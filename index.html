@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Feasibility dossier: adapting Jet Lag: The Game's Hide+Seek to Grand Rapids, MI on The Rapid transit system — verdict, numbers, transit reality, the full stop network, questions, curses, and recommended setup.">
+<title>Grand Rapids × Hide and Seek — Fitness Report</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl/dist/maplibre-gl.min.css">
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #f4f4ef;
+    --surface: #fcfcf9;
+    --surface-2: #eaeae2;
+    --ink: #191713;
+    --ink-2: #57534a;
+    --ink-3: #8d887c;
+    --grid: #e2ded2;
+    --baseline: #c6c1b2;
+    --ring: rgba(25,23,19,.10);
+    --accent: #2a78d6;        /* series-1 blue */
+    --accent-ink: #1c5cab;
+    --gold: #eda100;          /* series-4 yellow */
+    --gold-mark: #eda100;     /* chart-mark yellow (validated w/ direct labels) */
+    --gold-deep: #a86e00;
+    --off: #a49f92;           /* routes with no service on the selected day */
+    --seq-100:#cde2fb; --seq-200:#9ec5f4; --seq-300:#6da7ec; --seq-400:#3987e5; --seq-550:#1c5cab; --seq-650:#104281;
+    --good: #0ca30c; --good-text:#006300;
+    --q-yes:#2e9d5b; --q-no:#d1495b; --q-edge:#e0a000; --q-un:#7a8899;
+    --warn: #fab219; --warn-text:#8a5c00;
+    --serious: #ec835a; --serious-text:#9c3d16;
+    --crit: #d03b3b; --crit-text:#b02a2a;
+    --shadow: 0 1px 2px rgba(25,23,19,.06), 0 8px 24px -12px rgba(25,23,19,.18);
+    --serif: "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --paper: #12110e;
+      --surface: #1b1a16;
+      --surface-2: #24221c;
+      --ink: #f2efe6;
+      --ink-2: #c3beb0;
+      --ink-3: #8d887c;
+      --grid: #2c2a24;
+      --baseline: #3b3830;
+      --ring: rgba(242,239,230,.12);
+      --accent: #3987e5;
+      --accent-ink: #6da7ec;
+      --gold: #eda100;
+      --gold-mark: #c98500;
+      --gold-deep: #c98500;
+      --off: #5f5a4f;
+      --good-text:#3fc43f; --warn-text:#fab219; --serious-text:#ec835a; --crit-text:#e66767;
+      --q-yes:#3db374; --q-no:#e0616f; --q-edge:#d9a50a; --q-un:#8b99aa;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #12110e; --surface: #1b1a16; --surface-2: #24221c;
+    --ink: #f2efe6; --ink-2: #c3beb0; --ink-3: #8d887c;
+    --grid: #2c2a24; --baseline: #3b3830; --ring: rgba(242,239,230,.12);
+    --accent: #3987e5; --accent-ink: #6da7ec; --gold: #eda100; --gold-mark: #c98500; --gold-deep: #c98500; --off: #5f5a4f;
+    --good-text:#3fc43f; --warn-text:#fab219; --serious-text:#ec835a; --crit-text:#e66767;
+    --q-yes:#3db374; --q-no:#e0616f; --q-edge:#d9a50a; --q-un:#8b99aa;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -12px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 110px; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--serif); font-size: 17px; line-height: 1.62;
+    background-image: radial-gradient(rgba(25,23,19,.028) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  :root[data-theme="dark"] body { background-image: radial-gradient(rgba(242,239,230,.03) 1px, transparent 1px); }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) body { background-image: radial-gradient(rgba(242,239,230,.03) 1px, transparent 1px); }
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent-ink); }
+
+  /* ---- nav ---- */
+  nav {
+    position: sticky; top: 0; z-index: 50; background: color-mix(in srgb, var(--paper) 88%, transparent);
+    backdrop-filter: blur(10px); border-bottom: 1px solid var(--grid);
+  }
+  nav .wrap { display: flex; gap: 4px; align-items: center; overflow-x: auto; padding: 10px 24px; }
+  nav .brand { font-family: var(--sans); font-weight: 800; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; margin-right: 12px; white-space: nowrap; }
+  nav .brand .bus { color: var(--gold-deep); }
+  nav a { font-family: var(--sans); font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--ink-2); text-decoration: none; padding: 5px 10px; border-radius: 999px; white-space: nowrap; }
+  nav a:hover { background: var(--surface-2); color: var(--ink); }
+
+  /* ---- day-of-week selector (weekday vs weekend modes) ---- */
+  nav .wrap.daysel { border-top: 1px dashed var(--grid); padding-top: 8px; padding-bottom: 10px; gap: 6px; }
+  .daysel .dlab { font-family: var(--sans); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); margin-right: 4px; white-space: nowrap; }
+  .daysel .sep { flex: none; width: 1px; height: 20px; background: var(--baseline); margin: 0 6px; }
+  .daybtn { font-family: var(--sans); font-size: 12.5px; font-weight: 700; padding: 5px 13px; border-radius: 999px; border: 1.5px solid var(--grid); background: var(--surface); color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+  .daybtn:hover { border-color: var(--ink-3); color: var(--ink); }
+  .daybtn.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+  .daysel .modetag { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .modetag.wd { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-ink); }
+  .modetag.we { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold-deep); }
+  .daybanner { background: var(--surface); border-bottom: 1px solid var(--grid); border-top: 3px solid transparent; }
+  .daybanner.wd { border-top-color: var(--accent); }
+  .daybanner.sat { border-top-color: var(--good); }
+  .daybanner.sun { border-top-color: var(--crit); }
+  .daybanner .wrap { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; padding-top: 13px; padding-bottom: 13px; font-family: var(--sans); }
+  .daybanner .fact { font-size: 12px; color: var(--ink-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+  .daybanner .fact b { display: block; font-size: 15.5px; color: var(--ink); letter-spacing: 0; text-transform: none; }
+  .daybanner .note { flex: 1 1 100%; margin: 2px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--ink-2); max-width: 100ch; }
+  .tile.daytile { border-top: 3px solid var(--gold); }
+  #hwmap .cell.dimday { opacity: .33; }
+  #hwmap th.selday { color: var(--accent-ink); }
+  .card.today-flag { box-shadow: var(--shadow), 0 0 0 2px var(--crit); }
+
+  /* ---- hero ---- */
+  header.hero { padding: 56px 0 40px; border-bottom: 1px solid var(--grid); position: relative; overflow: hidden; }
+  .kicker { font-family: var(--sans); font-size: 12px; font-weight: 700; letter-spacing: .22em; text-transform: uppercase; color: var(--gold-deep); margin: 0 0 14px; }
+  .kicker::before { content: ""; display: inline-block; width: 34px; height: 3px; background: var(--gold); margin-right: 10px; vertical-align: middle; border-radius: 2px; }
+  h1 { font-size: clamp(30px, 4.6vw, 46px); line-height: 1.12; margin: 0 0 8px; letter-spacing: -0.015em; font-weight: 700; }
+  h1 .thin { font-weight: 400; font-style: italic; color: var(--ink-2); }
+  .headline { font-size: clamp(17px, 2vw, 20px); color: var(--ink-2); max-width: 62ch; margin: 14px 0 0; }
+  .hero-grid { display: grid; grid-template-columns: minmax(0,1fr) 240px; gap: 36px; align-items: center; }
+  @media (max-width: 760px) { .hero-grid { grid-template-columns: 1fr; } }
+  .dial-card { text-align: center; font-family: var(--sans); }
+  .dial-sub { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; margin-top: 2px; }
+  .rec-chip { display: inline-block; margin-top: 12px; font-family: var(--sans); font-size: 12.5px; font-weight: 700; padding: 6px 12px; border: 1.5px solid var(--gold-deep); color: var(--gold-deep); border-radius: 999px; letter-spacing: .05em; }
+
+  /* ---- sections ---- */
+  section { padding: 52px 0 8px; }
+  h2 { font-family: var(--sans); font-size: 13px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 6px; }
+  h2::before { content: attr(data-n); color: var(--gold-deep); margin-right: 10px; font-family: var(--mono); }
+  .sec-title { font-size: clamp(22px, 3vw, 30px); font-weight: 700; margin: 0 0 6px; letter-spacing: -.01em; }
+  .sec-lede { color: var(--ink-2); max-width: 70ch; margin: 0 0 26px; }
+
+  .prose p { max-width: 72ch; margin: 0 0 1.15em; }
+  .prose p::first-letter { }
+  .prose p:first-child::first-letter { font-size: 3.1em; float: left; line-height: .82; padding: 4px 8px 0 0; font-weight: 700; color: var(--gold-deep); }
+
+  /* ---- stat tiles ---- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px 12px; box-shadow: var(--shadow); }
+  .tile .v { font-family: var(--sans); font-size: 26px; font-weight: 800; letter-spacing: -.01em; line-height: 1.1; }
+  .tile .l { font-family: var(--sans); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-top: 4px; }
+  .tile .n { font-size: 13.5px; color: var(--ink-2); margin-top: 6px; line-height: 1.45; }
+
+  /* ---- cards / findings ---- */
+  .cardgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--ring); border-left-width: 4px; border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .card h4 { margin: 0 0 6px; font-size: 16.5px; font-family: var(--sans); font-weight: 700; letter-spacing: -.005em; }
+  .card p { margin: 0; font-size: 14.5px; color: var(--ink-2); line-height: 1.55; }
+  .card .mit { margin-top: 10px; font-size: 13.5px; border-top: 1px dashed var(--grid); padding-top: 8px; }
+  .card .mit b { font-family: var(--sans); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--good-text); }
+  .card.plus { border-left-color: var(--good); }
+  .card.minus { border-left-color: var(--crit); }
+  .card.benefit { border-left-color: var(--accent); }
+  .card.concern { border-left-color: var(--warn); }
+  .sev { font-family: var(--sans); font-size: 10.5px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; vertical-align: 2px; margin-left: 8px; }
+  .sev.high { background: var(--crit); color: #fff; }
+  .sev.medium { background: var(--warn); color: #3a2800; }
+  .sev.low { background: var(--surface-2); color: var(--ink-2); }
+  .subhead { font-family: var(--sans); font-weight: 800; font-size: 15px; letter-spacing: .02em; margin: 30px 0 12px; display: flex; align-items: center; gap: 10px; }
+  .subhead::after { content: ""; flex: 1; height: 1px; background: var(--grid); }
+  .subhead .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  /* ---- charts ---- */
+  .chartbox { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 18px 18px 12px; box-shadow: var(--shadow); overflow-x: auto; }
+  .chartbox + .chartbox { margin-top: 16px; }
+  .chart-title { font-family: var(--sans); font-weight: 700; font-size: 15px; margin: 0 0 2px; }
+  .chart-sub { font-family: var(--sans); font-size: 12.5px; color: var(--ink-3); margin: 0 0 12px; }
+  svg text { font-family: var(--sans); }
+  .tooltip {
+    position: fixed; z-index: 100; pointer-events: none; display: none; max-width: 320px;
+    background: var(--ink); color: var(--paper); font-family: var(--sans); font-size: 12.5px; line-height: 1.45;
+    padding: 8px 11px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.3);
+  }
+  .tooltip b { display: block; margin-bottom: 2px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-family: var(--sans); font-size: 12px; color: var(--ink-2); margin: 8px 2px 2px; }
+  .legend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+  /* ---- headway heatmap ---- */
+  table.hw { border-collapse: separate; border-spacing: 2px; font-family: var(--sans); font-size: 12.5px; min-width: 560px; }
+  table.hw th { text-align: left; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); padding: 4px 8px; }
+  table.hw td { padding: 0; }
+  table.hw td.rname { padding: 0 10px 0 4px; white-space: nowrap; color: var(--ink-2); }
+  table.hw td.rname b { color: var(--ink); font-family: var(--mono); font-size: 12px; background: var(--surface-2); border-radius: 5px; padding: 1px 7px; margin-right: 7px; display:inline-block; min-width: 34px; text-align:center; }
+  .cell { width: 92px; height: 30px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-variant-numeric: tabular-nums; cursor: default; }
+  .cell.nosvc { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 4px, var(--paper) 4px, var(--paper) 8px); color: var(--ink-3); font-weight: 500; }
+  .hb1 { background: var(--seq-100); color: #0d366b; } .hb2 { background: var(--seq-200); color: #0d366b; }
+  .hb3 { background: var(--seq-300); color: #0d366b; } .hb4 { background: var(--seq-400); color: #fff; }
+  .hb5 { background: var(--seq-550); color: #fff; } .hb6 { background: var(--seq-650); color: #fff; }
+
+  /* ---- network map (all bus stops, no scoring) ---- */
+  #netmap { border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+  #netmap.maplibregl-map { min-width: 0; }
+  .mk-central { width: 24px; height: 24px; }
+  .mk-central .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; color: var(--gold-deep); text-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .mk-central .clbl {
+    position: absolute; white-space: nowrap; font: 700 11px var(--sans); color: var(--ink); pointer-events: none;
+    background: color-mix(in srgb, var(--surface) 78%, transparent); padding: 1px 6px; border-radius: 5px;
+    top: 100%; left: 50%; transform: translateX(-50%); margin-top: 2px;
+  }
+  #netmap.dark-map .maplibregl-ctrl-group { background: #24221c; box-shadow: 0 0 0 1.5px rgba(242,239,230,.12); }
+  #netmap.dark-map .maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(.9) hue-rotate(180deg); }
+  #netmap.dark-map .maplibregl-ctrl-attrib { background: rgba(27,26,22,.75); }
+  #netmap.dark-map .maplibregl-ctrl-attrib, #netmap.dark-map .maplibregl-ctrl-attrib a { color: #c3beb0; }
+  #netmap.dark-map .maplibregl-ctrl-scale { background: rgba(27,26,22,.6); color: #c3beb0; border-color: #8d887c; }
+
+
+  /* ---- meters ---- */
+  .qgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .qcard { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .qcard .qh { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--sans); }
+  .qcard .qh b { font-size: 15.5px; }
+  .qcard .qh span { font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  .pips { display: flex; gap: 4px; margin: 8px 0; }
+  .pips i { height: 9px; flex: 1; border-radius: 3px; background: var(--surface-2); }
+  .pips i.on { background: var(--accent); }
+  .qcard p { margin: 4px 0 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+
+  /* ---- filterable tables ---- */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 14px; font-family: var(--sans); }
+  .chip { font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px; border: 1.5px solid var(--grid); background: var(--surface); color: var(--ink-2); cursor: pointer; }
+  .chip.on { border-color: var(--ink); color: var(--ink); background: var(--surface-2); }
+  table.data { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
+  table.data th { font-family: var(--sans); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--grid); }
+  table.data td { padding: 9px 14px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  table.data tr:last-child td { border-bottom: none; }
+  table.data td.q { font-family: var(--sans); font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+  table.data td.cat { font-family: var(--sans); font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+  table.data td.note { color: var(--ink-2); font-size: 13.5px; line-height: 1.5; }
+  .st { font-family: var(--sans); display: inline-block; font-size: 10.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; padding: 2.5px 9px; border-radius: 999px; white-space: nowrap; }
+  .st.strong { background: var(--good); color: #fff; }
+  .st.works { background: var(--accent); color: #fff; }
+  .st.caveat { background: var(--warn); color: #3a2800; }
+  .st.null { background: var(--surface-2); color: var(--ink-3); border: 1px dashed var(--baseline); }
+  .st.dead { background: var(--surface-2); color: var(--ink-2); }
+  .st.remove { background: var(--crit); color: #fff; }
+  .st.modify { background: var(--warn); color: #3a2800; }
+
+  /* ---- recommendations ---- */
+  .recs { counter-reset: rec; display: grid; gap: 10px; max-width: 78ch; padding: 0; margin: 0; list-style: none; }
+  .recs li { counter-increment: rec; background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 13px 16px 13px 58px; position: relative; font-size: 15px; color: var(--ink-2); box-shadow: var(--shadow); }
+  .recs li b:first-child { color: var(--ink); }
+  .recs li::before { content: counter(rec, decimal-leading-zero); position: absolute; left: 16px; top: 13px; font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--gold-deep); }
+
+  /* ---- citations ---- */
+  sup.cite { font-family: var(--sans); font-size: 10px; }
+  sup.cite a { text-decoration: none; color: var(--accent-ink); font-weight: 700; }
+  ol.cites { font-size: 13.5px; color: var(--ink-2); padding-left: 26px; columns: 2; column-gap: 40px; }
+  @media (max-width: 760px) { ol.cites { columns: 1; } }
+  ol.cites li { margin-bottom: 7px; break-inside: avoid; }
+  ol.cites .src { font-family: var(--mono); font-size: 11.5px; color: var(--gold-deep); }
+  ol.cites li:target { background: color-mix(in srgb, var(--gold) 22%, transparent); border-radius: 4px; padding: 2px 4px; }
+  details.ver { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 12px 16px; margin-top: 14px; font-size: 14px; }
+  details.ver summary { cursor: pointer; font-family: var(--sans); font-weight: 700; font-size: 14px; }
+  details.ver li { margin: 8px 0; color: var(--ink-2); font-size: 13.5px; }
+  details.ver li b { color: var(--crit-text); }
+
+  footer { border-top: 1px solid var(--grid); margin-top: 60px; padding: 26px 0 44px; font-family: var(--sans); font-size: 12.5px; color: var(--ink-3); }
+  .mrow { display: flex; flex-wrap: wrap; gap: 18px 34px; margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  .mrow b { display: block; font-size: 19px; color: var(--ink); }
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand">GR&nbsp;<span class="bus">×</span>&nbsp;Hide+Seek</span>
+  <a href="#verdict">Verdict</a><a href="#numbers">Numbers</a><a href="#transit">Transit</a><a href="#network">Network</a><a href="#questions">Questions</a><a href="#curses">Curses</a><a href="#findings">Findings</a><a href="#recs">Setup</a><a href="#sources">Sources</a>
+</div><div class="wrap daysel" id="daysel" role="group" aria-label="Choose your game day of the week"></div></nav>
+
+<div class="daybanner" id="daybanner"><div class="wrap"></div></div>
+
+<header class="hero"><div class="wrap hero-grid">
+  <div>
+    <p class="kicker">Feasibility dossier · Summer 2026 service · The Rapid, Grand Rapids MI</p>
+    <h1>Can you hide in <br>Grand Rapids? <span class="thin">Mostly, yes.</span></h1>
+    <p class="headline" id="headline"></p>
+    <span class="rec-chip" id="recchip"></span>
+  </div>
+  <div class="dial-card"><div id="dial"></div><div class="dial-sub">Map fitness · 0–100</div></div>
+</div></header>
+
+<main class="wrap">
+
+<section id="verdict">
+  <h2 data-n="01">The Verdict</h2>
+  <p class="sec-title">A seeker-friendly but genuinely playable MEDIUM map</p>
+  <div class="prose" id="verdict-prose"></div>
+</section>
+
+<section id="numbers">
+  <h2 data-n="02">Key Numbers</h2>
+  <p class="sec-title">The map at a glance</p>
+  <div class="tiles" id="tiles"></div>
+</section>
+
+<section id="transit">
+  <h2 data-n="03">Transit Reality</h2>
+  <p class="sec-title">Ride times &amp; the frequency problem</p>
+  <p class="sec-lede">Every hiding run starts at Rapid Central Station and must end at a zone within the 60-minute hiding period. One-seat rides fit comfortably; verified transfer itineraries do not (the fact-checked Kentwood transfer to Walmart-Grandville takes 92 minutes, not the 62 originally claimed).<sup class="cite" data-c="14,15"></sup></p>
+  <div class="chartbox">
+    <p class="chart-title">Scheduled ride time from Rapid Central Station</p>
+    <p class="chart-sub">Minutes in vehicle on real Summer 2026 trips · dashed line = 60-minute MEDIUM hiding period · hollow bar = no service on your selected game day</p>
+    <div id="ttchart"></div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent)"></span>One-seat ride, fits the window</span>
+      <span><span class="sw" style="background:var(--gold-mark)"></span>Service-window caveat</span>
+      <span><span class="sw" style="background:var(--crit)"></span>Busts the hiding period</span>
+      <span><span class="sw" style="background:transparent;border:1.5px dashed var(--baseline)"></span>No service on selected day</span>
+    </div>
+  </div>
+  <div class="chartbox">
+    <p class="chart-title">Headways by day of week</p>
+    <p class="chart-sub">Approximate minutes between buses per route · hatched = no service that day · hover for route details · your selected game day is highlighted</p>
+    <div id="hwmap"></div>
+    <div class="legend" id="hwlegend"></div>
+  </div>
+</section>
+
+<section id="network">
+  <h2 data-n="04">The Network</h2>
+  <p class="sec-title">Where the buses stop</p>
+  <p class="sec-lede">The raw playing field: every OSM-mapped bus stop inside the implied game rectangle — 464 of them, squarely inside the 100–500-station band the rulebook prescribes for a MEDIUM game. It's a hub-and-spoke system: nearly every route begins and ends at Rapid Central Station downtown, so cross-town chases almost always pass through the ★.</p>
+  <div class="chartbox">
+    <p class="chart-title">All 464 bus stops in the game rectangle</p>
+    <p class="chart-sub">Live OpenFreeMap basemap · gray dots = every OSM <code>highway=bus_stop</code> in the game rectangle (hover for stop names) · ★ = Rapid Central Station (all roads lead here) · dashed gold frame = the game border implied by the stops themselves</p>
+    <div id="netmap"></div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--ink-2);border-radius:50%"></span>Bus stop (OSM)</span>
+      <span><span style="color:var(--gold-deep);font-weight:800;margin-right:5px">★</span>Rapid Central Station</span>
+      <span><span class="sw" style="background:transparent;border:1.5px dashed var(--gold-deep)"></span>Implied game border</span>
+    </div>
+  </div>
+
+</section>
+
+<section id="questions">
+  <h2 data-n="05">Question Feasibility</h2>
+  <p class="sec-title">All six categories function — with a known dead list</p>
+  <p class="sec-lede" id="q-lede">Category health on this map, rated 0–5. The guaranteed-null and dead-singleton questions below should be pre-briefed so nobody burns a draw learning them.<sup class="cite" data-c="30,31,34,36,39"></sup></p>
+  <div class="qgrid" id="qcats"></div>
+  <div class="chips" id="qchips"></div>
+  <div style="overflow-x:auto"><table class="data" id="qtable"></table></div>
+</section>
+
+<section id="curses">
+  <h2 data-n="06">Curse Deck Audit</h2>
+  <p class="sec-title">21 of 24 curses work out of the box</p>
+  <p class="sec-lede">Every curse in the hider deck, checked against Grand Rapids geography and The Rapid's network. Meijer superstores — literal route termini — double as lemon-and-egg supply depots.<sup class="cite" data-c="28,29,37"></sup></p>
+  <div class="chips" id="cchips"></div>
+  <div style="overflow-x:auto"><table class="data" id="ctable"></table></div>
+</section>
+
+<section id="findings">
+  <h2 data-n="07">Findings</h2>
+  <p class="sec-title">Plusses, minuses, benefits &amp; concerns</p>
+  <div id="findings-body"></div>
+</section>
+
+<section id="recs">
+  <h2 data-n="08">Recommended Setup</h2>
+  <p class="sec-title">House rules for game day</p>
+  <ol class="recs" id="recs-list"></ol>
+</section>
+
+<section id="sources">
+  <h2 data-n="09">Verification &amp; Sources</h2>
+  <p class="sec-title">How this report was checked</p>
+  <div class="mrow" id="verstats"></div>
+  <details class="ver"><summary>The 5 refuted claims (and their corrections)</summary><ul id="refuted"></ul></details>
+  <p class="sec-lede" style="margin-top:26px">Citation index — hover chips like <sup class="cite"><a href="#c1">1</a></sup> throughout the report jump here.</p>
+  <ol class="cites" id="cites"></ol>
+</section>
+
+</main>
+
+<footer><div class="wrap">
+  <div class="mrow" id="method"></div>
+  <p style="max-width:80ch">Prepared by a multi-agent Claude workflow (Fable 5 synthesis &amp; adjudication, Opus analysis &amp; adversarial verification, Sonnet field research). Transit data from The Rapid's official GTFS feed (Summer 2026 service, Jul 1–Aug 30); geodata from the Nominatim &amp; Overpass APIs (OpenStreetMap). Rules from the Jet Lag The Game: Hide and Seek rulebook (lifack.ch mirror). Scheduled times are planning estimates — verify against live tracking on game day. Generated July 2026.</p>
+</div></footer>
+
+<div class="tooltip" id="tt"></div>
+
+<script type="application/json" id="data">{"report":{"headline":"Grand Rapids is a genuinely playable MEDIUM map — ~144 unique schedule-book timepoints on a ~225-square-mile game rectangle whose ~125 sq mi six-city core puts every spoke a one-seat ride under 45 minutes — but its 30–60 minute headways, radial geometry, and Sunday service collapse demand a Saturday game and a handful of firm house rules.","overallScore":64,"recommendedGameSize":"MEDIUM — the official schedule-book timepoints as hiding-zone centers: 146 raw names, ~144 unique after merging spelling variants, ~143 usable once the excluded airport is dropped (1/4-mile zones, 60-min hiding period); do NOT use all 503 OSM stops, which mismatches LARGE station count with MEDIUM area","verdictParagraphs":["The Rapid gives you a coherent, honest MEDIUM game. Restricting hiding zones to the official schedule-book timepoints — 146 raw names, ~144 unique once spelling variants like 'DeVos Place Station'/'Devos Place Station' and 'Walker Village/Remembrance'/'Walker Village at Remembrance' are merged, and ~143 usable zone centers after excluding the airport — lands both of GUIDE.md's sizing axes squarely in the MEDIUM band (100-500 stations, 100-1,000 sq mi). The operative map is a ~225 sq mi rectangle that boxes in the GVSU panhandle and encloses the ~125 sq mi six-city service core; dropping the panhandle shrinks the box to ~135 sq mi but kills the county-border questions. Using all 503 mapped bus stops would technically tip the station count into LARGE while the area stays firmly MEDIUM — a mismatch that produces a worse game, since travel times and map scale, not stop count, are what players actually feel. The timepoint design also solves a practical problem: timepoints are the stops with printed schedules, so a hider always knows exactly when the next bus comes.","The core strategic tension is the network's shape. This is a textbook hub-and-spoke system — 19 of 25 summer routes serve Rapid Central Station (only the Laker Line, DASH, and the crosstowns 24/27/28/44 skip it) — which hands seekers a devastating opening: one measuring or thermometer question anchored on Central collapses the hider to a distance ring, and one directional cue (nearest Meijer, which mall, which crosstown) identifies the spoke. But the same radial geometry punishes pursuit. Once seekers commit to a spoke, most locals run every 30-60 minutes, and worst-case Central-to-terminal times run 45-81 minutes including one headway of wait. A missed bus on an hourly route costs seekers an entire MEDIUM hiding period. The counterweights are two parallel 15-minute south-side spines — the Division corridor (Silver Line + Route 1, effectively ~10-min combined on the shared segment) and the Kalamazoo corridor (Routes 2/4) — plus four verified crosstowns that never enter downtown (24, 27, 28, 44 — Route 27 effectively leaves the game with the excluded airport zone), all hinged on Kentwood Station. Be honest about what crosstowns are for, though: they are seeker-evasion and mid-game repositioning tools, not hiding-period plays. From a downtown game start, reaching one requires a transfer, and the fact-check shows two-leg itineraries bust the window — the verified Route 6 → Route 44 trip to Walmart-Grandville is 92 minutes, not 62, and even the verified 49-minute Route 24 Kentwood-to-RiverTown run only fits if the hider is already at Kentwood. Realistic hides are one-seat rides.","The 60-minute hiding period fits the map almost perfectly for one-seat trips: Wealthy/Lake in 15, Knapp's Corner in 29, Kirkhof (GVSU) in 31, RiverTown in 32, Kentwood-Woodland in 35, the 60th Street BRT terminus in 42, UM Health-West in 43. Everything a hider should legitimately reach is reachable; everything requiring a transfer is a gamble. Zone quality is more uneven than zone reachability. The best hides are texture, not landmarks: Eastown's dense 7-day-service commercial fabric, the West Side's quiet Lane & Bridge residential grid (the zoo sits 1,250 m outside the zone radius — which matters for measuring precision, not matching, since on a one-zoo map 'nearest zoo' matching auto-matches everywhere), and GVSU's building-rich campus. The worst are the giveaway termini — malls, the Meijer plazas, and above all the airport, which is a 69-minute two-seat ride with a total weekend blackout and hostile security; it should simply be excluded.","Question-category health is good but lopsided. Radar and thermometer work everywhere. Measuring is strong precisely because of the radial geometry, though a whole family of sub-questions is dead on arrival: coastline (Lake Michigan is 29.9 mi away), international border (144.6 mi), state border (97.2 mi), mountains and sea level (none in-map). Matching is rich on parks (287 named), libraries (29), and golf courses (28), and the museum roster carries marquee names: the Gerald R. Ford Presidential Museum sits on the downtown west bank (served by Routes 7 and 9), and Frederik Meijer Gardens & Sculpture Park — Grand Rapids' best-known attraction — is in-map on East Beltline but served by NO Rapid route, making it a live matching/tentacle/measuring target that can never be a hiding zone. Several categories are singletons — one zoo, one aquarium (Van Andel Living Shores, which the brief wrongly assumed absent), one commercial airport, one rail station, one theme park — but their game effect is the opposite of a pinpoint: with exactly one in-map instance, every player's 'nearest zoo' is the same zoo, so the matching question always returns 'match' and teaches nothing. The singletons' real power migrates to measuring and thermometer ('are you closer to the aquarium than we are?'), where they are unusually decisive anchors. Meanwhile 4th administrative division always nulls since Grand Rapids neighborhoods are informal. The county-border and 2nd-division questions are only live if the map includes the Laker Line's Ottawa County tail, which is itself a reason to keep the GVSU panhandle despite the area it adds. All six categories function, so run the full MEDIUM deck — just brief players on the guaranteed-null list and the dead singleton-matching list so nobody wastes a question learning them.","The day-of-week problem is the single biggest scheduling decision. Saturday is clearly the best game day: all routes except 27/33/34 run, most locals last until ~23:20, DASH runs to 1:56 AM, and weekend-only Route 1000 adds Millennium Park. Weekdays add frequency (15-min trunk service, 30-min locals) but lose Route 1000 and add the Route 34 trap (a peak-only commuter route with a 278-minute midday hole). Sunday is genuinely bad — 8 routes dark, 17 running, nearly everything hourly, and a hard systemwide cutoff around 18:00-19:00 with DASH dying at 16:52. July 4 is unplayable (DASH only). Logistics are otherwise kind: a Wave card or contactless caps every player's transit spend at $5.25/day with free transfers for 1h45m, GVSU affiliates ride free, and real-time tracking via Transit/myStop keeps the 30-60 minute headways survivable. Play a Saturday, arm everyone with a Wave card, enforce a scheduled-service rule for zones, and this is a solid — if seeker-friendly — MEDIUM map."],"pluses":[{"title":"Clean MEDIUM sizing with the timepoint design","detail":"~144 unique schedule-book timepoints (146 raw names minus spelling-variant duplicates; ~143 zone centers after excluding the airport) and a ~225 sq mi map rectangle around a ~125 sq mi six-city core both land in GUIDE.md's MEDIUM tier (100-500 stations, 100-1,000 sq mi) — a coherent, well-calibrated board with no tier mismatch.","cites":[8,23,41,32,33]},{"title":"Everything is a one-seat ride inside the 60-minute window","detail":"Every scouted zone except the airport is reachable direct from Rapid Central Station in 7-43 minutes: Eastown 15, Knapp's Corner 29, Kirkhof/GVSU 31, RiverTown 32, Kentwood-Woodland 35, 60th St 42, UM Health-West 43.","cites":[14,16,17,18,23]},{"title":"Two parallel 15-minute spines give real chase play","detail":"The Division corridor (Silver Line ~15 min + Route 1 ~30 min, effectively ~10 min combined Wealthy-to-28th) and the Kalamazoo corridor (Routes 2/4, ~15 min) let seekers chain buses fast across the whole south side.","cites":[1,16,18]},{"title":"Crosstowns break the radial geometry","detail":"Four verified crosstowns never touch downtown — 24, 27, 28, 44, all hinged on Kentwood Station (27 effectively leaves the game with the excluded airport). The verified Route 24 run links Kentwood to RiverTown in a 49-minute one-seat ride that defeats Central-anchored thermometer logic — but as a mid-game repositioning and endgame-evasion tool for a hider already east: from Central, reaching a crosstown needs a transfer and doesn't fit the hiding window.","cites":[8,12,15]},{"title":"Deep POI inventory for the question deck","detail":"287 named parks, 29 libraries, 28 golf courses, 15 museums, 7 cinemas, 6 hospitals keep matching/tentacle questions informative rather than null; marquee anchors include the Gerald R. Ford Presidential Museum on the downtown west bank (Routes 7/9) and Frederik Meijer Gardens & Sculpture Park (in-map on East Beltline, served by no route — a live question target that can never be a hide); even an aquarium exists (Van Andel Living Shores at John Ball Zoo), overturning the brief's assumption.","cites":[34,35,36,44]},{"title":"Long Saturday spans and an all-night downtown circulator","detail":"Saturday keeps nearly all routes running to ~23:20 and DASH runs 11:00 AM to 1:56 AM at ~8-minute headways — the longest playable single-day window in the system.","cites":[1,4,10]},{"title":"Bridge-rich, water-crossed geography keeps curses alive","detail":"The Grand River bisects the map with 9+ named downtown road bridges plus the pedestrian Blue Bridge, a rail bridge, and I-196 spans — Bridge Troll, Water Weight, and Endless Tumble all work as printed.","cites":[37,28]}],"minuses":[{"title":"Radial geometry is a gift to seekers","detail":"With 19 of 25 routes serving Rapid Central Station (only the Laker Line, DASH, and crosstowns 24/27/28/44 skip it), one distance-from-Central question plus one directional cue pins the hider's spoke — hider counterplay is limited to the crosstowns and two frequent corridors.","cites":[3,8,30]},{"title":"30-60 minute headways create severe stranding risk","detail":"Most locals run every 30 min weekdays and 60 min weekends; a single missed bus erases a full MEDIUM hiding period, and worst-case Central-to-terminal pursuit runs 45-81 minutes including one headway of wait.","cites":[1,18,23]},{"title":"Sunday collapses the network","detail":"8 routes (5, 12, 13, 14, 24, 27, 33, 34) have no Sunday service, leaving 17 running; nearly all survivors go hourly and the system hard-stops around 18:00-19:00, with DASH ending at 16:52.","cites":[1,11,10]},{"title":"Transfers don't fit the hiding window","detail":"Fact-check refuted the flagship two-leg hider itinerary: Route 6 → Route 44 to Walmart-Grandville is actually 92 minutes (the 8:55 connection arrives 9:47), not 62 — multi-leg hides on 30-60 min headways routinely bust the 60-minute period.","cites":[14,15,23]},{"title":"Several zones are rules headaches or dead weight","detail":"Route 34 is peak-only with a 278-minute midday hole; Route 1000 (Millennium Park) is weekend-only and hourly; Routes 27/33/34 vanish on weekends; the airport requires a 69-minute two-seat ride with a weekend blackout.","cites":[9,5,7,13]},{"title":"Singletons neuter matching, and null-heavy geography wastes questions","detail":"One zoo, one aquarium, one commercial airport, one rail station, one theme park — with exactly one in-map instance, every player's 'nearest X' is the same X, so the matching question always returns 'match' and conveys zero information (the singletons' power migrates to measuring/thermometer, where they are decisive anchors). Meanwhile coastline, mountains, sea level, consulates, international/state borders, and 4th admin division all guarantee nulls.","cites":[34,36,39,40,31]},{"title":"Suburban terminus zones are hideability deserts","detail":"Woodland Mall, RiverTown, Knapp's Corner, and 60th Street are parking-lot moonscapes with giveaway landmark profiles, few or no public restrooms, and almost no all-hours public cover for the endgame.","cites":[34,27,22]}],"benefits":[{"title":"Transit costs cap at $5.25 per person per day","detail":"A Wave card ($3 one-time) or any contactless card/phone gives free transfers for 1h45m and a $5.25 daily fare cap — unlimited chase boardings for the price of three rides. Cash is $1.75 exact change with NO transfers.","cites":[2,43]},{"title":"GVSU students and staff ride free","detail":"College affiliates ride the whole network free with ID — a GVSU-heavy game group plays the entire day at zero transit cost.","cites":[3]},{"title":"Compact one-day game footprint","detail":"A ~225 sq mi map rectangle around a ~125 sq mi six-city core, with every zone ≤43 minutes from the hub, supports a full 4-8 hour MEDIUM game with 3-4 rounds in a single day — no rest-period rules needed.","cites":[41,23,18]},{"title":"DASH gives seekers a downtown teleporter","detail":"Route 51 runs every ~8 minutes (127 weekday trips, Saturday until 1:56 AM), letting seekers reposition across the downtown core essentially on demand.","cites":[4,10]},{"title":"Full real-time tracking","detail":"Every Rapid vehicle is trackable live in the Transit and myStop apps, which converts the 30-60 minute headways from a blind gamble into a plannable schedule for both sides.","cites":[3]},{"title":"Meijer termini double as curse supply depots","detail":"Routes 1, 2, 4, 7, 10, and 11 literally terminate at Meijer supercenters — lemons (Lemon Phylactery), eggs, and souvenirs are always one bus ride away, directly on the network.","cites":[8,28]},{"title":"The $5.25 daily cap — not the transfer window — is the real chase insurance","detail":"Wave/contactless transfers are free for 1h45m from the FIRST tap, which comfortably covers any single legal connection (even a 60-minute headway wait after a 43-minute ride squeaks in at 103 minutes) — but a longer multi-leg chain past 105 minutes does re-charge. That's fine: the $5.25 daily fare cap is what guarantees no player ever pays more, no matter how many boardings the chase takes.","cites":[2,1,43]}],"concerns":[{"title":"Sunday service collapse","severity":"high","detail":"8 routes dark, hourly headways on the 17 survivors, systemwide shutdown ~18:00-19:00, DASH ends 16:52 — a Sunday round can strand players with no return bus.","mitigation":"Play Saturday (or a weekday). If Sunday is unavoidable, end the game by 17:00 and restrict zones to routes with verified Sunday service.","cites":[1,10,11]},{"title":"Missed-bus stranding on 30-60 minute routes","severity":"high","detail":"A missed bus on an hourly route costs a full MEDIUM hiding period; hiders can be trapped short of their intended zone and seekers lose all momentum.","mitigation":"Mandate the Transit/myStop app for all players, and have hiders commit to a zone only after checking the next two departures out of it. A hard '≤30-minute scheduled headway' zone rule is viable on weekdays, but on the recommended Saturday it would gut the map — Routes 1, 3, 5, 7, 8, 10, 12, 13, 14, 15, 24, 44, and 1000 all run hourly on Saturday, invalidating over half the timepoints including ranked zones Knapp's Corner, RiverTown, and Millennium Park — so on weekends rely on the scheduled-service rule plus live tracking instead.","cites":[1,3,23]},{"title":"Day-dependent dead zones freeze the map mid-round","severity":"medium","detail":"Route 1000 stops exist only on weekends; Routes 27/33/34 stops only on weekdays; Route 34 has a 278-minute midday hole; Route 12's stops go dark Sundays.","mitigation":"House rule: a stop is a valid zone center only if it has scheduled service from round start through game end on the actual game day. This automatically excludes R34 midday, the airport on weekends, and Millennium Park on weekdays.","cites":[5,7,9,21]},{"title":"Cash-fare trap","severity":"medium","detail":"$1.75 exact change per boarding with no transfers punishes exactly the multi-boarding play the game requires — a 6-bus chase costs $10.50 in coins.","mitigation":"Every player buys a Wave card or sets up contactless pay before game day; tap the same method all day to hit the $5.25 cap.","cites":[2,43]},{"title":"The airport zone breaks the rules framework","severity":"medium","detail":"Gerald R. Ford Airport is a 69-minute two-seat ride (exceeding the 60-min hiding period), has zero weekend service, and airport security makes stationary hiding hostile.","mitigation":"Exclude the airport and all Route 27-only stops from the zone list outright.","cites":[13,7,27]},{"title":"Singleton POIs warp the question deck","severity":"low","detail":"Zoo, aquarium, theme park, rail station, and commercial airport each have exactly one in-map instance, so their MATCHING questions are dead weight — every player shares the same nearest instance, the answer is always 'match', and no information changes hands — while the very same landmarks become unusually decisive MEASURING/thermometer anchors ('are you closer to the zoo than us?').","mitigation":"Brief both sides pre-game: treat singleton matching questions as known no-information asks and skip them; expect singleton-anchored measuring questions to be the high-stakes plays instead.","cites":[34,36,31]},{"title":"Bathroom and shelter deserts at edge termini","severity":"low","detail":"60th Street P&R, Eastown, John Ball/Lane-Bridge, and Knapp's Corner have zero mapped public toilets in-radius; July heat and thunderstorms raise the stakes.","mitigation":"Follow GUIDE.md's advice: hiders verify an accessible bathroom in-zone before committing; carry water; agree the game pauses for weather emergencies.","cites":[26,34,22]}],"questionCategories":[{"category":"Matching","rating":3,"notes":"Rich on dense categories (287 named parks, 29 libraries, 28 golf courses, 15 museums, 7 cinemas), with marquee museum anchors — the Gerald R. Ford Presidential Museum downtown (Routes 7/9), the GR Public Museum, GRAM, and Frederik Meijer Gardens & Sculpture Park (in-map on East Beltline but served by no route, so a question target only, never a hide). The singletons — one zoo, one aquarium, one commercial airport, one rail station, one theme park — are dead matching material: with exactly one in-map instance, everyone's nearest is the same, so 'match' is guaranteed and zero information changes hands; their power belongs to measuring/thermometer. 3rd admin division (city) is genuinely useful across six municipalities; 4th admin division always nulls.","nullRisks":["4th administrative division (GR neighborhoods are informal place=neighbourhood, not boundaries)","Foreign consulate (zero in-map, confirmed twice)","Mountain (only two minor hills tagged natural=peak)","Singleton categories (zoo/aquarium/commercial airport/rail station/theme park) — not nulls, but auto-match: the answer is always 'match' and conveys no information"],"cites":[34,35,36,40,31,44]},{"category":"Measuring","rating":4,"notes":"The star category on a radial network: distance-from-Central rings are brutally informative, and the Kent/Ottawa county border is live if the Laker Line is in-map. The singleton landmarks (zoo, aquarium, airport, Amtrak station, theme park — plus Meijer Gardens) are where singleton power actually lives: 'are you closer to the zoo than us?' is decisive precisely because there is only one. But an entire family of sub-questions is guaranteed null: coastline 29.9 mi away, international border 144.6 mi, state border 97.2 mi, sea level nonexistent.","nullRisks":["Coastline (Lake Michigan 29.9 mi from Central)","International border (Windsor ~144.6 mi)","1st-division border (MI/IN line ~97.2 mi)","Sea level / mountain elevation"],"cites":[39,38,30,31,36]},{"category":"Radar","rating":5,"notes":"Works flawlessly at this map scale — 1/2/5-mile radii slice a ~13x17-mile board into meaningful bands, and the isolated termini (Kirkhof, 60th, Knapp's Corner) produce clean, decisive hits or misses. No null risk.","nullRisks":[],"cites":[30,41,38]},{"category":"Thermometer","rating":4,"notes":"Mechanically sound everywhere, and the radial geometry makes Central-anchored thermometers devastating. The only drag is operational: 30-60 minute headways make it slow for seekers to physically generate the second reading, so readings can go stale between buses.","nullRisks":[],"cites":[30,1,3]},{"category":"Photo","rating":4,"notes":"Fully functional. Flat river-valley terrain means no long-vista mountain shots, but the Grand River, distinctive bridges, BRT stations, and varied streetscapes (downtown towers vs Meijer plazas vs GVSU campus) make photos genuinely informative.","nullRisks":["No mountain/vista photos (flat terrain)"],"cites":[30,37,36]},{"category":"Tentacle","rating":3,"notes":"Legal in MEDIUM games and usable: museums (15, including the Ford Presidential Museum and Meijer Gardens), libraries (29), and movie theaters (7) give real multi-instance targets within tentacle range of downtown. Thinner in the suburban ring, and the singleton categories are useless for tentacles. Well-distributed golf courses are ironically one of the better tentacle classes.","nullRisks":["Singleton categories (zoo/aquarium/airport/rail) unusable as tentacle targets"],"cites":[30,34,35,44]}],"keyStats":[{"label":"Official timepoints (recommended zone centers)","value":"146 raw / ~144 unique","note":"Spelling-variant dedup (DeVos/Devos Place, Walker Village/Remembrance); ~143 zone centers after excluding the airport; vs 503 total OSM bus stops — timepoints keep the game cleanly MEDIUM","cites":[8,32,33]},{"label":"Summer 2026 routes","value":"25","note":"2 BRT + DASH + 22 locals; Routes 60/100 don't run in summer; 19 of 25 serve Rapid Central Station","cites":[1,3,42]},{"label":"Map area","value":"~225 sq mi rectangle","note":"Six-city service core is ~125 sq mi; excluding the GVSU panhandle shrinks the rectangle to ~135 sq mi","cites":[41,25]},{"label":"Fare with Wave/contactless","value":"$5.25/day cap","note":"$1.75 cash per boarding with NO transfers — get the card","cites":[2,43]},{"label":"Weekday headway range","value":"8–60 min","note":"DASH ~8; BRT/R2/R4 ~15; most locals 30-60","cites":[1,4]},{"label":"Routes lost on Sunday","value":"8 of 25","note":"17 remain, nearly all hourly, systemwide cutoff ~18:00-19:00","cites":[1,11]},{"label":"Longest one-seat ride from Central","value":"43 min","note":"Route 1 to UM Health-West; 60th St BRT terminus is 42","cites":[18,16]},{"label":"DASH downtown circulator","value":"~8 min","note":"127 weekday trips; Saturday until 1:56 AM; Sunday dies at 16:52","cites":[4,10]},{"label":"Hiding period (MEDIUM)","value":"60 min","note":"Hiding zone = 1/4-mile radius on a transit stop","cites":[23,24]},{"label":"Grand River bridges downtown","value":"9+ named","note":"Plus Blue Bridge, rail bridge, I-196 spans — Bridge Troll stays in","cites":[37,28]},{"label":"Route 34 midday service hole","value":"278 min","note":"Peak-only commuter route; exclude from zone list","cites":[9,6]},{"label":"July 4 service","value":"DASH only","note":"No fixed-route service on Independence Day — unplayable","cites":[3]}],"travelTimes":[{"destination":"Monroe/DeVos Place (downtown)","minutes":7,"route":"Route 11","cites":[18]},{"destination":"Lane/Bridge (West Side / John Ball)","minutes":10,"route":"Route 12 (weekday) / Route 1000 (weekend)","cites":[21]},{"destination":"Wealthy/Lake (Eastown)","minutes":15,"route":"Route 6","cites":[14]},{"destination":"Meijer - Plainfield Twp","minutes":23,"route":"Route 11","cites":[18]},{"destination":"Millennium Park (weekend only)","minutes":24,"route":"Route 1000","cites":[21,5]},{"destination":"Meijer - Knapp's Corner","minutes":29,"route":"Route 15","cites":[18]},{"destination":"Target - RiverTown","minutes":30,"route":"Route 3","cites":[18]},{"destination":"Kirkhof Station (GVSU Allendale)","minutes":31,"route":"Laker Line (from Monroe/Louis, ~5-min walk from Central)","cites":[17]},{"destination":"RiverTown Crossings Mall","minutes":32,"route":"Route 8 (midday trips only serve the mall stop)","cites":[19]},{"destination":"Meijer - Gaines Twp","minutes":34,"route":"Route 2","cites":[18]},{"destination":"Kentwood Station - Woodland Mall","minutes":35,"route":"Route 6","cites":[14]},{"destination":"Sam's Club / Walmart - Alpine","minutes":36,"route":"Route 9","cites":[18]},{"destination":"60th Street P&R (BRT terminus)","minutes":42,"route":"Silver Line","cites":[16]},{"destination":"Gerald R. Ford Airport","minutes":69,"route":"Route 6 → Route 27 (two-seat, weekday only — exceeds 60-min window)","cites":[13,14]}],"headways":[{"route":"LL","name":"Laker Line (BRT)","weekdayMin":15,"saturdayMin":30,"sundayMin":30},{"route":"SL","name":"Silver Line (BRT)","weekdayMin":15,"saturdayMin":30,"sundayMin":30},{"route":"1","name":"Madison","weekdayMin":30,"saturdayMin":60,"sundayMin":60},{"route":"2","name":"Kalamazoo","weekdayMin":15,"saturdayMin":30,"sundayMin":30},{"route":"3","name":"Wyoming","weekdayMin":43,"saturdayMin":60,"sundayMin":60},{"route":"4","name":"Eastern","weekdayMin":15,"saturdayMin":30,"sundayMin":60},{"route":"5","name":"Wealthy","weekdayMin":30,"saturdayMin":60,"sundayMin":-1},{"route":"6","name":"Eastown","weekdayMin":30,"saturdayMin":30,"sundayMin":60},{"route":"7","name":"West Leonard","weekdayMin":30,"saturdayMin":60,"sundayMin":60},{"route":"8","name":"Prairie","weekdayMin":45,"saturdayMin":60,"sundayMin":60},{"route":"9","name":"Alpine","weekdayMin":21,"saturdayMin":30,"sundayMin":60},{"route":"10","name":"Clyde Park","weekdayMin":30,"saturdayMin":60,"sundayMin":60},{"route":"11","name":"Plainfield","weekdayMin":29,"saturdayMin":30,"sundayMin":60},{"route":"12","name":"Westside","weekdayMin":30,"saturdayMin":60,"sundayMin":-1},{"route":"13","name":"Michigan/Fuller","weekdayMin":32,"saturdayMin":60,"sundayMin":-1},{"route":"14","name":"Fulton","weekdayMin":60,"saturdayMin":60,"sundayMin":-1},{"route":"15","name":"East Leonard","weekdayMin":31,"saturdayMin":60,"sundayMin":60},{"route":"24","name":"Burton (crosstown)","weekdayMin":57,"saturdayMin":60,"sundayMin":-1},{"route":"27","name":"Airport Industrial (crosstown)","weekdayMin":60,"saturdayMin":-1,"sundayMin":-1},{"route":"28","name":"28th Street (crosstown)","weekdayMin":30,"saturdayMin":30,"sundayMin":60},{"route":"33","name":"Three Mile","weekdayMin":60,"saturdayMin":-1,"sundayMin":-1},{"route":"34","name":"Northridge (peak-only, 278-min midday gap)","weekdayMin":30,"saturdayMin":-1,"sundayMin":-1},{"route":"44","name":"44th Street (crosstown)","weekdayMin":30,"saturdayMin":60,"sundayMin":60},{"route":"51","name":"DASH (downtown circulator)","weekdayMin":8,"saturdayMin":8,"sundayMin":8},{"route":"1000","name":"Millennium Park (weekend only)","weekdayMin":-1,"saturdayMin":60,"sundayMin":60}],"curseNotes":[{"curse":"Curse of the Luxury Car","status":"works","note":"Affluent East Grand Rapids and the Cascade/Ada corridor make upscale cars plausible; the burden is on seekers, not the hider."},{"curse":"Curse of the Bridge Troll","status":"works","note":"9+ named Grand River road bridges downtown plus the Blue Bridge, a rail bridge, and I-196 overpasses — and the card doesn't even require water. Do NOT remove.","cites":[28,37]},{"curse":"Curse of the Drained Brain","status":"works","note":"Pure hand-management mechanic; no geographic dependency."},{"curse":"Curse of the Water Weight","status":"works","note":"Grand River bisects the map and Millennium Park's lake is a confirmed transit destination; Reeds/Versluis Lakes likely add options (exact inventory unverified but at least two qualifying waters exist)."},{"curse":"Curse of the Zoologist","status":"works","note":"July in Michigan — wild insects near every stop and 287 named parks. Trivial."},{"curse":"Curse of the Egg Partner","status":"remove","note":"Rulebook's own buy-item/ethics opt-out; feasible via Meijer termini but drop it and replace with a blank-card custom to preserve the ~50/25/25 deck split.","cites":[28,29]},{"curse":"Curse of the Jammed Door","status":"modify","note":"Works on bus doors, but a failed 2d6 on a 15-min trunk route costs a full headway — cap the cooldown at one missed bus."},{"curse":"Curse of the Spotty Memory","status":"works","note":"MEDIUM games use all six question categories, so all die faces map cleanly with no dead reroll."},{"curse":"Curse of the Bird Guide","status":"works","note":"Abundant summer birds along the riverfront and parks."},{"curse":"Curse of the Unguided Tourist","status":"works","note":"Full US Street View coverage; the removal clause only targets limited-coverage countries."},{"curse":"Curse of the Ransom Note","status":"works","note":"Free-paper racks, stores, and hubs supply printed material."},{"curse":"Curse of the Mediocre Travel Agent","status":"works","note":"Parks, malls, and Meijer/Target termini offer plenty of reachable souvenir destinations."},{"curse":"Curse of the Impressionable Consumer","status":"remove","note":"Rulebook's own spend-money opt-out — it can force paying for an advertised service. Drop and replace with a blank to preserve the ~50/25/25 deck split.","cites":[28,29]},{"curse":"Curse of the U-Turn","status":"works","note":"The printed rule already defines 'next station' as the next stop the current vehicle makes and requires tracker confirmation — no house rule needed, but expect it to be brutal on the hourly routes (3/14/24/33)."},{"curse":"Curse of the Cairn","status":"works","note":"Riverbanks, parks, and landscaping supply self-found rocks."},{"curse":"Curse of the Distant Cuisine","status":"works","note":"Grand Rapids sustains many single-country restaurants (Mexican, Thai, Vietnamese, Ethiopian, Polish); multi-country 'Asian' spots are excluded by the card itself."},{"curse":"Curse of the Lemon Phylactery","status":"works","note":"Lemons at any Meijer — and Meijers are literal termini of Routes 1, 2, 4, 7, 10, 11."},{"curse":"Curse of the Gambler's Feet","status":"works","note":"Pure dice mechanic with a built-in road-crossing safety carve-out."},{"curse":"Curse of the Hidden Hangman","status":"works","note":"Language-only word game; fully portable."},{"curse":"Curse of the Endless Tumble","status":"works","note":"River-valley relief and underpass ramps provide 100-ft inclined surfaces."},{"curse":"Curse of the Right Turn","status":"works","note":"Dense street grid; never nulls on a road-served bus map."},{"curse":"Curse of the Urban Explorer","status":"modify","note":"Most Rapid stops are open-air poles with no building, so the card barely bites as printed — extend the no-ask ban to standing at/under any bus stop or shelter."},{"curse":"Curse of the Overflowing Chalice","status":"works","note":"Pure draw/keep modifier; no map dependency."},{"curse":"Curse of the Labyrinth","status":"works","note":"Pen-and-paper maze; fully self-contained."}],"recommendations":["Play on a SATURDAY. Nearly all routes run (only 27/33/34 are dark), most locals last to ~23:20, DASH runs to 1:56 AM, and Route 1000 adds Millennium Park. Avoid Sunday (8 routes dark, ~18:00 systemwide cutoff) and never play July 4 (DASH-only holiday service).","Use the official schedule-book timepoints as the only valid hiding-zone centers — ~144 unique after merging spelling-variant duplicates (146 raw names), ~143 once the airport is excluded — and run as a MEDIUM game (60-min hiding period, 1/4-mile zones). Do not use all 503 OSM stops — the station count would say LARGE while the area says MEDIUM, and timepoints are the stops with printed schedules.","Adopt a scheduled-service rule: a stop is a valid zone center only if its route has scheduled service from the start of the hiding period through the planned end of the game on the actual game day. This automatically handles Route 1000 (weekday games), Routes 27/33/34 (weekend games), Route 34's 278-minute midday hole, and Route 12/13/5/14/24 Sundays.","Exclude the Gerald R. Ford Airport zone entirely: it requires a 69-minute two-seat trip that exceeds the 60-minute hiding period, has zero weekend service, and airport security makes stationary hiding untenable.","Every player gets a Wave card ($3) or sets up contactless pay before game day, and taps the same method all day — free transfers for 1h45m from first tap and a $5.25 daily cap that covers any chase no matter how many boardings. Never pay cash ($1.75 exact change, no transfers).","Draw the map border as a rectangle around the six-city core and decide the GVSU panhandle explicitly: including the Laker Line makes the operative map ~225 sq mi, adds the map's best outlier hide, AND keeps the Kent/Ottawa county-border and 2nd-division questions live; excluding it shrinks the box to ~135 sq mi but nulls those questions.","Deck edits: remove Egg Partner and Impressionable Consumer (the rulebook's own opt-outs) and replace with blank-card customs to hold the ~50/25/25 time-bonus/powerup/curse split; cap Jammed Door's cooldown at one missed bus; extend Urban Explorer's question ban to any bus stop or shelter, not just station buildings.","Pre-brief two lists so nobody burns a question learning them: the guaranteed nulls (mountain, sea level, coastline, foreign consulate, international border, state border, 4th administrative division) and the dead singleton-matching asks — with exactly one in-map zoo, aquarium, commercial airport, rail station, and theme park, 'nearest X' matching always returns 'match' and teaches nothing, so spend those landmarks on measuring/thermometer questions instead.","Hiders: plan one-seat hides only during the hiding period. The fact-checked Kentwood transfer itinerary takes 92 minutes, not 62 — on 30-60 minute headways, any transfer risks blowing the entire 60-minute window. The crosstowns (24/28/44) are your anti-radial weapons for AFTER you're placed — mid-game repositioning and endgame evasion from a Kentwood-side position — not routes you can board direct from a downtown game start.","Safety and comfort: full phone charge plus power banks (live trackers and transit apps run all day), verify an in-zone bathroom before committing (60th St, Eastown, and Knapp's Corner have none), carry water for July heat, agree the game pauses for weather emergencies, and share live locations with a non-playing third party."],"citationIndex":[{"id":1,"label":"Route Overview table — spans & headways for all 25 routes (lines 50-76)","source":"THERAPID-COMPACT.md"},{"id":2,"label":"Fares & Payment — $1.75 cash/no transfers, Wave card 1h45m transfers, $5.25 daily cap (lines 21-33)","source":"THERAPID-COMPACT.md"},{"id":3,"label":"Key Rider Info — Rapid Central Station hub, Transit/myStop real-time apps, GVSU rides free, July 4 no service, no summer Route 60/100 (lines 15-46)","source":"THERAPID-COMPACT.md"},{"id":4,"label":"Route 51 DASH section — ~8 min, weekday 127 trips 6:30-23:57, Sat to 1:56, Sun 11:00-16:52 (lines 287-292)","source":"THERAPID-COMPACT.md"},{"id":5,"label":"Route 1000 Millennium Park — weekend-only, hourly, Sat 10:45-18:13 / Sun 11:15-18:43 (lines 294-300)","source":"THERAPID-COMPACT.md"},{"id":6,"label":"Route 34 Northridge section — peak-only pattern, span 5:58-17:20 (lines 281-285)","source":"THERAPID-COMPACT.md"},{"id":7,"label":"Routes 27 Airport Industrial & 33 Three Mile — weekday-only, no weekend service (lines 250-269)","source":"THERAPID-COMPACT.md"},{"id":8,"label":"Per-route timepoint sequences — 146 raw timepoint names (~144 unique after dedup); 19 of 25 routes serve Rapid Central Station (all but LL, 24, 27, 28, 44, 51); Meijer termini (R1/2/4/7/10/11), Kentwood Station convergence (5/6/24/27/28/44), RiverTown (3/8/24/44), Division vs Kalamazoo corridors","source":"THERAPID-COMPACT.md"},{"id":9,"label":"Route 34 weekday tables — verified 278/280-minute midday gaps, last trip 17:20 (lines 4947-4998)","source":"THERAPID.md"},{"id":10,"label":"Route 51 DASH trip tables — 127 weekday / 45 Sunday trips verified, Saturday last trip ~1:56 (lines 5000-5004+)","source":"THERAPID.md"},{"id":11,"label":"Sunday timetable cross-checks — last-trip arrivals cluster 17:50-19:01 systemwide (R1/R2/R28 et al.)","source":"THERAPID.md"},{"id":12,"label":"Route 24 Burton weekday tables — verified 8:25→9:14 Kentwood-to-RiverTown crosstown (49 min) and 8:42→9:30 return","source":"THERAPID.md"},{"id":13,"label":"Route 27 weekday to Airport table — Kentwood 8:38 → Airport 8:54; last loop 21:33→21:48 (lines 4334-4367)","source":"THERAPID.md"},{"id":14,"label":"Route 6 weekday to Kentwood Station tables — RCS 12:15 → Wealthy/Lake 12:30 → Kentwood 12:50 (lines 2036-2115)","source":"THERAPID.md"},{"id":15,"label":"Route 44 weekday to Walmart-Grandville — 8:55 Kentwood departure arrives Walmart 9:47 (fact-check refuting the 62-min itinerary claim)","source":"THERAPID.md"},{"id":16,"label":"Silver Line (Route SL/90) tables — RCS 12:13 → 60th St 12:55 (42 min), 61 weekday trips 5:39-22:20, Sunday ends 18:30","source":"THERAPID.md"},{"id":17,"label":"Laker Line (Route LL/45) tables — Monroe/Louis 12:05 → Kirkhof 12:36 (31 min); weekend 30-min 10:00-20:00","source":"THERAPID.md"},{"id":18,"label":"First/midday trip rows Routes 1/2/3/8/9/11/15 — in-vehicle times to termini (UM Health-West 43, Meijer-Gaines 34, Target-RiverTown 30-36, Plainfield 23, Knapp's 29, Alpine 36, Monroe/DeVos 7)","source":"THERAPID.md"},{"id":19,"label":"Route 8 weekday table — RiverTown mall timepoint F served midday only, skipped on early/late trips; RCS 12:30 → mall 13:02","source":"THERAPID.md"},{"id":20,"label":"Route 15 Sunday to Knapps Corner table — last trip departs Central 18:15, arrives 18:44 (lines 4161-4173, correcting the 17:50 claim)","source":"THERAPID.md"},{"id":21,"label":"Route 12 & Route 1000 tables — RCS→Lane/Bridge 10 min; Route 1000 Sat 10:45→Millennium 11:09 (24 min), last return 18:13/18:43","source":"THERAPID.md"},{"id":22,"label":"GTFS stop coordinate table — stop IDs and lat/lon for all zone-center stops (lines 5500-5760)","source":"THERAPID.md"},{"id":23,"label":"Game sizes & hiding periods — SMALL 30-100 stn/10-100 sq mi/30 min; MEDIUM 100-500/100-1,000/60 min; LARGE 500+/1,000+/180 min","source":"GUIDE.md"},{"id":24,"label":"Hiding Zones — 1/4-mile radius circle centered on a transit stop for small/medium games","source":"GUIDE.md"},{"id":25,"label":"Setting Map Borders — draw a square/circle encompassing the totality of the transit system","source":"GUIDE.md"},{"id":26,"label":"Safety & comfort guidance — bathroom in zone, pause for weather/health, share location with third party, pre-game safety discussion","source":"GUIDE.md"},{"id":27,"label":"Hiding-spot requirements — publicly accessible all game hours, within 10 ft of a mapped path, avoid stores/bathroom stalls","source":"HIDING.md"},{"id":28,"label":"All 24 curse cards with removal/modification clauses (lines 96-192)","source":"HIDING.md"},{"id":29,"label":"Customizing Your Deck — ~50% time bonus / 25% powerup / 25% curse split, blank cards for replacements (lines 196-201)","source":"HIDING.md"},{"id":30,"label":"Six question categories — matching, measuring, radar, thermometer, photo, tentacle (tentacle barred in SMALL games)","source":"SEEKING.md"},{"id":31,"label":"Null-answer rule — out-of-map locations treated as nonexistent; null is a valid answer and the hider still draws","source":"SEEKING.md"},{"id":32,"label":"Bus stop count — 503 highway=bus_stop nodes in full service bbox (re-verified)","source":"Overpass API","url":"https://overpass-api.de/api/interpreter?data=[out:json][timeout:90];node[%22highway%22=%22bus_stop%22](42.72,-85.90,43.12,-85.40);out%20count;"},{"id":33,"label":"Corroborating counts — 394 stops in six-city core bbox, 493 platform nodes, 27 Rapid route relations","source":"Overpass API","url":"https://overpass-api.de/api/interpreter?data=[out:json][timeout:90];node[%22highway%22=%22bus_stop%22](42.85,-85.78,43.02,-85.58);out%20count;"},{"id":34,"label":"POI inventory — 15 museums, 31 library elements (29 unique), 6 hospitals, 7 cinemas, 1 zoo, 1 aquarium (Van Andel Living Shores), 1 theme park (Craig's Cruisers), plus per-zone amenity/toilet scans","source":"Overpass API","url":"https://overpass-api.de/api/interpreter?data=[out:json][timeout:60];nwr[%22tourism%22=%22museum%22](42.72,-85.90,43.12,-85.40);out%20tags%20center%2050;"},{"id":35,"label":"Parks & golf — 333 leisure=park features (287 named, all 4 major parks confirmed), 31 golf-course elements (28 unique)","source":"Overpass API","url":"https://overpass-api.de/api/interpreter?data=[out:json][timeout:60];nwr[%22leisure%22=%22park%22](42.72,-85.90,43.12,-85.40);out%20count;"},{"id":36,"label":"Singleton/null checks — 0 consulates/embassies, 6 aerodromes (1 commercial: GRR), 1 rail station (Vernon J. Ehlers Amtrak), 2 minor peaks only","source":"Overpass API","url":"https://overpass-api.de/api/interpreter?data=[out:json][timeout:60];(nwr[%22aeroway%22=%22aerodrome%22](42.72,-85.90,43.12,-85.40);nwr[%22railway%22=%22station%22](42.72,-85.90,43.12,-85.40);nwr[%22natural%22=%22peak%22](42.72,-85.90,43.12,-85.40););out%20tags%20center%2040;"},{"id":37,"label":"Downtown bridge inventory — 24 named bridge ways over/near the Grand River incl. the pedestrian Blue Bridge (way 556368586)","source":"Overpass API","url":"https://overpass-api.de/api/interpreter?data=[out:json][timeout:60];way[%22bridge%22=%22yes%22][%22name%22](42.93,-85.69,42.99,-85.64);out%20tags%20center;"},{"id":38,"label":"Key coordinates — Rapid Central Station (42.9583,-85.6729) and Kirkhof Center GVSU (42.9628,-85.8887); straight-line 10.9 mi","source":"Nominatim","url":"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&q=Rapid%20Central%20Station%2C%20Grand%20Rapids%2C%20MI"},{"id":39,"label":"Null-distance checks — Grand Haven State Park 29.9 mi, Windsor ON 144.6 mi, New Buffalo MI 97.2 mi from Central (haversine)","source":"Nominatim","url":"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&q=Grand+Haven+State+Park+Michigan"},{"id":40,"label":"Administrative boundaries — Grand Rapids/EGR/Wyoming are Kent County place_rank-16 relations; Allendale Twp is Ottawa County; Heritage Hill is informal place=neighbourhood (no 4th admin division)","source":"Nominatim","url":"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=Heritage+Hill+Grand+Rapids+Michigan&addressdetails=1"},{"id":41,"label":"Six-city land areas — GR 44.78 + Wyoming 24.74 + Kentwood 20.92 + Grandville 7.25 + Walker 24.58 + EGR 2.93 = ~125.2 sq mi","source":"Wikipedia","url":"https://en.wikipedia.org/wiki/Grand_Rapids,_Michigan"},{"id":42,"label":"The Rapid official GTFS feed (source of THERAPID.md / THERAPID-COMPACT.md, Summer 2026 service period)","source":"connect.ridetherapid.org","url":"https://connect.ridetherapid.org"},{"id":43,"label":"The Rapid — official agency site (fares, Wave card, rider info)","source":"ridetherapid.org","url":"https://www.ridetherapid.org"},{"id":44,"label":"Popular Destinations by Route table (lines ~5421-5490) — Gerald R. Ford Museum served by Routes 7/9, John Ball Park & Zoo by LL/12, Woodland Mall by 5/6/24/27/28/44, Amtrak at Central Station; Frederik Meijer Gardens / East Beltline appears on NO route","source":"THERAPID.md"}]},"verificationSummary":{"checked":68,"refuted":[{"claim":"HIDER itinerary B: Route 6 (8:15 RCS) arrives Kentwood 8:49; transfer to Route 44 departing Kentwood 8:55 reaches Target-RiverTown 9:01, RiverTown Crossings 9:05, Walmart-Grandville 9:17; whole trip 8:15-9:17 (62 min), fits a 60-min window.","correction":"On the catchable 8:55 Route 44, Walmart-Grandville arrival is 9:47 (Target-RiverTown 9:30, RiverTown Crossings 9:34); total 8:15-9:47 = 92 minutes, exceeding the 60-min window. The 6-min transfer at Kentwood (8:49->8:55) is real, but every downstream time and the trip-length conclusion are wrong."},{"claim":"Finding lists Route 9 (~21) and Route 11 (~29) under 'Weekday ~15 min or better' turn-up-and-go routes."},{"claim":"On Sunday the running network drops to ~18 routes.","correction":"17 routes run on Sunday, not ~18."},{"claim":"Knapp's Corner (Sunday trap): outbound Route 15 last trip to Knapp's Corner departs Central ~17:50 (arr 18:20) and the line's Sunday span ends ~18:15.","correction":"Last Sunday trip departs Central 18:15 and arrives Knapp's Corner 18:44 (not 17:50→18:20); Sunday outbound service does not 'end ~18:15' — arrivals run to 18:44, and inbound-to-Central Sunday runs to 18:46."},{"claim":"Downtown zone: Route 13 runs 7 days (Sun 25 trips), providing weekend redundancy.","correction":"Route 13 does NOT run on Sundays; it is a weekday+Saturday route. The '7-day / Sun 25 trips' claim is false (25 Sunday trips likely belongs to Route 2 or the Silver Line). Sunday redundancy for this zone rests only on the Silver Line and Laker Line, not Route 13."}]}}</script>
+<script type="application/json" id="qdata">{"rows":[{"category":"Matching — Transit","question":"Commercial Airport","status":"dead","note":"Only one commercial airport in-map (GRR); a singleton means both parties' nearest airport is always GRR, so the answer is always 'yes' and returns zero information."},{"category":"Matching — Transit","question":"Transit Line","status":"strong","note":"Seekers must be on a moving bus; a 'yes' means their bus would stop at the hider's timepoint. With most routes feeding downtown Central Station, riding a crosstown route slices the map hard — high value while in transit."},{"category":"Matching — Transit","question":"Station Name's Length","status":"strong","note":"Bus-stop names in Google Maps ('Monroe / DeVos Place', 'Division / 28th St') vary widely in character count, giving good discrimination between timepoints."},{"category":"Matching — Transit","question":"Street or Path","status":"strong","note":"Dense street grid means nearest-street rarely ties; pairs well with seeker movement to triangulate a block."},{"category":"Matching — Admin","question":"1st Administrative Division","status":"dead","note":"Entire map is in Michigan, so nearest/containing state always matches — guaranteed 'yes', zero information."},{"category":"Matching — Admin","question":"2nd Administrative Division","status":"caveat","note":"Two counties exist but Ottawa is reachable only via the GVSU/Allendale panhandle; matching returns 'yes' almost everywhere and only distinguishes the panhandle, so it is low-information outside that arm."},{"category":"Matching — Admin","question":"3rd Administrative Division","status":"strong","note":"Rich layer: 6 cities plus surrounding townships give many distinct municipalities, so a shared-municipality answer meaningfully carves the map."},{"category":"Matching — Admin","question":"4th Administrative Division","status":"null","note":"Grand Rapids neighborhoods are informal; there is no formal 4th-level division on this map, so the question cannot resolve to a real division — guaranteed null."},{"category":"Matching — Natural","question":"Mountain","status":"null","note":"No mapping-app-classified mountains inside the ~225 sq mi map; nearest mountain is out of bounds and treated as nonexistent — guaranteed null."},{"category":"Matching — Natural","question":"Landmass","status":"dead","note":"All timepoints sit on the same contiguous mainland; landmass always matches, zero information."},{"category":"Matching — Natural","question":"Park","status":"strong","note":"287 named parks with map icons scattered densely; nearest-park-icon rarely ties and cuts the map well."},{"category":"Matching — POI","question":"Amusement Park","status":"dead","note":"Craig's Cruisers is the only in-map amusement park; singleton always matches, zero information."},{"category":"Matching — POI","question":"Zoo","status":"dead","note":"John Ball Zoo is the only in-map zoo; singleton always matches, zero information."},{"category":"Matching — POI","question":"Aquarium","status":"dead","note":"Van Andel Living Shores (at the zoo) is the only in-map aquarium; singleton always matches, zero information."},{"category":"Matching — POI","question":"Golf Course","status":"strong","note":"28 outdoor courses spread across the map; nearest-course discriminates well, especially in the suburbs."},{"category":"Matching — POI","question":"Museum","status":"works","note":"Several museums cluster downtown (Public, Art, Ford, Children's) plus Meijer Gardens east; matching mainly separates the downtown cluster from suburban zones."},{"category":"Matching — POI","question":"Movie Theater","status":"works","note":"~10 theaters give moderate coverage; nearest-theater discriminates but with coarser granularity than parks/libraries."},{"category":"Matching — Utilities","question":"Hospital","status":"works","note":"Several hospitals clustered on the downtown Medical Mile plus suburban ones; matching mostly separates the Medical Mile from the periphery."},{"category":"Matching — Utilities","question":"Library","status":"strong","note":"29 libraries spread evenly; nearest-library is a strong, fine-grained slicer."},{"category":"Matching — Utilities","question":"Foreign Consulate","status":"null","note":"No non-honorary foreign consulates in-map; guaranteed null."},{"category":"Measuring — Transit","question":"Commercial Airport","status":"strong","note":"Single airport (GRR) on the SE edge; measuring to one fixed point yields a clean distance gradient across the whole map — unlike matching, a singleton is fully useful here."},{"category":"Measuring — Transit","question":"High-Speed Train Line","status":"null","note":"No high-speed rail anywhere in Michigan/in-map; guaranteed null."},{"category":"Measuring — Transit","question":"Rail Station","status":"works","note":"One Amtrak station (Vernon J. Ehlers) downtown; measuring to it works but effectively duplicates a 'distance to downtown' cut."},{"category":"Measuring — Borders","question":"International Border","status":"null","note":"Nearest international border is ~145 mi away, out of bounds; guaranteed null."},{"category":"Measuring — Borders","question":"1st Administrative Division Border","status":"null","note":"Nearest state border is ~97 mi away, out of bounds; guaranteed null."},{"category":"Measuring — Borders","question":"2nd Administrative Division Border","status":"works","note":"The Kent–Ottawa county line runs through the map's west side/panhandle, so this measures cleanly; the border being on one side biases it toward an east-west cut."},{"category":"Measuring — Natural","question":"Sea Level (altitude)","status":"caveat","note":"Only ~75 m of relief (river valley ~185 m vs East GR/Grand Ridge ~260 m); usable to separate valley from hills but fiddly and compass-accuracy-dependent."},{"category":"Measuring — Natural","question":"Body of Water","status":"strong","note":"Grand River bisects the map plus Reeds Lake and Millennium Park lakes; many named bodies give a rich, versatile slice."},{"category":"Measuring — Natural","question":"Coastline","status":"null","note":"Lake Michigan shore is ~30 mi west (out of bounds) and the Grand River is far under 1 mile across, so no qualifying coastline exists in-map — guaranteed null."},{"category":"Measuring — Natural","question":"Mountain","status":"null","note":"No in-map mountains; guaranteed null."},{"category":"Measuring — Natural","question":"Park","status":"strong","note":"287 park icons; measuring to nearest park icon is a strong, always-available slicer."},{"category":"Measuring — POI","question":"Amusement Park","status":"works","note":"Single park (Craig's Cruisers) on the south edge; measuring to one edge point gives a usable north-south-ish gradient."},{"category":"Measuring — POI","question":"Zoo","status":"works","note":"Single zoo (John Ball) west of downtown; measuring to it gives a clean distance gradient."},{"category":"Measuring — POI","question":"Aquarium","status":"caveat","note":"Only aquarium is co-located with the zoo, so this measure is nearly identical to the zoo measure — functional but redundant if the zoo question was already asked."},{"category":"Measuring — POI","question":"Golf Course","status":"strong","note":"28 courses; nearest-course distance is a strong slicer everywhere."},{"category":"Measuring — POI","question":"Museum","status":"works","note":"Downtown cluster plus Meijer Gardens; measuring works but the tight downtown grouping limits resolution near the center."},{"category":"Measuring — POI","question":"Movie Theater","status":"works","note":"~10 theaters give reasonable coverage for a distance cut."},{"category":"Measuring — Utilities","question":"Hospital","status":"works","note":"Medical Mile cluster plus suburban hospitals; useful distance cut, somewhat downtown-weighted."},{"category":"Measuring — Utilities","question":"Library","status":"strong","note":"29 evenly spread libraries make nearest-library distance a strong, reliable slicer."},{"category":"Measuring — Utilities","question":"Foreign Consulate","status":"null","note":"No in-map foreign consulates; guaranteed null."},{"category":"Radar","question":"¼ Mile","status":"works","note":"End-game only; equals the hiding-zone radius, so useful for pinpointing once you're on top of a zone."},{"category":"Radar","question":"½ Mile","status":"works","note":"Close-range confirmation when already in the right neighborhood."},{"category":"Radar","question":"1 Mile","status":"strong","note":"Good closing tool; carves a meaningful chunk on a ~15-20 mi map without needing to be right on top of the hider."},{"category":"Radar","question":"3 Miles","status":"strong","note":"Ideal mid-game slice for this map scale — a 3-mile circle removes a real fraction of the ~225 sq mi area."},{"category":"Radar","question":"5 Miles","status":"strong","note":"Excellent early/mid slice; covers roughly a quarter of the map from a central point."},{"category":"Radar","question":"10 Miles","status":"works","note":"Good opening question — a 10-mile circle splits the ~15-20 mi map into a usable in/out, though it can cover most of the map from center."},{"category":"Radar","question":"25 Miles","status":"caveat","note":"Map is only ~15-20 mi across, so a 25-mile radar returns 'yes' from almost anywhere — near-zero information; keep only as an edge-case corner check."},{"category":"Radar","question":"50 Miles","status":"dead","note":"Always 'yes' on a ~20-mile map; zero information."},{"category":"Radar","question":"100 Miles","status":"dead","note":"Always 'yes'; zero information."},{"category":"Radar","question":"Choose","status":"strong","note":"Free choice of radius is the most flexible radar; on this scale seekers will pick 2-7 mi to match density."},{"category":"Thermometer (MEDIUM)","question":"½ Mile","status":"works","note":"Fine-grained direction check for the final approach; too short to be efficient early."},{"category":"Thermometer (MEDIUM)","question":"3 Miles","status":"strong","note":"Best-matched thermometer for this map — a 3-mile leg reliably reveals direction without overshooting the target."},{"category":"Thermometer (MEDIUM)","question":"10 Miles","status":"works","note":"Useful for the opening direction read, but a 10-mile leg can overshoot on a ~15-20 mi map, muddying the hotter/colder signal near the middle."},{"category":"Photo (MEDIUM)","question":"Any Building Visible from Transit Station","status":"caveat","note":"Most Rapid timepoints are curbside stops without a real 'entrance/roof' building; workable at Central Station and major stops but needs a house-rule for what counts as the stop location on bare curb stops."},{"category":"Photo (MEDIUM)","question":"Widest Street","status":"works","note":"Straightforward and often revealing given the mix of arterials vs residential streets."},{"category":"Photo (MEDIUM)","question":"Tree","status":"works","note":"Answerable almost anywhere; low information but cheap."},{"category":"Photo (MEDIUM)","question":"Tallest Structure in Your Current Sightline","status":"works","note":"Strong downtown where the skyline is distinctive; less discriminating in flat suburban zones."},{"category":"Photo (MEDIUM)","question":"You (selfie)","status":"works","note":"Background can leak location cues; always answerable."},{"category":"Photo (MEDIUM)","question":"The Sky","status":"works","note":"Always answerable; minimal but occasionally useful (cloud/sun angle) info."},{"category":"Photo (MEDIUM)","question":"Tallest Building Visible from Transit Station","status":"caveat","note":"Very high value downtown where towers ID the block, but many bus timepoints are curbside with no clear 'station entrance' — needs the same stop-location house-rule as the building photo."},{"category":"Photo (MEDIUM)","question":"Trace Nearest Street/Path","status":"strong","note":"The distinctive street grid/curves make a traced intersection-to-intersection segment highly matchable on the map."},{"category":"Photo (MEDIUM)","question":"2 Buildings","status":"works","note":"Facade details give matchable cues, especially in commercial corridors."},{"category":"Photo (MEDIUM)","question":"Restaurant Interior","status":"works","note":"Answerable when a restaurant sits in the zone (common along corridors); may force 'cannot answer' in purely residential zones."},{"category":"Photo (MEDIUM)","question":"Park","status":"works","note":"With 287 parks most zones can answer; distinctive park features aid matching."},{"category":"Photo (MEDIUM)","question":"Grocery Store Aisle","status":"caveat","note":"Only answerable if a grocery store falls in the ¼-mile zone; many zones will return 'cannot answer', which still costs the seekers a card."},{"category":"Photo (MEDIUM)","question":"Place of Worship","status":"works","note":"Churches are plentiful across the metro, so most zones can answer and the 3-distinct-element rule makes it matchable."},{"category":"Photo (MEDIUM)","question":"Train Platform","status":"remove","note":"The Rapid is buses only; the sole rail platform is the downtown Amtrak station, so every hider except one in that single zone answers 'cannot answer' — effectively dead on this network."},{"category":"Tentacle (MEDIUM)","question":"Museums Within 1 Mile","status":"strong","note":"Museums cluster tightly downtown, so a 1-mile museum tentacle is a powerful late-game density-buster in the core; often reaches nothing in the suburbs (valid 'not within reach')."},{"category":"Tentacle (MEDIUM)","question":"Libraries Within 1 Mile","status":"works","note":"29 libraries spread out; a 1-mile tentacle usually pings 0-1, giving a precise name-level fix when it connects."},{"category":"Tentacle (MEDIUM)","question":"Movie Theaters Within 1 Mile","status":"works","note":"~10 theaters are sparse, so within 1 mile this frequently reaches one specific theater or none — clean but situational."},{"category":"Tentacle (MEDIUM)","question":"Hospitals Within 1 Mile","status":"works","note":"Powerful on the Medical Mile where several hospitals sit within a mile; elsewhere usually reaches one or none."}]}</script>
+<script type="application/json" id="busstops">{"stops":[[-85.62176,42.8458,"Meijer at Gaines"],[-85.62658,42.84997,"Eastport at Kalamazoo (WB)"],[-85.62471,42.85027,"Kalamazoo at Eastport (NB)"],[-85.62827,42.85028,"Eastport at Saffron (WB)"],[-85.62496,42.85029,"Kalamazoo at Eastport (SB)"],[-85.62971,42.85124,"Eastport at Ridgebrook (WB)"],[-85.64845,42.85299,"Woodfield Place"],[-85.62982,42.8531,"Ridgebrook at 60th (NB)"],[-85.625,42.8532,"Kalamazoo at 60th (SB)"],[-85.6447,42.85416,"Eastern at 60th (SB)"],[-85.62474,42.85426,"Kalamazoo at 60th (NB)"],[-85.62542,42.85454,"60th at Kalamazoo (EB)"],[-85.64395,42.85473,"60th at Eastern (EB)"],[-85.64755,42.85475,"60th at Leisure South (EB)"],[-85.634,42.85483,"60th at Kentwood Community Church (WB)"],[-85.63932,42.85487,"60th at Ridge Glen (WB)"],[-85.66361,42.85539,"60th Street"],[-85.62507,42.85584,"Kalamazoo at 59th (SB)"],[-85.62477,42.8561,"Kalamazoo at Hidden Valley (NB)"],[-85.71939,42.85806,""],[-85.68399,42.8645,""],[-85.66392,42.86513,"54th Street"],[-85.68262,42.86526,""],[-85.66423,42.86537,"54th Street"],[-85.66847,42.86581,""],[-85.67316,42.86587,""],[-85.68437,42.86597,""],[-85.66884,42.86601,"54th at 165 54th WB"],[-85.66428,42.86609,"Division at 54th (SB)"],[-85.67307,42.8661,"54th across from Crippen WB"],[-85.68473,42.86619,""],[-85.68406,42.86685,""],[-85.6838,42.86765,""],[-85.66438,42.86958,"Division across from 52nd (SB)"],[-85.68421,42.87117,""],[-85.68394,42.8717,""],[-85.6645,42.87337,"Division at 50th (SB)"],[-85.68403,42.87421,""],[-85.68435,42.87497,""],[-85.59634,42.8755,"Walma at Kentwood City Hall"],[-85.66461,42.8769,"Division across from 48th (SB)"],[-85.66475,42.88062,"Division at Montebello (SB)"],[-85.74862,42.88126,"Rivertown Meijer"],[-85.66486,42.88311,"44th Street"],[-85.66458,42.8832,"44th Street"],[-85.53906,42.88364,""],[-85.55852,42.88366,"44th at Brockton (WB)"],[-85.55308,42.88367,"44th at Danvers (WB)"],[-85.54927,42.88367,"44th at Patterson (WB)"],[-85.56411,42.88369,"44th at Broadmoor (WB)"],[-85.53082,42.88432,"Hotel Shuttle"],[-85.6649,42.88435,"Division at 44th (SB)"],[-85.53434,42.88455,"West Michigan Aviation Academy"],[-85.52997,42.88523,"Economy Lot Parking Shuttle"],[-85.52979,42.88534,"Gerald R Ford Airport (WB)"],[-85.54748,42.8871,"Patterson at Danvers (SB)"],[-85.66502,42.88785,"Division at Thurston (SB)"],[-85.56719,42.88922,"East Paris at Allied Finishing (NB)"],[-85.66511,42.89057,"Division at Floyd (SB)"],[-85.56747,42.89167,"40th at East Paris (WB)"],[-85.54775,42.89173,"Patterson at 40th (SB)"],[-85.66523,42.89329,"Division at 39th (SB)"],[-85.56753,42.89483,""],[-85.66534,42.89565,"Division at Jordan (SB)"],[-85.54807,42.89666,"Patterson at 37th (SB)"],[-85.56766,42.89736,"East Paris at 36th (NB)"],[-85.56698,42.89794,"36th at East Paris (EB)"],[-85.55977,42.89795,""],[-85.54987,42.89795,""],[-85.66546,42.89823,"36th Street"],[-85.66521,42.89901,"36th Street"],[-85.6655,42.89923,"Division at 36th (SB)"],[-85.77547,42.8996,""],[-85.5678,42.89985,""],[-85.56807,42.90033,""],[-85.7723,42.90218,""],[-85.7758,42.90227,""],[-85.66564,42.90267,"Division at 34th (SB)"],[-85.56831,42.90424,""],[-85.56804,42.90425,""],[-85.77242,42.90586,""],[-85.6658,42.90613,"Division at 32nd (SB)"],[-85.73476,42.90641,""],[-85.73476,42.90663,""],[-85.76955,42.90731,""],[-85.76982,42.90742,""],[-85.56826,42.90801,""],[-85.56856,42.90808,""],[-85.76512,42.90885,""],[-85.76539,42.90889,""],[-85.58244,42.90907,""],[-85.5814,42.90925,""],[-85.57521,42.90927,"29th & Lake Eastbrook"],[-85.57549,42.90945,""],[-85.66596,42.90962,"Division at Celia (SB)"],[-85.56865,42.91012,""],[-85.58862,42.91037,""],[-85.5891,42.91054,""],[-85.56925,42.91067,""],[-85.62745,42.91077,"Kalamazoo at 28th/Meijer (NB)"],[-85.62782,42.91105,"Kalamazoo at 28th/Meijer (SB)"],[-85.75854,42.91107,""],[-85.75865,42.9112,""],[-85.62833,42.91126,"Meijer at 28th/Kalamazoo"],[-85.66605,42.91148,"Division at Canterberry (SB)"],[-85.59198,42.91173,""],[-85.59181,42.91217,""],[-85.75422,42.91218,""],[-85.75457,42.91225,""],[-85.56418,42.91239,""],[-85.5739,42.9124,""],[-85.56968,42.91244,""],[-85.55788,42.91245,""],[-85.55509,42.91246,""],[-85.54771,42.91248,""],[-85.59634,42.91249,""],[-85.61745,42.91254,""],[-85.60171,42.91254,""],[-85.60686,42.91255,""],[-85.63454,42.9126,""],[-85.54049,42.91261,""],[-85.66612,42.91263,"28th Street"],[-85.5927,42.91264,""],[-85.57017,42.91264,""],[-85.56389,42.91264,""],[-85.63985,42.91265,""],[-85.55958,42.91265,""],[-85.66583,42.91266,"28th Street"],[-85.55509,42.91267,""],[-85.55026,42.91267,""],[-85.59737,42.91268,""],[-85.64633,42.9127,""],[-85.65166,42.91271,""],[-85.60183,42.91271,""],[-85.60948,42.91272,""],[-85.61729,42.91273,""],[-85.60492,42.91273,""],[-85.65623,42.91274,""],[-85.54399,42.91276,""],[-85.53143,42.91277,""],[-85.63381,42.91278,""],[-85.66177,42.91282,""],[-85.64368,42.91287,""],[-85.66503,42.91289,""],[-85.64781,42.9129,""],[-85.65243,42.91291,""],[-85.6582,42.91295,""],[-85.52377,42.91297,""],[-85.51739,42.91299,""],[-85.51366,42.91301,""],[-85.66244,42.91302,""],[-85.50752,42.91304,""],[-85.67223,42.91306,""],[-85.50601,42.91306,""],[-85.52919,42.91317,""],[-85.52296,42.91318,""],[-85.51738,42.91319,""],[-85.68098,42.9132,""],[-85.66737,42.9132,""],[-85.51305,42.91321,""],[-85.50874,42.91322,""],[-85.68423,42.91325,""],[-85.67182,42.91325,""],[-85.69444,42.91329,""],[-85.69125,42.9133,""],[-85.69865,42.91333,""],[-85.70461,42.9134,""],[-85.68154,42.9134,""],[-85.57507,42.91344,""],[-85.68646,42.91346,""],[-85.74431,42.91347,""],[-85.70917,42.9135,""],[-85.69054,42.91351,""],[-85.69928,42.91352,""],[-85.69607,42.91353,""],[-85.58732,42.91354,"Kentwood Station - Woodland"],[-85.57531,42.91354,""],[-85.73729,42.91361,""],[-85.71525,42.91361,""],[-85.74748,42.91365,""],[-85.7062,42.91366,""],[-85.74378,42.91367,""],[-85.71005,42.9137,""],[-85.73199,42.91372,""],[-85.72047,42.91376,""],[-85.73822,42.91378,""],[-85.71422,42.91378,""],[-85.72287,42.91382,""],[-85.72684,42.91384,""],[-85.73256,42.9139,""],[-85.72026,42.91393,""],[-85.72583,42.91403,""],[-85.66595,42.91405,"Division/Eola (NB)"],[-85.66619,42.91452,"Division across from Eola (SB)"],[-85.50059,42.91465,""],[-85.62966,42.91536,"Kalamazoo/Indian Trails (NB)"],[-85.5746,42.91557,""],[-85.5306,42.91588,""],[-85.63049,42.9161,"Kalamazoo/Indian Trails (SB)"],[-85.57507,42.91619,""],[-85.66629,42.91645,"Division at Claire (SB)"],[-85.66606,42.91674,"Division/Ken-O-Sha (NB)"],[-85.57976,42.91719,""],[-85.57986,42.91765,""],[-85.58126,42.91847,""],[-85.66639,42.91848,"Division at Plaster Creek (SB)"],[-85.66614,42.91861,"Division/Kroc Center (NB)"],[-85.66615,42.91895,"Kroc Center Station (NB)"],[-85.58191,42.91895,""],[-85.58114,42.91902,""],[-85.66644,42.91951,"Kroc Center Station (SB)"],[-85.63307,42.91957,"Kalamazoo/Alger (SB)"],[-85.57804,42.91968,""],[-85.57481,42.91968,""],[-85.57957,42.91979,""],[-85.57509,42.91981,""],[-85.66622,42.92007,"Division/Alger (NB)"],[-85.66648,42.92036,"Division at Alger (SB)"],[-85.56977,42.92064,""],[-85.56904,42.92081,""],[-85.58542,42.92314,""],[-85.66659,42.92315,"Division at Banner (SB)"],[-85.58519,42.92329,""],[-85.58748,42.92332,""],[-85.58773,42.92333,""],[-85.66637,42.92341,"Division/Melville (NB)"],[-85.56949,42.92365,""],[-85.56926,42.92391,""],[-85.66646,42.92536,"Division/Andre (NB)"],[-85.66667,42.92553,"Division/Andre (SB)"],[-85.66674,42.92673,"Division at Cutler (SB)"],[-85.58364,42.92687,""],[-85.57544,42.92689,""],[-85.57785,42.9269,""],[-85.56987,42.9269,""],[-85.58402,42.92701,""],[-85.5781,42.92703,""],[-85.57642,42.92705,""],[-85.57045,42.92707,""],[-85.66676,42.9273,"Burton Street Station (SB)"],[-85.66617,42.92744,"Burton/Division (EB)"],[-85.6585,42.92751,"Burton at Madison (WB)"],[-85.66272,42.92753,"Burton at Jefferson (WB)"],[-85.67174,42.92754,"Burton/Buchanan (EB)"],[-85.67484,42.92761,"Burton/Palace (EB)"],[-85.66719,42.92764,"Burton/Division (WB)"],[-85.67853,42.92767,"Burton/Towner (EB)"],[-85.67141,42.9277,"Burton/Buchanan (WB)"],[-85.67447,42.92773,"Burton/Palace (WB)"],[-85.67873,42.92782,"Burton/Towner (WB)"],[-85.66654,42.92782,"Burton Street Station (NB)"],[-85.6582,42.92925,"Madison north of Burton (SB)"],[-85.65835,42.93121,"Madison at Griggs (SB)"],[-85.65859,42.93455,"Madison at Crofton (SB)"],[-85.66714,42.93494,"Cottage Grove"],[-85.69391,42.93567,"Godfrey/Freeman (SB)"],[-85.66697,42.93589,"Cottage Grove"],[-85.69309,42.93594,"Godfrey/Chicago Dr (NB)"],[-85.69161,42.93673,"Godfrey/Plastico (NB)"],[-85.69163,42.93688,"Godfrey/Plastico (SB)"],[-85.6588,42.93706,"Madison at Garden (SB)"],[-85.65895,42.93906,"Madison across from Gilbert (SB)"],[-85.6869,42.93975,"Godfrey/Liberty (NB)"],[-85.68692,42.93996,"Godfrey/Liberty (SB)"],[-85.63934,42.9407,"Fuller/Hall (NB)"],[-85.65912,42.94145,"Madison at Hall (SB)"],[-85.68942,42.94194,""],[-85.6675,42.94263,"Hall Street"],[-85.66726,42.94312,"Hall Street"],[-85.65913,42.94376,"Madison at Highland (SB)"],[-85.65915,42.94605,"Madison at Delaware (SB)"],[-85.68328,42.94686,"Godfrey/Oxford (SB)"],[-85.68277,42.94761,"Godfrey/B (NB)"],[-85.66764,42.94846,"Franklin Street"],[-85.65932,42.9485,"MLK at Madison (EB)"],[-85.66127,42.94854,"MLK at Lafayette (EB)"],[-85.66422,42.9486,"MLK at Jefferson (EB)"],[-85.66696,42.94865,"MLK at Division (EB)"],[-85.66737,42.94894,"Franklin Street"],[-85.68242,42.94905,"Godfrey/Clemente Park (SB)"],[-85.66769,42.9507,"Division at Grant (SB)"],[-85.68247,42.95208,"Godfrey/Chestnut (SB)"],[-85.68226,42.95244,"Godfrey/GRCC M-TEC (NB)"],[-85.66772,42.95279,"Division at Buckley (SB)"],[-85.66747,42.95279,"Division at Buckley (NB)"],[-85.68252,42.95406,"Godfrey/Market (SB)"],[-85.68233,42.95439,"Godfrey/Market (NB)"],[-85.66778,42.95524,"Wealthy Street"],[-85.66751,42.95532,"Wealthy Street"],[-85.62804,42.95565,""],[-85.65899,42.95582,""],[-85.66791,42.95587,""],[-85.66131,42.95588,""],[-85.66505,42.95597,""],[-85.66742,42.95604,""],[-85.66779,42.95611,"Division at Wealthy (SB)"],[-85.6676,42.95646,"Division at Wealthy (NB)"],[-85.66401,42.95754,"Trinity Health"],[-85.66763,42.95788,"Division at Bartlett (NB)"],[-85.66784,42.95792,"Division at Bartlett (SB)"],[-85.66417,42.95792,"Trinity Health"],[-85.89295,42.95793,""],[-85.67334,42.9595,""],[-85.67379,42.95969,"Cherry at Grandville (EB)"],[-85.67519,42.96041,"Market at Cherry (NB)"],[-85.67226,42.96076,"Ottawa at Oakes (NB)"],[-85.67357,42.96102,""],[-85.67422,42.96194,"Market at Weston (NB)"],[-85.88929,42.96246,"Kirkhof Station"],[-85.66799,42.96258,"Division south of Fulton (SB)"],[-85.67392,42.96271,"Market at Fulton (SB)"],[-85.67369,42.96271,"Market at Fulton (NB)"],[-85.67249,42.96285,""],[-85.65389,42.96287,""],[-85.65664,42.96302,""],[-85.66706,42.9631,""],[-85.67112,42.96317,"Fulton at Van Andel (EB)"],[-85.66631,42.96324,""],[-85.67992,42.96327,"Fulton at Mt Vernon (EB)"],[-85.6786,42.96327,"Pew Campus Station (EB)"],[-85.66464,42.96327,"Fulton Street"],[-85.66898,42.96331,"Fulton at Louis (WB)"],[-85.67484,42.96332,"Fulton west of Monroe (WB)"],[-85.66672,42.96332,""],[-85.68289,42.96334,"Fulton at Seward (EB)"],[-85.68526,42.9634,"Fulton at Gold (EB)"],[-85.67866,42.96341,"Pew Campus Station(WB)"],[-85.68782,42.96347,"Straight Ave Station (EB)"],[-85.689,42.96349,"Fulton at Indiana (EB)"],[-85.67988,42.96349,"Fulton at Mt Vernon (WB)"],[-85.6651,42.96349,"Fulton Street"],[-85.68363,42.96351,"Fulton at Lexington (WB)"],[-85.68716,42.96356,"Straight Ave Station (WB)"],[-85.68607,42.96356,"Fulton at National (WB)"],[-85.69257,42.9636,"Fulton at Lane (EB)"],[-85.68866,42.96363,"Fulton at Indiana (WB)"],[-85.69508,42.96367,"Fulton at Marion (EB)"],[-85.69167,42.96372,"Fulton at Lane (WB)"],[-85.69756,42.96374,"Fulton at Garfield (EB)"],[-85.69918,42.9638,"John Ball Zoo Station (EB)"],[-85.69468,42.96381,"Fulton at Marion (WB)"],[-85.69796,42.96386,"Garfield Ave Station (WB)"],[-85.69711,42.96387,"Fulton at Garfield (WB)"],[-85.69884,42.96397,"Valley at Fulton (SB)"],[-85.67212,42.96469,"Monroe/Louis Station (NB)"],[-85.67233,42.96477,""],[-85.67227,42.96518,"Monroe/Louis Station (SB)"],[-85.67203,42.96528,""],[-85.69888,42.96632,"Valley at Lake Michigan (SB)"],[-85.69864,42.96633,"Valley at Lake Michigan (NB)"],[-85.67228,42.96651,""],[-85.88766,42.96721,"Mackinac Station (NB)"],[-85.66966,42.96735,""],[-85.66613,42.9674,""],[-85.67207,42.96746,""],[-85.65829,42.96749,""],[-85.8878,42.96777,"Mackinac Station (SB)"],[-85.66491,42.96838,"GRCC/Spectrum"],[-85.69756,42.96842,"Garfield at Jackson (SB)"],[-85.66509,42.96845,"GRCC/Spectrum"],[-85.69737,42.96849,"Garfield at Jackson (NB)"],[-85.67225,42.9685,""],[-85.67225,42.96903,"DeVos Place Station (SB)"],[-85.77854,42.96905,"Standale Meijer"],[-85.67204,42.96925,"DeVos Place"],[-85.67205,42.96994,"Devos Place Station (NB)"],[-85.6725,42.97029,""],[-85.6613,42.97037,"Lafayette Ave Station (WB)"],[-85.66696,42.97038,"Medical Mile Station (EB)"],[-85.6774,42.97046,""],[-85.67304,42.97046,""],[-85.6797,42.97052,""],[-85.68237,42.97057,""],[-85.67726,42.9706,""],[-85.66693,42.9706,"Medical Mile Station (WB)"],[-85.6794,42.97064,""],[-85.6976,42.97072,"Garfield at Bridge (SB)"],[-85.68375,42.97075,""],[-85.69734,42.97077,"Garfield at Bridge (NB)"],[-85.70301,42.97115,"Bridge at Scott (EB)"],[-85.703,42.97127,"Bridge across from Scott (WB)"],[-85.70673,42.97128,"Bridge at Bristol (EB)"],[-85.71833,42.97135,"Covell Ave Station (EB)"],[-85.6618,42.97138,"Lafayette north of Michigan NB"],[-85.70707,42.97142,"Bridge at Mt. Mercy (WB)"],[-85.72585,42.97147,"Lake Michigan at Bona Vista (EB)"],[-85.7152,42.97149,"Bridge at Grandview Apartments (WB)"],[-85.73044,42.9715,"Lake Michigan across from Fairfield (EB)"],[-85.71743,42.9715,"Covell Ave Station (WB)"],[-85.71596,42.97151,"Bridge at Grandview Apartments (EB)"],[-85.71824,42.97157,"Bridge at Lake Michigan (WB)"],[-85.73736,42.9717,"Lake Michigan at Collindale (EB)"],[-85.72672,42.9717,"Lake Michigan at Oakleigh (WB)"],[-85.73054,42.97174,"Lake Michigan at Fairfield (WB)"],[-85.7178,42.97181,"Bridge at Lake Michigan (EB)"],[-85.74742,42.97185,"Maynard Ave Station (EB)"],[-85.74985,42.97189,"Lake Michigan across from Bayberry (EB)"],[-85.73699,42.9719,"Lake Michigan at Collindale (WB)"],[-85.74,42.97196,"Lake Michigan at Marsh Ridge (WB)"],[-85.7563,42.97198,"Lake Michigan at Sunset Hills (EB)"],[-85.76158,42.972,"Standale Trail Station (EB)"],[-85.76206,42.97201,"Lake Michigan at Manzana (EB)"],[-85.7465,42.97204,"Maynard Ave Station (WB)"],[-85.76669,42.97206,"Lake Michigan at Kinney (EB)"],[-85.68523,42.97207,""],[-85.74928,42.97212,"Lake Michigan at Bayberry Apartments"],[-85.77424,42.97214,"Lake Michigan across from St Clair (EB)"],[-85.77099,42.97214,"Cummings Ave Station (EB)"],[-85.757,42.97218,"Lake Michigan at Lincoln Lawns (WB)"],[-85.77948,42.97219,"Ferndale Ave Station (EB)"],[-85.76267,42.97224,"Lake Michigan at Hampton Lane (WB)"],[-85.76143,42.97225,"Standale Trail Station (WB)"],[-85.76683,42.97228,"Lake Michigan at Kinney (WB)"],[-85.77111,42.97231,"Lake Michigan at Cummings (WB)"],[-85.77179,42.97236,"Cummings Ave Station (WB)"],[-85.78056,42.97247,"Ferndale Ave Station (WB)"],[-85.6229,42.97261,""],[-85.68557,42.97276,""],[-85.65712,42.97365,""],[-85.76876,42.97398,""],[-85.62504,42.9747,""],[-85.68736,42.97491,""],[-85.68784,42.97607,""],[-85.62747,42.97612,""],[-85.63011,42.97622,""],[-85.68799,42.97659,""],[-85.62524,42.97662,"5536"],[-85.65715,42.97728,""],[-85.68791,42.9778,""],[-85.68795,42.97812,""],[-85.62511,42.97863,"5501"],[-85.65717,42.97921,""],[-85.65718,42.98105,""],[-85.68789,42.98146,""],[-85.68806,42.98171,""],[-85.62498,42.98221,""],[-85.65721,42.98377,""],[-85.62016,42.98427,""],[-85.63019,42.98433,""],[-85.61074,42.98433,""],[-85.64009,42.98438,""],[-85.62536,42.98441,""],[-85.6102,42.98446,""],[-85.62647,42.9845,""],[-85.6662,42.98452,""],[-85.66227,42.98452,""],[-85.60837,42.98455,""],[-85.60071,42.98458,""],[-85.68817,42.9849,""],[-85.68798,42.98568,""],[-85.75453,42.98716,""],[-85.68826,42.98855,""],[-85.68809,42.98875,""],[-85.68836,42.99184,""],[-85.68817,42.99236,""],[-85.68827,42.99546,""],[-85.68844,42.99567,""],[-85.59375,42.9978,""],[-85.68836,43.00017,""],[-85.68861,43.00051,""],[-85.68864,43.00262,""],[-85.68841,43.00303,""],[-85.68849,43.00665,"Alpine at Hillside - Meijer (NB) - Stop 3852"],[-85.6888,43.00717,"Alpine/Hillside - Meijer (SB) - Stop 4006"]]}</script>
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl/dist/maplibre-gl.min.js"></script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const QDATA = JSON.parse(document.getElementById('qdata').textContent);
+const BUSSTOPS = JSON.parse(document.getElementById('busstops').textContent).stops;   /* every OSM highway=bus_stop in the game rectangle: [lon,lat,name] */
+const R = DATA.report;
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const $ = id => document.getElementById(id);
+
+/* ---- game-day state: weekday vs weekend modes (Sat/Sun use distinct schedules) ---- */
+const DAY_IDS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const DAY_META = { mon: ['Mon', 'Monday'], tue: ['Tue', 'Tuesday'], wed: ['Wed', 'Wednesday'], thu: ['Thu', 'Thursday'],
+                   fri: ['Fri', 'Friday'], sat: ['Sat', 'Saturday'], sun: ['Sun', 'Sunday'] };
+let CURRENT = { id: 'sat', key: 'saturday', mode: 'weekend' };
+/* service profiles distilled from THERAPID-COMPACT.md Route Overview */
+const SVC = {
+  weekday: { cls: 'wd', routes: '25 of 25', cad: 'trunks 8–30 min · locals 30–60', span: '~4:45 – 23:00',
+    note: 'The fullest board of the week — frequent trunks (DASH ~8 min; Laker/Silver Line and Routes 2/4/9/11 ~15–21 min) keep chases fluid. Millennium Park is OFF the board (Route 1000 runs weekends only); weekday-only Routes 27/33/34 are up, but the airport zone stays excluded and Route 34’s 278-minute midday hole disqualifies its stops.' },
+  saturday: { cls: 'sat', routes: '22 of 25', cad: 'trunks ~30 min · locals ~60', span: '~5:05 – 23:20 · DASH to 1:56 AM',
+    note: '★ The recommended game day. Only weekday-only Routes 27/33/34 are dark, locals run late (~23:20), DASH runs every 8 min from 11:00 to 1:56 AM, and Route 1000 adds the Millennium Park zone (hourly; last bus back 18:13).' },
+  sunday: { cls: 'sun', routes: '17 of 25', cad: 'nearly everything hourly', span: '~6:09 – 18:45 · DASH dies 16:52',
+    note: 'Service-collapse day: Routes 5, 12, 13, 14, 24, 27, 33 and 34 are dark and the system shuts down ~18:00–19:00. If Sunday is unavoidable, end the game by 17:00 and restrict zones to routes with verified Sunday service.' },
+};
+const DAYTILES = {
+  weekday: [
+    { v: '25 of 25', l: 'routes running today', n: 'Fullest board of the week — includes weekday-only Routes 27, 33 and 34.' },
+    { v: '8–30 min', l: 'trunk-route cadence', n: 'DASH ~8; Laker/Silver Line & Routes 2/4/9/11 ~15–21; most locals every 30.' },
+    { v: '~4:45–23:00', l: 'service window', n: 'DASH runs to 23:57. Millennium Park (Route 1000) has NO weekday service.' },
+  ],
+  saturday: [
+    { v: '22 of 25', l: 'routes running today', n: 'Only weekday-only Routes 27/33/34 are dark; Route 1000 adds Millennium Park.' },
+    { v: '30–60 min', l: 'typical cadence', n: 'Trunks ~30 min, most locals hourly; DASH every 8 min from 11:00.' },
+    { v: '~5:05–1:56', l: 'service window', n: 'Locals run to ~23:20; DASH keeps downtown alive until 1:56 AM.' },
+  ],
+  sunday: [
+    { v: '17 of 25', l: 'routes running today', n: 'Routes 5, 12, 13, 14, 24, 27, 33 & 34 are dark all day.' },
+    { v: '~60 min', l: 'typical cadence', n: 'Nearly everything is hourly; DASH is the lone frequent route and dies at 16:52.' },
+    { v: '~6:09–18:45', l: 'service window', n: 'Systemwide shutdown ~18:00–19:00 — end the game by 17:00.' },
+  ],
+};
+
+/* ---- citation chips ---- */
+function citeChips(ids) {
+  if (!ids || !ids.length) return '';
+  const valid = ids.filter(i => R.citationIndex.some(c => c.id === i));
+  if (!valid.length) return '';
+  return '<sup class="cite">' + valid.map(i => `<a href="#c${i}" title="Source ${i}">${i}</a>`).join(',') + '</sup>';
+}
+document.querySelectorAll('sup.cite[data-c]').forEach(el => {
+  el.outerHTML = citeChips(el.dataset.c.split(',').map(Number));
+});
+
+/* ---- hero ---- */
+$('headline').textContent = R.headline;
+$('recchip').textContent = (R.recommendedGameSize || '').split('—')[0].trim() + ' GAME · TIMEPOINT ZONES';
+(function dial() {
+  const score = R.overallScore, r = 88, cx = 110, cy = 104;
+  const a0 = -Math.PI * 1.17, a1 = Math.PI * 0.17;         // 242° sweep
+  const ang = t => a0 + (a1 - a0) * t;
+  const pt = (a, rr) => [cx + rr * Math.cos(a), cy + rr * Math.sin(a)];
+  const arc = (t0, t1, rr) => {
+    const [x0, y0] = pt(ang(t0), rr), [x1, y1] = pt(ang(t1), rr);
+    const large = (t1 - t0) > 0.5 ? 1 : 0;
+    return `M${x0},${y0} A${rr},${rr} 0 ${large} 1 ${x1},${y1}`;
+  };
+  let ticks = '';
+  for (let i = 0; i <= 10; i++) {
+    const a = ang(i / 10), [x0, y0] = pt(a, r + 8), [x1, y1] = pt(a, r + (i % 5 ? 3 : 0) + 13);
+    ticks += `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="var(--baseline)" stroke-width="${i % 5 ? 1 : 2}"/>`;
+  }
+  $('dial').innerHTML = `<svg viewBox="0 0 220 190" style="width:100%;max-width:240px">
+    ${ticks}
+    <path d="${arc(0, 1, r)}" fill="none" stroke="var(--surface-2)" stroke-width="14" stroke-linecap="round"/>
+    <path d="${arc(0, score / 100, r)}" fill="none" stroke="var(--gold)" stroke-width="14" stroke-linecap="round"/>
+    <text x="${cx}" y="${cy + 6}" text-anchor="middle" font-size="52" font-weight="800" fill="var(--ink)">${score}</text>
+    <text x="${cx}" y="${cy + 30}" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="2" fill="var(--ink-3)">/ 100</text>
+  </svg>`;
+})();
+
+/* ---- verdict prose ---- */
+$('verdict-prose').innerHTML = R.verdictParagraphs.map(p => `<p>${esc(p)}</p>`).join('');
+
+/* ---- stat tiles (day tiles first, then the shared key stats) ---- */
+function renderTiles() {
+  $('tiles').innerHTML = DAYTILES[CURRENT.key].map(t =>
+    `<div class="tile daytile"><div class="v">${esc(t.v)}</div><div class="l">${esc(t.l)}</div><div class="n">${esc(t.n)}</div></div>`).join('')
+  + R.keyStats.map(s =>
+    `<div class="tile"><div class="v">${esc(s.value)}</div><div class="l">${esc(s.label)}</div>${s.note ? `<div class="n">${esc(s.note)}${citeChips(s.cites)}</div>` : ''}</div>`).join('');
+}
+
+/* ---- tooltip ---- */
+const tt = $('tt');
+function bindTT(el, html) {
+  el.addEventListener('mousemove', e => {
+    tt.innerHTML = html; tt.style.display = 'block';
+    const w = tt.offsetWidth, x = Math.min(e.clientX + 14, innerWidth - w - 12);
+    tt.style.left = x + 'px'; tt.style.top = (e.clientY + 16) + 'px';
+  });
+  el.addEventListener('mouseleave', () => tt.style.display = 'none');
+}
+
+/* ---- travel time chart (re-rendered per selected game day) ---- */
+function renderTT() {
+  const rows = [...R.travelTimes].sort((a, b) => a.minutes - b.minutes);
+  const avail = t => /millennium/i.test(t.destination) ? CURRENT.mode === 'weekend'
+                   : /ford airport/i.test(t.destination) ? CURRENT.mode === 'weekday' : true;
+  /* "Route 12 (weekday) / Route 1000 (weekend)" → show the leg that applies today */
+  const routeFor = t => {
+    const r = t.route || '';
+    if (/weekday/i.test(r) && /weekend/i.test(r)) {
+      const pick = r.split('/').map(s => s.trim()).find(s => (CURRENT.mode === 'weekday') === /weekday/i.test(s));
+      if (pick) return pick.replace(/\s*\((weekday|weekend)\)/i, '') + ' today';
+    }
+    return r;
+  };
+  const W = 940, LM = 250, RM = 46, bh = 21, gap = 9, TM = 24;
+  const H = TM + rows.length * (bh + gap) + 30;
+  const maxV = 75, sx = v => LM + v / maxV * (W - LM - RM);
+  const color = t => /exceeds|two-seat/i.test(t.route || '') || t.minutes > 60 ? 'var(--crit)'
+                   : /weekend only|weekday only/i.test(t.destination + (t.route || '')) ? 'var(--gold-mark)' : 'var(--accent)';
+  let g = '';
+  for (let v = 0; v <= maxV; v += 15) {
+    g += `<line x1="${sx(v)}" y1="${TM - 6}" x2="${sx(v)}" y2="${H - 24}" stroke="var(--grid)" stroke-width="1"/>
+          <text x="${sx(v)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--ink-3)">${v}</text>`;
+  }
+  g += `<line x1="${sx(60)}" y1="${TM - 10}" x2="${sx(60)}" y2="${H - 24}" stroke="var(--crit)" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="${sx(60)}" y="${TM - 13}" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--crit-text)">60-MIN HIDING PERIOD</text>`;
+  const bars = rows.map((t, i) => {
+    const y = TM + i * (bh + gap);
+    const label = `<text x="${LM - 10}" y="${y + bh / 2 + 4}" text-anchor="end" font-size="12.5" font-weight="600" fill="${avail(t) ? 'var(--ink)' : 'var(--ink-3)'}">${esc(t.destination.length > 36 ? t.destination.slice(0, 35) + '…' : t.destination)}</text>`;
+    const bw = Math.max(2, sx(Math.min(t.minutes, maxV)) - LM);
+    if (!avail(t)) return `<g class="bar-g" data-i="${i}">${label}
+      <rect x="${LM}" y="${y}" width="${bw}" height="${bh}" fill="none" stroke="var(--baseline)" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <text x="${sx(Math.min(t.minutes, maxV)) - 6}" y="${y + bh / 2 + 4}" text-anchor="end" font-size="11" font-style="italic" fill="var(--ink-3)">no service ${CURRENT.mode === 'weekday' ? 'Mon–Fri' : 'on weekends'}</text>
+    </g>`;
+    return `<g class="bar-g" data-i="${i}">${label}
+      <rect x="${LM}" y="${y}" width="${bw}" height="${bh}" fill="${color(t)}" rx="0" ry="0"
+        style="clip-path: inset(0 0 0 0 round 0 4px 4px 0)"/>
+      <text x="${sx(Math.min(t.minutes, maxV)) + 6}" y="${y + bh / 2 + 4}" font-size="12" font-weight="700" fill="var(--ink-2)" font-family="var(--mono)">${t.minutes}</text>
+    </g>`;
+  }).join('');
+  $('ttchart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="min-width:720px;width:100%">${g}${bars}</svg>`;
+  $('ttchart').querySelectorAll('.bar-g').forEach(el => {
+    const t = rows[+el.dataset.i];
+    bindTT(el, avail(t)
+      ? `<b>${esc(t.destination)}</b>${esc(routeFor(t))} — ${t.minutes} min scheduled${citePlain(t.cites)}`
+      : `<b>${esc(t.destination)}</b>No service on ${DAY_META[CURRENT.id][1]} — ${esc(t.route || '')}${citePlain(t.cites)}`);
+  });
+}
+function citePlain(ids) {
+  if (!ids || !ids.length) return '';
+  return `<br><span style="opacity:.7">Sources: ${ids.join(', ')}</span>`;
+}
+
+/* ---- headway heatmap ---- */
+(function hw() {
+  const bin = v => v <= 10 ? 'hb1' : v <= 15 ? 'hb2' : v <= 25 ? 'hb3' : v <= 35 ? 'hb4' : v <= 50 ? 'hb5' : 'hb6';
+  const days = [['weekdayMin', 'Weekday'], ['saturdayMin', 'Saturday'], ['sundayMin', 'Sunday']];
+  let html = '<table class="hw"><tr><th>Route</th>' + days.map(d => `<th data-d="${d[0]}">${d[1]}</th>`).join('') + '</tr>';
+  R.headways.forEach((h, i) => {
+    html += `<tr><td class="rname"><b>${esc(h.route)}</b>${esc(h.name)}</td>`;
+    days.forEach(([k]) => {
+      const v = h[k];
+      html += v == null || v < 0
+        ? `<td><div class="cell nosvc" data-i="${i}" data-d="${k}">—</div></td>`
+        : `<td><div class="cell ${bin(v)}" data-i="${i}" data-d="${k}">${v}</div></td>`;
+    });
+    html += '</tr>';
+  });
+  $('hwmap').innerHTML = html + '</table>';
+  $('hwlegend').innerHTML = [['hb1', '≤10 min'], ['hb2', '≤15'], ['hb3', '≤25'], ['hb4', '≤35'], ['hb5', '≤50'], ['hb6', '~60']].map(([c, l]) =>
+    `<span><span class="sw ${c}"></span>${l}</span>`).join('') + '<span><span class="sw cell nosvc" style="width:11px;height:11px;display:inline-block"></span>No service</span>';
+  $('hwmap').querySelectorAll('.cell').forEach(el => {
+    const h = R.headways[+el.dataset.i];
+    const v = h[el.dataset.d];
+    const day = el.dataset.d.replace('Min', '');
+    bindTT(el, `<b>Route ${esc(h.route)} — ${esc(h.name)}</b>${day[0].toUpperCase() + day.slice(1)}: ${v == null || v < 0 ? 'no service' : '~every ' + v + ' min'}`);
+  });
+})();
+function hwHighlight() {
+  const key = CURRENT.key + 'Min';
+  document.querySelectorAll('#hwmap .cell').forEach(c => c.classList.toggle('dimday', c.dataset.d !== key));
+  document.querySelectorAll('#hwmap th[data-d]').forEach(h => h.classList.toggle('selday', h.dataset.d === key));
+}
+
+/* ---- the network map: every bus stop ---- */
+(function netmap() {
+  const C = { lat: 42.9583, lon: -85.6729 };   /* Rapid Central Station */
+  const lats = BUSSTOPS.map(s => s[1]).concat(C.lat);
+  const lons = BUSSTOPS.map(s => s[0]).concat(C.lon);
+  const bb = { la0: Math.min(...lats), la1: Math.max(...lats), lo0: Math.min(...lons), lo1: Math.max(...lons) };
+  /* the game rectangle implied by the stops themselves */
+  const rectRing = [[bb.lo0, bb.la0], [bb.lo1, bb.la0], [bb.lo1, bb.la1], [bb.lo0, bb.la1], [bb.lo0, bb.la0]];
+
+  if (typeof maplibregl === 'undefined') return fallback();
+  try { realMap(); } catch (e) { console.warn('MapLibre failed, using schematic fallback', e); $('netmap').innerHTML = ''; $('netmap').style.height = ''; fallback(); }
+
+  /* live vector basemap — OpenFreeMap tiles (openfreemap.org, no key) + MapLibre GL */
+  function realMap() {
+    const STYLES = { light: 'https://tiles.openfreemap.org/styles/positron', dark: 'https://tiles.openfreemap.org/styles/dark' };
+    const PAL = { light: { stop: '#57534a', stopEdge: '#ffffff', gold: '#a86e00' },
+                  dark:  { stop: '#8d887c', stopEdge: '#1b1a16', gold: '#c98500' } };
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    const isDark = () => { const t = document.documentElement.dataset.theme; return t === 'dark' || (t !== 'light' && mq.matches); };
+    let dark = isDark();
+
+    $('netmap').style.height = '470px';
+    $('netmap').classList.toggle('dark-map', dark);
+    const map = new maplibregl.Map({
+      container: 'netmap',
+      style: STYLES[dark ? 'dark' : 'light'],
+      bounds: [[bb.lo0, bb.la0], [bb.lo1, bb.la1]],
+      fitBoundsOptions: { padding: { top: 42, bottom: 36, left: 42, right: 54 } },
+      cooperativeGestures: true,
+      attributionControl: { compact: true },
+    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
+
+    /* sources/layers rebuilt on every style.load (fires again after retheme's setStyle) */
+    map.on('style.load', () => {
+      const p = PAL[isDark() ? 'dark' : 'light'];
+      map.addSource('gamerect', { type: 'geojson', data: {
+        type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: rectRing } } });
+      map.addLayer({ id: 'game-rect', type: 'line', source: 'gamerect',
+        paint: { 'line-color': p.gold, 'line-width': 1.6, 'line-opacity': .8, 'line-dasharray': [3, 2.4] } });
+      /* every bus stop in the game rectangle (OSM highway=bus_stop) */
+      map.addSource('busstops', { type: 'geojson', data: {
+        type: 'FeatureCollection',
+        features: BUSSTOPS.map(([lon, lat, name]) => ({ type: 'Feature', properties: { name }, geometry: { type: 'Point', coordinates: [lon, lat] } })),
+      } });
+      map.addLayer({ id: 'bus-stops', type: 'circle', source: 'busstops',
+        paint: { 'circle-color': p.stop, 'circle-opacity': .8,
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.4, 12, 2.6, 14, 4, 16, 6],
+          'circle-stroke-color': p.stopEdge, 'circle-stroke-opacity': .8,
+          'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 9, .4, 13, 1.1] } });
+    });
+
+    const ce = document.createElement('div');
+    ce.className = 'mk-central';
+    ce.innerHTML = '<span class="star">★</span><span class="clbl">Rapid Central</span>';
+    new maplibregl.Marker({ element: ce }).setLngLat([C.lon, C.lat]).addTo(map);
+    bindTT(ce, '<b>Rapid Central Station</b>Downtown hub — nearly every route begins and ends here.');
+
+    /* delegated layer events survive setStyle, so bind once */
+    map.on('mousemove', 'bus-stops', e => {
+      const n = e.features[0].properties.name;
+      tt.innerHTML = `<b>${esc(n || 'Bus stop')}</b>${n ? 'Bus stop · ' : ''}OpenStreetMap`;
+      tt.style.display = 'block';
+      const w = tt.offsetWidth, x = Math.min(e.originalEvent.clientX + 14, innerWidth - w - 12);
+      tt.style.left = x + 'px'; tt.style.top = (e.originalEvent.clientY + 16) + 'px';
+    });
+    map.on('mouseleave', 'bus-stops', () => { tt.style.display = 'none'; });
+
+    /* follow OS theme + artifact-viewer data-theme toggles */
+    const retheme = () => {
+      const d = isDark(); if (d === dark) return; dark = d;
+      $('netmap').classList.toggle('dark-map', d);
+      map.setStyle(STYLES[d ? 'dark' : 'light']);
+    };
+    mq.addEventListener('change', retheme);
+    new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }
+
+  /* schematic SVG fallback when MapLibre/tiles are unreachable (offline, CSP) */
+  function fallback() {
+    const pad = 0.012;
+    const la0 = bb.la0 - pad, la1 = bb.la1 + pad;
+    const lo0 = bb.lo0 - pad, lo1 = bb.lo1 + pad;
+    const W = 940, H = 470;
+    const X = lo => (lo - lo0) / (lo1 - lo0) * (W - 40) + 20;
+    const Y = la => H - 24 - (la - la0) / (la1 - la0) * (H - 48);
+    let s = `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--surface-2)" rx="8" opacity=".45"/>`;
+    /* stylized Grand River course through downtown, roughly N-S at lon -85.673 */
+    const rx = X(-85.6755);
+    s += `<path d="M${rx - 22},0 C ${rx - 8},${H * .2} ${rx + 14},${H * .3} ${rx + 2},${H * .48} S ${rx - 30},${H * .8} ${rx + 40},${H}" fill="none" stroke="var(--seq-200)" stroke-width="10" opacity=".55" stroke-linecap="round"/>
+         <text x="${rx + 14}" y="${H * .16}" font-size="10.5" fill="var(--accent-ink)" opacity=".8" font-style="italic" transform="rotate(62 ${rx + 14} ${H * .16})">Grand River</text>`;
+    /* implied game border = bounding box of the stops */
+    s += `<rect x="${X(bb.lo0).toFixed(1)}" y="${Y(bb.la1).toFixed(1)}" width="${(X(bb.lo1) - X(bb.lo0)).toFixed(1)}" height="${(Y(bb.la0) - Y(bb.la1)).toFixed(1)}" fill="none" stroke="var(--gold-deep)" stroke-width="1.5" stroke-dasharray="5 4" opacity=".8"/>`;
+    BUSSTOPS.forEach(([lo, la]) => {
+      s += `<circle cx="${X(lo).toFixed(1)}" cy="${Y(la).toFixed(1)}" r="1.3" fill="var(--ink-3)" opacity=".55"/>`;
+    });
+    s += `<text x="${X(C.lon)}" y="${Y(C.lat) + 5}" text-anchor="middle" font-size="20" fill="var(--gold-deep)">★</text>
+          <text x="${X(C.lon)}" y="${Y(C.lat) + 22}" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--ink-2)">Rapid Central</text>`;
+    s += `<text x="${W - 22}" y="26" text-anchor="end" font-size="12" fill="var(--ink-3)">N ↑</text>`;
+    $('netmap').innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="min-width:680px;width:100%">${s}</svg>`;
+  }
+})();
+
+/* ---- question categories ---- */
+$('qcats').innerHTML = R.questionCategories.map(q => `
+  <div class="qcard">
+    <div class="qh"><b>${esc(q.category)}</b><span>${q.rating}/5</span></div>
+    <div class="pips">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= q.rating ? 'on' : ''}"></i>`).join('')}</div>
+    <p>${esc(q.notes)}${citeChips(q.cites)}</p>
+    ${q.nullRisks?.length ? `<p style="margin-top:8px"><b style="font-family:var(--sans);font-size:11px;letter-spacing:.08em;color:var(--crit-text)">NULL / DEAD:</b> ${esc(q.nullRisks.join(' · '))}</p>` : ''}
+  </div>`).join('');
+
+/* ---- per-question table ---- */
+(function qtable() {
+  const rows = (QDATA.rows || []);
+  if (!rows.length) { $('qchips').style.display = 'none'; $('qtable').style.display = 'none'; return; }
+  const statuses = ['all', 'strong', 'works', 'caveat', 'null', 'dead', 'remove'];
+  let filter = 'all';
+  $('qchips').innerHTML = statuses.map(s => `<button class="chip ${s === 'all' ? 'on' : ''}" data-f="${s}">${s === 'all' ? 'All ' + rows.length : s + ' · ' + rows.filter(r => r.status === s).length}</button>`).join('');
+  function render() {
+    const rs = rows.filter(r => filter === 'all' || r.status === filter);
+    $('qtable').innerHTML = '<tr><th>Category</th><th>Question</th><th>Status</th><th>Assessment</th></tr>' +
+      rs.map(r => `<tr><td class="cat">${esc(r.category)}</td><td class="q">${esc(r.question)}</td><td><span class="st ${esc(r.status)}">${esc(r.status)}</span></td><td class="note">${esc(r.note)}</td></tr>`).join('');
+  }
+  $('qchips').querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {
+    filter = c.dataset.f;
+    $('qchips').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === c));
+    render();
+  }));
+  render();
+})();
+
+/* ---- curses ---- */
+(function curses() {
+  const rows = R.curseNotes;
+  let filter = 'all';
+  const counts = s => rows.filter(r => r.status === s).length;
+  $('cchips').innerHTML = [['all', 'All 24'], ['works', 'Works · ' + counts('works')], ['modify', 'Modify · ' + counts('modify')], ['remove', 'Remove · ' + counts('remove')]]
+    .map(([f, l], i) => `<button class="chip ${i === 0 ? 'on' : ''}" data-f="${f}">${l}</button>`).join('');
+  function render() {
+    const rs = rows.filter(r => filter === 'all' || r.status === filter);
+    $('ctable').innerHTML = '<tr><th>Curse</th><th>Status</th><th>Grand Rapids reality check</th></tr>' +
+      rs.map(r => `<tr><td class="q">${esc(r.curse)}</td><td><span class="st ${esc(r.status)}">${esc(r.status)}</span></td><td class="note">${esc(r.note || '')}</td></tr>`).join('');
+  }
+  $('cchips').querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {
+    filter = c.dataset.f;
+    $('cchips').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === c));
+    render();
+  }));
+  render();
+})();
+
+/* ---- findings ---- */
+(function findings() {
+  const sect = (title, items, cls, color) => `
+    <p class="subhead"><span class="dot" style="background:${color}"></span>${title}</p>
+    <div class="cardgrid">${items.map(i => `
+      <div class="card ${cls}">
+        <h4>${esc(i.title)}${i.severity ? `<span class="sev ${esc(i.severity)}">${esc(i.severity)}</span>` : ''}</h4>
+        <p>${esc(i.detail)}${citeChips(i.cites)}</p>
+        ${i.mitigation ? `<p class="mit"><b>Mitigation</b> · ${esc(i.mitigation)}</p>` : ''}
+      </div>`).join('')}</div>`;
+  $('findings-body').innerHTML =
+    sect('Plusses — what the map does well', R.pluses, 'plus', 'var(--good)') +
+    sect('Minuses — what works against it', R.minuses, 'minus', 'var(--crit)') +
+    sect('Benefits — practical upsides for players', R.benefits, 'benefit', 'var(--accent)') +
+    sect('Concerns — risks needing house rules', R.concerns, 'concern', 'var(--warn)');
+})();
+
+/* ---- recommendations ---- */
+$('recs-list').innerHTML = R.recommendations.map(r => `<li>${esc(r)}</li>`).join('');
+
+/* ---- verification & sources ---- */
+(function ver() {
+  const v = DATA.verificationSummary || {};
+  $('verstats').innerHTML = [
+    ['68', 'claims adversarially re-checked'],
+    ['62', 'confirmed from primary sources'],
+    ['5', 'refuted & corrected'],
+    ['1', 'uncertain, flagged in text'],
+  ].map(([n, l]) => `<span><b>${n}</b>${l}</span>`).join('');
+  $('refuted').innerHTML = (v.refuted || []).map(r =>
+    `<li><b>Refuted:</b> ${esc(r.claim)}${r.correction ? `<br><span style="color:var(--good-text)">Correction:</span> ${esc(r.correction)}` : ''}</li>`).join('');
+  $('cites').innerHTML = R.citationIndex.map(c =>
+    `<li id="c${c.id}" value="${c.id}"><span class="src">${esc(c.source || '')}</span> — ${esc(c.label)}${c.url ? ` <a href="${esc(c.url)}" rel="noopener">↗</a>` : ''}</li>`).join('');
+  $('method').innerHTML = [
+    ['38', 'AI agents (Fable · Opus · Sonnet)'],
+    ['~2.1M', 'tokens of analysis'],
+    ['480+', 'tool calls'],
+    ['~40', 'Nominatim / Overpass queries'],
+    ['5,757', 'lines of GTFS timetable read'],
+  ].map(([n, l]) => `<span><b>${n}</b>${l}</span>`).join('');
+})();
+
+/* ---- day-of-week selector: drives weekday vs weekend content modes ---- */
+(function buildDaySel() {
+  const bar = $('daysel');
+  let html = '<span class="dlab">Game day</span>';
+  DAY_IDS.forEach(d => {
+    if (d === 'sat') html += '<span class="sep" aria-hidden="true"></span>';
+    html += `<button type="button" class="daybtn" data-d="${d}" aria-pressed="false" title="${DAY_META[d][1]}${d === 'sat' ? ' — the recommended game day' : ''}">${DAY_META[d][0]}${d === 'sat' ? ' ★' : ''}</button>`;
+  });
+  bar.innerHTML = html + '<span class="modetag"></span>';
+  bar.querySelectorAll('.daybtn').forEach(b => b.addEventListener('click', () => setDay(b.dataset.d)));
+})();
+
+function renderBanner() {
+  const s = SVC[CURRENT.key];
+  const b = $('daybanner');
+  b.className = 'daybanner ' + s.cls;
+  b.querySelector('.wrap').innerHTML = `
+    <span class="fact"><b>${esc(DAY_META[CURRENT.id][1])}</b>${CURRENT.mode} mode</span>
+    <span class="fact"><b>${esc(s.routes)}</b>routes running</span>
+    <span class="fact"><b>${esc(s.cad)}</b>cadence</span>
+    <span class="fact"><b>${esc(s.span)}</b>service window</span>
+    <p class="note">${esc(s.note)}</p>`;
+}
+
+function setDay(id) {
+  const i = DAY_IDS.indexOf(id);
+  CURRENT = { id, key: i < 5 ? 'weekday' : id === 'sat' ? 'saturday' : 'sunday', mode: i < 5 ? 'weekday' : 'weekend' };
+  try { localStorage.setItem('jltg-day', id); } catch (e) { /* private browsing / blocked storage — selection just won't persist */ }
+  document.querySelectorAll('.daybtn').forEach(b => {
+    const on = b.dataset.d === id;
+    b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on));
+  });
+  const mt = document.querySelector('.daysel .modetag');
+  mt.className = 'modetag ' + (CURRENT.mode === 'weekday' ? 'wd' : 'we');
+  mt.textContent = CURRENT.mode === 'weekday' ? 'Weekday mode' : 'Weekend mode';
+  renderBanner(); renderTiles(); renderTT(); hwHighlight();
+  /* spotlight the concern cards that bite on the selected day */
+  document.querySelectorAll('#findings-body .card').forEach(c => {
+    const t = c.querySelector('h4')?.textContent || '';
+    c.classList.toggle('today-flag', CURRENT.key === 'sunday' && /sunday/i.test(t));
+  });
+}
+/* boot: restore the day picked on either page (shared via localStorage), else the recommended Saturday */
+(function boot() {
+  let saved = null;
+  try { saved = localStorage.getItem('jltg-day'); } catch (e) {}
+  setDay(DAY_IDS.includes(saved) ? saved : 'sat');
+})();
+</script>
+
+</body>
+</html>
