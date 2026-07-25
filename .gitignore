@@ -1,2 +1,27 @@
+# Dependencies
+node_modules/
+
+# Secrets
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+
+# Cloudflare / Wrangler
+.wrangler/
+
+# Logs and debug output
+*.log
+npm-debug.log*
+
+# Editor and tooling
 .claude
+.vscode/
+.idea/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local reference copy of another site
 www.lifack.ch
