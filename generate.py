@@ -1379,6 +1379,12 @@ def document(*, title: str, description: str, body_html: str, script_js: str,
     is empty emits nothing at all — no orphan heading — mirroring the rule that a
     section which rendered `""` vanishes from the rail with it. Every link keeps
     `data-drawer="close"` so the mobile drawer dismisses itself.
+
+    Each link is a `wa-flank:start` — the utilities skill's "fixed icon next to
+    flexible text" media object — and **not** a `wa-cluster`. A cluster is
+    `flex-wrap`, so a label wider than the rail is pushed onto its own flex line and
+    lands *under* the icon, flush left; the flank gives the label its own column, so
+    a two-line label hangs indented and the icon stays put.
     """
     navi = ""
     groups = []
@@ -1388,7 +1394,7 @@ def document(*, title: str, description: str, body_html: str, script_js: str,
         anchors = "".join(
             el("a", join(wa_icon(icon, class_="wa-color-text-quiet"), el("span", esc(label))),
                href=href, data_drawer="close",
-               class_="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain")
+               class_="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain")
             for href, label, icon in links)
         groups.append(el("div", join(
             el("span", esc(group_title),
@@ -1604,6 +1610,13 @@ main pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-
 [slot='subheader'] > wa-progress-bar { flex: 1 1 100%; }
 nav[slot='navigation'] a { padding: var(--wa-space-3xs) var(--wa-space-2xs);
                            border-radius: var(--wa-border-radius-m); }
+/* The link is a flank (icon column + label column), so the only thing left to fix is
+   where the icon sits against a label that wrapped: `wa-align-items-start` pins it to
+   the top of the label *block*, and a 1lh-tall canvas re-centres the 1em glyph on the
+   first *line*. Balanced wrapping keeps a three-word label from leaving one word
+   alone on line two. */
+nav[slot='navigation'] a > wa-icon { block-size: 1lh; }
+nav[slot='navigation'] a > span { text-wrap: balance; overflow-wrap: break-word; }
 nav[slot='navigation'] a[aria-current] {
   color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-bold);
   background: var(--wa-color-brand-fill-quiet);
@@ -11502,9 +11515,13 @@ def index_hero(report: Report) -> str:
         el("div", chips, class_="wa-cluster wa-gap-2xs"),
     ), class_="wa-stack wa-gap-xs", style="flex:1 1 24rem")
 
+    # `wa-align-items-start`, not `-center`: the scorecard is roughly twice the height
+    # of the text beside it, so centring buries the headline under ~275px of dead space
+    # once the two columns fit side by side (~1176px viewport and up). Below that the
+    # columns wrap, each flex line holds one item, and the two alignments are identical.
     return el("header", el("div", join(
         left, el("div", _s4_scorecard(report), style="flex:1 1 26rem"),
-    ), class_="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-center"),
+    ), class_="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start"),
         id="top", class_="wa-stack wa-gap-l")
 
 
@@ -13559,7 +13576,7 @@ def page_chrome(report: Report, *, status_html: str) -> tuple[str, str]:
 
 # The rail's group order. Sections declare which group they belong to; a group with
 # no surviving section emits nothing at all.
-_S4_NAV_ORDER: tuple[str, ...] = ("The answer", "The map", "The deck", "The receipts")
+_S4_NAV_ORDER: tuple[str, ...] = ("The Answer", "The Map", "The Deck", "The Receipts")
 
 # strategy.html's two groups, same mechanism.
 _S5_NAV_ORDER: tuple[str, ...] = ("Play", "Reference")
@@ -13636,17 +13653,17 @@ def render_index(report: Report) -> str:
     # dropped here and its nav entry disappears with it — pages.md §5's "no empty
     # cards" rule — and a nav group left with no links vanishes too.
     built: list[tuple[str, str, str, str, str]] = [
-        ("verdict", "The answer", "Verdict", "circle-check", index_verdict(report)),
-        ("trace", "The answer", "Where the points came from", "chart-simple",
+        ("verdict", "The Answer", "Verdict", "circle-check", index_verdict(report)),
+        ("trace", "The Answer", "Where the Points Came From", "chart-simple",
          index_score_trace(report)),
         ("yourgame", "", "", "", index_your_game(report)),
-        ("numbers", "The map", "At a glance", "hashtag", index_key_numbers(report)),
-        ("network", "The map", "The map you're playing on", "map-location-dot",
+        ("numbers", "The Map", "At a Glance", "hashtag", index_key_numbers(report)),
+        ("network", "The Map", "The Map You're Playing On", "map-location-dot",
          index_network_map(report)),
-        ("transit", "The map", "Getting around", "route", index_transit_reality(report)),
-        ("questions", "The deck", "The questions", "circle-question", index_questions(report)),
-        ("curses", "The deck", "The curse deck", "wand-magic-sparkles", index_curses(report)),
-        ("sources", "The receipts", "Where these numbers come from", "book-open",
+        ("transit", "The Map", "Getting Around", "route", index_transit_reality(report)),
+        ("questions", "The Deck", "The Questions", "circle-question", index_questions(report)),
+        ("curses", "The Deck", "The Curse Deck", "wand-magic-sparkles", index_curses(report)),
+        ("sources", "The Receipts", "Where These Numbers Come From", "book-open",
          index_provenance(report)),
     ]
     live = [quint for quint in built if quint[4]]
@@ -13663,9 +13680,9 @@ def render_index(report: Report) -> str:
             nav_source.append(quint)
             continue
         if report.recommendations:
-            nav_source.append(("recs", "The answer", "House rules", "list-check", "1"))
+            nav_source.append(("recs", "The Answer", "House Rules", "list-check", "1"))
         if report.findings:
-            nav_source.append(("findings", "The answer", "What works, what fights you",
+            nav_source.append(("findings", "The Answer", "What Works, What Fights You",
                                "circle-exclamation", "1"))
     nav = nav_groups(nav_source, _S4_NAV_ORDER)
 
@@ -15535,10 +15552,10 @@ def render_strategy(report: Report) -> str:
     same placeholder mechanism index uses, because a guard is not a promise.
     """
     built: list[tuple[str, str, str, str, str]] = [
-        ("zones", "Play", "The shortlist", "map-location-dot", strategy_shortlist(report)),
-        ("all", "Play", "The whole field", "table", strategy_all_candidates(report)),
+        ("zones", "Play", "The Shortlist", "map-location-dot", strategy_shortlist(report)),
+        ("all", "Play", "The Whole Field", "table", strategy_all_candidates(report)),
         ("tactics", "Play", "Tactics", "list-check", strategy_tactics(report)),
-        ("axes", "Reference", "How zones are scored", "chart-simple", strategy_axes(report)),
+        ("axes", "Reference", "How Zones Are Scored", "chart-simple", strategy_axes(report)),
         ("sources", "Reference", "Method", "book-open", strategy_provenance(report)),
     ]
     live = [quint for quint in built if quint[4]]
@@ -15555,11 +15572,11 @@ def render_strategy(report: Report) -> str:
     # now had no entry at all.
     nav_source: list[tuple[str, str, str, str, str]] = []
     if pick:
-        nav_source.append(("top", "Play", "The pick", "star", "1"))
+        nav_source.append(("top", "Play", "The Pick", "star", "1"))
     for quint in live:
         nav_source.append(quint)
         if quint[0] == "zones" and report.zones:
-            nav_source.append(("dossier", "Play", "Zone dossiers", "location-dot", "1"))
+            nav_source.append(("dossier", "Play", "Zone Dossiers", "location-dot", "1"))
     nav = nav_groups(nav_source, _S5_NAV_ORDER)
 
     status = ""
@@ -15590,9 +15607,11 @@ def render_strategy(report: Report) -> str:
         el("div", chips, class_="wa-cluster wa-gap-2xs"),
     ), class_="wa-stack wa-gap-xs", style="flex:1 1 24rem")
 
+    # Top-aligned for the same reason as the report hero: the pick card is much taller
+    # than the text, and centring it pushes the H1 down the page in the two-column view.
     hero = el("header", el("div", join(
         left, el("div", pick, style="flex:1 1 26rem") if pick else "",
-    ), class_="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-center"),
+    ), class_="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start"),
         id="top", class_="wa-stack wa-gap-l")
 
     # The page's thesis, which was a footnote at the end of §01. The precise version

@@ -171,6 +171,13 @@ main pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-
 [slot='subheader'] > wa-progress-bar { flex: 1 1 100%; }
 nav[slot='navigation'] a { padding: var(--wa-space-3xs) var(--wa-space-2xs);
                            border-radius: var(--wa-border-radius-m); }
+/* The link is a flank (icon column + label column), so the only thing left to fix is
+   where the icon sits against a label that wrapped: `wa-align-items-start` pins it to
+   the top of the label *block*, and a 1lh-tall canvas re-centres the 1em glyph on the
+   first *line*. Balanced wrapping keeps a three-word label from leaving one word
+   alone on line two. */
+nav[slot='navigation'] a > wa-icon { block-size: 1lh; }
+nav[slot='navigation'] a > span { text-wrap: balance; overflow-wrap: break-word; }
 nav[slot='navigation'] a[aria-current] {
   color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-bold);
   background: var(--wa-color-brand-fill-quiet);
@@ -318,16 +325,16 @@ Best zone · Milwaukee &amp; Spaulding 97.0</wa-tag>
 <span id="nowat"></span></span>
 <wa-progress-bar class="wa-visually-hidden-label" id="readbar" label="Reading progress" style="--track-height:3px" value="0.0"></wa-progress-bar></div>
 <nav class="wa-stack wa-gap-l" slot="navigation"><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">Play</span>
-<div class="wa-stack wa-gap-3xs"><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#top"><wa-icon class="wa-color-text-quiet" name="star"></wa-icon>
-<span>The pick</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#zones"><wa-icon class="wa-color-text-quiet" name="map-location-dot"></wa-icon>
-<span>The shortlist</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#dossier"><wa-icon class="wa-color-text-quiet" name="location-dot"></wa-icon>
-<span>Zone dossiers</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#all"><wa-icon class="wa-color-text-quiet" name="table"></wa-icon>
-<span>The whole field</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#tactics"><wa-icon class="wa-color-text-quiet" name="list-check"></wa-icon>
+<div class="wa-stack wa-gap-3xs"><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#top"><wa-icon class="wa-color-text-quiet" name="star"></wa-icon>
+<span>The Pick</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#zones"><wa-icon class="wa-color-text-quiet" name="map-location-dot"></wa-icon>
+<span>The Shortlist</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#dossier"><wa-icon class="wa-color-text-quiet" name="location-dot"></wa-icon>
+<span>Zone Dossiers</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#all"><wa-icon class="wa-color-text-quiet" name="table"></wa-icon>
+<span>The Whole Field</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#tactics"><wa-icon class="wa-color-text-quiet" name="list-check"></wa-icon>
 <span>Tactics</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">Reference</span>
-<div class="wa-stack wa-gap-3xs"><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#axes"><wa-icon class="wa-color-text-quiet" name="chart-simple"></wa-icon>
-<span>How zones are scored</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#sources"><wa-icon class="wa-color-text-quiet" name="book-open"></wa-icon>
+<div class="wa-stack wa-gap-3xs"><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#axes"><wa-icon class="wa-color-text-quiet" name="chart-simple"></wa-icon>
+<span>How Zones Are Scored</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#sources"><wa-icon class="wa-color-text-quiet" name="book-open"></wa-icon>
 <span>Method</span></a></div></div></nav>
-<header class="wa-stack wa-gap-l" id="top"><div class="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-center"><div class="wa-stack wa-gap-xs" style="flex:1 1 24rem"><p class="kicker wa-caption-s wa-text-uppercase">Hider&#x27;s guide · Chicago Transit Authority</p>
+<header class="wa-stack wa-gap-l" id="top"><div class="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start"><div class="wa-stack wa-gap-xs" style="flex:1 1 24rem"><p class="kicker wa-caption-s wa-text-uppercase">Hider&#x27;s guide · Chicago Transit Authority</p>
 <h1 class="wa-heading-4xl">Where to hide in Chicago</h1>
 <p class="wa-body-l" style="max-inline-size:46ch">1,204 candidate hiding zones scored on six axes, 13 written up in full. Every number below comes from Chicago Transit Authority&#x27;s own schedule and from OpenStreetMap — nothing here is an opinion about the city.</p>
 <div class="wa-cluster wa-gap-2xs"><wa-tag appearance="outlined" pill size="small" variant="warning"><wa-icon name="ruler-combined"></wa-icon>

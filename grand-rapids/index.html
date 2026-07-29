@@ -171,6 +171,13 @@ main pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-
 [slot='subheader'] > wa-progress-bar { flex: 1 1 100%; }
 nav[slot='navigation'] a { padding: var(--wa-space-3xs) var(--wa-space-2xs);
                            border-radius: var(--wa-border-radius-m); }
+/* The link is a flank (icon column + label column), so the only thing left to fix is
+   where the icon sits against a label that wrapped: `wa-align-items-start` pins it to
+   the top of the label *block*, and a 1lh-tall canvas re-centres the 1em glyph on the
+   first *line*. Balanced wrapping keeps a three-word label from leaving one word
+   alone on line two. */
+nav[slot='navigation'] a > wa-icon { block-size: 1lh; }
+nav[slot='navigation'] a > span { text-wrap: balance; overflow-wrap: break-word; }
 nav[slot='navigation'] a[aria-current] {
   color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-bold);
   background: var(--wa-color-brand-fill-quiet);
@@ -320,22 +327,22 @@ Menu</wa-button>
 <span class="wa-caption-s wa-color-text-quiet wa-cluster wa-gap-2xs wa-desktop-only"><wa-icon name="location-dot"></wa-icon>
 <span id="nowat"></span></span>
 <wa-progress-bar class="wa-visually-hidden-label" id="readbar" label="Reading progress" style="--track-height:3px" value="0.0"></wa-progress-bar></div>
-<nav class="wa-stack wa-gap-l" slot="navigation"><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The answer</span>
-<div class="wa-stack wa-gap-3xs"><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#verdict"><wa-icon class="wa-color-text-quiet" name="circle-check"></wa-icon>
-<span>Verdict</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#trace"><wa-icon class="wa-color-text-quiet" name="chart-simple"></wa-icon>
-<span>Where the points came from</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#recs"><wa-icon class="wa-color-text-quiet" name="list-check"></wa-icon>
-<span>House rules</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#findings"><wa-icon class="wa-color-text-quiet" name="circle-exclamation"></wa-icon>
-<span>What works, what fights you</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The map</span>
-<div class="wa-stack wa-gap-3xs"><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#numbers"><wa-icon class="wa-color-text-quiet" name="hashtag"></wa-icon>
-<span>At a glance</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#network"><wa-icon class="wa-color-text-quiet" name="map-location-dot"></wa-icon>
-<span>The map you&#x27;re playing on</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#transit"><wa-icon class="wa-color-text-quiet" name="route"></wa-icon>
-<span>Getting around</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The deck</span>
-<div class="wa-stack wa-gap-3xs"><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#questions"><wa-icon class="wa-color-text-quiet" name="circle-question"></wa-icon>
-<span>The questions</span></a><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#curses"><wa-icon class="wa-color-text-quiet" name="wand-magic-sparkles"></wa-icon>
-<span>The curse deck</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The receipts</span>
-<div class="wa-stack wa-gap-3xs"><a class="wa-cluster wa-gap-xs wa-align-items-center wa-link-plain" data-drawer="close" href="#sources"><wa-icon class="wa-color-text-quiet" name="book-open"></wa-icon>
-<span>Where these numbers come from</span></a></div></div></nav>
-<header class="wa-stack wa-gap-l" id="top"><div class="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-center"><div class="wa-stack wa-gap-xs" style="flex:1 1 24rem"><p class="kicker wa-caption-s wa-text-uppercase">Feasibility report · Fri 24 Jul 2026 – Sun 30 Aug 2026 · The Rapid, Grand Rapids</p>
+<nav class="wa-stack wa-gap-l" slot="navigation"><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Answer</span>
+<div class="wa-stack wa-gap-3xs"><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#verdict"><wa-icon class="wa-color-text-quiet" name="circle-check"></wa-icon>
+<span>Verdict</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#trace"><wa-icon class="wa-color-text-quiet" name="chart-simple"></wa-icon>
+<span>Where the Points Came From</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#recs"><wa-icon class="wa-color-text-quiet" name="list-check"></wa-icon>
+<span>House Rules</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#findings"><wa-icon class="wa-color-text-quiet" name="circle-exclamation"></wa-icon>
+<span>What Works, What Fights You</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Map</span>
+<div class="wa-stack wa-gap-3xs"><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#numbers"><wa-icon class="wa-color-text-quiet" name="hashtag"></wa-icon>
+<span>At a Glance</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#network"><wa-icon class="wa-color-text-quiet" name="map-location-dot"></wa-icon>
+<span>The Map You&#x27;re Playing On</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#transit"><wa-icon class="wa-color-text-quiet" name="route"></wa-icon>
+<span>Getting Around</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Deck</span>
+<div class="wa-stack wa-gap-3xs"><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#questions"><wa-icon class="wa-color-text-quiet" name="circle-question"></wa-icon>
+<span>The Questions</span></a><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#curses"><wa-icon class="wa-color-text-quiet" name="wand-magic-sparkles"></wa-icon>
+<span>The Curse Deck</span></a></div></div><div class="wa-stack wa-gap-3xs"><span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Receipts</span>
+<div class="wa-stack wa-gap-3xs"><a class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain" data-drawer="close" href="#sources"><wa-icon class="wa-color-text-quiet" name="book-open"></wa-icon>
+<span>Where These Numbers Come From</span></a></div></div></nav>
+<header class="wa-stack wa-gap-l" id="top"><div class="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start"><div class="wa-stack wa-gap-xs" style="flex:1 1 24rem"><p class="kicker wa-caption-s wa-text-uppercase">Feasibility report · Fri 24 Jul 2026 – Sun 30 Aug 2026 · The Rapid, Grand Rapids</p>
 <h1 class="wa-heading-4xl">Can you hide in Grand Rapids?</h1>
 <p class="wa-heading-2xl wa-color-text-quiet"><em>Yes, with a few house rules.</em></p>
 <p class="wa-body-l" style="max-inline-size:46ch">319 distinct hiding zones across 160.2 sq mi of The Rapid network, 44 of the 71 questions in the MEDIUM deck function here, and crossing the network end to end costs about 77 min — 1.28 hiding periods.<sup data-cite><a class="wa-link" href="#prov-A1" title="Where this number comes from: A1">A1</a>,<a class="wa-link" href="#prov-B1" title="Where this number comes from: B1">B1</a></sup></p>
