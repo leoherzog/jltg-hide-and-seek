@@ -1,6 +1,11 @@
 # Dependencies
 node_modules/
 
+# Generated output and caches
+build*/
+cache/
+__pycache__/
+
 # Secrets
 .dev.vars
 .dev.vars.*

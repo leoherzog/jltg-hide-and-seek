@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "add-icon": {
+      "source": "FortAwesome/fontawesome-agent-tools",
+      "sourceType": "github",
+      "skillPath": "plugins/icons/skills/add-icon/SKILL.md",
+      "computedHash": "303d28d273fbe0093905b9838bb000bde0ab11a783088f31530ac671ae1ea26c"
+    },
+    "fa-help": {
+      "source": "FortAwesome/fontawesome-agent-tools",
+      "sourceType": "github",
+      "skillPath": "plugins/icons/skills/fa-help/SKILL.md",
+      "computedHash": "d836a3da615a946e922cf9aaea0b615b1e8cebc4cbbbe79b996f0252e410acaa"
+    },
+    "setup-fa": {
+      "source": "FortAwesome/fontawesome-agent-tools",
+      "sourceType": "github",
+      "skillPath": "plugins/icons/skills/setup-fa/SKILL.md",
+      "computedHash": "8fdd94c77411bbfe5ccd459f9aa0251bd35835f63643465a6222ee3884b4ae90"
+    },
+    "suggest-icon": {
+      "source": "FortAwesome/fontawesome-agent-tools",
+      "sourceType": "github",
+      "skillPath": "plugins/icons/skills/suggest-icon/SKILL.md",
+      "computedHash": "9ea2bf4321c84e131d8f97978f4d54d59ce68659e22c5e250a6d4c7a195967cb"
+    }
+  }
+}
