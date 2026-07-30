@@ -135,7 +135,10 @@ export const GEO_CATEGORIES = Object.freeze([
     + '["leisure"!="swimming_pool"]({{bbox}});'
     + 'way["waterway"~"^(river|canal)$"]["name"]({{bbox}});', {
       needsGeometry: true,
-      note: "The name filter is the rulebook's own wording: 999 water features exist, 75 are named.",
+      note: 'The name filter is the measuring question\'s own wording — "any named body of '
+        + 'water on your maps app, excluding pools": 999 water features exist, 75 are named. '
+        + 'It belongs to THIS question only. Curse of the Water Weight says "marked", not '
+        + '"named", and has its own unnamed predicate in CURSE_PREDICATE_SELECTORS.',
     }),  // 75+48
   cat('coastline', 'Coastline', 'way["natural"="coastline"]({{bbox}});', {
     note: 'OSM tags ocean/sea only, so shore segments are also derived from any '
@@ -168,7 +171,12 @@ export const GEO_CATEGORIES = Object.freeze([
   cat('footpath', 'Footpath',
     'way["highway"~"^(footway|path|pedestrian|steps|cycleway|track)$"]({{bbox}});'),  // 30,827
   cat('bridge', 'Bridge',
-    'way["bridge"]["bridge"!="no"]["highway"]["covered"!="yes"]({{bbox}});'),  // 1,026
+    'way["bridge"]["bridge"!="no"]["highway"]({{bbox}});'
+    + 'way["bridge"]["bridge"!="no"]["railway"]({{bbox}});', {
+      note: 'The Bridge Troll card defines a bridge as "any elevated structure, acting as a '
+        + 'path, road or railway" — so railway bridges are in, and covered bridges are not '
+        + 'filtered out. Kept identical to the `bridge` curse predicate.',
+    }),  // >1,026 (1,026 was the road-only, uncovered count)
   cat('car_street', 'Motor-vehicle street', '', { note: 'See CAR_STREET_SELECTOR.' }),  // 54,693
   cat('shop', 'Shop', 'nwr["shop"]({{bbox}});'),  // 1,220
   cat('advertising', 'Advertising', 'nwr["advertising"]({{bbox}});', {
@@ -304,11 +312,29 @@ export const LEGAL_PATH_CANDIDATE_SELECTOR =
 // Tourist (a static Street View country table) and U-Turn (GTFS route overlap) —
 // is decided elsewhere and deliberately absent from this table.
 export const CURSE_PREDICATE_SELECTORS = Object.freeze([
-  Object.freeze(['bridge', 'way["bridge"]["bridge"!="no"]["highway"]["covered"!="yes"]({{bbox}});']),
+  // "'Bridge' is defined as any elevated structure, acting as a path, road or railway,
+  // intended to be crossed by pedestrians, cars, or other vehicles" (Bridge Troll). So
+  // the ["highway"] clause cannot be mandatory — railway bridges are named outright —
+  // and covered bridges are not excluded: the card cares that it is crossable, not that
+  // it is open to the sky. Two statements because Overpass cannot OR across two keys in
+  // one; the surrounding union deduplicates a way carrying both.
+  Object.freeze(['bridge',
+    'way["bridge"]["bridge"!="no"]["highway"]({{bbox}});'
+    + 'way["bridge"]["bridge"!="no"]["railway"]({{bbox}});']),
+  // "'Body of water' within this context does not necessarily mean natural, but it
+  // cannot be a pool and must be large enough to be marked on the map" (Water Weight).
+  // MARKED, not named — so no ["name"] filter here. The named form belongs to the
+  // *measuring* question ("any named body of water on your maps app"), which is the
+  // GEO_CATEGORIES `water` category; the two are kept apart on purpose because they
+  // differ by 8:1 and one drifted into the other once already. "Not necessarily
+  // natural" pulls in reservoirs and basins. "Large enough to be marked" has no tag
+  // that expresses it, so it is approximated by "OSM marks it at all" — the honest
+  // reading, and the looser one, which is the right direction for a REMOVAL test.
   Object.freeze(['water',
-    'nwr["natural"="water"]["name"]["water"!~"^(pool|reflecting_pool)$"]'
+    'nwr["natural"="water"]["water"!~"^(pool|reflecting_pool)$"]'
     + '["leisure"!="swimming_pool"]({{bbox}});'
-    + 'way["waterway"~"^(river|canal)$"]["name"]({{bbox}});']),
+    + 'nwr["landuse"~"^(reservoir|basin)$"]({{bbox}});'
+    + 'way["waterway"~"^(river|canal)$"]({{bbox}});']),
   Object.freeze(['car_street', CAR_STREET_SELECTOR]),
   Object.freeze(['grocery',
     'nwr["shop"~"^(supermarket|greengrocer|convenience|grocery|farm)$"]({{bbox}});']),

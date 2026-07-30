@@ -21,6 +21,15 @@
 // the sample size set to one. That is why the maths below is a transcription and not
 // an approximation: a reader checking the page against the rulebook will check this.
 //
+// WHERE IT DELIBERATELY LEAVES THE CLI BEHIND. Three places where `generate.py`'s page
+// script did not agree with `rules/audit.js`, and therefore did not agree with the
+// rulebook: measuring anchored BOTH distances on the seeker's nearest feature; the
+// tentacle mode never tested the hider's own distance and so could never return the
+// rulebook's "not within reach"; and the tentacle reach was one number per game size
+// when a LARGE deck holds a 1-mile family and a 15-mile family at once. All three are
+// corrected below and each is marked DIVERGENCE, so that AGENTS.md's rule — a JS/Python
+// disagreement is a JS bug — does not misread them as regressions.
+//
 // WHY IT RECOMPUTES INSTEAD OF READING AN ANSWER MATRIX. `worker.js:461–477`
 // builds `signatures` and `surv` as worker-local consts and never posts them. It does
 // not need to: the CLI's simulator never consumed them either (its `#zdata` carries no
@@ -105,6 +114,27 @@ const ANSWER_TEXT = Object.freeze({
   no: Object.freeze(['mostly no', 'danger', 'circle-xmark']),
   edge: Object.freeze(['mostly on the edge', 'warning', 'scale-balanced']),
   un: Object.freeze(['no answer yet', 'neutral', 'circle-question']),
+});
+
+/**
+ * The same partition in tentacle words.
+ *
+ * A tentacle answer is never yes or no: it is the NAME of a location, or — rulebook,
+ * `seeking/tentacle_questions` — "If the hider is not within reach of the tentacle
+ * question, they may simply answer that they are not within reach." Same three keys,
+ * same variants and icons as `ANSWER_TEXT` so the colours cannot drift apart; only the
+ * words differ, because the word is the channel a reader who cannot see the colour gets.
+ * @type {Object<string, [string, string, string]>}
+ */
+const TENTACLE_TEXT = Object.freeze({
+  yes: Object.freeze(['mostly a name in reach', 'success', 'circle-check']),
+  no: Object.freeze(['mostly not within reach', 'danger', 'circle-xmark']),
+  edge: Object.freeze(['mostly on the edge', 'warning', 'scale-balanced']),
+  /* NOT "no answer yet": by the time this chip is drawn a category is selected and a
+     seeker is placed, so `un` here can only be the engine's class `-2` — the seekers
+     named a category with nothing inside their own circle, and "there is nothing to
+     name" is an answer every in-reach zone gives alike. See `majorityGroup`. */
+  un: Object.freeze(['mostly nothing in reach to name', 'neutral', 'circle-question']),
 });
 
 /**
@@ -282,7 +312,21 @@ function buildInstance(root, report) {
   const poi = poiCategories(report);
   const size = report.size || {};
   const RAD = Number(size.zoneRadiusM) || 0;
-  const REACH_M = (Number(size.tentacleReachMi) || 0) * M_PER_MILE;
+  /**
+   * Category key → THAT tentacle question's own reach, in metres.
+   *
+   * Never one `REACH_M` per game size from `size.tentacleReachMi`, which is what this
+   * used to do and what it measured every tentacle question against. The rulebook does
+   * not work that way: it lists Museums / Libraries / Movie Theaters /
+   * Hospitals **Within 1 Mile**, and then "For LARGE Sized Games, Add the Following:
+   * Metro Lines Within 15 Miles / Zoos … / Aquariums … / Amusement Parks Within 15
+   * Miles" — so a LARGE deck asks both, and one number misstates half of it. The engine
+   * has always read the per-question `param` (`rules/audit.js:980`); `modeChips` now
+   * carries the same figure as `reachMi`, so this side reads it too.
+   * `size.tentacleReachMi` is left alone — it is still the deck's headline number.
+   */
+  const tentacleReachM = new Map((chips.tentacle || [])
+    .map((c) => [c.key, (Number(c.reachMi) || 0) * M_PER_MILE]));
   const HIDING_MIN = Number(size.hidingPeriodMin) || 0;
   const hubName = (report.hub && report.hub.name) || 'the hub';
   const imperial = s4Imperial(report);
@@ -317,7 +361,17 @@ function buildInstance(root, report) {
   const answers = new Map();
   /** zoneId → the tentacle feature whose name the hider would have to say. */
   const tentacleNames = new Map();
+  /**
+   * zoneId → the IDENTITY of that feature, `lon,lat`, which is what decides whether
+   * two zones gave the same answer. Never group by the name: `rules/audit.js`'s
+   * `survivalFractions` classes a zone by `flat.owner`, the feature's own index, so two
+   * branches both called "Kent District Library" are two answers, and a feature with no
+   * `name` tag at all is not the same answer as every other unnamed one.
+   */
+  const tentacleFeatures = new Map();
   let counts = { yes: 0, no: 0, edge: 0, un: 0 };
+  /** The largest identical-answer group, refreshed with `counts`. See `majorityGroup`. */
+  let majority = { size: 0, word: '' };
 
   // ── map handles, all owned by `destroy()` ──────────────────────────────────
   let maplibregl = null;
@@ -379,7 +433,8 @@ function buildInstance(root, report) {
    *
    * `explore` is the odd one out and returns a *score* band, not an answer; every
    * other mode returns `yes` / `no` / `edge` / `un`, and `un` means "the question
-   * cannot be asked yet", never "no".
+   * cannot be asked yet", never "no". In the tentacle mode `no` is the rulebook's
+   * "not within reach" — see that branch — which is why nothing prints these keys raw.
    *
    * @param {Object} view @returns {string}
    */
@@ -414,22 +469,58 @@ function buildInstance(root, report) {
     }
 
     if (mode === 'measure') {
-      const target = nearestIn(opt.cat, seeker.lat, seeker.lon);
-      if (!target) return 'un';
-      const mineD = haversineM(seeker.lat, seeker.lon, target.feature[1], target.feature[0]);
-      const theirsD = haversineM(view.lat, view.lon, target.feature[1], target.feature[0]);
-      return bandOf(theirsD - mineD);
+      /* Two nearest-feature lookups, not one. Calling `nearestIn` once on the seeker and
+         measuring BOTH sides to that one feature — which this used to do — answers "how
+         far are you from the seekers' nearest park", a question nobody asked. The rulebook's measuring
+         question is "Compared to me, are you closer to or further from ____?", and each
+         player measures to the instance nearest THEM: "If you are in a large park, a
+         mile from the park icon, you might have to say you are a mile away from any
+         park despite the fact that you are in a park." Two independent nearest-feature
+         distances, which is exactly what the engine compares — `osm_distance`
+         (rules/audit.js:727) stores each zone's OWN nearest distance and `survMeasuring`
+         (:851) ranks those against the seeker's. */
+      const mine = nearestIn(opt.cat, seeker.lat, seeker.lon);
+      const theirs = nearestIn(opt.cat, view.lat, view.lon);
+      if (!mine || !theirs) return 'un';
+      /* `edge` still means what it means everywhere else: the nearest-feature distance
+         is 1-Lipschitz in the hider's position, so anywhere inside the rulebook circle
+         it can move by up to one radius — and inside that band the honest answer really
+         does depend on where in the circle the hider is standing. It is also where the
+         engine's third class lives: a zone level with the seeker answers neither closer
+         nor further (`measuring_ties_are_their_own_answer`). */
+      return bandOf(theirs.d - mine.d);
     }
 
     if (mode === 'tentacle') {
-      /* Both radii anchor on the SEEKER, not on the hider: the seekers ask "name the
-         nearest X within N miles of us", and the hider must answer about that set.
-         There is no `no` — the partition is by which name, and `edge` marks the
-         zones where two names are within a circle's width of each other. */
+      /* The FEATURE reach anchors on the seekers — "Within ___ miles of me, which ___
+         are you nearest to?" — so a target well outside the hider's zone can still be
+         the name they have to give. But the question does not stop there. It ends
+         "(You must also be within ___ miles)", and the rulebook spells the consequence
+         out: "If the hider is not within reach of the tentacle question, they may
+         simply answer that they are not within reach."
+
+         Filtering only the features and then returning `edge` or `yes` for every zone —
+         which this used to do — left that rulebook answer unreachable in the shipped
+         tool. The engine has always had it — `rules/audit.js:999` classes an
+         out-of-reach zone `-1`, its own class, and `s3Answer` (:1073) prints "not
+         within reach" — and this is that class: `no`, distinct from both in-reach
+         groups, which is what the map legend's `--q-no` "out of reach" already promised.
+
+         The reach ring gets the same treatment as every other boundary on this page: a
+         hider whose circle straddles it answers one way from one half of it and the
+         other way from the other half, which is `edge`. */
+      const reachM = tentacleReachM.get(opt.cat) || 0;
+      if (!reachM) return 'un';
+      const reachBand = bandOf(
+        haversineM(seeker.lat, seeker.lon, view.lat, view.lon) - reachM,
+      );
+      if (reachBand === 'no') return 'no';                    /* "not within reach" */
       const c = poi.categories[opt.cat];
       const inReach = c.features.filter(
-        (f) => haversineM(seeker.lat, seeker.lon, f[1], f[0]) <= REACH_M,
+        (f) => haversineM(seeker.lat, seeker.lon, f[1], f[0]) <= reachM,
       );
+      /* in reach of the seekers, but the seekers named a category with nothing inside
+         their own circle — there is no name to give (the engine's class `-2`) */
       if (!inReach.length) return 'un';
       let best = null;
       let bd = Infinity;
@@ -439,22 +530,87 @@ function buildInstance(root, report) {
         if (d < bd) { second = bd; bd = d; best = f; } else if (d < second) { second = d; }
       }
       tentacleNames.set(view.id, best ? best[2] : null);
+      tentacleFeatures.set(view.id, best ? `${best[0]},${best[1]}` : '');
+      if (reachBand === 'edge') return 'edge';
+      /* two names within a circle's width of each other ⇒ which one is nearest depends
+         on where in the circle the hider stands */
       return second - bd <= 2 * RAD ? 'edge' : 'yes';
     }
 
     return 'un';
   }
 
-  /** Refresh `answers`, `tentacleNames` and `counts` for the current question. */
+  /**
+   * The biggest set of zones whose answer is IDENTICAL, and the words for it.
+   *
+   * This is the readout's survival number, and it is the same quantity the score is
+   * built from: `survivalFractions` averages the size of the hider's own answer class
+   * over a sample of seekers, and here the sample is the one seeker on the map.
+   *
+   * `edge` is never a group — its zones have no decided answer to share. Tentacles are
+   * why this cannot be `max(yes, no)`: the in-reach zones do NOT all say the same
+   * thing, they each name a feature, so the `yes` colour is really one group per
+   * FEATURE, exactly as `rules/audit.js:1016` counts them. The out-of-reach zones, by
+   * contrast, all give one and the same answer and are frequently the largest group.
+   *
+   * @param {{yes:number,no:number,edge:number,un:number}} tally
+   * @returns {{size: number, word: string}}
+   */
+  function majorityGroup(tally) {
+    if (mode !== 'tentacle') return { size: Math.max(tally.yes, tally.no), word: '' };
+    let best = { size: tally.no, word: 'not within reach' };
+    /* `un` is a third real group here, not a gap: it is the engine's class `-2`
+       (`rules/audit.js`, `survTentacle`) — the seekers named a category with nothing
+       inside their own circle, so every zone that IS in reach gives the identical
+       answer "there is nothing to name". Only the tentacle mode can hold a partial
+       `un`; every other mode's `un` is all-or-nothing and `renderReadout` has already
+       returned by then. Leaving it out reported 0% survival on a map where every zone
+       agreed. */
+    if (tally.un > best.size) best = { size: tally.un, word: 'nothing in reach to name' };
+    /* Keyed by feature identity, not by name — see `tentacleFeatures`. Grouping by name
+       merged every unnamed feature into one bogus group and reported survival over a set
+       of zones that do not share an answer. */
+    const byFeature = new Map();
+    for (const v of views) {
+      if (answers.get(v.id) !== 'yes') continue;
+      const key = tentacleFeatures.get(v.id) || '';
+      const row = byFeature.get(key);
+      if (row === undefined) byFeature.set(key, { n: 1, name: tentacleNames.get(v.id) });
+      else row.n += 1;
+    }
+    for (const key of Array.from(byFeature.keys()).sort(cmp)) {
+      const { n, name } = byFeature.get(key);
+      if (n <= best.size) continue;
+      best = { size: n, word: name ? `nearest to ${name}` : 'nearest to the same unnamed feature' };
+    }
+    return best;
+  }
+
+  /** Refresh `answers`, `tentacleNames`, `counts` and `majority` for the question. */
   function computeAnswers() {
     const tally = { yes: 0, no: 0, edge: 0, un: 0 };
     tentacleNames.clear();
+    tentacleFeatures.clear();
     for (const v of views) {
       const a = answerFor(v);
       answers.set(v.id, a);
       if (mode !== 'explore' && a in tally) tally[a] += 1;
     }
     counts = tally;
+    majority = majorityGroup(tally);
+  }
+
+  /**
+   * One zone's current answer, in the words that answer is actually given in.
+   *
+   * Only the tentacle mode needs the translation, and it needs it badly: `no` there is
+   * the rulebook's "not within reach", not a plain no, and a marker tip that said "no"
+   * would be telling the reader the opposite of what their hider would say.
+   */
+  function answerWord(view) {
+    const a = answers.get(view.id) || 'un';
+    if (mode === 'tentacle' && a === 'no') return 'not within reach';
+    return a;
   }
 
   /** Does this zone have any service at all? Two places read it; both must agree. */
@@ -582,7 +738,7 @@ function buildInstance(root, report) {
     bindTip(node, () => join(
       el('b', esc(view.name)),
       `#${view.rank === null ? '—' : num(view.rank)} · ${num(view.overall, 1)}/${num(view.max, 0)}`,
-      mode === 'explore' ? '' : `answer: ${esc(answers.get(view.id) || 'un')}`,
+      mode === 'explore' ? '' : `answer: ${esc(answerWord(view))}`,
       mode === 'tentacle' && tentacleNames.get(view.id)
         ? `nearest in reach: ${esc(tentacleNames.get(view.id))}`
         : '',
@@ -818,18 +974,23 @@ function buildInstance(root, report) {
     if (mode === 'radar') return `Within ${s4Val(opt.radar)} mi: `;
     if (mode === 'thermo') return 'Hotter (closer to the end of your leg): ';
     if (mode === 'match') return `Same nearest ${label}: `;
-    if (mode === 'measure') return `Closer to that ${label} than you are: `;
-    if (mode === 'tentacle') return 'Zones with an answer in reach: ';
+    /* NOT "that ${label}": there is no shared feature. Each side measures to the
+       instance nearest itself, which is the whole point of the question. */
+    if (mode === 'measure') return `Nearer their own ${label} than you are to yours: `;
+    /* NOT "zones with an answer": every zone has one, and for most of them it is "I am
+       not within reach". This counts the zones that must name something. */
+    if (mode === 'tentacle') return `Within reach, and so having to name a ${label}: `;
     return '';
   }
 
   /**
    * The sentence under the map.
    *
-   * The closing percentage is the client twin of `survivalFractions`: the majority
-   * branch's share of the whole field, with the edge zones excluded from the `no`
-   * count because their answer is not decided. It is `aria-live="polite"`, so a
-   * reader who cannot see the colours still gets every repaint read to them.
+   * The closing percentage is the client twin of `survivalFractions`: the share of the
+   * whole field held by the largest group of zones giving the IDENTICAL answer (see
+   * `majorityGroup`), with the edge zones in no group at all because their answer is
+   * not decided. It is `aria-live="polite"`, so a reader who cannot see the colours
+   * still gets every repaint read to them.
    */
   function renderReadout() {
     const host = $('s-readout');
@@ -842,20 +1003,31 @@ function buildInstance(root, report) {
       host.textContent = MODE_NEED[mode] || '';
       return;
     }
-    if ((mode === 'match' || mode === 'measure' || mode === 'tentacle') && !opt.cat) {
+    /* `opt.cat` is shared by the three category modes, so it can arrive here naming a
+       category this mode has no question for — a park is a matching and a measuring
+       subject but never a tentacle one. The option row already shows nothing checked;
+       without this the readout would report a field of zeroes as if it were an answer. */
+    if ((mode === 'match' || mode === 'measure' || mode === 'tentacle')
+      && !(chips[mode] || []).some((c) => c.key === opt.cat)) {
       host.textContent = 'Pick a category above.';
       return;
     }
     const total = views.length;
     const yes = counts.yes || 0;
+    const no = counts.no || 0;
     const edge = counts.edge || 0;
-    const majority = Math.max(yes, total - yes - edge);
     /* the dominant answer as a word, so the map's colours are never the only channel */
     let top = 'un';
     for (const k of ['yes', 'no', 'edge', 'un']) {
       if ((counts[k] || 0) > (counts[top] || 0)) top = k;
     }
-    const [word, variant, icon] = ANSWER_TEXT[top] || ANSWER_TEXT.un;
+    const words = mode === 'tentacle' ? TENTACLE_TEXT : ANSWER_TEXT;
+    const [word, variant, icon] = words[top] || words.un;
+    /* the tentacle mode's third answer is a real answer, not a gap in the map, so it is
+       counted out loud rather than left to be inferred from the other two */
+    const notInReach = mode === 'tentacle' && no
+      ? `. ${el('b', num(no))} are not within reach of the seekers and simply say so`
+      : '';
     host.innerHTML = join(
       esc(readoutLead())
         + el('b', num(yes)) + ` of ${num(total)} zones`
@@ -863,7 +1035,10 @@ function buildInstance(root, report) {
           ? `, plus ${el('b', num(edge))} on the edge where the answer depends on`
             + ' where in the circle they stand'
           : '')
-        + `. Survival for a zone in the majority group is ${total ? pct(majority / total, 0) : pct(0, 0)}.`,
+        + notInReach
+        + '. Survival for a zone in the majority group'
+        + (majority.word ? ` (${esc(majority.word)})` : '')
+        + ` is ${total ? pct(majority.size / total, 0) : pct(0, 0)}.`,
       chip(word, icon, { variant, size: 's' }),
     );
   }

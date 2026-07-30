@@ -1517,7 +1517,9 @@ function bestDay(report) {
 
 /**
  * Questions that actually function: functional plus weak. `unaskable` is not counted
- * — Transit Line exists but cannot be asked from a standing start.
+ * either, but nothing emits it any more — `rules/audit.js` scores Transit Line like
+ * every other matching question. Kept byte-for-byte in step with
+ * `render/verdict.js`'s `s4LiveQuestions`, which is the same count.
  */
 function liveQuestions(report) {
   return (report.questions || []).filter((q) => q.status === 'functional' || q.status === 'weak').length;

@@ -43,7 +43,7 @@ embedded JSON block; it is built from `state.report` in memory, and it is exclud
 | `render/verdict.js` | Verdict agent | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
 | `render/map.js` | Map agent | main | `renderKeyNumbers`, `renderNetworkMap`, `renderTransitReality` |
 | `render/deck.js` | Deck agent | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
-| `render/strategy.js` | Strategy agent | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. |
+| `render/strategy.js` | Strategy agent | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
 | `render/simulator.js` | Strategy agent | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
 | `worker.js` | Worker agent | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | **Contract agent (done)** | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
@@ -57,7 +57,7 @@ embedded JSON block; it is built from `state.report` in memory, and it is exclud
 | `gtfs/infer.js` | Network agent | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
 | `osm/overpass.js` | OSM agent | worker | `overpassQL`, `overpassQuery`, `parseOverpass`, `tileBbox`, `nominatimReverse` |
 | `osm/geodata.js` | OSM agent | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
-| `rules/catalogue.js` | Rules agent | worker | `QUESTIONS`, `CURSES`, `SIZES`, `RADAR_MILES`, `INTERPRETATIONS`, `catalogueFor` |
+| `rules/catalogue.js` | Rules agent | worker+main | `QUESTIONS`, `CURSES`, `SIZES`, `RADAR_MILES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. |
 | `rules/audit.js` | Rules agent | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
 | `rules/score.js` | Score agent | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
 
@@ -282,14 +282,14 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {'small'|'medium'|'large'} name  // name
  * @property {number} hidingPeriodMin         // hiding_period_min — 30 / 60 / 180
  * @property {number} zoneRadiusM             // zone_radius_m — QUARTER_MILE_M / QUARTER_MILE_M / HALF_MILE_M
- * @property {number} tentacleReachMi         // tentacle_reach_mi — 0.5 / 1.0 / 15.0
- * @property {number[]} thermometerMi         // thermometer_mi — (0.25,1,3) / (0.5,3,10) / (1,15,50)
+ * @property {number} tentacleReachMi         // tentacle_reach_mi — 0.0 / 1.0 / 15.0. The deck's headline reach only: a LARGE deck holds 1-mile AND 15-mile tentacle questions at once, so per-question reach comes from `QuestionDef.param`, never from here. SMALL is 0 because the rulebook bars the category.
+ * @property {number[]} thermometerMi         // thermometer_mi — cumulative: (0.5,3) / (0.5,3,10) / (0.5,3,10,50)
  * @property {number} categoryCount           // category_count — 5 / 6 / 6
  * @property {number} catalogueSize           // catalogue_size — 58 / 71 / 80
  * @property {number} photoLimitMin           // photo_limit_min — 10 / 10 / 20
  * @property {number} otherLimitMin           // other_limit_min — 5
  * @property {number} moveGrantMin            // move_grant_min — 10 / 20 / 60
- * @property {number} requiredHours           // required_hours — 6 / 10 / 12 (scoring.md §1.5)
+ * @property {number} requiredHours           // required_hours — 6 / 10 / 12. INFERRED, not transcribed: the rulebook gives a size's length only as prose ("lasts 4–8 hours" / "about 1 day" / "2 to 4 days") and never an hours-per-playing-day figure. Metrics built on it are tagged `interp`.
  * @property {boolean} inferred               // inferred — false when options.sizeOverride forced it
  */
 
@@ -1086,7 +1086,8 @@ only ever visible to someone already inside it.
 | Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. The CLI's bare ids collide in a single document: `#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion, `#zmap`/`#ztable` with nothing yet but by luck. The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
 | Controls | The three mutually-exclusive rows — `#s-modes` (question mode), `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same native pair `s4ChipGroup` (`render/map.js` 169) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` itself cannot be reused because it has no way to disable an option. A dead option is a `disabled` radio **and** a printed reason — a disabled control is not focusable, so a `title` on one is reachable by hovering with a pointer and by nothing else. Never express the selection by rewriting `appearance`. |
 | Seeker placement | Pointer **and** keyboard. The map click and the marker drag are the CLI's; the port adds a "Place the seekers at …" `wa-button` in `#s-opts` (a leg from the hub to the selected zone, in thermometer mode) and makes the marker element itself a focusable control that the arrow keys nudge. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user, i.e. the flagship feature does not run at all. |
-| Module boundary | `app.js` → `renderStrategy(report) → string` (one root element, or `''`) and `initStrategy(root, report) → void`. `initStrategy` is called **only after** `body[data-view]` is set, because MapLibre reads its container size once, at construction. It is idempotent: a second call resizes the map and returns, so mode, selection, sort, filter and page survive leaving and re-entering. The dependency between the two new modules is one-way — `simulator.js` imports `strategy.js`, never the reverse. |
+| Module boundary | `app.js` → `renderStrategy(report) → string` (one root element, or `''`) and `initStrategy(root, report) → void`. `initStrategy` is called **only after** `body[data-view]` is set, because MapLibre reads its container size once, at construction. It is idempotent: a second call resizes the map and returns, so mode, selection, sort, filter and page survive leaving and re-entering. The dependency between the two new modules is one-way — `simulator.js` imports `strategy.js`, never the reverse. The one shape that crosses it is `modeChips`' `CatChip` (typedef in `render/strategy.js`), whose `reachMi` — that tentacle question's own reach in miles, `null` on matching and measuring chips — is what `answerFor` measures against. Never `size.tentacleReachMi`: that is the deck's headline figure and a LARGE deck holds two reaches at once. |
+| What `answerFor` answers | `generate.py` line 14942 is the port's source, but it is **not** the specification — `rules/audit.js` is, and three of its answers used to disagree with the CLI's simulator. All three were fixed on both sides and the two implementations now agree. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
 
 ### Deliberate divergences from `generate.py` in this view
 

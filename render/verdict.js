@@ -90,13 +90,34 @@ const S4_QUADRANTS = Object.freeze([
   Object.freeze(['concern', 'Risks needing a house rule', 'var(--warn)', 'wa-warning', 'triangle-exclamation']),
 ]);
 
-// The four size axes in plain words. The rulebook's own name for each stays on the
-// page as the quiet caption beneath, so nothing is renamed away.
+// The four size axes in plain words. The generator's own technical name for each stays
+// on the page as the quiet caption beneath, so nothing is renamed away.
 const S4_AXIS_PLAIN = Object.freeze({
   A: 'The area the buses actually cover',
   B: 'How many distinct places there are to hide',
   C: 'How long it takes to cross the map',
   D: 'How far it is corner to corner',
+});
+
+// Where each axis's band came from, as a `Metric.source` value so the axis table can
+// reuse `s4SourceTag` and read the same as every other provenance chip on the page.
+//
+// "Choosing a Transit System" gives the size table in full and gives nothing else:
+// SMALL 30–100 stations / 10–100 sq. mi, MEDIUM 100–500 / 100–1,000, LARGE 500+ /
+// 1,000+. So:
+//   A · convex-hull area [100, 1000] sq mi — verbatim the rulebook's second column.
+//   B · hiding zones [100, 500] — a reading, not a quotation: the rulebook counts
+//       *stations*, and only because it says each hiding zone is centred on one (and
+//       calls the whole table "our best estimate") does the station band transfer.
+//   C · T90 traversal time and D · straight-line diameter — no rulebook counterpart at
+//       all; the rulebook never mentions traversal or diameter. These bands are the
+//       generator's, and saying otherwise turned two invented thresholds into rules.
+// The numbers themselves live in gtfs/infer.js and are not restated here.
+const S4_AXIS_BASIS = Object.freeze({
+  A: 'rulebook',
+  B: 'interp',
+  C: 'interp',
+  D: 'interp',
 });
 
 // The placeholder every index section passes as its ordinal. app.js replaces it with
@@ -398,8 +419,11 @@ export function s4WorstDay(report) {
 }
 
 /**
- * Questions that actually function: functional plus weak. `unaskable` is not counted
- * — Transit Line exists but cannot be asked from a standing start.
+ * Questions that actually function: functional plus weak. `degenerate`, `dead` and
+ * `unknown` are not counted; `unaskable` is not counted either, but nothing emits it
+ * any more — `rules/audit.js` `auditQuestions` now scores Transit Line like every
+ * other matching question, because a curse that has to be drawn and paid for is not a
+ * property of the map. The status stays in the union, so the test stays.
  */
 export function s4LiveQuestions(report) {
   let n = 0;
@@ -825,7 +849,8 @@ export function s4AxisWord(score) {
  *
  * This used to be a 60-word clause inside paragraph one. Same four facts per axis —
  * name, value, verdict word and both thresholds — laid out so they can be compared
- * rather than parsed.
+ * rather than parsed, plus a fifth the table used to assert wrongly in its subtitle:
+ * where the band came from.
  */
 function s4AxisCard(report) {
   const si = report.sizeInference || null;
@@ -848,7 +873,13 @@ function s4AxisCard(report) {
         }),
       el('span', esc(`${shown} ${unit}`.trim()), { className: 'wa-text-nowrap' }),
       chip(word, 'equals', { title: `${a.name} votes ${word}` }),
-      el('span', esc(bands), { className: 'wa-caption-xs wa-color-text-quiet' }),
+      // The band and, beneath it, whose band it is. Only axis A's is quoted from the
+      // rulebook (`S4_AXIS_BASIS`); the reader has to be able to tell which cut points
+      // they can look up and which are this generator's, because the verdict is the
+      // median of all four votes, so an arguable band still moves it.
+      el('span', esc(bands), {
+        className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block',
+      }) + s4SourceTag(S4_AXIS_BASIS[String(a.id)] || 'interp'),
     ]);
   }
   return waCard(
@@ -861,7 +892,8 @@ function s4AxisCard(report) {
     {
       headerHtml: s4CardHeader(
         `Why this is a ${cap((report.size || {}).name || (si && si.verdict) || '')} map`,
-        "Each axis votes independently; the bands are the rulebook's.",
+        'Each axis votes independently, and every band says whose it is: only the area '
+        + "band is the rulebook's.",
       ),
       appearance: 'plain',
     },

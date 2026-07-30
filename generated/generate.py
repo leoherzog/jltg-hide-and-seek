@@ -2120,7 +2120,10 @@ _S1_NEG_INF = -(10 ** 9)
 _S1_RADAR_MILES = (0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.0, 25.0, 50.0, 100.0)
 
 # The rulebook's own size parameters (GUIDE.md "Game Size", SEEKING.md question
-# tiers). Nothing here is inferred — these are transcriptions.
+# tiers). Transcriptions, with one exception: `required_hours` is INFERRED. The
+# rulebook gives a size's length only as prose — "lasts 4–8 hours" / "about 1 day" /
+# "2 to 4 days" — and never an hours-per-playing-day figure, so 6 / 10 / 12 are ours
+# and D1 is tagged `interp` rather than `rulebook`.
 _S1_SIZE_PARAMS: dict[str, dict[str, Any]] = {
     "small": dict(hiding_period_min=30, zone_radius_m=QUARTER_MILE_M, tentacle_reach_mi=0.0,
                   thermometer_mi=(0.5, 3.0), category_count=5, catalogue_size=58,
@@ -4518,7 +4521,11 @@ GEO_CATEGORIES: tuple[GeoCategory, ...] = (
                 'nwr["natural"="water"]["name"]["water"!~"^(pool|reflecting_pool)$"]'
                 '["leisure"!="swimming_pool"]({{bbox}});'
                 'way["waterway"~"^(river|canal)$"]["name"]({{bbox}});', needs_geometry=True,
-                note="The name filter is the rulebook's own wording: 999 water features exist, 75 are named."),  # 75+48
+                note="The name filter is the measuring question's own wording — \"any named "
+                     "body of water on your maps app, excluding pools\": 999 water features "
+                     "exist, 75 are named. It belongs to THIS question only. Curse of the Water "
+                     "Weight says \"marked\", not \"named\", and has its own unnamed predicate "
+                     "in CURSE_PREDICATE_SELECTORS."),  # 75+48
     GeoCategory("coastline", "Coastline", 'way["natural"="coastline"]({{bbox}});',
                 note="OSM tags ocean/sea only, so shore segments are also derived from any "
                      "water body larger than the game map — a great-lake shore is a coast."),  # 0 tagged
@@ -4547,7 +4554,12 @@ GEO_CATEGORIES: tuple[GeoCategory, ...] = (
     GeoCategory("footpath", "Footpath",
                 'way["highway"~"^(footway|path|pedestrian|steps|cycleway|track)$"]({{bbox}});'),  # 30,827
     GeoCategory("bridge", "Bridge",
-                'way["bridge"]["bridge"!="no"]["highway"]["covered"!="yes"]({{bbox}});'),  # 1,026
+                'way["bridge"]["bridge"!="no"]["highway"]({{bbox}});'
+                'way["bridge"]["bridge"!="no"]["railway"]({{bbox}});',
+                note="The Bridge Troll card defines a bridge as \"any elevated structure, acting "
+                     "as a path, road or railway\" — so railway bridges are in, and covered "
+                     "bridges are not filtered out. Kept identical to the `bridge` curse "
+                     "predicate."),  # >1,026 (1,026 was the road-only, uncovered count)
     GeoCategory("car_street", "Motor-vehicle street", "", note="See CAR_STREET_SELECTOR."),  # 54,693
     GeoCategory("shop", "Shop", 'nwr["shop"]({{bbox}});'),  # 1,220
     GeoCategory("advertising", "Advertising", 'nwr["advertising"]({{bbox}});',
@@ -4757,10 +4769,27 @@ PRIVATE_ACCESS = frozenset({"private", "no", "customers", "permit", "military", 
 # Tourist (a static Street View country table) and U-Turn (GTFS route overlap) —
 # is decided elsewhere and deliberately absent from this table.
 CURSE_PREDICATE_SELECTORS: tuple[tuple[str, str], ...] = (
-    ("bridge", 'way["bridge"]["bridge"!="no"]["highway"]["covered"!="yes"]({{bbox}});'),
-    ("water", 'nwr["natural"="water"]["name"]["water"!~"^(pool|reflecting_pool)$"]'
+    # "'Bridge' is defined as any elevated structure, acting as a path, road or railway,
+    # intended to be crossed by pedestrians, cars, or other vehicles" (Bridge Troll). So the
+    # ["highway"] clause cannot be mandatory — railway bridges are named outright — and
+    # covered bridges are not excluded: the card cares that it is crossable, not that it is
+    # open to the sky. Two statements because Overpass cannot OR across two keys in one; the
+    # surrounding union deduplicates a way carrying both.
+    ("bridge", 'way["bridge"]["bridge"!="no"]["highway"]({{bbox}});'
+               'way["bridge"]["bridge"!="no"]["railway"]({{bbox}});'),
+    # "'Body of water' within this context does not necessarily mean natural, but it cannot
+    # be a pool and must be large enough to be marked on the map" (Water Weight). MARKED, not
+    # named — so no ["name"] filter here. The named form belongs to the *measuring* question
+    # ("any named body of water on your maps app"), which is the GEO_CATEGORIES `water`
+    # category; the two are kept apart on purpose because they differ by 8:1 and one drifted
+    # into the other once already. "Not necessarily natural" pulls in reservoirs and basins.
+    # "Large enough to be marked" has no tag that expresses it, so it is approximated by "OSM
+    # marks it at all" — the honest reading, and the looser one, which is the right direction
+    # for a REMOVAL test.
+    ("water", 'nwr["natural"="water"]["water"!~"^(pool|reflecting_pool)$"]'
               '["leisure"!="swimming_pool"]({{bbox}});'
-              'way["waterway"~"^(river|canal)$"]["name"]({{bbox}});'),
+              'nwr["landuse"~"^(reservoir|basin)$"]({{bbox}});'
+              'way["waterway"~"^(river|canal)$"]({{bbox}});'),
     ("car_street", CAR_STREET_SELECTOR),
     ("grocery", 'nwr["shop"~"^(supermarket|greengrocer|convenience|grocery|farm)$"]({{bbox}});'),
     ("shop", 'nwr["shop"]({{bbox}});'),
@@ -6402,10 +6431,23 @@ class CurseDef:
 
 
 # Rulebook size parameters. Complete — these three entries are the whole table.
+#
+# `thermometer_mi` is cumulative, exactly as SEEKING.md prints it: SMALL gets ½ and 3 mi,
+# MEDIUM and LARGE add 10 mi, LARGE adds 50 mi. There is no ¼-mile, 1-mile or 15-mile
+# thermometer. `tentacle_reach_mi` is 0 for SMALL because SEEKING.md line 436 says
+# outright "Tentacle question cannot be used in SMALL games". Both now agree with the
+# QUESTIONS rows below and with `_S1_SIZE_PARAMS`, which is the copy the pipeline runs on.
+#
+# One field is NOT a transcription: `required_hours` (6 / 10 / 12) is ours. The rulebook
+# gives a size's length only as prose — "lasts 4–8 hours" / "about 1 day" / "2 to 4 days"
+# (GUIDE.md "Choosing Game Size") — and never an hours-per-playing-day figure, so the
+# metric built on it is tagged `interp` rather than `rulebook`. The trailing `True` is a
+# different thing entirely and is not a provenance flag: it is `GameSize.inferred`,
+# meaning the size was deduced from the feed rather than forced with `--size`.
 SIZES: dict[str, GameSize] = {
-    "small": GameSize("small", 30, QUARTER_MILE_M, 0.5, (0.25, 1.0, 3.0), 5, 58, 10, 5, 10, 6.0, True),
+    "small": GameSize("small", 30, QUARTER_MILE_M, 0.0, (0.5, 3.0), 5, 58, 10, 5, 10, 6.0, True),
     "medium": GameSize("medium", 60, QUARTER_MILE_M, 1.0, (0.5, 3.0, 10.0), 6, 71, 10, 5, 20, 10.0, True),
-    "large": GameSize("large", 180, HALF_MILE_M, 15.0, (1.0, 15.0, 50.0), 6, 80, 20, 5, 60, 12.0, True),
+    "large": GameSize("large", 180, HALF_MILE_M, 15.0, (0.5, 3.0, 10.0, 50.0), 6, 80, 20, 5, 60, 12.0, True),
 }
 
 # Radar distances the rulebook offers, in miles. The last one is the "Choose" radar,
@@ -6421,8 +6463,9 @@ QUESTIONS: tuple[QuestionDef, ...] = (
     QuestionDef("matching.transit_line", "matching", "Transit", "Transit Line",
                 "Is your nearest transit line the same as my nearest transit line?",
                 ("small", "medium", "large"), 3, 1, None,
-                note="Unaskable while the seekers are not on moving transit; "
-                     "Curse of the Urban Explorer kills it permanently for the run."),
+                note="Can only be asked from aboard a moving vehicle; if the hider draws, "
+                     "pays for and plays Curse of the Urban Explorer, it is gone for the "
+                     "rest of the run."),
     QuestionDef("radar.5mi", "radar", "Radar", "5 miles",
                 "Are you within 5 miles of me?", ("small", "medium", "large"), 2, 1, None, param=5.0),
     # … 77 more, from specs/rules.json `questions[]`
@@ -6699,8 +6742,13 @@ QUESTIONS: tuple[QuestionDef, ...] = (
     QuestionDef("matching.transit_line", "matching", "Transit", "Transit Line",
                 "Is your nearest transit line the same as my nearest transit line?",
                 ("small", "medium", "large"), 3, 1, None,
-                note="Unaskable while the seekers are not on moving transit; Curse of the Urban "
-                     "Explorer kills it permanently for the run.",
+                # NOT the `unaskable` status: the rulebook attaches a timing precondition,
+                # not a terrain one, and a curse that has to be drawn and paid for is not a
+                # property of the map. `audit_questions` scores this like every other
+                # matching question.
+                note="Can only be asked from aboard a moving vehicle; if the hider draws, pays "
+                     "for and plays Curse of the Urban Explorer, it is gone for the rest of "
+                     "the run.",
                 ),
     QuestionDef("matching.station_name_length", "matching", "Transit", "Station's Name Length",
                 "Is your nearest station's name length the same as my nearest station's name length?",
@@ -6913,7 +6961,10 @@ QUESTIONS: tuple[QuestionDef, ...] = (
     QuestionDef("photo.trace_nearest_street_path", "photo", "Photo", "Trace Nearest Street/Path",
                 "Send me a photo of trace nearest street/path.",
                 ("medium", "large"), 1, 1, None,
-                note="Treated as answerable wherever a mapped street reaches the zone.",
+                note="The street graph is never consulted: this is short-circuited to "
+                     "answerable everywhere, so the rulebook's \"street/path must be visible "
+                     "on mapping app\" condition is not checked. See the "
+                     "photo_always_answerable interpretation.",
                 ),
     QuestionDef("photo.2_buildings", "photo", "Photo", "2 Buildings",
                 "Send me a photo of 2 buildings.",
@@ -7098,8 +7149,9 @@ CURSES: tuple[CurseDef, ...] = (
              "touches the ground, your tower has fallen. Once your tower falls, tell the seekers "
              "how many rocks high your tower was when it last stood for five seconds. The seekers "
              "must then construct a rock tower of the same number of rocks, under the same "
-             "parameters, before asking another question. The rocks must be found in nature, and "
-             "both teams must disperse the rocks after building.",
+             "parameters, before asking another question. If their tower falls, they must "
+             "restart. The rocks must be found in nature, and both teams must disperse the "
+             "rocks after building.",
              "Build a rock tower.",
              ("asking_questions",), "cairn_terrain",
              "Never removed. Loose rock is not reliably mapped, so the terrain count is a hint "
@@ -7129,7 +7181,11 @@ CURSES: tuple[CurseDef, ...] = (
              "it to the seekers. You cannot use the internet to research maze designs. The seekers "
              "must solve the maze before asking another question.",
              "Draw a maze.",
-             (), None,
+             # The maze is the same categorical prevention Cairn, Bird Guide and Endless
+             # Tumble carry, and HIDING.md line 94 says "there cannot be more than one
+             # active curse preventing the seekers from asking questions or taking
+             # transit" — so it has to occupy that slot.
+             ("asking_questions",), None,
              "Never removed and not a geography question: it needs pen and paper, which belongs in "
              "the what-to-pack list."),
     CurseDef("mediocre_travel_agent", "Curse of the Mediocre Travel Agent", 3,
@@ -7331,10 +7387,21 @@ _S3_INTERPRETATIONS: tuple[dict[str, Any], ...] = (
              "coverage share is printed."},
     {"id": "photo_always_answerable", "affects": ["photo.you", "photo.the_sky",
                                                   "photo.tallest_structure_in_your_current_sightline",
-                                                  "photo.widest_street"],
-     "text": "Four photo questions can be answered from anywhere, so as locational questions they "
-             "are degenerate — but the image itself can still show the seekers a landmark, a "
-             "shadow or a sky no model can score. They are scored as zero-information and flagged."},
+                                                  "photo.widest_street",
+                                                  "photo.trace_nearest_street_path",
+                                                  "photo.half_mile_of_streets_traced"],
+     "text": "Six photo questions are short-circuited to answerable everywhere, so as locational "
+             "questions they are degenerate — but the image itself can still show the seekers a "
+             "landmark, a shadow or a sky no model can score. They are scored as zero-information "
+             "and flagged. Four of them really are answerable from anywhere on Earth: You, The "
+             "Sky, Tallest Structure in Your Current Sightline and Widest Street. The other two "
+             "are a judgement call. The rulebook conditions Trace Nearest Street/Path on "
+             "“Street/path must be visible on mapping app” and ½ Mile of Streets Traced on "
+             "“Streets must appear on mapping app”, plus a continuous five-turn route with no "
+             "doubling back — and street geometry is counted map-wide but never downloaded, so "
+             "neither condition can be checked here. They are assumed answerable rather than "
+             "reported as unknown, which overstates them on a zone whose streets a mapping app "
+             "does not draw."},
     {"id": "tentacle_double_radius", "affects": ["every tentacle question"],
      "text": "The two distance blanks on a tentacle card are always the same number, and both "
              "reach tests are anchored on the seeker, not on the hider."},
@@ -7384,7 +7451,13 @@ _S3_SPECIAL_SUBJECT: dict[str, tuple[str, Any]] = {
     "tentacle.metro_line": ("gtfs_metro_line", None),
 }
 
-# Photo questions that can be answered from anywhere on Earth.
+# Photo questions this engine treats as answerable from anywhere.
+#
+# The first four genuinely are. The last two are a judgement call, disclosed as one in
+# the `photo_always_answerable` interpretation: the rulebook conditions both on the
+# mapping app ("Street/path must be visible on mapping app", "Streets must appear on
+# mapping app"), and this engine never checks that the zone has such a street. Keep the
+# two lists in step — a judgement call the interpretation table does not carry is a bug.
 _S3_ALWAYS_PHOTOS = frozenset({
     "photo.you",
     "photo.the_sky",
@@ -8435,10 +8508,15 @@ def audit_questions(size: GameSize, geo: GeoData, gtfs_facts: dict[str, Any],
       * tentacle  — N=0 dead at the game's priciest cost, N=1 degenerate, N≥2 with a
         median in-reach count ≥2 functional.
 
-    Only *Transit Line* can be `unaskable`. Every count is measured **inside the
-    border**, applied to the feature's own map icon rather than to whatever Overpass
-    returned for the bbox, and any question whose status would flip under a modestly
-    larger border is marked `borderline`.
+    Nothing here returns `unaskable` any more: it means "the rules of the question
+    itself cannot be satisfied here", and no question in the catalogue is barred by the
+    map alone. *Transit Line* used to claim it on the strength of a curse that might be
+    drawn; see the branch for why that is prose, not a verdict. The status is kept in
+    the vocabulary because the renderers still name it.
+
+    Every count is measured **inside the border**, applied to the feature's own map
+    icon rather than to whatever Overpass returned for the bbox, and any question whose
+    status would flip under a modestly larger border is marked `borderline`.
     """
     n = len(zones)
     proj = _s3_proj_from_zones(zones)
@@ -8503,15 +8581,26 @@ def audit_questions(size: GameSize, geo: GeoData, gtfs_facts: dict[str, Any],
                     status = "degenerate"
                     why = "One route serves the whole map, so everyone's nearest transit line is it."
                 else:
+                    # Scored like every other matching question, because nothing about
+                    # THIS MAP stops the question being asked. The rulebook attaches only
+                    # a timing precondition — "In order to ask this question, seekers must
+                    # be on the form of transit, and it must be moving" (SEEKING.md) —
+                    # which seekers on a multi-route network can satisfy whenever they
+                    # choose. Curse of the Urban Explorer can end that, but it has to be
+                    # drawn, paid for and played, so it is advice for the row's prose, not
+                    # a property of the map, and it does not earn `unaskable` ("the rules
+                    # of the question itself cannot be satisfied here").
                     quality = _s3_quality(q, sig, zones, seekers)
-                    status = "unaskable"
+                    status = "weak" if quality < 0.12 else "functional"
                     sharp = "cuts hard when it lands" if quality >= 0.12 else \
                             "almost always answers no, and a no eliminates only the seeker's own set"
                     why = (f"{num(routes)} routes produce {num(classes)} distinct route sets across "
-                           f"{num(n)} zones, so it {sharp}. It can only be asked from moving "
-                           f"transit, and Curse of the Urban Explorer shuts that off permanently "
-                           f"for the rest of the run — which is why it is listed as unaskable "
-                           f"rather than functional.")
+                           f"{num(n)} zones, so it {sharp}. Asking it costs timing, not terrain: "
+                           f"you must be aboard a vehicle and moving when the question goes out, "
+                           f"which on {num(routes)} routes is a matter of planning the ask. One "
+                           f"caveat — if the hider draws Curse of the Urban Explorer, pays its "
+                           f"cost and plays it, transit is closed to you for the rest of the run "
+                           f"and this question goes with it.")
             elif kind == "gtfs_name_length":
                 classes, smallest, largest = _s3_block_span(sig)
                 instances = classes
@@ -8855,8 +8944,10 @@ def _s3_tentacle_verdict(q: QuestionDef, sig: Sequence[Any], feats: Sequence[Any
 # Plain-words description of what decides each curse. Printed next to the count, so
 # a player can disagree with the predicate rather than with the verdict.
 _S3_CURSE_PREDICATE_WORDS: dict[str, str] = {
-    "bridge": 'OSM: way["bridge"]["bridge"!="no"]["highway"]["covered"!="yes"](BBOX)',
-    "water": 'OSM: named natural=water and waterway=river|canal, pools excluded (BBOX)',
+    "bridge": 'OSM: way["bridge"]["bridge"!="no"] carrying ["highway"] or ["railway"], '
+              'covered ones included (BBOX)',
+    "water": 'OSM: natural=water, landuse=reservoir|basin and waterway=river|canal, pools '
+             'excluded, named or not (BBOX)',
     "car_street": "OSM: motor-vehicle highway ways with motor_vehicle and access not no (BBOX)",
     "grocery": 'OSM: shop=supermarket|greengrocer|convenience|grocery|farm (BBOX)',
     "shop": 'OSM: shop=* (BBOX)',
@@ -8949,7 +9040,12 @@ def audit_curses(size: GameSize, geo: GeoData, gtfs_facts: dict[str, Any],
                 why = ("No bridges on the game map. The rulebook says outright to remove this "
                        "curse in that case.")
             else:
-                why = (f"{num(count)} road bridges on the map, so the curse stays in. Check that "
+                # The card defines a bridge as "any elevated structure, acting as a path,
+                # road or railway, intended to be crossed by pedestrians, cars, or other
+                # vehicles", so rail and covered bridges are inside the count and the
+                # wording says so.
+                why = (f"{num(count)} bridges on the map — road, path and rail — so the "
+                       f"curse stays in. Check that "
                        f"some of them are ones a seeker can physically stand under.")
 
         elif c.id == "distant_cuisine":
@@ -9010,12 +9106,31 @@ def _s3_metric(mid: str, name: str, raw: float | None, unit: str, frac: float | 
                   source=source, note=note, available=available)
 
 
+# How long the rulebook says a game of each size lasts, in its own words (GUIDE.md
+# "Choosing Game Size"). Printed by D1 so the reader can see the stated duration next to
+# the playing-hours figure we inferred from it.
+_S3_SIZE_STATED_LENGTH: dict[str, str] = {
+    "small": "lasts 4–8 hours",
+    "medium": "lasts about 1 day",
+    "large": "lasts 2 to 4 days",
+}
+
+
 def _s3_question_stats(questions: Sequence[QuestionAudit],
                        size: GameSize) -> dict[str, Any]:
-    """The four B-metric inputs, from the audit rows. `unknown` never enters a denominator."""
+    """The four B-metric inputs, from the audit rows. `unknown` never enters a denominator.
+
+    `unaskable` used to be counted into the functional pool at both sites below, because
+    there was exactly one `unaskable` question — Transit Line, forced there by a curse
+    that only bites once drawn and played — and folding it back in was how the pool kept
+    a live question at full weight. `audit_questions` no longer emits that status for a
+    map with routes, so the clause is gone; carrying it would silently restore full
+    weight to any question a future rule does class `unaskable`, which is by definition a
+    question that cannot be asked.
+    """
     scored = [q for q in questions if q.status != "unknown"]
     total = len(scored)
-    functional = [q for q in scored if q.status in ("functional", "unaskable")]
+    functional = [q for q in scored if q.status == "functional"]
     weak = [q for q in scored if q.status == "weak"]
     dead = [q for q in scored if q.status in ("dead", "degenerate")]
     live_share = (len(functional) + 0.5 * len(weak)) / total if total else None
@@ -9024,7 +9139,7 @@ def _s3_question_stats(questions: Sequence[QuestionAudit],
     for q in scored:
         row = per_cat.setdefault(q.category, {"n": 0, "functional": 0, "dead": 0})
         row["n"] += 1
-        if q.status in ("functional", "unaskable"):
+        if q.status == "functional":
             row["functional"] += 1
         if q.status in ("dead", "degenerate"):
             row["dead"] += 1
@@ -9188,8 +9303,19 @@ def _s3_subscores(view: dict[str, Any], qstats: dict[str, Any], size: GameSize,
     d = [
         _s3_metric("D1", "Service span ÷ the size's playing hours", span_ratio, "ratio",
                    None if span_ratio is None else ramp(span_ratio, 0.60, 1.00), 6,
-                   "ramp", (0.60, 1.00), "rulebook",
-                   f"A {size.name.upper()} game wants about {num(required)} hours of play. At 0.6 "
+                   # The rulebook gives a size's length only as prose — SMALL "lasts 4–8
+                   # hours", MEDIUM "lasts about 1 day", LARGE "lasts 2 to 4 days"
+                   # (GUIDE.md "Choosing Game Size"). It never prints a playing-hours
+                   # figure, so `required_hours` is OURS: those durations read as a single
+                   # playing DAY, which is the unit D1 needs because it divides ONE day's
+                   # service span. SMALL's 6 sits inside the stated 4–8; 10 and 12 stay
+                   # under the ~14 hours a playing day can hold once the rulebook's own
+                   # "minimum of 10 hours" of rest comes out of the 24. So D1 and its
+                   # 0.60/1.00 bounds are `interp`, not `rulebook`; the numbers are unchanged.
+                   "ramp", (0.60, 1.00), "interp",
+                   f"The rulebook says a {size.name.upper()} game "
+                   f"{_S3_SIZE_STATED_LENGTH.get(size.name, 'runs to no stated number of hours')}; "
+                   f"we read that as about {num(required)} hours of play in a day. At 0.6 "
                    f"you end the round because the buses stopped, not because someone was found.",
                    span_ratio is not None),
         _s3_metric("D2", "Zones still served at the end of the round", evening, "share",
@@ -9637,8 +9763,16 @@ def score_zones(zones: Sequence[Zone], questions: Sequence[QuestionAudit],
         metrics_rows.append(_s3_metric(
             "S1", "Distinct routes inside the zone", routes, "routes",
             s1_frac if routes else None, 6, "table", (1, 2, 3), "rulebook",
-            "One route means the Transit Line matching question names you and Curse of the U-Turn "
-            "has no escape hatch here.",
+            # Both clauses are hider-negative, which is why one route scores 0.2. The
+            # U-Turn card's parenthetical is a let-off for the SEEKERS — they disembark
+            # only "as long as that station is serviced by another form of transit"
+            # inside the window — so a one-route zone is where that escape hatch is
+            # always open and the curse fizzles. F3 and the u_turn curse finding read it
+            # the same way; this sentence used to say the opposite. The 0.2/0.6/1.0
+            # table is unchanged.
+            "One route means the Transit Line matching question names you, and Curse of the "
+            "U-Turn fizzles here: with no second form of transit at the station, the card's "
+            "escape hatch is always open and the seekers stay on board.",
             routes > 0))
         home = back.get(zone.zone_id)
         exit_margin = None if home is None else (home - game_end_s) / 60.0
@@ -11529,13 +11663,34 @@ def _s4_axis_word(score: int) -> str:
     return ("small", "medium", "large")[max(0, min(2, int(score)))]
 
 
-# The four size axes in plain words. The rulebook's own name for each stays on the
-# page as the quiet caption beneath, so nothing is renamed away.
+# The four size axes in plain words. The generator's own technical name for each stays
+# on the page as the quiet caption beneath, so nothing is renamed away.
 _S4_AXIS_PLAIN: dict[str, str] = {
     "A": "The area the buses actually cover",
     "B": "How many distinct places there are to hide",
     "C": "How long it takes to cross the map",
     "D": "How far it is corner to corner",
+}
+
+# Where each axis's band came from, as a `Metric.source` value so the axis table can
+# reuse `_s4_source_tag` and read the same as every other provenance chip on the page.
+#
+# GUIDE.md "Choosing a Transit System" gives the size table in full and gives nothing
+# else: SMALL 30–100 stations / 10–100 sq. mi, MEDIUM 100–500 / 100–1,000, LARGE 500+ /
+# 1,000+. So:
+#   A · convex-hull area [100, 1000] sq mi — verbatim the rulebook's second column.
+#   B · hiding zones [100, 500] — a reading, not a quotation: the rulebook counts
+#       *stations*, and only because it says each hiding zone is centred on one (and
+#       calls the whole table "our best estimate") does the station band transfer.
+#   C · T90 traversal time and D · straight-line diameter — no rulebook counterpart at
+#       all; the rulebook never mentions traversal or diameter. These bands are the
+#       generator's, and saying otherwise turned two invented thresholds into rules.
+# The numbers themselves live in `infer_game_size` and are not restated here.
+_S4_AXIS_BASIS: dict[str, str] = {
+    "A": "rulebook",
+    "B": "interp",
+    "C": "interp",
+    "D": "interp",
 }
 
 
@@ -11567,13 +11722,20 @@ def _s4_axis_card(report: Report) -> str:
                  class_="wa-caption-xs wa-color-text-quiet", style="display:block"),
             el("span", esc(f"{shown} {unit}".strip()), class_="wa-text-nowrap"),
             chip(word, "equals", title=f"{a.get('name')} votes {word}"),
-            el("span", esc(bands), class_="wa-caption-xs wa-color-text-quiet"),
+            # Two of the four bands are the rulebook's and two are ours, so each row
+            # carries its own provenance chip (`_S4_AXIS_BASIS`); the reader has to be
+            # able to tell which cut points they can look up and which are this
+            # generator's, because the verdict is the median of all four votes, so an
+            # arguable band still moves it.
+            el("span", esc(bands), class_="wa-caption-xs wa-color-text-quiet",
+               style="display:block")
+            + _s4_source_tag(_S4_AXIS_BASIS.get(str(a.get("id")), "interp")),
         ])
     return wa_card(
         data_table(["What was measured", "This map", "Verdict", "Bands"], rows, scrollable=False),
         header_html=_s4_card_header(
             f"Why this is a {report.size.name.capitalize()} map",
-            "Each axis votes independently; the bands are the rulebook's."),
+            "Each axis votes independently; each band says where it came from."),
         appearance="plain")
 
 
@@ -12120,13 +12282,17 @@ def index_network_map(report: Report) -> str:
 
 
 def _s4_status_tag(status: str) -> str:
-    """A question's status as a plain phrase with its icon. The rulebook's own word
-    survives in the chip's `title`, in the row's `data-status` and in §07's definition
-    list — the phrase is the UI, the term is the record."""
+    """A question's status as a plain phrase with its icon. The one-word status survives
+    in the chip's `title`, in the row's `data-status` and in §07's definition list — the
+    phrase is the UI, the term is the record.
+
+    The `title` says whose word it is. The six statuses are this report's vocabulary (see
+    `_S4_STATUS_TAG`), and calling them the rulebook's turned six judgement calls into six
+    rules ~98 times per report."""
     plain, icon, variant, appearance = _S4_STATUS_TAG.get(
         status, (status, "circle-question", "neutral", "outlined"))
     return chip(plain, icon, variant=variant, appearance=appearance,
-                title=f"the rulebook's word for this is “{status}”")
+                title=f"this report's word for this is “{status}”")
 
 
 def _s4_question_categories(report: Report) -> list[dict[str, Any]]:
@@ -12202,9 +12368,9 @@ def _s4_funnel(report: Report) -> str:
 def _s4_definition_list(rows: Sequence[tuple[str, str, str]]) -> str:
     """A `<dl>` of `(plain phrase, the precise term, what it means)`.
 
-    This is where the rulebook's own vocabulary lives once the chips speak plain
-    English — a definition list on the page, not a tooltip: tooltips do not exist on a
-    phone, and this reader is on a phone.
+    This is where the precise vocabulary lives once the chips speak plain English — a
+    definition list on the page, not a tooltip: tooltips do not exist on a phone, and
+    this reader is on a phone.
     """
     out: list[str] = []
     for plain, term, meaning in rows:
@@ -12262,8 +12428,8 @@ def index_questions(report: Report) -> str:
 
     funnel = _s4_funnel(report) if report.geo.available else ""
 
-    # Chip VALUES are the rulebook's status words and never change — `bindFilter`
-    # keys on them and so does every row's `data-status`. Only the labels are plain.
+    # Chip VALUES are the one-word statuses and never change — `bindFilter` keys on
+    # them and so does every row's `data-status`. Only the labels are plain.
     statuses = ["functional", "weak", "degenerate", "dead", "unaskable", "unknown"]
     present = [s for s in statuses if any(q.status == s for q in report.questions)]
     options: list[tuple[str, str] | tuple[str, str, str]] = [
@@ -12350,8 +12516,9 @@ def index_questions(report: Report) -> str:
     lede = (
         "Every question in the deck, checked against this map. “Found on the map” is how many "
         "qualifying things the question has to work with inside the border; “how much it narrows "
-        "the search” is the information the answer actually carries. The rulebook's own word for "
-        "each status is under “what these words mean”, with the chips."
+        "the search” is the information the answer actually carries. Each status also has a "
+        "one-word name of this report's own — they are not the rulebook's — and they are "
+        "defined under “what these words mean”, with the chips."
     )
     if not report.geo.available:
         lede += (" OpenStreetMap was not available for this run, so only the questions this "
@@ -12373,11 +12540,15 @@ def index_questions(report: Report) -> str:
 
 def _s4_action_tag(action: str) -> str:
     """A curse's verdict as an instruction, with its icon. `data-action` — which the
-    filter keys on — keeps the rulebook's word, and so does the chip's `title`."""
+    filter keys on — keeps the one-word action, and so does the chip's `title`.
+
+    The four actions are this report's verdict on a curse, not rulebook terms — the
+    rulebook has no `keep` / `warn` / `remove` / `player-choice` vocabulary. What it does
+    prescribe is which specific curses to take out, and that is what tier 1 records."""
     plain, icon, variant, appearance = _S4_ACTION_TAG.get(
         action, (action, "circle-question", "neutral", "outlined"))
     return chip(plain, icon, variant=variant, appearance=appearance,
-                title=f"the rulebook's word for this is “{action}”")
+                title=f"this report's word for this is “{action}”")
 
 
 def _s4_curse_rows(report: Report, curses: Sequence[CurseAudit]) -> list[tuple[dict[str, Any], list[str]]]:
@@ -13901,6 +14072,15 @@ _S5_RADAR_ID_MILES: dict[str, float] = {
     "radar.25mi": 25.0, "radar.50mi": 50.0, "radar.100mi": 100.0,
 }
 
+# A tentacle question's own reach, in miles, from its `param`. NOT `size.tentacle_reach_mi`:
+# that is the deck's headline figure, and a LARGE deck holds 1-mile tentacles (Museums,
+# Libraries, Movie Theaters, Hospitals) and 15-mile ones (Metro Lines, Zoos, Aquariums,
+# Amusement Parks) at the same time, so one number per size cannot express it.
+_S5_TENTACLE_ID_REACH_MI: dict[str, float] = {
+    q.id: float(q.param) for q in QUESTIONS
+    if q.category == "tentacle" and q.param is not None
+}
+
 _S5_SPOTS_SHIPPED = 10        # the dossier lists 8; the rest is a count, not a payload
 _S5_MAX_POI_PER_CATEGORY = 500    # simulator payload cap; the page states when it bites
 _S5_TABLE_PAGE = 100
@@ -14229,6 +14409,16 @@ def _s5_poi_payload(report: Report) -> dict[str, Any]:
             "cap": _S5_MAX_POI_PER_CATEGORY, "available": report.geo.available}
 
 
+def _s5_reach_words(reaches: Sequence[float]) -> str:
+    """"1 mile", "1 mile and 15 miles", or the SMALL game's plain statement of the rule."""
+    if not reaches:
+        return "none — no tentacle question in a SMALL game"
+    parts = [f"{num(r, 0)} mile" + ("" if float(r) == 1.0 else "s") for r in reaches]
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
 def _s5_mode_chips(report: Report) -> dict[str, Any]:
     """Per-mode chip definitions, resolved in Python.
 
@@ -14264,13 +14454,18 @@ def _s5_mode_chips(report: Report) -> dict[str, Any]:
             key = q.id.split(".", 1)[1] if "." in q.id else q.id
             if key not in geo_keys:
                 continue          # not an OSM-backed subject (admin borders, transit lines)
-            chips.append({
+            chip_def = {
                 "key": key, "qid": q.id,
                 "label": labels.get(key, q.label),
                 "count": counts.get(key, 0),
                 "status": q.status, "why": q.why,
                 "usable": q.status in ("functional", "weak") and bool(report.geo.pois.get(key)),
-            })
+            }
+            if mode == "tentacle":
+                # That question's own reach, which `answerFor` measures against. Never
+                # `G.tentacle_reach_mi` — a LARGE deck holds two reaches at once.
+                chip_def["reach_mi"] = _S5_TENTACLE_ID_REACH_MI.get(q.id, 0.0)
+            chips.append(chip_def)
         out[mode] = chips
     return out
 
@@ -14479,8 +14674,19 @@ def strategy_zone_map(report: Report) -> str:
         modes.append((mode, label))
         if not live:
             dead = [q for q in report.questions if q.category == category]
-            reasons[mode] = (dead[0].why if dead else
-                             f"No {label.lower()} question functions on this map.")
+            if not dead:
+                # NOT a map problem, and saying "no question functions on this map"
+                # blamed the geography for a rule. The audit only ever contains the
+                # questions this game size's deck holds, so an empty family means the
+                # RULEBOOK left the category out — which today is exactly one case:
+                # "Tentacle question cannot be used in SMALL games".
+                reasons[mode] = (
+                    "The rulebook says the tentacle question cannot be used in SMALL games, "
+                    "so a SMALL deck contains none. Nothing about this map is at fault."
+                    if category == "tentacle" else
+                    f"A {size.name.upper()} game's deck contains no {label.lower()} question.")
+            else:
+                reasons[mode] = dead[0].why
 
     # Built from `el` rather than `wa_button` because a dead mode carries *two* icons:
     # its own, and a `ban` that says the button is off without relying on the disabled
@@ -14782,14 +14988,19 @@ def strategy_tactics(report: Report) -> str:
                      if q.category.lower().startswith("tentacle") and q.status in ("functional", "weak")]
         if tentacles:
             named = ", ".join(sorted({q.label for q in tentacles})[:4])
+            reaches = sorted({_S5_TENTACLE_ID_REACH_MI[q.id] for q in tentacles
+                              if q.id in _S5_TENTACLE_ID_REACH_MI})
+            reach_words = _s5_reach_words(reaches)
             tips.append((
                 "Respect the tentacle categories",
-                f"The live tentacle categories here are {named}. The radius is measured from the "
-                f"seekers, not from you, so a target well outside your zone can still be the name "
-                f"you have to give. A zone where the category is absent or ambiguous blunts the "
-                f"whole family — and a null answer still pays you a card draw.",
-                f"Tentacle Questions — {num(size.tentacle_reach_mi, 0)}-mile reach in a "
-                f"{size.name.upper()} game."))
+                f"The live tentacle categories here are {named}. Each question carries its own "
+                f"reach — {reach_words} on this map — and it is measured from the seekers, not "
+                f"from you, so a target well outside your zone can still be the name you have to "
+                f"give. You must also be inside that reach yourself: if you are not, you may "
+                f"simply answer that you are not within reach. A zone where the category is "
+                f"absent or ambiguous blunts the whole family — and a null answer still pays you "
+                f"a card draw.",
+                f"Tentacle Questions — {reach_words} of reach in a {size.name.upper()} game."))
 
     tips.append((
         "Radar targets you, not your zone",
@@ -14913,6 +15124,13 @@ let selected = Z.dossiers[0] || (ZONES[0] && ZONES[0].id) || null;
 let mode = 'explore';
 let seeker = null, thermoA = null, thermoB = null;
 const _usableRadar = (G.chips.radar || []).filter(r => r.usable);
+/* category key → that tentacle question's OWN reach in miles. A LARGE deck holds
+   1-mile and 15-mile tentacles at once, so `G.tentacle_reach_mi` cannot answer this. */
+const CAT_REACH_MI = {};
+for (const c of (G.chips.tentacle || [])) CAT_REACH_MI[c.key] = c.reach_mi || 0;
+/* tentacle answers are not yes/no: `no` is the rulebook's "not within reach" and `un`
+   is "the seekers named a category with nothing inside their own circle". */
+const TENTACLE_WORD = {no: 'not within reach', un: 'nothing in reach to name'};
 let opt = {radar: (_usableRadar.find(r => r.miles === 1) || _usableRadar[0] || {miles: 1}).miles, cat: null};
 
 /* ── geometry: the same arithmetic the scorer used, one seeker at a time ── */
@@ -14964,21 +15182,35 @@ function answerFor(z) {
     return same ? 'yes' : 'no';
   }
   if (mode === 'measure') {
+    /* "Compared to me, are you closer to or further from ____?" — the blank is a
+       CATEGORY, and each side answers about the feature nearest THEM. The rulebook
+       spells it out: "If you are in a large park, a mile from the park icon, you might
+       have to say you are a mile away from any park despite the fact that you are in a
+       park." So this is two nearest-feature lookups, not one shared target. */
     if (!seeker || !opt.cat) return 'un';
-    const target = nearestIn(opt.cat, seeker.lat, seeker.lon);
-    if (!target) return 'un';
-    const mine = hav(seeker.lat, seeker.lon, target.feature[1], target.feature[0]);
-    const theirs = hav(z.lat, z.lon, target.feature[1], target.feature[0]);
-    return band(theirs - mine);
+    const mine = nearestIn(opt.cat, seeker.lat, seeker.lon);
+    const theirs = nearestIn(opt.cat, z.lat, z.lon);
+    if (!mine || !theirs) return 'un';
+    return band(theirs.d - mine.d);
   }
   if (mode === 'tentacle') {
-    /* Both radii anchor on the seeker, not on the hider: the seekers ask "name the
-       nearest X within N miles of us", and the hider must answer about that set. */
+    /* The FEATURE reach anchors on the seekers — "Within ___ miles of me, which ___ are
+       you nearest to?" — so a target well outside the hider's zone can still be the name
+       they have to give. But the question ends "(You must also be within ___ miles)",
+       and the rulebook spells the consequence out: "If the hider is not within reach of
+       the tentacle question, they may simply answer that they are not within reach."
+       That answer is `no`, its own class, distinct from both in-reach groups. The reach
+       ring gets the same edge treatment as every other boundary on this page. */
     if (!seeker) return 'un';
-    const reach = G.tentacle_reach_mi * MI;
+    const reach = (CAT_REACH_MI[opt.cat] || 0) * MI;
+    if (!reach) return 'un';
     const c = P.categories[opt.cat];
     if (!c) return 'un';
+    const reachBand = band(hav(seeker.lat, seeker.lon, z.lat, z.lon) - reach);
+    if (reachBand === 'no') return 'no';          /* "not within reach" */
     const inReach = c.features.filter(f => hav(seeker.lat, seeker.lon, f[1], f[0]) <= reach);
+    /* in reach of the seekers, but the seekers named a category with nothing inside
+       their own circle — there is no name to give */
     if (!inReach.length) return 'un';
     let best = null, bd = Infinity, second = Infinity;
     for (const f of inReach) {
@@ -14986,6 +15218,10 @@ function answerFor(z) {
       if (d < bd) { second = bd; bd = d; best = f; } else if (d < second) second = d;
     }
     z._tent = best ? best[2] : null;
+    /* the answer's identity is the FEATURE, not its name: two branches sharing a name
+       are two answers, and an unnamed feature is not the same answer as every other */
+    z._tentKey = best ? best[0] + ',' + best[1] : '';
+    if (reachBand === 'edge') return 'edge';
     return (second - bd) <= 2 * RAD ? 'edge' : 'yes';
   }
   return 'un';
@@ -15086,7 +15322,7 @@ function paint() {
         d.innerHTML = '<span class="lbl"><span class="md"></span><b>' + esc(z.overall) + '</b> ' + esc(z.name) + '</span>';
         d.addEventListener('click', ev => { ev.stopPropagation(); select(z.id); });
         bindTT(d, '<b>' + esc(z.name) + '</b><br>#' + z.rank + ' · ' + z.overall + '/' + z.max
-                 + (mode !== 'explore' ? '<br>answer: ' + z._a : ''));
+                 + (mode !== 'explore' ? '<br>answer: ' + answerWord(z) : ''));
         markers.push(new maplibregl.Marker({element: d, anchor: 'center'}).setLngLat([z.lon, z.lat]).addTo(map));
       }
     }
@@ -15095,6 +15331,44 @@ function paint() {
   readout(counts);
   renderList();
   renderTable();
+}
+
+/* One zone's answer in the words it is actually given in. Only tentacles need the
+   translation, and they need it badly: `no` there is the rulebook's "not within reach",
+   and a marker tip saying "no" would tell the reader the opposite of what their hider
+   would say. */
+function answerWord(z) {
+  const a = z._a || 'un';
+  return (mode === 'tentacle' && TENTACLE_WORD[a]) ? TENTACLE_WORD[a] : a;
+}
+
+/* The biggest set of zones whose answer is IDENTICAL, and the words for it. This is the
+   readout's survival number, the same quantity the score is built from.
+
+   `edge` is never a group — its zones have no decided answer to share. Tentacles are why
+   this cannot be `max(yes, no)`: the in-reach zones do NOT all say the same thing, they
+   each name a feature, so the `yes` colour is really one group per FEATURE. The
+   out-of-reach zones, by contrast, all give one and the same answer and are frequently
+   the largest group on the map. `un` is a third real group in tentacle mode — the seekers
+   named a category with nothing inside their own circle, so every zone in reach gives the
+   identical answer "there is nothing to name". */
+function majorityGroup(counts) {
+  if (mode !== 'tentacle') return {size: Math.max(counts.yes || 0, counts.no || 0), word: ''};
+  let best = {size: counts.no || 0, word: TENTACLE_WORD.no};
+  if ((counts.un || 0) > best.size) best = {size: counts.un, word: TENTACLE_WORD.un};
+  const byFeature = new Map();
+  for (const z of ZONES) {
+    if (z._a !== 'yes') continue;
+    const key = z._tentKey || '';
+    const row = byFeature.get(key);
+    if (row === undefined) byFeature.set(key, {n: 1, name: z._tent}); else row.n += 1;
+  }
+  for (const key of Array.from(byFeature.keys()).sort()) {
+    const row = byFeature.get(key);
+    if (row.n <= best.size) continue;
+    best = {size: row.n, word: row.name ? 'nearest to ' + row.name : 'nearest to the same unnamed feature'};
+  }
+  return best;
 }
 
 function readout(counts) {
@@ -15112,11 +15386,14 @@ function readout(counts) {
   if (mode === 'radar') lead = 'Within ' + opt.radar + ' mi: ';
   else if (mode === 'thermo') lead = 'Hotter (closer to the end of your leg): ';
   else if (mode === 'match') lead = 'Same nearest ' + (P.categories[opt.cat] || {}).label + ': ';
-  else if (mode === 'measure') lead = 'Closer to that ' + (P.categories[opt.cat] || {}).label + ' than you are: ';
-  else if (mode === 'tentacle') lead = 'Zones with an answer in reach: ';
+  else if (mode === 'measure') lead = 'Nearer their own ' + (P.categories[opt.cat] || {}).label + ' than you are to yours: ';
+  else if (mode === 'tentacle') lead = 'Within reach, and so having to name a ' + (P.categories[opt.cat] || {}).label + ': ';
+  const maj = majorityGroup(counts);
   el2.innerHTML = esc(lead) + '<b>' + yes + '</b> of ' + total + ' zones'
     + (edge ? ', plus <b>' + edge + '</b> on the edge where the answer depends on where in the circle they stand' : '')
-    + '. Survival for a zone in the majority group is ' + Math.round(100 * Math.max(yes, total - yes - edge) / total) + '%.';
+    + (mode === 'tentacle' && counts.no ? '. <b>' + counts.no + '</b> are not within reach of the seekers and simply say so' : '')
+    + '. Survival for a zone in the majority group' + (maj.word ? ' (' + esc(maj.word) + ')' : '')
+    + ' is ' + Math.round(100 * maj.size / total) + '%.';
 }
 
 /* ── the ranked list ──

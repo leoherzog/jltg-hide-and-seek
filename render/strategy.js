@@ -46,13 +46,19 @@ import {
   dataTable,
 } from './html.js';
 import {
-  s4Dist, s4Val, s4NaturalCmp, s4JoinWords, s4DayLabel, s4BestDay, s4WorstDay,
+  s4Dist, s4Val, s4Plural, s4NaturalCmp, s4JoinWords, s4DayLabel, s4BestDay, s4WorstDay,
   s4LiveQuestions, s4MetricLookup, s4Swatch, s4CardHeader, s4SourceTag,
 } from './verdict.js';
 // `render/map.js` is read-only here, exactly like `verdict.js`: the map legends are a
 // shared vocabulary, and a second hand-rolled `div[role="list"]` is the thing
 // `s4Legend`'s own docstring exists to stop.
 import { s4Legend } from './map.js';
+// The catalogue is pure frozen data and imports nothing but `lib/core.js`, so reading
+// it on the main thread is safe — `render/deck.js:71` already does. It is read here for
+// one field only: a tentacle question's own `param`, its reach in miles. `QuestionAudit`
+// does not carry `param` across the wire (CONTRACT.md §(b)), and inventing a wire field
+// the contract does not have would be the worse of the two fixes.
+import { QUESTIONS } from '../rules/catalogue.js';
 
 // ── rulebook presentation constants (read, never recomputed) ─────────────────
 
@@ -181,6 +187,22 @@ export const RADAR_ID_MILES = Object.freeze({
   'radar.50mi': 50.0,
   'radar.100mi': 100.0,
 });
+
+/**
+ * Tentacle question id → its OWN reach in MILES, read off the catalogue's `param`.
+ *
+ * THERE IS NO SUCH THING AS "THE" TENTACLE REACH OF A GAME SIZE. The rulebook lists
+ * Museums / Libraries / Movie Theaters / Hospitals **Within 1 Mile**, and then "For
+ * LARGE Sized Games, Add the Following: Metro Lines Within 15 Miles / Zoos Within 15
+ * Miles / Aquariums Within 15 Miles / Amusement Parks Within 15 Miles" — so a LARGE
+ * deck carries both reaches at once. `SizeParams.tentacleReachMi` is the deck's
+ * headline figure and cannot answer "how far does THIS question reach"; the engine has
+ * never used it for that either (`rules/audit.js:980` reads `question.param`).
+ * @type {Object<string, number>}
+ */
+export const TENTACLE_ID_REACH_MI = Object.freeze(Object.fromEntries(
+  QUESTIONS.filter((q) => q.category === 'tentacle').map((q) => [q.id, Number(q.param) || 0]),
+));
 
 /** Rows per page in §02's table once it pages at all. (`_S5_TABLE_PAGE`.) */
 export const TABLE_PAGE = 100;
@@ -321,6 +343,30 @@ function subjectKey(questionId) {
 /** Questions in id order — the CLI sorts before every chip loop (14239, 14257). */
 function questionsById(report) {
   return Array.from((report && report.questions) || []).sort((a, b) => cmpStr(a.id, b.id));
+}
+
+/**
+ * The DISTINCT reaches of a set of tentacle questions, ascending, in miles.
+ *
+ * `[]` for a SMALL deck (which holds no tentacle question at all), `[1]` for a MEDIUM
+ * one, `[1, 15]` for a LARGE one — the rulebook adds the four 15-mile tentacles to the
+ * four 1-mile ones rather than replacing them, so a LARGE game has two reaches at once
+ * and no single number can stand for "the" tentacle reach. See `TENTACLE_ID_REACH_MI`.
+ * @param {Array<Object>} questions @returns {number[]}
+ */
+function tentacleReachesMi(questions) {
+  const seen = new Set();
+  for (const q of questions || []) {
+    if (q.category !== 'tentacle') continue;
+    const r = TENTACLE_ID_REACH_MI[q.id];
+    if (r) seen.add(r);
+  }
+  return Array.from(seen).sort((a, b) => a - b);
+}
+
+/** `[1, 15]` → `'1 mile and 15 miles'`; `[]` → `''`. */
+function tentacleReachWords(reaches) {
+  return s4JoinWords(reaches.map((r) => `${s4Val(r)} ${s4Plural(r, 'mile')}`));
 }
 
 /** One zone flag, as icon **and** word — never colour alone. (`_s5_flag_chip`, 13962.) */
@@ -517,7 +563,11 @@ export function zoneViews(report) {
  * @typedef {{id:string, miles:number, label:string, status:string, why:string,
  *            usable:boolean}} RadarChip
  * @typedef {{key:string, qid:string, label:string, count:number, status:string,
- *            why:string, usable:boolean}} CatChip
+ *            why:string, usable:boolean, reachMi:number|null}} CatChip
+ *
+ * `reachMi` is the tentacle chip's own reach in miles (`TENTACLE_ID_REACH_MI`), and is
+ * `null` on matching and measuring chips, which have no reach at all. The simulator
+ * measures against THIS number, never against `size.tentacleReachMi`.
  */
 
 /**
@@ -578,6 +628,10 @@ export function modeChips(report) {
         why: q.why,
         usable: (q.status === 'functional' || q.status === 'weak')
           && Array.isArray(features) && features.length > 0,
+        // per QUESTION, not per game size: a LARGE deck holds 1-mile and 15-mile
+        // tentacles side by side, so the chip has to carry its own reach for the
+        // simulator to measure against (see `TENTACLE_ID_REACH_MI`).
+        reachMi: mode === 'tentacle' ? (TENTACLE_ID_REACH_MI[q.id] ?? null) : null,
       });
     }
     out[mode] = chips;
@@ -821,8 +875,19 @@ function mapCard(report) {
       const category = MODE_CATEGORY[mode];
       const family = questions.filter((q) => q.category === category);
       const live = family.filter((q) => q.status === 'functional' || q.status === 'weak');
-      if (!live.length) {
-        reason = (family.length && family[0].why)
+      if (!family.length) {
+        // NOT a map problem, and saying "no question functions on this map" blamed the
+        // geography for a rule. The audit only ever contains the questions this game
+        // size's deck holds, so an empty family means the RULEBOOK left the category
+        // out — which today is exactly one case: "Tentacle question cannot be used in
+        // SMALL games", asserted at `rules/catalogue.js:711`.
+        reason = category === 'tentacle'
+          ? 'The rulebook says the tentacle question cannot be used in SMALL games, so a '
+            + 'SMALL deck contains none. Nothing about this map is at fault.'
+          : `A ${String(size.name || '').toUpperCase()} game's deck contains no `
+            + `${label.toLowerCase()} question.`;
+      } else if (!live.length) {
+        reason = family[0].why
           || `No ${label.toLowerCase()} question functions on this map.`;
       } else if (mode !== 'thermo' && !(chips[mode] || []).length) {
         // A live question the simulator has nothing to point at. `modeChips` derives
@@ -1216,13 +1281,24 @@ function sectionTactics(report) {
     if (tentacles.length) {
       const named = Array.from(new Set(tentacles.map((q) => q.label)))
         .sort(cmpStr).slice(0, 4).join(', ');
+      // Per question, never `size.tentacleReachMi`: a LARGE deck asks about museums,
+      // libraries, movie theaters and hospitals within 1 mile AND about metro lines,
+      // zoos, aquariums and amusement parks within 15, so one number would misstate
+      // half the family. (`TENTACLE_ID_REACH_MI`.)
+      const reaches = tentacleReachesMi(tentacles);
+      const words = tentacleReachWords(reaches);
+      const reachClause = reaches.length > 1
+        ? `Each question carries its own reach — ${words} on this map — measured from the `
+        : `The reach is ${words}, measured from the `;
       tips.push([
         'Respect the tentacle categories',
-        `The live tentacle categories here are ${named}. The radius is measured from the `
+        `The live tentacle categories here are ${named}. ${reachClause}`
         + 'seekers, not from you, so a target well outside your zone can still be the name '
-        + 'you have to give. A zone where the category is absent or ambiguous blunts the '
-        + 'whole family — and a null answer still pays you a card draw.',
-        `Tentacle Questions — ${num(size.tentacleReachMi, 0)}-mile reach in a `
+        + 'you have to give. You must be inside that reach yourself as well: if you are not, '
+        + 'the honest answer is simply that you are not within reach, and it names nothing. '
+        + 'A zone where the category is absent or ambiguous blunts the whole family — and a '
+        + 'null answer still pays you a card draw.',
+        `Tentacle Questions — “(You must also be within ___ miles.)”; ${words} of reach in a `
         + `${String(size.name || '').toUpperCase()} game.`,
       ]);
     }
@@ -1431,6 +1507,7 @@ function sectionMethod(report) {
   const zones = report.zones || [];
   const questions = report.questions || [];
   const agency = feed.agencyName || '';
+  const tentacleReaches = tentacleReachesMi(questions);
 
   const rows = [
     ['Zones scored', esc(num(zones.length))],
@@ -1438,7 +1515,12 @@ function sectionMethod(report) {
     ['Game size', esc(`${String(size.name || '').toUpperCase()}`
       + `${size.inferred ? ' (inferred)' : ' (given)'}`)],
     ['Hiding period', esc(mins(size.hidingPeriodMin))],
-    ['Tentacle reach', esc(`${s4Val(size.tentacleReachMi)} mi`)],
+    // Per question, not per size. A LARGE deck holds the four 1-mile tentacles AND the
+    // four 15-mile ones, so this row prints both; a SMALL deck holds none, because the
+    // rulebook excludes the category. (`TENTACLE_ID_REACH_MI`.)
+    ['Tentacle reach', esc(tentacleReaches.length
+      ? tentacleReachWords(tentacleReaches)
+      : `none — no tentacle question in a ${String(size.name || '').toUpperCase()} game`)],
     ['Round start', esc(hub.name)],
     ['Departure', esc(opts.departure || '')],
     ['Day shown', esc(s4DayLabel(report, s4BestDay(report)))],

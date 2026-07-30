@@ -113,25 +113,40 @@ export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.
   25.0, 50.0, 100.0]);
 
 /**
- * The rulebook's own size parameters (GUIDE.md "Game Size", SEEKING.md question
- * tiers). Nothing here is inferred — these are transcriptions.
+ * The rulebook's own size parameters (GUIDE.md "Choosing Game Size", SEEKING.md
+ * question tiers). Every field here is a transcription EXCEPT `requiredHours`,
+ * which is inferred and marked as such on each entry — see the note below.
+ * `SIZES` in rules/catalogue.js carries the same table and the same one
+ * inference.
  * `_S1_SIZE_PARAMS`, generate.py line 2124.
+ *
+ * `requiredHours` is a playing DAY, not the whole game. The rulebook states a
+ * size's length only as prose — SMALL "lasts 4–8 hours", MEDIUM "lasts about 1
+ * day", LARGE "lasts 2 to 4 days" (GUIDE.md "Choosing Game Size") — and never
+ * prints an hours-per-day figure, so 6 / 10 / 12 are ours. SMALL's 6 sits inside
+ * the stated 4–8; 10 and 12 stay under the ~14 hours a day can hold once the
+ * rulebook's own "minimum of 10 hours" of rest comes out of the 24. The scoring
+ * layer divides a single day's service span by this, which is why a per-day
+ * figure is the right unit for the multi-day sizes.
  */
 export const S1_SIZE_PARAMS = Object.freeze({
   small: Object.freeze({
     hidingPeriodMin: 30, zoneRadiusM: QUARTER_MILE_M, tentacleReachMi: 0.0,
     thermometerMi: Object.freeze([0.5, 3.0]), categoryCount: 5, catalogueSize: 58,
-    photoLimitMin: 10, otherLimitMin: 5, moveGrantMin: 10, requiredHours: 6.0,
+    photoLimitMin: 10, otherLimitMin: 5, moveGrantMin: 10,
+    requiredHours: 6.0,   // INFERRED — GUIDE.md line 28 says only "lasts 4–8 hours"
   }),
   medium: Object.freeze({
     hidingPeriodMin: 60, zoneRadiusM: QUARTER_MILE_M, tentacleReachMi: 1.0,
     thermometerMi: Object.freeze([0.5, 3.0, 10.0]), categoryCount: 6, catalogueSize: 71,
-    photoLimitMin: 10, otherLimitMin: 5, moveGrantMin: 20, requiredHours: 10.0,
+    photoLimitMin: 10, otherLimitMin: 5, moveGrantMin: 20,
+    requiredHours: 10.0,  // INFERRED — GUIDE.md line 33 says only "lasts about 1 day"
   }),
   large: Object.freeze({
     hidingPeriodMin: 180, zoneRadiusM: HALF_MILE_M, tentacleReachMi: 15.0,
     thermometerMi: Object.freeze([0.5, 3.0, 10.0, 50.0]), categoryCount: 6, catalogueSize: 80,
-    photoLimitMin: 20, otherLimitMin: 5, moveGrantMin: 60, requiredHours: 12.0,
+    photoLimitMin: 20, otherLimitMin: 5, moveGrantMin: 60,
+    requiredHours: 12.0,  // INFERRED — GUIDE.md line 38 says only "lasts 2 to 4 days"
   }),
 });
 

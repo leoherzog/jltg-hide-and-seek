@@ -142,12 +142,20 @@ function s3Metric(mid, name, raw, unit, frac, maxPoints, kind, args, source, not
 /**
  * The four B-metric inputs, from the audit rows. `unknown` never enters a denominator.
  * (generate.py `_s3_question_stats`, line 9013)
+ *
+ * `unaskable` used to be counted into the functional pool at both sites below, because
+ * there was exactly one `unaskable` question — Transit Line, forced there by a curse
+ * that only bites once drawn and played — and folding it back in was how the pool kept a
+ * live question at full weight. `rules/audit.js` no longer emits that status for a map
+ * with routes, so the clause is gone; carrying it would silently
+ * restore full weight to any question a future rule does class `unaskable`, which is by
+ * definition a question that cannot be asked.
  * @param {Object[]} questions @param {Object} size @returns {Object}
  */
 function s3QuestionStats(questions, size) {
   const scored = questions.filter((q) => q.status !== 'unknown');
   const total = scored.length;
-  const functional = scored.filter((q) => q.status === 'functional' || q.status === 'unaskable');
+  const functional = scored.filter((q) => q.status === 'functional');
   const weak = scored.filter((q) => q.status === 'weak');
   const dead = scored.filter((q) => q.status === 'dead' || q.status === 'degenerate');
   const liveShare = total ? (functional.length + 0.5 * weak.length) / total : null;
@@ -158,7 +166,7 @@ function s3QuestionStats(questions, size) {
     let row = get(perCat, q.category);
     if (row === undefined) { row = { n: 0, functional: 0, dead: 0 }; perCat[q.category] = row; }
     row.n += 1;
-    if (q.status === 'functional' || q.status === 'unaskable') row.functional += 1;
+    if (q.status === 'functional') row.functional += 1;
     if (q.status === 'dead' || q.status === 'degenerate') row.dead += 1;
   }
 
@@ -364,12 +372,26 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
   const evening = get(view, 'eveningZoneShare');
   const fullDays = get(view, 'fullServiceDateShare');
   const spanRatio = (nullish(span) === null || required <= 0) ? null : Number(span) / required;
+  // The rulebook gives a size's length only as prose — SMALL "lasts 4–8 hours", MEDIUM
+  // "lasts about 1 day", LARGE "lasts 2 to 4 days" (GUIDE.md "Choosing Game Size", lines
+  // 28/33/38). It never prints a playing-hours figure, so `requiredHours` is OURS: those
+  // durations read as a single playing DAY, which is the unit D1 needs because it divides
+  // ONE day's service span. SMALL's 6 sits inside the stated 4–8; 10 and 12 stay under the
+  // ~14 hours a playing day can hold once the rulebook's own "minimum of 10 hours" of rest
+  // (GUIDE.md "Considering Rest Periods", line 167) comes out of the 24. So D1 and its
+  // 0.60/1.00 bounds are tagged `interp` — "Our call" — not `rulebook`; the numbers are
+  // unchanged.
+  const stated = get(Object.freeze({
+    small: 'lasts 4–8 hours', medium: 'lasts about 1 day', large: 'lasts 2 to 4 days',
+  }), size.name);
   const d = [
     s3Metric('D1', 'Service span ÷ the size\'s playing hours', spanRatio, 'ratio',
       spanRatio === null ? null : ramp(spanRatio, 0.60, 1.00), 6,
-      'ramp', [0.60, 1.00], 'rulebook',
-      `A ${size.name.toUpperCase()} game wants about ${num(required)} hours of play. At 0.6 `
-      + `you end the round because the buses stopped, not because someone was found.`,
+      'ramp', [0.60, 1.00], 'interp',
+      `The rulebook says a ${size.name.toUpperCase()} game `
+      + `${stated || 'runs to no stated number of hours'}; we read that as about `
+      + `${num(required)} hours of play in a day. At 0.6 you end the round because the buses `
+      + `stopped, not because someone was found.`,
       spanRatio !== null),
     s3Metric('D2', 'Zones still served at the end of the round', nullish(evening), 'share',
       nullish(evening) === null ? null : ramp(Number(evening), 0.30, 0.85), 5,
@@ -974,8 +996,15 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
     metricsRows.push(s3Metric(
       'S1', 'Distinct routes inside the zone', routes, 'routes',
       routes ? s1Frac : null, 6, 'table', [1, 2, 3], 'rulebook',
-      'One route means the Transit Line matching question names you and Curse of the U-Turn '
-      + 'has no escape hatch here.',
+      // Both clauses are hider-negative, which is why one route scores 0.2. The U-Turn card's
+      // parenthetical is a let-off for the SEEKERS — they disembark only "as long as that
+      // station is serviced by another form of transit" inside the window — so a one-route
+      // zone is where that escape hatch is always open and the curse fizzles. F3 above and
+      // audit.js's u_turn finding read it the same way; this sentence used to say the
+      // opposite. The 0.2/0.6/1.0 table is unchanged.
+      'One route means the Transit Line matching question names you, and Curse of the U-Turn '
+      + 'fizzles here: with no second form of transit at the station, the card\'s escape hatch '
+      + 'is always open and the seekers stay on board.',
       routes > 0,
     ));
     const home = nullish(get(back, zone.zoneId));

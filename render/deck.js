@@ -75,9 +75,15 @@ import { QUESTIONS } from '../rules/catalogue.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Question status → (plain phrase, icon, wa-tag variant, appearance). Colour is never
-// the only channel and the plain phrase is never the only wording: the rulebook's own
-// word rides in the chip's `title`, in `data-status` (which the filter keys on) and in
-// §07's "What these words mean" list.
+// the only channel and the plain phrase is never the only wording: the one-word status
+// rides in the chip's `title`, in `data-status` (which the filter keys on) and in §07's
+// "What these words mean" list.
+//
+// These six words are this generator's, not the rulebook's: a case-insensitive search of
+// the whole rulebook finds no "functional", "weak", "degenerate" or "unaskable" anywhere.
+// rules/audit.js declares them ("THE SIX VERDICTS"), so nothing on the page may present
+// them as rules — they are analysis, and a reader who mistakes a judgement call for a
+// rule will argue the wrong thing at the table.
 const S4_STATUS_TAG = Object.freeze({
   functional: Object.freeze(['works', 'circle-check', 'success', 'accent']),
   weak: Object.freeze(['barely helps', 'circle-half-stroke', 'warning', 'accent']),
@@ -241,10 +247,10 @@ function fnum(x) {
 /**
  * A filter chip row: a `wa-radio-group` of button-appearance radios.
  *
- * The selection is the group's `value`, and the option VALUES are always the
- * rulebook's own words — `bindFilter` keys on them and so does every row's
- * `data-status` / `data-action`. Only the labels are plain English. An option may
- * carry a third element, its icon name; the word always stays.
+ * The selection is the group's `value`, and the option VALUES are always the one-word
+ * terms — `bindFilter` keys on them and so does every row's `data-status` /
+ * `data-action`. Only the labels are plain English. An option may carry a third
+ * element, its icon name; the word always stays.
  *
  * (generate.py `_s4_chip_group`, line 11739.)
  *
@@ -322,9 +328,9 @@ function s4Table(headers, rows, opts = {}) {
 /**
  * A `<dl>` of `(plain phrase, the precise term, what it means)`.
  *
- * This is where the rulebook's own vocabulary lives once the chips speak plain
- * English — a definition list on the page, not a tooltip: tooltips do not exist on a
- * phone, and this reader is on a phone.
+ * This is where the precise vocabulary lives once the chips speak plain English — a
+ * definition list on the page, not a tooltip: tooltips do not exist on a phone, and
+ * this reader is on a phone.
  *
  * (generate.py `_s4_definition_list`, line 12202.)
  *
@@ -404,8 +410,12 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
 /**
  * A question's status as a plain phrase with its icon.
  *
- * The rulebook's own word survives in the chip's `title`, in the row's `data-status`
+ * The one-word status survives in the chip's `title`, in the row's `data-status`
  * and in §07's definition list — the phrase is the UI, the term is the record.
+ *
+ * The `title` says whose word it is. The six statuses are this report's vocabulary
+ * (see `S4_STATUS_TAG`), and calling them the rulebook's turned six judgement calls
+ * into six rules ~98 times per report.
  *
  * (generate.py `_s4_status_tag`, line 12122.)
  *
@@ -415,7 +425,7 @@ function s4StatusTag(status) {
   const [plain, icon, variant, appearance] = S4_STATUS_TAG[status]
     || [status, 'circle-question', 'neutral', 'outlined'];
   return chip(plain, icon, {
-    variant, appearance, title: `the rulebook's word for this is “${status}”`,
+    variant, appearance, title: `this report's word for this is “${status}”`,
   });
 }
 
@@ -649,8 +659,8 @@ export function renderQuestions(payload) {
   const geoAvailable = Boolean(report.geo && report.geo.available);
   const funnel = geoAvailable ? s4Funnel(report) : '';
 
-  // Chip VALUES are the rulebook's status words and never change — `bindFilter` keys
-  // on them and so does every row's `data-status`. Only the labels are plain.
+  // Chip VALUES are the one-word statuses and never change — `bindFilter` keys on
+  // them and so does every row's `data-status`. Only the labels are plain.
   const present = S4_STATUS_ORDER.filter((s) => questions.some((q) => q.status === s));
   const options = [['all', `All ${num(questions.length)}`, 'list']];
   for (const s of present) {
@@ -773,8 +783,9 @@ export function renderQuestions(payload) {
   const title = `${num(live)} of the ${num(questions.length)} questions work here`;
   let lede = 'Every question in the deck, checked against this map. “Found on the map” is how '
     + 'many qualifying things the question has to work with inside the border; “how much it '
-    + "narrows the search” is the information the answer actually carries. The rulebook's "
-    + 'own word for each status is under “what these words mean”, with the chips.';
+    + "narrows the search” is the information the answer actually carries. Each status "
+    + "also has a one-word name of this report's own — they are not the rulebook's — and "
+    + 'they are defined under “what these words mean”, with the chips.';
   if (!geoAvailable) {
     lede += ' OpenStreetMap was not available for this run, so only the questions this '
       + 'generator can answer from the feed alone are evaluated.';
@@ -800,10 +811,15 @@ export function renderQuestions(payload) {
 /**
  * A curse's verdict as an instruction, with its icon.
  *
- * `data-action` — which the filter keys on — keeps the rulebook's word, and so does
+ * `data-action` — which the filter keys on — keeps the one-word action, and so does
  * the chip's `title`. `take it out` and `your call` are the pair that must never read
  * alike: the first is a measurement the page is willing to defend, the second is an
  * argument the page refuses to have on the group's behalf.
+ *
+ * The four actions are this report's verdict on a curse, not rulebook terms — the
+ * rulebook has no `keep` / `warn` / `remove` / `player-choice` vocabulary. What it does
+ * prescribe is which specific curses to take out, and that is what tier 1 records
+ * (`S4_TIER_DEF`).
  *
  * (generate.py `_s4_action_tag`, line 12374.)
  *
@@ -813,7 +829,7 @@ function s4ActionTag(action) {
   const [plain, icon, variant, appearance] = S4_ACTION_TAG[action]
     || [action, 'circle-question', 'neutral', 'outlined'];
   return chip(plain, icon, {
-    variant, appearance, title: `the rulebook's word for this is “${action}”`,
+    variant, appearance, title: `this report's word for this is “${action}”`,
   });
 }
 
@@ -942,7 +958,7 @@ export function renderCurses(payload) {
 
   // The chip counts are over the rows the table actually holds, not over all 24 — a
   // filter that promises eight rows and shows five is worse than no filter. The chip
-  // VALUES stay the rulebook's action words: `bindFilter` reads them.
+  // VALUES stay the one-word actions: `bindFilter` reads them.
   const shown = counter(main, (c) => c.action);
   const present = S4_ACTION_ORDER.filter((a) => count(shown, a));
   const options = [['all', `All ${num(main.length)}`, 'list']];

@@ -74,20 +74,38 @@ function C(id, name, tier, cardText, castingCost, blocks, predicateKey, removalR
   });
 }
 
-/** Rulebook size parameters. Complete — these three entries are the whole table. */
+/**
+ * Rulebook size parameters. Complete — these three entries are the whole table.
+ *
+ * `thermometerMi` is cumulative, exactly as SEEKING.md prints it: SMALL gets ½ and 3 mi,
+ * MEDIUM and LARGE add 10 mi, LARGE adds 50 mi. There is no ¼-mile, 1-mile or 15-mile
+ * thermometer. `tentacleReachMi` is 0 for SMALL because SEEKING.md line 436 says outright
+ * "Tentacle question cannot be used in SMALL games". Both agree with the QUESTIONS rows
+ * below and with `S1_SIZE_PARAMS` in gtfs/network.js, which is the copy the pipeline
+ * actually runs on.
+ *
+ * One field is NOT a transcription: `requiredHours` is marked INFERRED on each entry
+ * below. The rulebook gives a size's length only as prose — "lasts 4–8 hours" / "about
+ * 1 day" / "2 to 4 days" (GUIDE.md "Choosing Game Size") — and never an hours-per-
+ * playing-day figure, so 6 / 10 / 12 are ours. gtfs/network.js marks it the same way,
+ * and rules/score.js tags the metric built on it `interp` rather than `rulebook`.
+ * `inferred` is a different thing entirely and is not a provenance flag: it is the
+ * `GameSize` contract field meaning the size was deduced from the feed rather than
+ * forced with `--size` (gtfs/infer.js sets `inferred: !forced`).
+ */
 export const SIZES = Object.freeze({
   small: Object.freeze({
     name: 'small',
     hidingPeriodMin: 30,
     zoneRadiusM: QUARTER_MILE_M,
-    tentacleReachMi: 0.5,
-    thermometerMi: Object.freeze([0.25, 1.0, 3.0]),
+    tentacleReachMi: 0.0,
+    thermometerMi: Object.freeze([0.5, 3.0]),
     categoryCount: 5,
     catalogueSize: 58,
     photoLimitMin: 10,
     otherLimitMin: 5,
     moveGrantMin: 10,
-    requiredHours: 6.0,
+    requiredHours: 6.0,   // INFERRED — the rulebook says only "lasts 4–8 hours"
     inferred: true,
   }),
   medium: Object.freeze({
@@ -101,7 +119,7 @@ export const SIZES = Object.freeze({
     photoLimitMin: 10,
     otherLimitMin: 5,
     moveGrantMin: 20,
-    requiredHours: 10.0,
+    requiredHours: 10.0,  // INFERRED — the rulebook says only "lasts about 1 day"
     inferred: true,
   }),
   large: Object.freeze({
@@ -109,13 +127,13 @@ export const SIZES = Object.freeze({
     hidingPeriodMin: 180,
     zoneRadiusM: HALF_MILE_M,
     tentacleReachMi: 15.0,
-    thermometerMi: Object.freeze([1.0, 15.0, 50.0]),
+    thermometerMi: Object.freeze([0.5, 3.0, 10.0, 50.0]),
     categoryCount: 6,
     catalogueSize: 80,
     photoLimitMin: 20,
     otherLimitMin: 5,
     moveGrantMin: 60,
-    requiredHours: 12.0,
+    requiredHours: 12.0,  // INFERRED — the rulebook says only "lasts 2 to 4 days"
     inferred: true,
   }),
 });
@@ -133,8 +151,11 @@ export const QUESTIONS = Object.freeze([
   Q('matching.transit_line', 'matching', 'Transit', 'Transit Line',
     'Is your nearest transit line the same as my nearest transit line?',
     ['small', 'medium', 'large'], 3, 1, null,
-    { note: 'Unaskable while the seekers are not on moving transit; Curse of the Urban ' +
-            'Explorer kills it permanently for the run.' }),
+    // NOT the `unaskable` status: the rulebook attaches a timing precondition, not a
+    // terrain one, and a curse that has to be drawn and paid for is not a property of
+    // the map. `rules/audit.js` scores this like every other matching question.
+    { note: 'Can only be asked from aboard a moving vehicle; if the hider draws, pays ' +
+            'for and plays Curse of the Urban Explorer, it is gone for the rest of the run.' }),
   Q('matching.station_name_length', 'matching', 'Transit', "Station's Name Length",
     "Is your nearest station's name length the same as my nearest station's name length?",
     ['small', 'medium', 'large'], 3, 1, null),
@@ -335,7 +356,9 @@ export const QUESTIONS = Object.freeze([
   Q('photo.trace_nearest_street_path', 'photo', 'Photo', 'Trace Nearest Street/Path',
     'Send me a photo of trace nearest street/path.',
     ['medium', 'large'], 1, 1, null,
-    { note: 'Treated as answerable wherever a mapped street reaches the zone.' }),
+    { note: 'The street graph is never consulted: this is short-circuited to answerable ' +
+            'everywhere, so the rulebook\'s "street/path must be visible on mapping app" ' +
+            'condition is not checked. See the photo_always_answerable interpretation.' }),
   Q('photo.2_buildings', 'photo', 'Photo', '2 Buildings',
     'Send me a photo of 2 buildings.',
     ['medium', 'large'], 1, 1, null),
@@ -516,8 +539,9 @@ export const CURSES = Object.freeze([
     'touches the ground, your tower has fallen. Once your tower falls, tell the seekers ' +
     'how many rocks high your tower was when it last stood for five seconds. The seekers ' +
     'must then construct a rock tower of the same number of rocks, under the same ' +
-    'parameters, before asking another question. The rocks must be found in nature, and ' +
-    'both teams must disperse the rocks after building.',
+    'parameters, before asking another question. If their tower falls, they must restart. ' +
+    'The rocks must be found in nature, and both teams must disperse the rocks after ' +
+    'building.',
     'Build a rock tower.',
     ['asking_questions'], 'cairn_terrain',
     'Never removed. Loose rock is not reliably mapped, so the terrain count is a hint ' +
@@ -542,12 +566,16 @@ export const CURSES = Object.freeze([
     [], 'building',
     'Never removed — it is always satisfiable. Its bite scales with how much of the ' +
     "seekers' route is boardings: punishing on a bus-heavy map, weak on a walking one."),
+  // The card ends "The seekers must solve the maze before asking another question", the
+  // same categorical prevention Cairn, Bird Guide and Endless Tumble carry, and HIDING.md
+  // line 94 says "there cannot be more than one active curse preventing the seekers from
+  // asking questions or taking transit" — so the maze has to occupy that slot.
   C('labyrinth', 'Curse of the Labyrinth', 3,
     'Spend up to S 10 / M 20 / L 30 minutes drawing a solvable maze and send a photo of ' +
     'it to the seekers. You cannot use the internet to research maze designs. The seekers ' +
     'must solve the maze before asking another question.',
     'Draw a maze.',
-    [], null,
+    ['asking_questions'], null,
     'Never removed and not a geography question: it needs pen and paper, which belongs in ' +
     'the what-to-pack list.'),
   C('mediocre_travel_agent', 'Curse of the Mediocre Travel Agent', 3,
@@ -772,10 +800,20 @@ export const INTERPRETATIONS = Object.freeze([
           'coverage share is printed.' },
   { id: 'photo_always_answerable',
     affects: Object.freeze(['photo.you', 'photo.the_sky',
-      'photo.tallest_structure_in_your_current_sightline', 'photo.widest_street']),
-    text: 'Four photo questions can be answered from anywhere, so as locational questions they ' +
-          'are degenerate — but the image itself can still show the seekers a landmark, a ' +
-          'shadow or a sky no model can score. They are scored as zero-information and flagged.' },
+      'photo.tallest_structure_in_your_current_sightline', 'photo.widest_street',
+      'photo.trace_nearest_street_path', 'photo.half_mile_of_streets_traced']),
+    text: 'Six photo questions are short-circuited to answerable everywhere, so as locational ' +
+          'questions they are degenerate — but the image itself can still show the seekers a ' +
+          'landmark, a shadow or a sky no model can score. They are scored as zero-information ' +
+          'and flagged. Four of them really are answerable from anywhere on Earth: You, The ' +
+          'Sky, Tallest Structure in Your Current Sightline and Widest Street. The other two ' +
+          'are a judgement call. The rulebook conditions Trace Nearest Street/Path on ' +
+          '“Street/path must be visible on mapping app” and ½ Mile of Streets Traced on ' +
+          '“Streets must appear on mapping app”, plus a continuous five-turn route with no ' +
+          'doubling back — and street geometry is counted map-wide but never downloaded, so ' +
+          'neither condition can be checked here. They are assumed answerable rather than ' +
+          'reported as unknown, which overstates them on a zone whose streets a mapping app ' +
+          'does not draw.' },
   { id: 'tentacle_double_radius', affects: Object.freeze(['every tentacle question']),
     text: 'The two distance blanks on a tentacle card are always the same number, and both ' +
           'reach tests are anchored on the seeker, not on the hider.' },
