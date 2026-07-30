@@ -5,7 +5,7 @@ Point it at a city's public transit feed. It tells you whether that city works a
 is, and — if you're the one hiding — where to go.
 
 ```bash
-uv run generate.py https://connect.ridetherapid.org/InfoPoint/GTFS-Zip.ashx --out build/
+uv run generate.py <gtfs-url> --out build/
 ```
 
 Two HTML files come out. That's the whole interface.
@@ -28,8 +28,8 @@ Answering it by hand is a slog: read the rulebook, read the timetable, cross-ref
 question against what's actually on the map, then argue about it. This repo does that work from the
 feed, the same way every time.
 
-The two files at the repo root, `index.html` and `strategy.html`, are hand-built drafts of what that
-answer should look like for Grand Rapids. `generate.py` produces the same thing for anywhere.
+A few worked examples ship with the repo, one directory per city, each holding the two pages the tool
+produced for that feed. `generate.py` produces the same thing for anywhere.
 
 ---
 
@@ -49,13 +49,21 @@ uv run generate.py <gtfs-url> --out build/ --no-osm
 Find a feed for your city on [Mobility Database](https://mobilitydatabase.org/) or
 [transit.land](https://www.transit.land/). Most agencies publish one.
 
-> **Pass `--out`.** It defaults to the current directory, which would overwrite the two hand-built
-> drafts at the repo root.
+> **Pass `--out`.** It defaults to the current directory, so without it the two pages land in the
+> repo root — and pointing it at one of the example directories overwrites that example.
 
 **How long it takes.** ~10 seconds with a warm cache. First run on a new city is ~8 minutes, almost
 all of it waiting on the free OpenStreetMap query servers. `--no-osm` runs in seconds but disables
-everything that depends on knowing where the museums are. Big systems scale fine — Boston's MBTA
-(7,770 stops, 2.15 million scheduled stop times) takes under three minutes.
+everything that depends on knowing where the museums are. Big systems scale fine — a 7,700-stop feed
+with 2.15 million scheduled stop times takes under three minutes.
+
+**When OpenStreetMap doesn't answer.** The public Overpass mirrors are shared and frequently busy.
+Each query falls back through three of them, and a run can still lose one: if the whole OSM layer is
+unreachable the report is written with the OSM-backed scores excluded and a banner saying so, and if
+only the optional "within 10 ft of a routable path" join fails, the pages come out complete but every
+candidate hiding spot is marked verify-on-the-ground. Both outcomes are printed on the page rather
+than papered over — see [Caveats](#caveats). Retrying later, when the mirrors are quieter, fills the
+gap from cache in seconds.
 
 ---
 
@@ -63,36 +71,42 @@ everything that depends on knowing where the museums are. Big systems scale fine
 
 ### `index.html` — should we play here?
 
-The public-facing report. For Grand Rapids it opens with **70.5 / 100, "Strong map"**, and then
-shows its working:
+The public-facing report. It opens with a rating out of 100 and the band that rating falls in — from
+"not recommended as a transit game" up through "excellent map" — and then shows its working across
+nine sections. Three of the headings are written from the measurements themselves, so their wording
+changes with the feed:
 
 | § | Section | What's in it |
 |---|---|---|
-| 01 | Verdict | The rating, the band, and the one-line reason |
-| 02 | The map at a glance | Zone count, area, stops, routes, service span |
-| 03 | Ride times and the frequency problem | How long it takes to cross the map, and how often buses actually come |
-| 04 | Where the transit actually goes | Live map of every stop, every zone, and the game border |
-| 05 | Question feasibility | **All 71 questions**, one by one, with a verdict each |
-| 06 | Curse deck audit | Which curses to physically remove from the deck |
-| 07 | Where every point came from | The full score trace |
-| 08 | Findings | Plusses, minuses, things to agree in advance |
-| 09 | House rules for game day | Recommended setup for this specific map |
-| 10 | Provenance and method | Every query, every source, every interpretation |
+| 01 | The verdict | The rating, the band, and the four axes that voted on the game size |
+| 02 | Where the points came from | The full score trace — every point tied to a named metric, its value and its threshold |
+| 03 | What this means for your game | What the map does well, what fights you, and the house rules — including the ones your group has to agree in advance |
+| 04 | The map at a glance | Zone count, area, stops, routes, service span |
+| 05 | The map you're playing on | Live map of every stop with service, every zone, and the game border |
+| 06 | Getting around | How long it takes to cross the map, and how often buses actually come |
+| 07 | How many questions work here | **Every question in the deck**, one by one, with a verdict each |
+| 08 | How many curses work as printed | Which curses to physically remove from the deck |
+| 09 | Where these numbers come from | Every query, every source, every interpretation |
 
-The rating breaks into six sub-scores. Grand Rapids scores:
+The rating breaks into six sub-scores:
 
 ```
-A  Zone supply             20   / 20     319 distinct hiding zones
-B  Question health         13.5 / 25     only 30 of 71 questions fully work
-C  Mobility & tempo        11.2 / 20
-D  Round viability         15   / 15
-E  Schedule resilience      6.6 / 10     Sunday service falls apart
-F  Structural fairness      4.2 / 10     one hub carries 75% of routes
+A  Zone supply           / 20     how many distinct places there are to hide
+B  Question health       / 25     how much of the deck actually functions
+C  Mobility & tempo      / 20     crossing time against the hiding period, and frequency
+D  Round viability       / 15     whether a full round fits inside the service day
+E  Schedule resilience   / 10     how far the weekend falls off the weekday
+F  Structural fairness   / 10     whether one hub carries the whole network
 ```
 
-It also rates each day separately — Grand Rapids is 70.5 on a weekday, 66.2 Saturday, **60.3
-Sunday**. That's a real finding: it's a meaningfully worse game on a Sunday, and you'd want to know
-before scheduling.
+The deck size follows the game size, so the question total moves with the map: 58 questions on a
+Small map, 71 on a Medium one, 80 on a Large one. Two different counts get reported and they mean
+different things — how many questions are *fully* functional, and how many work at all, which adds
+the weak ones that barely narrow anything.
+
+It also rates each day separately, weekday against Saturday against Sunday. That's often the most
+actionable thing on the page: a map can be a materially worse game on a Sunday, and you'd want to
+know before scheduling.
 
 ### `strategy.html` — where should I hide?
 
@@ -107,11 +121,18 @@ The hider's companion. Every candidate zone scored and ranked, with:
   **"what finds you"** (the three questions that most narrow the search onto you, with the answer
   you'd be forced to give), candidate legal hiding spots with distances, amenities, service facts
   for the selected day, and a full evidence table of every metric it earned.
-- **The complete table of all 319 zones**, sortable by any axis. If you disagree with the weighting,
+- **The complete table of every scored zone**, sortable by any axis. If you disagree with the weighting,
   re-sort by the axis you care about and get your own shortlist. Nothing is hidden behind a cutoff —
   zones that are unreachable inside the hiding period are held out of the ranking but still listed,
   with the reason and the travel time.
 - **Tactics**, derived from the rulebook and parameterised to this map, each citing its rule.
+
+Six categories are named above because that's what the *simulator* offers. The question catalogue's
+own six are slightly different — photo challenges take the place of exploring, since there's nothing
+for a map to partition.
+
+On a map with more than 2,000 zones the full field is too big to put in the page, so a `zones.json`
+is written next to the two HTML files and nothing is silently dropped.
 
 ---
 
@@ -159,15 +180,17 @@ Every question in the deck gets one of six verdicts:
 - **unaskable** / **unknown** — structurally impossible here, or needs data this pipeline doesn't
   carry
 
-Grand Rapids: 30 functional, 14 weak, 13 degenerate, 11 dead. The dead list is the useful part —
-no commercial airport, no coastline, no consulate, no mountain, no high-speed rail inside the
-border. Those five questions are dead weight in the deck.
+The dead list is the useful part, and it's usually longer than the list of things the map is missing:
+one absent feature can kill two questions, because the deck asks about several of them in both the
+Matching and the Measuring category. Others die from the shape of the map rather than a missing
+landmark — a map inside a single state and a single country can't answer either border question, and
+a feed with no rail mode kills Train Platform.
 
 Curses get the same treatment. The rulebook itself says things like *"if there are no bridges on the
 game map, this curse should be removed"* — so that becomes a real query against real data, not a
-judgement call. Grand Rapids keeps 21 of 24; two are flagged as player preference rather than
-measurement (Egg Partner, Impressionable Consumer), and Curse of the U-Turn gets a warning because
-only 10.2% of stops carry a second route, so it rarely does anything.
+judgement call. Curses that survive the geography check can still earn a warning: one that turns on
+transferring to a second route does very little on a network where few stops carry one. A couple are
+flagged as player preference rather than measurement, since no query settles them.
 
 ### 4. Score it
 
@@ -182,7 +205,7 @@ Zones are scored on six axes: **information resistance**, **reach**, **service**
 **amenities**, **exposure**.
 
 The first of those is the interesting one, and it's the thing this project does that a human with a
-map really can't. For every live question, it computes what each of the 319 zones *would answer* —
+map really can't. For every live question, it computes what every zone on the map *would answer* —
 then, for each zone, how many other zones give the same answers. A zone whose answer vector is
 shared with a large crowd survives interrogation. A zone with a unique vector gets named by one
 cheap question, no matter how nice it is otherwise. That's a genuinely counterintuitive property —
@@ -204,10 +227,12 @@ follows you between the two pages.
 
 ## Determinism
 
-The same feed and the same cached data produce **byte-identical** HTML. No randomness, no unsorted
-iteration reaching the output, no clock — every date on the page comes from the feed's own calendar
-or from `--as-of`. Network responses are cached by a hash of the exact request, so once a city is
-cached the whole thing runs offline and reproducibly.
+The same feed and the same cached data produce **byte-identical** HTML. No unsorted iteration
+reaching the output, no clock — every date on the page comes from the feed's own calendar or from
+`--as-of`. There is exactly one call into `random` — a fixed-seed permutation inside the
+minimum-enclosing-circle, which is a fixed shuffle rather than entropy. Network responses are cached
+by a hash of the exact request, so once a city is cached the whole thing runs offline and
+reproducibly.
 
 This is the point of the project, not a nicety. If two people generate the report for the same city
 they must get the same report, or it isn't evidence of anything.
@@ -223,8 +248,9 @@ can't be wrong, because every candidate in a tie is already known to be equally 
 Everything else — every number, score, ranking, verdict and sentence — is computed. That's not
 caution for its own sake; it's what the measurements said. Two local models were tested against
 hand-labelled ground truth, and a flavour-text feature was built and then deleted when it turned out
-to invent things. The full write-up, including why the better model *still* didn't earn a place, is
-in `AGENTS.md` and `scratchpad/MODEL_COMPARISON.md`.
+to invent things. The surviving write-up, including why the better model *still* didn't earn a
+place, is in `AGENTS.md`. (`--llm`'s own `--help` text still advertises those deleted flavour
+sentences; the code no longer has them.)
 
 Without the flag, the pages are complete and never mention a model.
 
@@ -233,20 +259,25 @@ Without the flag, the pages are complete and never mention a model.
 ## Options
 
 ```
---out DIR              where to write (default: ., which would clobber the drafts — always set this)
+--out DIR              where to write (default: ., the repo root — always set this)
+--cache DIR            HTTP cache directory (default: cache)
 --no-osm               skip OpenStreetMap entirely; fast, but disables the OSM-backed questions
 --as-of YYYYMMDD       analysis date (default: the feed's own start date)
 --size {small,medium,large}      override the inferred game size
 --zone-radius M        override the hiding-zone radius
 --hiding-period MIN    override the hiding period
 --start STOP_ID        override the inferred round-start station
+--border {bbox,circle} border shape (default: bbox)
 --border-bbox S,W,N,E  set the map border explicitly
 --exclude-stop ID      drop a stop from the map (repeatable — for the safety conversation)
 --exclude-route ID     drop a route (repeatable)
---departure HH:MM      round-start departure time (default 09:00)
+--departure HH:MM[:SS] round-start departure time (default 09:00:00)
+--board-slack SEC      transfer slack in the travel-time model (default 0)
 --offline              a cache miss becomes an error instead of a fetch
 --refresh              ignore the cache and refetch
 --llm                  allow the local model to break exact score ties
+--llm-url URL          LM Studio base URL
+--llm-model ID         model id
 --selftest             assert the reference feed's known-good numbers
 -v / -vv               logging
 ```
@@ -259,21 +290,21 @@ already agreed on a border.
 ## Repo layout
 
 ```
-generate.py          the whole thing (single file, ~14k lines, one dependency)
+generate.py          the whole thing (single file, ~16k lines, one dependency)
 README.md            this file
 AGENTS.md            notes for AI coding agents: architecture, conventions, measurements
-index.html           hand-built draft for Grand Rapids — the design reference, NOT generated
-strategy.html        ditto
+<city>/             generated examples, one directory per city
 GUIDE.md             \
 HIDING.md             >  the Hide+Seek rulebook — the authority on game rules
 SEEKING.md           /
-THERAPID*.md         prose rendering of the Grand Rapids feed, handy for sanity checks
+THERAPID*.md         prose rendering of the reference feed, handy for sanity checks
+package.json         the WebAwesome Pro component dependency
 build/               generated output (gitignored)
 cache/               cached HTTP responses (gitignored)
 ```
 
-`generate.py` is assembled from section sources kept in the scratchpad — see `AGENTS.md` if you're
-editing it.
+`generate.py` is assembled from section sources — see `AGENTS.md` if you're editing it. Those
+sources, and the specs the file's docstring cites, are kept outside this tree.
 
 ---
 
@@ -284,8 +315,16 @@ editing it.
 - **OpenStreetMap isn't Google Maps**, and the rulebook assumes players are using a maps app. The
   rulebook's own legitimacy test (5+ Google reviews) has no OSM equivalent; the report says so where
   it matters, but expect some category disagreements at the margins.
-- **The OSM layer has only been exercised on Grand Rapids.** The schedule side has been tested on
-  BART and the MBTA; Overpass behaviour on other cities is unproven.
+- **The OSM layer has only been exercised on a handful of cities**, of small and large size; the
+  schedule side on a few more, including heavy-rail systems. Overpass behaviour beyond those is
+  unproven.
+- **The path-proximity test is the first thing to fall over.** The rulebook's "within 10 ft of a
+  routable path" check needs a 5 m buffer around every walkable way on the map — the most expensive
+  query in the pipeline. On a large map it isn't attempted at all, because asking a shared mirror to
+  buffer several hundred thousand ways is not a polite request, and on a small one a busy Overpass
+  can still refuse it: three mirrors timing out on three consecutive runs is a real outcome, not a
+  hypothetical. When that happens, candidate hiding spots are still listed, just marked
+  verify-on-the-ground.
 - **Some of this is interpretation**, and the rulebook is genuinely ambiguous in places. Those spots
   are labelled as interpretations on the page rather than presented as rules — but you and your
   group are still the final authority. It's your game.
