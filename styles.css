@@ -1,0 +1,593 @@
+/* styles.css — the browser port's one stylesheet.
+   Sections 1-6 are generate.py's SHARED_CSS (line 1454), ported verbatim,
+   followed by INDEX_CSS (line 10527), also verbatim. The CLI inlines both in
+   a <style> block; a static app links them instead. Section 7 at the end is
+   new and exists only because this page ships before its data does. */
+
+/* ══ 1. THEME TOKENS — LIGHT ═════════════════════════════════════════════ */
+:where(:root), .wa-light, .wa-dark .wa-invert {
+  /* type */
+  --wa-font-family-body:     "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --wa-font-family-heading:  "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --wa-font-family-longform: "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --wa-font-family-code:     ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --wa-font-family-ui:       system-ui, -apple-system, "Segoe UI", sans-serif;  /* custom: WA has no UI-family role */
+  --wa-font-size-scale: 1.0625;          /* base 17px, matches the old body */
+  --wa-line-height-normal: 1.62;
+  --wa-font-weight-heading: 700;
+  --wa-font-weight-action: 700;
+  --wa-link-decoration-default: none;
+  --wa-link-decoration-hover: underline;
+
+  /* shape + rhythm */
+  --wa-border-radius-scale: 1.25;        /* 10–12px cards, as before */
+  --wa-content-spacing: var(--wa-space-l);
+
+  /* surfaces & text — the warm-paper identity */
+  --wa-color-surface-default: #f4f4ef;
+  --wa-color-surface-raised:  #fcfcf9;
+  --wa-color-surface-lowered: #eaeae2;
+  --wa-color-surface-border:  #e2ded2;
+  --wa-color-text-normal: #191713;
+  --wa-color-text-quiet:  #57534a;
+  --wa-color-text-link:   #1c5cab;
+  --wa-color-shadow: #191713;
+  --wa-color-focus:  #2a78d6;
+
+  /* variant colours — exact hues from the old palette */
+  --wa-color-brand-fill-loud:   #2a78d6;
+  --wa-color-brand-on-loud:     #ffffff;
+  --wa-color-success-fill-loud: #0ca30c;
+  --wa-color-success-on-loud:   #ffffff;
+  --wa-color-success-on-quiet:  #006300;
+  --wa-color-warning-fill-loud: #fab219;
+  --wa-color-warning-on-loud:   #3a2800;
+  --wa-color-warning-on-quiet:  #8a5c00;
+  --wa-color-danger-fill-loud:  #d03b3b;
+  --wa-color-danger-on-loud:    #ffffff;
+  --wa-color-danger-on-quiet:   #b02a2a;
+
+  /* ── legacy aliases: READ BY SVG CHART + MAP JS. Do not rename in JS. ── */
+  --paper:      var(--wa-color-surface-default);
+  --surface:    var(--wa-color-surface-raised);
+  --surface-2:  var(--wa-color-surface-lowered);
+  --ink:        var(--wa-color-text-normal);
+  --ink-2:      var(--wa-color-text-quiet);
+  --ink-3:      #8d887c;                       /* identical in both schemes */
+  --grid:       var(--wa-color-surface-border);
+  --baseline:   #c6c1b2;
+  --accent:     var(--wa-color-brand-fill-loud);
+  --accent-ink: var(--wa-color-text-link);
+  --good:       var(--wa-color-success-fill-loud);
+  --good-text:  var(--wa-color-success-on-quiet);
+  --warn:       var(--wa-color-warning-fill-loud);
+  --warn-text:  var(--wa-color-warning-on-quiet);
+  --crit:       var(--wa-color-danger-fill-loud);
+  --crit-text:  var(--wa-color-danger-on-quiet);
+  --sans:  var(--wa-font-family-ui);
+  --serif: var(--wa-font-family-longform);
+  --mono:  var(--wa-font-family-code);
+
+  /* ── semantic chart colours WA has no token for ── */
+  --gold: #eda100; --gold-mark: #eda100; --gold-deep: #a86e00;
+  --off: #a49f92;
+  --seq-100:#cde2fb; --seq-200:#9ec5f4; --seq-300:#6da7ec;
+  --seq-400:#3987e5; --seq-550:#1c5cab; --seq-650:#104281;
+  --serious: #ec835a; --serious-text: #9c3d16;
+  --q-yes:#2e9d5b; --q-no:#d1495b; --q-edge:#e0a000; --q-un:#7a8899;
+}
+
+/* ══ 2. THEME TOKENS — DARK ══════════════════════════════════════════════ */
+.wa-dark, .wa-invert {
+  --wa-color-surface-default: #12110e;
+  --wa-color-surface-raised:  #1b1a16;
+  --wa-color-surface-lowered: #24221c;
+  --wa-color-surface-border:  #2c2a24;
+  --wa-color-text-normal: #f2efe6;
+  --wa-color-text-quiet:  #c3beb0;
+  --wa-color-text-link:   #6da7ec;
+  --wa-color-shadow: #000000;
+  --wa-color-focus:  #3987e5;
+  --wa-color-brand-fill-loud:  #3987e5;
+  --wa-color-success-on-quiet: #3fc43f;
+  --wa-color-warning-on-quiet: #fab219;
+  --wa-color-danger-on-quiet:  #e66767;
+  --baseline: #3b3830;
+  --gold-mark: #c98500; --gold-deep: #c98500;
+  --off: #5f5a4f;
+  --serious-text: #ec835a;
+  --q-yes:#3db374; --q-no:#e0616f; --q-edge:#d9a50a; --q-un:#8b99aa;
+  /* the sequential ramp re-anchors on the dark surface (more service = lighter).
+     Measured against --wa-color-surface-raised #1b1a16: 13.29 · 10.17 · 7.52 · 5.31
+     · 3.53 · 2.22:1, monotone in lightness. Unanchored, --seq-650 sat at 1.90:1 and
+     the worst-frequency bin vanished. */
+  --seq-100:#cfe3fa; --seq-200:#a5c9f4; --seq-300:#7aaeea;
+  --seq-400:#5590dc; --seq-550:#3771bd; --seq-650:#24528f;
+}
+
+/* ══ 3. UI VOICE — serif reading text, sans chrome (the page's identity) ══ */
+/* Custom properties inherit through shadow DOM; this is the reliable lever. */
+/* .wa-heading-s / -xs are chrome (card titles, subheads, stat values, chart titles);
+   .wa-heading-2xl / -4xl are reading text (h1 + section titles) and stay serif. */
+wa-button, wa-tag, wa-radio, wa-radio-group, wa-switch,
+wa-callout, wa-details, wa-progress-bar, [class*="wa-caption-"],
+.wa-heading-s, .wa-heading-xs, th {
+  --wa-font-family-body: var(--wa-font-family-ui);
+  font-family: var(--wa-font-family-ui);
+}
+sup[data-cite] { font-family: var(--wa-font-family-ui); font-size: 10px; font-weight: 700; }
+
+/* ══ 4. PAGE FURNITURE ════════════════════════════════════════════════════ */
+html { scroll-behavior: smooth; scroll-padding-top: 7rem; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+html, body { min-height: 100%; padding: 0; margin: 0; }
+body { background-image: radial-gradient(color-mix(in srgb, var(--ink) 3%, transparent) 1px, transparent 1px);
+       background-size: 22px 22px; }                          /* one rule, both schemes */
+wa-page { --menu-width: 15rem; --content-width: 1080px; }     /* group headings + icons need the width */
+wa-page[view='mobile'] { --menu-width: auto; }
+wa-page::part(main-content) { padding-inline: 0; }
+/* wa-card's :host paints --wa-color-surface-default, i.e. the body colour; every
+   panel in this design is a raised surface, as it was before the migration. */
+wa-card { background-color: var(--wa-color-surface-raised); }
+/* ---- measure: every band on the page starts at the same x ----
+   wa-page's shadow sheet pads its slotted children by three different amounts
+   (`::slotted(main)` 3xl, `::slotted([slot='header'])` m, `::slotted([slot='footer'])`
+   3xl) and never pads the unslotted hero at all, so a single max-inline-size on its
+   own leaves four different content edges. Declarations from the outer tree beat
+   `::slotted()`, so one gutter is declared here and applied to all of them; the cap
+   is on the border box, so identical padding means identical text alignment. */
+wa-page { --gutter: var(--wa-space-3xl); }
+@media (max-width: 40rem) { wa-page { --gutter: var(--wa-space-m); } }
+:where(main, wa-page > header, [slot='subheader'], wa-page > [slot='footer'] > *) {
+  max-inline-size: var(--content-width); margin-inline: auto; width: 100%;
+  padding-inline: var(--gutter, var(--wa-space-3xl));
+}
+wa-page > [slot='footer'] { padding-inline: 0; }   /* the gutter belongs to the child */
+/* the hero is an unslotted <header>, so wa-page's ::slotted(main) padding never reaches it */
+wa-page > header:not([slot]) { padding-block-start: var(--wa-space-3xl); }
+section > header > p:last-child { max-inline-size: 72ch; }    /* the one reading-width rule */
+:where(td, .wa-heading-2xl, .wa-heading-xl, .wa-heading-l) { font-variant-numeric: tabular-nums; }
+main pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
+           overflow-wrap: anywhere; margin: 0; color: var(--ink-2); }
+#daysel::part(form-control) { display: flex; align-items: center; gap: var(--wa-space-s); flex-wrap: wrap; }
+#daysel wa-radio[value='sat'] { margin-inline-start: var(--wa-space-xs); }  /* replaces .sep */
+
+/* ---- the sticky status strip and the scrollspy rail ---- */
+[slot='subheader'] {
+  padding-block: var(--wa-space-2xs);
+  border-block-end: 1px solid var(--wa-color-surface-border);
+  background: var(--wa-color-surface-raised);
+}
+/* wa-progress-bar's track has no intrinsic width, so as a bare flex item it collapses;
+   the reading bar takes its own full-width line under the strip. */
+[slot='subheader'] > wa-progress-bar { flex: 1 1 100%; }
+nav[slot='navigation'] a { padding: var(--wa-space-3xs) var(--wa-space-2xs);
+                           border-radius: var(--wa-border-radius-m); }
+/* The link is a flank (icon column + label column), so the only thing left to fix is
+   where the icon sits against a label that wrapped: `wa-align-items-start` pins it to
+   the top of the label *block*, and a 1lh-tall canvas re-centres the 1em glyph on the
+   first *line*. Balanced wrapping keeps a three-word label from leaving one word
+   alone on line two. */
+nav[slot='navigation'] a > wa-icon { block-size: 1lh; }
+nav[slot='navigation'] a > span { text-wrap: balance; overflow-wrap: break-word; }
+nav[slot='navigation'] a[aria-current] {
+  color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-bold);
+  background: var(--wa-color-brand-fill-quiet);
+}
+/* in-section control bars: a filter is never scrolled away from the rows it filters */
+#qcontrols, #ccontrols {
+  position: sticky; top: 7rem; z-index: 1;
+  background: var(--wa-color-surface-default); padding-block: var(--wa-space-2xs);
+}
+@media (max-width: 560px) { #qcontrols, #ccontrols { position: static; } }
+
+/* ══ 5. EDITORIAL DECORATION (identity; WA has no equivalent) ═════════════ */
+  .kicker { color: var(--gold-deep); }
+  .kicker::before { content: ""; display: inline-block; width: 34px; height: 3px; background: var(--gold); margin-right: 10px; vertical-align: middle; border-radius: 2px; }
+  /* the ordinal is the wayfinding cue and stays, but the monospace tell goes: it is
+     the loudest "machine-generated" signal on an otherwise editorial page. */
+  h2[data-n]::before { content: attr(data-n); color: var(--wa-color-text-quiet); margin-right: 10px;
+                       font-family: inherit; font-size: var(--wa-font-size-l);
+                       font-weight: var(--wa-font-weight-normal); }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex: none; }
+  /* a flex/grid parent blockifies the <li> and can drop its marker, so the recs
+     list stays in normal flow and spaces itself. */
+  ol.recs { list-style: decimal-leading-zero; padding-inline-start: 3ch; }
+  ol.recs li:has(+ li) { margin-block-end: var(--wa-space-s); }
+  ol.recs li::marker { font-family: var(--mono); font-weight: 700; color: var(--gold-deep); }
+  /* the accent rail keys off the WA colour utility the card already carries */
+  wa-card.wa-success, wa-card.wa-danger, wa-card.wa-brand, wa-card.wa-warning {
+    border-inline-start-width: var(--wa-border-width-l);
+    border-inline-start-color: var(--wa-color-fill-loud);
+  }
+  wa-card[data-day-sensitive] { border-block-start: var(--wa-border-width-l) solid var(--gold); }
+  wa-card[data-today] { outline: var(--wa-border-width-m) solid var(--crit); }
+  /* the day-sensitive cue is a word, not a colour: both chips ship, one is shown */
+  [data-today-cue='on'], wa-card[data-today] [data-today-cue='off'] { display: none; }
+  wa-card[data-today] [data-today-cue='on'] { display: inline-flex; }
+
+/* ══ 6. CHART / MAP INTERNALS — hand-rolled SVG + MapLibre. Permanent keeps. ══ */
+  /* MapLibre feature-hover cannot anchor a <wa-tooltip>; bindTT reads offsetWidth. */
+  #tt {
+    position: fixed; z-index: 100; pointer-events: none; display: none; max-width: 320px;
+    background: var(--wa-tooltip-background-color); color: var(--wa-tooltip-content-color);
+    font-family: var(--sans); font-size: 12.5px; line-height: 1.45;
+    /* the shadow is the upstream token because a hard rgba(0,0,0,.3) is scheme-blind
+       and reads as pure black on a dark surface. font-size, line-height and
+       border-radius stay bespoke on purpose: the matching tokens are 14px / 1.6 / 3px
+       against 12.5px / 1.45 / 8px, which would resize ~144 heatmap tips. */
+    padding: 8px 11px; border-radius: 8px; box-shadow: var(--wa-shadow-l);
+  }
+  #tt b { display: block; margin-bottom: 2px; }
+
+  /* MapLibre's own controls live outside WA and outside shadow DOM; every map skins
+     them identically, so the block is written once. `generate.py:1666` reads
+     `:is(#netmap, #zmap)` because the CLI has two files and one map per file; here the
+     map ids are dropped entirely and the class carries it. `.dark-map` is set by the
+     map builders and by nothing else, so the selector is exact — and this way the
+     shared sheet names no map the report does not have. */
+  .dark-map .maplibregl-ctrl-group { background: #24221c; box-shadow: 0 0 0 1.5px rgba(242,239,230,.12); }
+  .dark-map .maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(.9) hue-rotate(180deg); }
+  .dark-map .maplibregl-ctrl-attrib { background: rgba(27,26,22,.75); }
+  .dark-map .maplibregl-ctrl-attrib,
+  .dark-map .maplibregl-ctrl-attrib a { color: #c3beb0; }
+  .dark-map .maplibregl-ctrl-scale { background: rgba(27,26,22,.6); color: #c3beb0; border-color: #8d887c; }
+
+/* ---- index.html only ---- */
+#prov-trace table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 13px; }
+#prov-trace th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+                 color: var(--ink-3); padding: 4px 10px 4px 0; white-space: nowrap; }
+#prov-trace td { padding: 7px 10px 7px 0; border-top: 1px solid var(--grid); }
+#prov-trace tr[data-basis='interp'] td:first-child { border-inline-start: 3px solid var(--gold); padding-inline-start: 8px; }
+#prov-trace tr[data-available='0'] td { opacity: .55; }
+:is(#qtable, #ctable) td:last-child { max-inline-size: 62ch; }   /* replaces .qwhy */
+
+/* ---- editorial: the one drop cap ---- */
+.dropcap p:first-child::first-letter { font-size: 3.1em; float: left; line-height: .82; padding: 4px 8px 0 0; font-weight: 700; color: var(--gold-deep); }
+
+/* ---- the Points Budget / deck strip is a <wa-chart stacked index-axis="y"> — see
+   budgetBar() in render/html.js and the budgetSeg plugin in app.js. The fill stays
+   --seq-550 rather than --seq-400 for the same measured reason it always was: the
+   letters are 11px bold, so 4.5:1 applies, and white on --seq-400 is 3.64:1 light /
+   3.28:1 dark against --seq-550's 6.2:1 / 4.9:1. The bar is identity-encoded, so
+   which step of the ramp it uses is otherwise free. ---- */
+
+/* ---- the hero's three day tiles are controls, so they need to look like controls:
+   a pointer, a hover, a focus ring, and a visible current state for the aria-current
+   that renderDay() sets. Without these the click was undiscoverable and unconfirmed. */
+#dayscores [data-day] { cursor: pointer; }
+#dayscores [data-day]:hover { border-color: var(--gold); }
+#dayscores [data-day]:focus-visible { outline: var(--wa-focus-ring);
+                                      outline-offset: var(--wa-focus-ring-offset); }
+#dayscores [data-day][aria-current] { border-color: var(--gold);
+                                      box-shadow: inset 0 0 0 var(--wa-border-width-m) var(--gold); }
+
+/* ---- headway heatmap ---- */
+table.hw { border-collapse: separate; border-spacing: 2px; font-family: var(--sans); font-size: 12.5px; min-width: 560px; }
+table.hw th { text-align: left; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); padding: 4px 8px; }
+table.hw td { padding: 0; }
+table.hw td:first-child { padding: 0 10px 0 4px; white-space: nowrap; color: var(--ink-2); }
+table.hw td:first-child b { color: var(--ink); font-family: var(--mono); font-size: 12px; background: var(--surface-2); border-radius: 5px; padding: 1px 7px; margin-right: 7px; display:inline-block; min-width: 34px; text-align:center; }
+/* `.cell` is geometry only — the 92x30 grid block. The fills hang off `[data-hb]`
+   alone so an 11px `.sw` legend key and a 92x30 grid cell can share them without the
+   swatch having to out-specify `.cell`; that override used to be inline on all seven
+   keys. `[data-hb]` is deliberately unscoped: only `.cell` and `.sw` carry it. */
+.cell { width: 92px; height: 30px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-variant-numeric: tabular-nums; cursor: default; }
+/* the hairline is the measured fix for the light end of the ramp: --seq-100 is
+   1.20:1 against the paper, and that bin is "a bus every 10 minutes". The defect is
+   the mark's edge, not its fill, so re-stepping the ramp would be the wrong fix — and
+   it travels WITH the fills, because the 11px legend key needs it as much as the grid. */
+[data-hb] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent); }
+[data-hb='none'] { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 4px, var(--paper) 4px, var(--paper) 8px); color: var(--ink-3); font-weight: 500; }
+[data-hb='1'] { background: var(--seq-100); color: #0d366b; } [data-hb='2'] { background: var(--seq-200); color: #0d366b; }
+[data-hb='3'] { background: var(--seq-300); color: #0d366b; } [data-hb='4'] { background: var(--seq-400); color: #fff; }
+[data-hb='5'] { background: var(--seq-550); color: #fff; } [data-hb='6'] { background: var(--seq-650); color: #fff; }
+#hwmap .cell[data-dim], #hwmap2 .cell[data-dim] { opacity: .33; }
+#hwmap th[data-sel], #hwmap2 th[data-sel] { color: var(--accent-ink); }
+
+/* ---- network map (all bus stops, no scoring) ---- */
+#netmap { height: 0; overflow: hidden; background: var(--surface-2); }  /* the map script sets a height once it builds */
+#netmap.maplibregl-map { min-width: 0; }
+.mk-central { width: 24px; height: 24px; }
+.mk-central .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; color: var(--gold-deep); text-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.mk-central .clbl {
+  position: absolute; white-space: nowrap; font: 700 11px var(--sans); color: var(--ink); pointer-events: none;
+  background: color-mix(in srgb, var(--surface) 78%, transparent); padding: 1px 6px; border-radius: 5px;
+  top: 100%; left: 50%; transform: translateX(-50%); margin-top: 2px;
+}
+
+/* ---- sources index: two-column jump target ---- */
+#cites { font-size: 13.5px; color: var(--ink-2); padding-left: 26px; columns: 2; column-gap: 40px; }
+@media (max-width: 760px) { #cites { columns: 1; } }
+#cites li { margin-bottom: 7px; break-inside: avoid; }
+#cites code { font-family: var(--mono); font-size: 11.5px; color: var(--gold-deep); }
+#cites li:target { background: color-mix(in srgb, var(--gold) 22%, transparent); border-radius: 4px; padding: 2px 4px; }
+
+/* ══ 7. NEW — BROWSER PORT ONLY ═══════════════════════════════════════════
+   Everything above this line is `SHARED_CSS` (generate.py 1454) and
+   `INDEX_CSS` (generate.py 10527), ported verbatim. Nothing above is
+   restyled here.
+
+   The CLI writes a finished page: by the time any CSS runs, every number
+   exists. The browser port ships a shell first and fills it in from a
+   worker, so it needs three states the Python never had — the landing
+   form, the skeleton, and the header progress readout. All of it is
+   additive; no selector below overrides one above.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ---- the state machine: one attribute on <body> drives the whole shell ----
+   `landing` → the pick-a-feed card. `running` → the nine skeleton sections
+   plus the header progress bar. `ready` → the same nine sections, hydrated,
+   progress gone. app.js owns `document.body.dataset.state`; CSS owns what
+   that means, so no renderer has to remember to hide anything. */
+body[data-state='landing']       [data-when='report']  { display: none !important; }
+body:not([data-state='landing']) [data-when='landing'] { display: none !important; }
+body:not([data-state='running']) [data-when='running'] { display: none !important; }
+
+/* Hiding the rail is not the same as reclaiming its column. wa-page's body grid is
+   `minmax(0, var(--menu-width)) …` (page.styles) and nothing in the component zeroes
+   that variable when the navigation slot renders nothing — so the 15rem set at §4
+   survives `display: none` on the rail, and `main`'s `margin-inline: auto` centres
+   inside the 15rem-narrower remainder while the header and footer, which sit in the
+   outer full-width grid, stay centred on the viewport. On the landing state there is
+   no rail to justify the offset, so the column goes to zero and every band lines up
+   on the same centre again. */
+body[data-state='landing'] wa-page { --menu-width: 0px; }
+
+/* The second view's own rules used to live here, between the state machine and the
+   header progress. They now sit in the guarded region at the end of this file — see
+   the sentinel comment there for why. */
+
+/* ---- header progress: the run's one persistent readout ----
+   It sits in the `header` slot between the wordmark and the theme button,
+   which is a `wa-split`, so it needs its own basis or the bar collapses to
+   nothing the way `[slot='subheader'] > wa-progress-bar` does. */
+#hydration { flex: 1 1 14rem; min-inline-size: 0; max-inline-size: 28rem; }
+#hydration-progress { inline-size: 100%; --track-height: 6px;
+                      --indicator-color: var(--gold); }
+#hydration-status { min-inline-size: 0; white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; }
+/* The per-stage note is the thing that keeps an eight-minute Overpass wait from
+   reading as a hang, so it gets to wrap onto as many lines as it needs. */
+#hydration-note, #hydration-wait { text-wrap: pretty; max-inline-size: 60ch; }
+/* Below the point where the wordmark, the bar and the two buttons stop fitting on
+   one line, the bar takes a line of its own rather than being squeezed to a stub.
+   The header is `wa-split wa-flex-wrap`, so this is a basis change, not a reflow. */
+@media (max-width: 46rem) {
+  #hydration { flex: 1 1 100%; max-inline-size: none; order: 1; }
+}
+
+/* ---- the landing card ---- */
+#landing { max-inline-size: 48rem; margin-inline: auto; }
+#landing-lede { max-inline-size: 60ch; }
+/* A real drop target, not a styled file input: it takes the drag, the click
+   and the keyboard, so the three ways a person expects to hand over a file
+   all land on the same element. app.js sets `data-dragover` / `data-file`. */
+#dropzone {
+  display: grid; justify-items: center; gap: var(--wa-space-2xs);
+  padding: var(--wa-space-2xl) var(--wa-space-l);
+  border: var(--wa-border-width-m) dashed var(--wa-color-surface-border);
+  border-radius: var(--wa-border-radius-l);
+  background: var(--wa-color-surface-lowered);
+  text-align: center; cursor: pointer;
+  transition: border-color .12s, background-color .12s;
+}
+@media (prefers-reduced-motion: reduce) { #dropzone { transition: none; } }
+#dropzone:hover { border-color: var(--accent); }
+#dropzone:focus-visible { outline: var(--wa-focus-ring);
+                          outline-offset: var(--wa-focus-ring-offset); }
+#dropzone[data-dragover] { border-color: var(--accent); border-style: solid;
+  background: color-mix(in srgb, var(--accent) 10%, var(--wa-color-surface-lowered)); }
+#dropzone[data-file] { border-style: solid; border-color: var(--good);
+  background: color-mix(in srgb, var(--good) 8%, var(--wa-color-surface-lowered)); }
+#dropzone wa-icon { font-size: 1.75rem; color: var(--ink-3); }
+#dropzone[data-file] wa-icon { color: var(--good-text); }
+#dropzone[data-file] #dropzone-empty,
+#dropzone:not([data-file]) #dropzone-chosen { display: none; }
+#dropzone-name { overflow-wrap: anywhere; }
+/* the "or" between the two inputs — one control, two doors — is two <wa-divider>s in
+   a wa-cluster (index.html). Their --color/--width are the same border token the old
+   ::before/::after pair hand-rolled. The rules are invisible until the kit loader
+   upgrades them, which costs nothing here: this card is already built from wa-card,
+   wa-details, wa-icon and wa-radio-group, so it has never rendered without the kit. */
+
+/* ---- the skeleton ----
+   `wa-skeleton` sized to the thing that is coming, so the layout does not move when
+   the real content lands.
+
+   SHAPE IS NOT AVAILABLE. `wa-skeleton` exposes exactly two custom properties,
+   `--color` and `--sheen-color`; its indicator hardcodes
+   `border-radius: var(--wa-border-radius-pill)`. Eight `--border-radius` declarations
+   used to sit in this block and every one of them was inert — every skeleton on the
+   page renders as a stadium, including the "ring". Anything that needs a real corner
+   has to go through `::part(indicator)`, deliberately not done here. */
+wa-skeleton { --color: var(--wa-color-surface-lowered);
+              --sheen-color: color-mix(in srgb, var(--ink) 7%, var(--surface)); }
+@media (prefers-reduced-motion: reduce) { wa-skeleton { --sheen-color: transparent; } }
+
+/* the layout half is `wa-stack wa-gap-xs` on the container; only the child sizing is
+   left here, which no utility covers. `.sk-tile` keeps its own `display:grid` — the
+   same swap would widen its gap 6.4px → 8px, which is visible. */
+.sk-text > wa-skeleton { block-size: .78em; }
+.sk-lede  { block-size: .9em; }
+/* .sk-chip's inline-size is omitted on purpose: all 13 uses set their own. Same for
+   .sk-title, .sk-ring, .sk-map and .sk-chart, which had one or two uses each and are
+   now inline styles at the call site. */
+.sk-chip  { block-size: 1.6rem; }
+.sk-bar   { inline-size: 100%; block-size: 1.25rem; }
+.sk-meter { display: grid; grid-template-columns: 1fr 4rem;
+            align-items: center; gap: var(--wa-space-s); }
+.sk-meter > wa-skeleton:first-child { block-size: 1.5rem; }
+.sk-meter > wa-skeleton:last-child  { block-size: .9em; }
+/* `.sk-tiles` is `wa-grid wa-gap-m` + `--min-column-size:11rem` on the container.
+   That changes auto-fill → auto-fit, which stretches a partial last row instead of
+   leaving dead columns — skeleton-only, so the difference is transient. */
+.sk-tile  { display: grid; gap: .4rem; }
+.sk-tile > wa-skeleton:first-child { block-size: 2rem; inline-size: 60%; }
+.sk-tile > wa-skeleton { block-size: .7em; }
+/* `.sk-days` is `wa-grid wa-gap-s` + `--min-column-size:8rem`; `wa-grid` is already
+   auto-fit, so that swap changes nothing. `.sk-rows` is `wa-stack wa-gap-xs`, an
+   exact token match for its old .5rem. */
+.sk-day   { block-size: 5rem; }
+/* the score trace, the question table and the curse table are all the same
+   shape at this stage: a header rule and n rows of fixed-width cells */
+.sk-row   { display: grid; gap: var(--wa-space-s); align-items: center;
+            grid-template-columns: minmax(0, 1.6fr) 6rem 5rem minmax(0, 2fr); }
+.sk-row > wa-skeleton { block-size: .85em; }
+.sk-row[data-head] > wa-skeleton { block-size: .6em; --color: var(--grid); }
+@media (max-width: 640px) { .sk-row { grid-template-columns: minmax(0, 1fr) 5rem; }
+                            .sk-row > wa-skeleton:nth-child(n+3) { display: none; } }
+.sk-cells { display: grid; gap: 2px; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+.sk-cells > wa-skeleton { block-size: 30px; }
+.sk-cites { columns: 2; column-gap: 40px; }
+@media (max-width: 760px) { .sk-cites { columns: 1; } }
+.sk-cites > wa-skeleton { block-size: .8em; margin-bottom: 7px; break-inside: avoid; }
+.sk-figures { display: grid; gap: var(--wa-space-m);
+              grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+
+/* A pending section is not a broken section: it keeps its heading, its
+   ordinal, its kicker and its nav entry, and only the evidence is grey.
+   `aria-busy` carries the same fact to a screen reader.
+
+   Two spellings of the same visual state, distinguished only for `fatalError`:
+   `skeleton` is a report section, which a stopped run removes; `pending` is the
+   hero and the footer, which it must keep because they carry `#top` and the
+   attribution. They look identical while the run is alive. */
+[data-state='skeleton'] .sk-body,
+[data-state='pending']  .sk-body { pointer-events: none; user-select: none; }
+
+/* The map frame is a separate element from `#netmap`, which INDEX_CSS pins
+   at `height: 0` until the map script gives it one. Removing this is how
+   the real map appears. */
+#netmap-frame { inline-size: 100%; }
+
+/* ---- errors surfaced by app.js (worker `error`, a CORS failure, a bad zip) */
+#landing-error:not([hidden]), #run-error:not([hidden]) { display: block; }
+
+/* == STRATEGY-CSS-START =====================================================
+   EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S, AND IS CUT OUT OF THE SAVED
+   FILE. `inlineStyles()` (app.js) slices the span between these two sentinels
+   before it embeds this sheet, so the report a reader downloads carries no rule
+   naming `strategy`, `#s-map`, `#s-controls`, `#s-detail`, `#s-table` or any of the
+   marker attributes — the download is report-only, and a stylesheet that describes
+   the guide's whole DOM would give it away as surely as the markup would.
+
+   This is `generate.py`'s own partition (`INDEX_CSS` 10527 vs `STRATEGY_CSS` 1674,
+   and the note at 1449) expressed the only way one document can express it: the CLI
+   writes two files and simply hands each its own text. Keep the two markers exactly
+   as spelled — app.js matches them literally — and put nothing here that the report
+   view needs.
+
+   Zero new classes below. Every rule is scoped to an id or to a data attribute the
+   view already carries for behaviour — the same precedent as `#qcontrols`,
+   `#dayscores [data-day]` and `[data-hb]` above — and every value that has a token
+   uses it. Five classes the CLI's S5 CSS carried (`.zrow`, `.abar`, `.ab`, `.mk*`,
+   `#ztable td[data-bar]`) are retired here into `wa-card` / `wa-flank` /
+   `wa-card.wa-brand` and attribute selectors.
+   ========================================================================== */
+
+/* ---- the second view: an axis orthogonal to data-state ----
+   The CLI writes two files; this is one document, so its second page is a view.
+   `data-state` keeps its meaning — the run lifecycle — and is deliberately NOT
+   changed when the view is up, so the report is hidden rather than torn down and
+   coming back costs nothing. app.js owns `document.body.dataset.view`.
+
+   `[data-when]` is overloaded (render/deck.js:855 emits `on`/`off` inside the curse
+   table) but `on`/`off` can never match `report`, `landing`, `running` or the fourth
+   value, so the overload is safe. */
+body[data-view='strategy'] :is([data-when='report'], wa-page > main) { display: none !important; }
+body:not([data-view='strategy']) [data-when='strategy'] { display: none !important; }
+/* no rail ⇒ no rail column, for the same reason as the landing state above */
+body[data-view='strategy'] wa-page { --menu-width: 0px; }
+/* The report's 7rem clears the header slot AND the `[slot='subheader']` strip; the
+   strip is `data-when="report"`, so the rule above puts it to `display: none` and the
+   guide's sticky stack is the header alone. The number is written once, on the root —
+   `scroll-padding-top` only counts on the element that owns the scrollport, and the
+   custom property inherits down to the two sticky elements — so the fragment jumps and
+   the sticky offsets cannot drift apart. */
+html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: var(--s-sticky); }
+
+/* MapLibre reads its container size once, at construction, so the height is CSS and
+   not an imperative style: the container is laid out before the map is built. 470px
+   is a viewport dimension, not a spacing step, so there is no token for it —
+   `#netmap` makes the same call at `height: 0` and hands the number to its script. */
+#s-map { block-size: 470px; overflow: hidden;
+         border-radius: var(--wa-border-radius-m);
+         background: var(--wa-color-surface-lowered); }
+#s-map.maplibregl-map { min-width: 0; }        /* the same MapLibre reset as #netmap */
+
+/* a filter is never scrolled away from the rows it filters; the offset is the guide's
+   own sticky stack, set above — NOT the report's 7rem, which counts a subheader this
+   view hides. This is `#zcontrols` from generate.py:1625, which the port had lost. */
+#s-controls { position: sticky; top: var(--s-sticky); z-index: 1;
+              background: var(--wa-color-surface-default);
+              padding-block: var(--wa-space-2xs); }
+#s-detail   { position: sticky; top: calc(var(--s-sticky) + 1rem); }
+@media (max-width: 560px) { #s-controls, #s-detail { position: static; } }
+
+/* sort arrows painted from the `aria-sort` the table already sets, so the header
+   button carries no second element and no icon to keep in sync */
+#s-table th[aria-sort='ascending'] button::after  { content: ' \2191'; }
+#s-table th[aria-sort='descending'] button::after { content: ' \2193'; }
+#s-table td { white-space: nowrap; }
+
+/* ---- MapLibre markers. They are DOM nodes MapLibre owns, outside WebAwesome and
+   outside any shadow root; WA has no marker, no map-label pill and no crosshair, so
+   this is the same "permanent keep" §6 makes for the map internals. They carry data
+   attributes rather than classes, which is what keeps the class budget at zero. ---- */
+#s-map [data-zmark] { cursor: pointer; }   /* must not touch maplibregl-marker's transform */
+#s-map [data-zmark='zone'] { inline-size: 0; block-size: 0; }
+#s-map [data-zmark]:hover, #s-map [data-zmark][data-sel] { z-index: 5; }
+#s-map [data-zlbl] {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  white-space: nowrap; font-family: var(--wa-font-family-ui);
+  font-size: var(--wa-font-size-xs); font-weight: var(--wa-font-weight-bold);
+  color: var(--wa-color-text-normal);
+  background: color-mix(in srgb, var(--wa-color-surface-raised) 78%, transparent);
+  padding: var(--wa-space-3xs) var(--wa-space-2xs);
+  border: var(--wa-border-width-s) solid transparent;
+  border-radius: var(--wa-border-radius-s); box-shadow: var(--wa-shadow-s);
+}
+#s-map [data-zdot] { display: inline-block; inline-size: .5rem; block-size: .5rem;
+                     margin-inline-end: var(--wa-space-3xs);
+                     border-radius: var(--wa-border-radius-s); background: var(--accent); }
+/* `data-band` (score bands, explore mode) and `data-answer` (a question's verdict) are
+   mutually exclusive — the simulator sets one and removes the other. Neither is ever
+   the only channel: the readout prints the word and the chip carries the icon. */
+#s-map [data-band='top']  [data-zdot] { background: var(--gold-mark); }
+/* `fair` is its own step, as it is in the CLI (generate.py:15526 gives it `--warn`).
+   `good` keeps the inherited `--accent` above. Collapsing the two made a five-band
+   scale render in three colours, which is not a scale. */
+#s-map [data-band='fair'] [data-zdot] { background: var(--warn); }
+#s-map [data-band='weak'] [data-zdot],
+#s-map [data-band='un']   [data-zdot] { background: var(--off); }
+#s-map [data-answer='yes']  [data-zdot] { background: var(--q-yes); }
+#s-map [data-answer='yes']  [data-zlbl] { border-color: var(--q-yes); }
+#s-map [data-answer='no']   [data-zdot] { background: var(--q-no); }
+#s-map [data-answer='no']   [data-zlbl] { border-color: var(--q-no); }
+#s-map [data-answer='edge'] [data-zdot] { background: var(--q-edge); }
+#s-map [data-answer='edge'] [data-zlbl] { border-color: var(--q-edge); }
+#s-map [data-answer='un']   [data-zdot] { background: var(--q-un); }
+#s-map [data-answer='un']   [data-zlbl] { border-color: var(--q-un); }
+#s-map [data-sel] [data-zlbl] { outline: var(--wa-focus-ring); }
+#s-map [data-off] [data-zlbl] { color: var(--wa-color-text-quiet); }
+#s-map [data-zmark='seeker'] { inline-size: 1.875rem; block-size: 1.875rem;
+                               cursor: grab; z-index: 6; }
+#s-map [data-zmark='seeker']:active { cursor: grabbing; }
+#s-map [data-zmark='seeker']:focus-visible { outline: var(--wa-focus-ring);
+                                             outline-offset: var(--wa-focus-ring-offset); }
+/* The seeker reuses `[data-zlbl]` for its word so the pill is styled once, but its
+   sibling `[data-zcross]` already owns the centre of the same box — so the label hangs
+   below the crosshair instead of covering it. Same geometry as `.mk-central .clbl`
+   above, and the CLI's `.mk-seeker .slbl` (generate.py:1713). */
+#s-map [data-zmark='seeker'] [data-zlbl] { top: 100%; left: 50%;
+                                           transform: translateX(-50%);
+                                           margin-block-start: var(--wa-space-3xs);
+                                           pointer-events: none; }
+#s-map [data-zcross] { position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center;
+  font: var(--wa-font-weight-bold) var(--wa-font-size-2xl)/1 var(--wa-font-family-ui);
+  color: var(--wa-color-text-normal);
+  text-shadow: 0 0 4px var(--wa-color-surface-raised), 0 0 8px var(--wa-color-surface-raised); }
+
+/* == STRATEGY-CSS-END ===================================================== */

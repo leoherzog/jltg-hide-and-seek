@@ -4,11 +4,18 @@ Point it at a city's public transit feed. It tells you whether that city works a
 [Jet Lag: The Game's *Hide and Seek*](https://www.jetlagthegame.com/) home game, how good a map it
 is, and — if you're the one hiding — where to go.
 
+There are two ways to run it, and they do the same analysis.
+
+**In a browser, no install.** Serve this directory and open it. Drop in a feed and the whole
+pipeline runs client-side — the feed is never uploaded anywhere.
+
+**As a CLI**, which writes two self-contained HTML files:
+
 ```bash
-uv run generate.py <gtfs-url> --out build/
+uv run generated/generate.py <gtfs-url> --out build/
 ```
 
-Two HTML files come out. That's the whole interface.
+That's the whole interface.
 
 ---
 
@@ -28,29 +35,43 @@ Answering it by hand is a slog: read the rulebook, read the timetable, cross-ref
 question against what's actually on the map, then argue about it. This repo does that work from the
 feed, the same way every time.
 
-A few worked examples ship with the repo, one directory per city, each holding the two pages the tool
-produced for that feed. `generate.py` produces the same thing for anywhere.
+A few worked examples ship with the repo under `generated/`, one directory per city, each holding
+the two pages the tool produced for that feed. It produces the same thing for anywhere.
 
 ---
 
 ## Quick start
+
+### In a browser
+
+Nothing to install and no build step. Serve the repo root with any static file server and open it:
+
+```bash
+python3 -m http.server 8000     # then open http://localhost:8000/
+```
+
+Paste a feed URL or drop a `.zip` on the page. Everything — the feed parse, the travel-time model,
+the OpenStreetMap lookups, the scoring — runs in your browser.
+
+### As a CLI
 
 You need [`uv`](https://docs.astral.sh/uv/). No virtualenv, no install step — the script declares
 its own dependency inline (just `httpx`).
 
 ```bash
 # any GTFS feed URL, or a local .zip
-uv run generate.py <gtfs-url> --out build/
+uv run generated/generate.py <gtfs-url> --out build/
 
 # much faster: skip the OpenStreetMap layer
-uv run generate.py <gtfs-url> --out build/ --no-osm
+uv run generated/generate.py <gtfs-url> --out build/ --no-osm
 ```
 
 Find a feed for your city on [Mobility Database](https://mobilitydatabase.org/) or
 [transit.land](https://www.transit.land/). Most agencies publish one.
 
-> **Pass `--out`.** It defaults to the current directory, so without it the two pages land in the
-> repo root — and pointing it at one of the example directories overwrites that example.
+> **Pass `--out`.** It defaults to the current directory. Run from the repo root without it and
+> the two pages land on top of the browser port's own `index.html`; point it at one of the
+> `generated/<city>/` directories and it overwrites that example.
 
 **How long it takes.** ~10 seconds with a warm cache. First run on a new city is ~8 minutes, almost
 all of it waiting on the free OpenStreetMap query servers. `--no-osm` runs in seconds but disables
@@ -290,18 +311,33 @@ already agreed on a border.
 ## Repo layout
 
 ```
-generate.py          the whole thing (single file, ~16k lines, one dependency)
+index.html           the browser port: same analysis, self-serve, no install
+app.js               main-thread controller
+worker.js            the pipeline, off the main thread
+lib/ gtfs/ osm/ rules/   worker-side pipeline (no DOM)
+render/              main-side renderers
+styles.css           the one stylesheet
+CONTRACT.md          authoritative for every shape crossing a module boundary
+tools/smoke.mjs      headless harness: asserts the CLI's golden numbers
+
+generated/           the Python generator and its output
+  generate.py        the whole thing (single file, ~16k lines, one dependency)
+  <city>/            generated examples, one directory per city
+
 README.md            this file
 AGENTS.md            notes for AI coding agents: architecture, conventions, measurements
-<city>/             generated examples, one directory per city
 GUIDE.md             \
 HIDING.md             >  the Hide+Seek rulebook — the authority on game rules
 SEEKING.md           /
 THERAPID*.md         prose rendering of the reference feed, handy for sanity checks
 package.json         the WebAwesome Pro component dependency
 build/               generated output (gitignored)
-cache/               cached HTTP responses (gitignored)
+cache/               cached HTTP responses (gitignored), shared by both
 ```
+
+The browser port is the repo root and needs no build step — serve the directory and open it.
+It runs the same pipeline as `generated/generate.py` entirely in the browser; the feed is
+never uploaded anywhere.
 
 `generate.py` is assembled from section sources — see `AGENTS.md` if you're editing it. Those
 sources, and the specs the file's docstring cites, are kept outside this tree.

@@ -4,8 +4,13 @@ Guidance for Claude Code, Codex, Gemini, etc. working in this repository.
 
 ## What this is
 
-`generate.py` reads **one GTFS feed** and writes two self-contained HTML pages that rate that
-transit system as a map for Jet Lag: The Game's *Hide and Seek* home game:
+Two implementations of one analysis. The **repo root is the browser port** — a no-build ES-module
+single-page app that runs the whole pipeline client-side; `CONTRACT.md` is authoritative for every
+shape crossing a module boundary in it, and `tools/smoke.mjs` asserts it against the CLI's golden
+numbers. **`generated/`** holds the original Python CLI and the example pages it produced.
+
+`generated/generate.py` reads **one GTFS feed** and writes two self-contained HTML pages that rate
+that transit system as a map for Jet Lag: The Game's *Hide and Seek* home game:
 
 - **`index.html`** — the public feasibility report: the verdict and rating with its full score
   trace, key numbers, transit reality, the network map, a question-by-question audit of all six
@@ -18,16 +23,32 @@ Everything is inferred from the feed. There is no per-city configuration.
 
 ## Running
 
+### The browser port (repo root)
+
+No build step, no bundler, no npm runtime dependency. Serve the root and open it:
+
+```bash
+python3 -m http.server 8000          # then http://localhost:8000/
+node tools/smoke.mjs                 # headless: asserts the CLI's golden numbers, 19/19
+node tools/smoke.mjs --json --quiet  # same, machine-readable
+```
+
+`smoke.mjs` runs the real `runPipeline` against the cached reference feed with the OSM layer off,
+and asserts `selftest()`'s numbers. **Never adjust an assertion to make it pass** — a change to one
+of those numbers means an algorithm moved, which may be correct but must be deliberate.
+
+### The CLI (`generated/`)
+
 Single file, PEP 723 inline metadata, one dependency (`httpx`). No venv setup:
 
 ```bash
-uv run generate.py https://connect.ridetherapid.org/InfoPoint/GTFS-Zip.ashx --out build/
-uv run generate.py feed.zip --out build/ --no-osm       # skip Overpass; much faster
-uv run generate.py <url> --out build/ --selftest        # assert the reference feed's golden numbers
+uv run generated/generate.py https://connect.ridetherapid.org/InfoPoint/GTFS-Zip.ashx --out build/
+uv run generated/generate.py feed.zip --out build/ --no-osm       # skip Overpass; much faster
+uv run generated/generate.py <url> --out build/ --selftest        # assert the reference feed's golden numbers
 ```
 
-`--out` defaults to `.`, which would overwrite the two hand-built drafts at the repo root — those
-are the design reference and are **not** generated. Always pass `--out build/`.
+`--out` defaults to `.`, which from the repo root would overwrite the browser port's own
+`index.html`. Always pass `--out build/`.
 
 Useful flags: `--size/--zone-radius/--hiding-period/--start/--border-bbox` override an inference,
 `--as-of YYYYMMDD` picks the analysis date, `--offline` turns a cache miss into an error,
@@ -38,6 +59,29 @@ cache, ~8 min cold, almost all of it Overpass. MBTA (7,770 stops / 2.15M stop_ti
 `--no-osm`.
 
 ## Architecture
+
+### The browser port (repo root)
+
+`CONTRACT.md` is authoritative for every shape crossing a module boundary — **read it before
+touching anything here.** If it and `generated/generate.py` disagree, the Python wins and the
+contract is a bug; say so rather than silently diverging.
+
+The split that matters is worker vs main. `lib/`, `gtfs/`, `osm/` and `rules/` run inside the Web
+Worker and **must not touch the DOM**; `app.js` and `render/` are main-thread and may. `worker.js`
+is the pipeline orchestrator and emits stages (`feed`, `days`, `network`, `geo`, `rules`, `score`,
+`provenance`) that `app.js` hydrates into the page as they land, so the report fills in
+progressively rather than appearing at the end.
+
+Same two pages as the CLI, but as one document: `render/verdict.js`, `render/map.js` and
+`render/deck.js` are S4, and S5 is a **fragment-only second view** — `render/strategy.js` (markup,
+pure `Report → string`) plus `render/simulator.js` (every DOM mutation in that view). It is reached
+only by `#strategy`, appears in no nav or link, and is excluded from the Save download. See
+`CONTRACT.md` §(g), which also lists the deliberate divergences from the Python.
+
+Renderers **format only — they never compute.** Every number reaching the UI goes through exactly
+one formatter from `lib/core.js`.
+
+### The CLI (`generated/generate.py`)
 
 One file, six banded sections. `build_report()` runs the pipeline in dependency order and returns
 a `Report`; both renderers consume that object and **format only — they never compute**.
@@ -58,9 +102,11 @@ a `Report`; both renderers consume that object and **format only — they never 
   models with a full explainable trace.
 - **S4 render_index**, **S5 render_strategy** — the two pages.
 
-Section sources live in `scratchpad/sections/*.py` and are spliced into the skeleton by
-`scratchpad/assemble.py`; the assembled `generate.py` is the artifact. Specs behind the design are
-in `scratchpad/specs/` — `contract.md` is authoritative for anything crossing a section boundary.
+Section sources are spliced into the skeleton by an `assemble.py`; the assembled
+`generated/generate.py` is the artifact. **Those sources and the specs behind the design are kept
+outside this tree** — there is no `scratchpad/` in the checkout, so edit the assembled file
+directly and treat the `scratchpad/…` paths cited in the file's own docstring as historical
+references, not as things you can open.
 
 ## Scoring
 
@@ -130,7 +176,9 @@ is resident.
 ## Verification performed
 
 - `--selftest` golden numbers for the reference feed (served stops, routes, trips, zones, hub,
-  game size, hull area, T90, hub route share).
+  game size, hull area, T90, hub route share). The browser port reproduces all 19 of them through
+  `node tools/smoke.mjs`, which is the cheapest way to prove a change to either implementation did
+  not move an algorithm.
 - Byte-identical output across repeated runs, on both the `--no-osm` and OSM paths.
 - Headway model cross-checked against an independent computation from raw `stop_times`: the
   reported figure is the **midday (10:00–14:00) median over the route-direction's stops**, which
@@ -146,8 +194,8 @@ is resident.
 
 ## Conventions
 
-- **Never** overwrite the root `index.html` / `strategy.html` — hand-built drafts, kept as the
-  quality reference.
+- **Never** overwrite the root `index.html` — that is the browser port's shell, not output.
+  Always pass `--out build/`.
 - Commit messages stay bare: no `Co-Authored-By`, no `Claude-Session` trailer.
 - `THERAPID*.md` are a prose rendering of the reference feed, useful for sanity checks; they are
   **not** an input to the script, which reads GTFS directly.

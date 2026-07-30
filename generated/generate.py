@@ -11302,7 +11302,7 @@ def _s4_band_ladder(report: Report) -> str:
     tags = []
     for cut, name, _advice in reversed(_S3_BANDS):        # low → high, deterministic
         active = name == current
-        tags.append(wa_tag(f"{num(cut, 0)}+ {name}", size="small",
+        tags.append(wa_tag(f"{num(cut, 0)}+ {name}", size="s",
                            variant=(band_variant(name) if active else "neutral"),
                            appearance=("filled" if active else "outlined"),
                            title=f"{num(cut, 1)} and up"))
@@ -11750,9 +11750,9 @@ def _s4_chip_group(group_id: str, name: str,
         return ""
     radios = "".join(
         el("wa-radio", join(wa_icon(opt[2]) if len(opt) > 2 and opt[2] else "", esc(opt[1])),
-           value=opt[0], appearance="button", size="small")
+           value=opt[0], appearance="button", size="s")
         for opt in options)
-    return el("wa-radio-group", radios, id=group_id, name=name, size="small",
+    return el("wa-radio-group", radios, id=group_id, name=name, size="s",
               orientation="horizontal", label=label, value=value or options[0][0],
               class_="wa-visually-hidden-label")
 
@@ -13507,10 +13507,10 @@ def _s4_day_selector(report: Report) -> str:
         title = label
         if key in per:
             title = f"{label} — this map rates {num(per[key], 1)} of 100 on {label} service"
-        radios.append(el("wa-radio", esc(label), value=key, appearance="button", size="small",
+        radios.append(el("wa-radio", esc(label), value=key, appearance="button", size="s",
                          title=title))
     return el("wa-radio-group", "".join(radios), id="daysel", name="day", label="Playing on",
-              orientation="horizontal", size="small", value=_s4_best_day(report))
+              orientation="horizontal", size="s", value=_s4_best_day(report))
 
 
 def band_variant(band: str) -> str:
@@ -13555,13 +13555,13 @@ def page_chrome(report: Report, *, status_html: str) -> tuple[str, str]:
 
     header = el("header", join(
         wordmark,
-        wa_button("Theme", id="color-scheme-button", appearance="plain", size="small",
+        wa_button("Theme", id="color-scheme-button", appearance="plain", size="s",
                   icon="circle-half-stroke"),
     ), slot="header", class_="wa-split wa-align-items-center wa-gap-m")
 
     subheader = el("div", join(
         el("div", join(
-            wa_button("Menu", data_toggle_nav=True, appearance="plain", size="small",
+            wa_button("Menu", data_toggle_nav=True, appearance="plain", size="s",
                       class_="wa-mobile-only", icon="bars"),
             _s4_day_selector(report),
         ), class_="wa-cluster wa-gap-s wa-align-items-center"),
@@ -14489,7 +14489,7 @@ def strategy_zone_map(report: Report) -> str:
     chips = "".join(
         el("wa-button", join(wa_icon(_S5_MODE_ICON[mode], slot="start"), esc(label),
                              wa_icon("ban", slot="end") if mode in reasons else ""),
-           data_mode=mode, size="small", variant="neutral",
+           data_mode=mode, size="s", variant="neutral",
            appearance="outlined" if mode != "explore" else "accent",
            disabled=True if mode in reasons else None,
            title=reasons.get(mode) or None)
@@ -15227,7 +15227,7 @@ function renderDossier() {
 
   const inv = Object.entries(z.inventory || {});
   const amenities = inv.length
-    ? inv.map(([k, v]) => '<wa-tag size="small" appearance="outlined">' + esc(k) + ' ' + v + '</wa-tag>').join('')
+    ? inv.map(([k, v]) => '<wa-tag size="s" appearance="outlined">' + esc(k) + ' ' + v + '</wa-tag>').join('')
     : '<span class="wa-caption-s">Nothing catalogued inside the circle.</span>';
 
   const service = svc.served
@@ -15241,7 +15241,7 @@ function renderDossier() {
   /* icon **and** word: a flag's colour is never the only channel */
   const flags = (z.flags || []).map(f => {
     const meta = FLAGS[f] || [f, 'neutral', 'circle-info'];
-    return '<wa-tag size="small" pill variant="' + meta[1] + '" appearance="outlined">'
+    return '<wa-tag size="s" pill variant="' + meta[1] + '" appearance="outlined">'
       + '<wa-icon name="' + esc(meta[2] || 'circle-info') + '"></wa-icon>' + esc(meta[0]) + '</wa-tag>';
   }).join('');
 
@@ -15323,9 +15323,9 @@ function renderTable() {
   const pager = $('zpager');
   if (pager && paged) {
     const pages = Math.ceil(rows.length / Z.page_size);
-    pager.innerHTML = '<wa-button size="small" appearance="outlined" id="pprev">Previous</wa-button>'
+    pager.innerHTML = '<wa-button size="s" appearance="outlined" id="pprev">Previous</wa-button>'
       + '<span class="wa-caption-s">Page ' + (page + 1) + ' of ' + pages + '</span>'
-      + '<wa-button size="small" appearance="outlined" id="pnext">Next</wa-button>';
+      + '<wa-button size="s" appearance="outlined" id="pnext">Next</wa-button>';
     $('pprev').addEventListener('click', () => { if (page > 0) { page--; renderTable(); } });
     $('pnext').addEventListener('click', () => { if (page < pages - 1) { page++; renderTable(); } });
   }
@@ -15338,7 +15338,7 @@ function optionChips() {
   if (mode === 'radar') {
     const rs = (G.chips.radar || []);
     host.innerHTML = rs.map(r =>
-      '<wa-button size="small" data-radar="' + r.miles + '" appearance="'
+      '<wa-button size="s" data-radar="' + r.miles + '" appearance="'
       + (r.miles === opt.radar ? 'accent' : 'outlined') + '"'
       + (r.usable ? '' : ' disabled title="' + esc(r.why) + '"')
       + '>' + esc(r.label) + '</wa-button>').join('')
@@ -15350,7 +15350,7 @@ function optionChips() {
   }
   const chips = G.chips[mode] || [];
   host.innerHTML = chips.map(c =>
-    '<wa-button size="small" data-cat="' + esc(c.key) + '" appearance="'
+    '<wa-button size="s" data-cat="' + esc(c.key) + '" appearance="'
     + (c.key === opt.cat ? 'accent' : 'outlined') + '"'
     + (c.usable ? '' : ' disabled title="' + esc(c.why) + '"')
     + '>' + esc(c.label) + ' (' + c.count + ')</wa-button>').join('')
