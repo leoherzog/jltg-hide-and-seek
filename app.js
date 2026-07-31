@@ -2210,7 +2210,7 @@ function bindTT(el, html) {
    render/html.js). chart.js registers no datalabels plugin, so the segment letters are
    painted here; and Chart.js's own tooltip draws *inside* a 20px-tall canvas, where it
    is clipped to nothing, so hover routes to the same #tt panel the heatmap uses. One
-   plugin, both jobs. wa-chart merges `.plugins` onto the config it parsed from the
+   plugin, both jobs. wa-chart merges '.plugins' onto the config it parsed from the
    slotted <script>, which is why the config itself can stay in the render layer. */
 const budgetSeg = {
   id: 'budgetSeg',
@@ -2233,8 +2233,8 @@ const budgetSeg = {
   },
 };
 
-/* Assigning `plugins` is itself a property change, so the component re-renders on its
-   own — no awaiting whenDefined/updateComplete. The hover handler reads `.chart`
+/* Assigning '.plugins' is itself a property change, so the component re-renders on its
+   own — no awaiting whenDefined/updateComplete. The hover handler reads '.chart'
    lazily, so it is correct even while the element is still upgrading. */
 function bindBudgets() {
   for (const c of document.querySelectorAll('wa-chart[data-budget]')) {
