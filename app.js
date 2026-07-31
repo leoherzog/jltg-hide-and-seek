@@ -28,7 +28,7 @@ import {
 } from './lib/core.js';
 
 import {
-  esc, el, join, waIcon, waCallout, waCard, waDetails, jsonBlock, chip,
+  esc, el, join, waIcon, waCard, waDetails, jsonBlock, chip,
 } from './render/html.js';
 
 import {
@@ -228,8 +228,6 @@ const state = {
   fatal: false,
   progress: { pct: 0, done: 0, total: 0, stage: '', label: '' },
   runtimeInjected: 0,
-  /** A dropped `File` on browsers where `input.files` cannot be assigned. */
-  /** @type {File|null} */ droppedFile: null,
   /** @type {number|null} */ heartbeat: null,
   /** Seconds since the last `progress` message. Chrome only — never a report value. */
   waitedS: 0,
@@ -302,18 +300,20 @@ export function boot() {
       startRun(form);
     });
   }
-  // A file picked from disk is the common case; naming it in the button is friendlier
-  // than a bare "no file chosen".
+  // <wa-file-input> names the file and draws its own card, so all that is left here is
+  // the cross-field rule: a URL and a file together is an error, and choosing a file is
+  // the unambiguous half of that pair, so the URL box is cleared rather than making the
+  // reader do it. `change` is fired for both a dialog pick and a drop.
   const fileInput = findFileInput(form);
   if (fileInput) {
     fileInput.addEventListener('change', () => {
-      // A dialog pick always wins over an earlier drop that could not be assigned.
-      state.droppedFile = null;
-      showChosenFile(fileInput.files && fileInput.files[0]);
+      if (!(fileInput.files && fileInput.files.length)) return;
+      const urlInput = findUrlInput(form);
+      if (urlInput && urlInput.value) urlInput.value = '';
       clearFormError();
     });
   }
-  wireDropZone(form, fileInput);
+  guardStrayDrops();
   // The whole router. It has one route and one fallback, and on a cold load with no
   // report the fallback is the landing form — silently, which is the point.
   window.addEventListener('hashchange', applyRoute);
@@ -330,102 +330,24 @@ export function boot() {
 }
 
 /**
- * Name the chosen file, and say how big it is.
+ * A file dropped anywhere *other* than the drop zone must not navigate the page away
+ * mid-run — the browser's default for a dropped file is to open it, which throws away
+ * a report that can take minutes to build.
  *
- * `data-file` on the drop zone is what styles.css §7 keys the "chosen" state off:
- * the green rule, the tick-coloured icon, and swapping `#dropzone-empty` for
- * `#dropzone-chosen`. Setting the text without setting the attribute leaves the name
- * in a `display:none` box.
+ * Both types are cancelled, and that pairing is the point: `dragover` defaults to
+ * *refusing* the drop, so cancelling it is what makes the rest of the page a legal
+ * target, and cancelling `drop` is then what stops the browser opening the file. The
+ * two together swallow the drop and do nothing, which is the intent.
+ *
+ * This is the whole of what app.js still does about dragging. `<wa-file-input>` owns
+ * the zone itself: the dragenter/dragover/dragleave/drop handlers, the `dragging`
+ * state the border colour keys off, walking a dropped directory, and re-checking
+ * `accept` against what was dropped. It calls `stopPropagation()` on both of these,
+ * so the ones that land on target never reach window and are unaffected.
  */
-function showChosenFile(file) {
-  const name = pick('#filename', '[data-role="filename"]', '#dropzone-name');
-  if (name) name.textContent = file ? file.name : '';
-  const size = pick('#dropzone-size', '[data-role="filesize"]');
-  if (size) size.textContent = file ? `${num(Math.round(file.size / 1024))} kB` : '';
-  const zone = pick('#dropzone', '[data-role="dropzone"]');
-  if (zone) {
-    if (file) zone.setAttribute('data-file', '');
-    else zone.removeAttribute('data-file');
-  }
-}
-
-/**
- * The drop zone: drop, click and keyboard all land on the same file input.
- *
- * The input itself is `.wa-visually-hidden`, which is the right call visually and a
- * trap otherwise — visually-hidden is still focusable and still operable, but nobody
- * *finds* it, and a mouse user has nothing to click at all. So the zone is a
- * `role="button"` with `tabindex="0"`: a real click forwards to the input, and
- * Enter/Space are forwarded by hand, because a `div[role=button]` gets neither for
- * free the way a `<button>` does.
- *
- * `DataTransfer` is how a dropped file reaches the input: assigning `input.files` is
- * only allowed from a `FileList`, and building one is the only way to keep a single
- * source of truth for `readSource()`. Browsers without it fall back to remembering
- * the drop in `state.droppedFile`.
- */
-function wireDropZone(form, fileInput) {
-  const zone = pick('#dropzone', '[data-role="dropzone"]');
-  if (!zone || !fileInput) return;
-
-  const open = () => fileInput.click();
-  zone.addEventListener('click', (event) => {
-    // The input is inside the zone; forwarding its own click would recurse.
-    if (event.target === fileInput) return;
-    event.preventDefault();
-    open();
-  });
-  zone.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
-    event.preventDefault();
-    open();
-  });
-
-  let depth = 0;
-  const enter = (event) => {
-    event.preventDefault();
-    depth += 1;
-    zone.setAttribute('data-dragover', '');
-  };
-  const leave = (event) => {
-    event.preventDefault();
-    depth = Math.max(0, depth - 1);
-    if (!depth) zone.removeAttribute('data-dragover');
-  };
-  zone.addEventListener('dragenter', enter);
-  zone.addEventListener('dragover', (event) => {
-    // Without this the browser navigates to the file instead of dropping it.
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-  });
-  zone.addEventListener('dragleave', leave);
-  zone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    depth = 0;
-    zone.removeAttribute('data-dragover');
-    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
-    if (!file) return;
-    try {
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      fileInput.files = dt.files;
-    } catch {
-      // Safari < 14.1 and friends: keep the file to one side, `readSource` looks here.
-      state.droppedFile = file;
-    }
-    // A URL and a file together is an error; dropping a file is an unambiguous
-    // choice, so the URL box is cleared rather than making the reader do it.
-    const urlInput = findUrlInput(form);
-    if (urlInput && urlInput.value) urlInput.value = '';
-    showChosenFile(file);
-    clearFormError();
-  });
-  // A file dropped anywhere else must not navigate the page away mid-run.
+function guardStrayDrops() {
   for (const type of ['dragover', 'drop']) {
-    window.addEventListener(type, (event) => {
-      if (zone.contains(event.target)) return;
-      event.preventDefault();
-    });
+    window.addEventListener(type, (event) => event.preventDefault());
   }
 }
 
@@ -438,9 +360,15 @@ function ensureTooltipHost() {
   }
 }
 
+/**
+ * `<wa-file-input>` first: its `.files` is a plain `File[]` rather than a `FileList`,
+ * but everything here only ever reads `.files[0]` and `.files.length`, so the two are
+ * interchangeable and the native fallbacks below still work unchanged.
+ */
 function findFileInput(form) {
   const scope = form || document;
-  return scope.querySelector('input[type="file"][data-opt="file"]')
+  return scope.querySelector('wa-file-input')
+    || scope.querySelector('input[type="file"][data-opt="file"]')
     || scope.querySelector('#feedfile')
     || scope.querySelector('input[type="file"]');
 }
@@ -602,8 +530,7 @@ function readOptions(form) {
  */
 function readSource(form) {
   const fileInput = findFileInput(form);
-  const file = (fileInput && fileInput.files && fileInput.files[0])
-    || state.droppedFile || null;
+  const file = (fileInput && fileInput.files && fileInput.files[0]) || null;
   const urlInput = findUrlInput(form);
   const url = orNull(urlInput ? urlInput.value : null);
 
@@ -649,28 +576,32 @@ function readSource(form) {
   };
 }
 
+/**
+ * The callout itself is in the shell (index.html), the same way `#daybanner` is —
+ * so there is nothing to build here, only something to reveal. The text node is
+ * found inside the box, never document-wide, so it cannot bind to anything else.
+ */
+function formErrorBox() {
+  const box = pick('#landing-error', '[data-role="formerror"]');
+  return { box, text: box && box.querySelector('[data-role="formerrortext"]') };
+}
+
 function showFormError(message) {
-  const box = pick('#formerror', '[data-role="formerror"]');
-  if (box) {
-    box.innerHTML = waCallout(el('p', esc(message), { className: 'wa-body-s' }),
-      { variant: 'danger', icon: 'triangle-exclamation' });
-    box.hidden = false;
-    return;
-  }
-  // No slot for it: say so where the eye already is rather than swallowing it.
-  const form = pick('#runform', 'form[data-role="runform"]', 'form');
-  if (form) form.insertAdjacentHTML('afterbegin', waCallout(
-    el('p', esc(message), { className: 'wa-body-s' }),
-    { variant: 'danger', icon: 'triangle-exclamation', id: 'formerror' },
-  ));
+  const { box, text } = formErrorBox();
+  if (!box || !text) return;
+  // Unhide first: the region must be in the a11y tree before the message lands,
+  // or `role="alert"` has nothing to announce.
+  box.hidden = false;
+  text.textContent = message;
 }
 
 function clearFormError() {
-  const box = pick('#formerror', '[data-role="formerror"]');
-  if (box) {
-    box.innerHTML = '';
-    box.hidden = true;
-  }
+  const { box, text } = formErrorBox();
+  if (!box) return;
+  box.hidden = true;
+  // Blank it too — otherwise re-submitting an unfixed form writes the same string,
+  // mutates nothing, and the alert stays silent.
+  if (text) text.textContent = '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3004,7 +2935,7 @@ async function buildStandalonePage() {
   // Anything that only makes sense while a run is in flight: the landing form, the
   // progress readout, the download button itself.
   for (const node of clone.querySelectorAll('[data-run-only], #landing, [data-role="landing"],'
-    + ' #runprogress, [data-role="progress"], #download, [data-role="download"], #formerror,'
+    + ' #runprogress, [data-role="progress"], #download, [data-role="download"],'
     + ' [data-state="empty"]')) {
     node.remove();
   }

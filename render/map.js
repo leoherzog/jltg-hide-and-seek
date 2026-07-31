@@ -43,7 +43,7 @@ import {
 
 import {
   S4_ORDINAL,
-  s4Imperial, s4Dist, s4Area, s4Plural, s4Signed, s4JoinWords,
+  s4Dist, s4Area, s4Plural, s4Signed, s4JoinWords,
   s4Swatch, s4CardHeader,
   s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4WorstDay, s4LiveQuestions,
 } from './verdict.js';

@@ -116,6 +116,35 @@ wa-callout, wa-details, wa-progress-bar, [class*="wa-caption-"],
   font-family: var(--wa-font-family-ui);
 }
 sup[data-cite] { font-family: var(--wa-font-family-ui); font-size: 10px; font-weight: 700; }
+/* wa-input is deliberately NOT in the list above. That rule sets `font-family` on the
+   host, and wa-input's inner control is `font-family: inherit` — the sans face would
+   land on the value the reader types, which is serif today. So the UI voice is applied
+   to the shadow parts only. Five properties, not two: the component gives ::part(label)
+   16px/semibold/text-normal and ::part(hint) ~14px, where the hand-rolled captions
+   these replaced were 12px, normal weight and quiet. Scoped per control rather than
+   `#landing-form ::part(label)`, which would also hit #dropzone's label part.
+   #opt-border-shape is named separately twice over: it lives in the same grid but
+   wa-radio-group emits only a `form-control-label` part, never a `label` one. The
+   0.5em label/hint margins are left alone deliberately — every field in the grid now
+   gets them from the same component styles, so they line up. */
+#opt-url::part(label),
+#landing-fields wa-input::part(label),
+#landing-fields wa-select::part(label),
+#opt-border-shape::part(form-control-label) {
+  font-family: var(--wa-font-family-ui);
+  font-size: var(--wa-font-size-xs);
+  font-weight: var(--wa-font-weight-body);
+  color: var(--wa-color-text-quiet);
+  text-transform: uppercase;
+}
+#opt-url::part(hint),
+#landing-fields wa-input::part(hint),
+#landing-fields wa-select::part(hint),
+#opt-border-shape::part(hint) {
+  font-family: var(--wa-font-family-ui);
+  font-size: var(--wa-font-size-xs);
+  line-height: var(--wa-line-height-condensed);
+}
 
 /* ══ 4. PAGE FURNITURE ════════════════════════════════════════════════════ */
 html { scroll-behavior: smooth; scroll-padding-top: 7rem; }
@@ -360,31 +389,50 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 /* ---- the landing card ---- */
 #landing { max-inline-size: 48rem; margin-inline: auto; }
 #landing-lede { max-inline-size: 60ch; }
-/* A real drop target, not a styled file input: it takes the drag, the click
-   and the keyboard, so the three ways a person expects to hand over a file
-   all land on the same element. app.js sets `data-dragover` / `data-file`. */
-#dropzone {
-  display: grid; justify-items: center; gap: var(--wa-space-2xs);
+/* `#dropzone` is a <wa-file-input>, so the structure and every behaviour — the
+   <label for> that opens the picker, the drag handling, the chosen-file card —
+   belong to the component. Only the skin is ours, and it is the skin the
+   hand-rolled zone had: dashed and quiet at rest, accent while a file is over
+   it, green once one is held.
+
+   The component's own states drive all three, so there are no `data-` attributes
+   to set any more: `:state(dragging)` while dragging, `:state(blank)` until a
+   file is chosen. It also draws its own focus ring from `input:focus-visible`,
+   which is why there is no rule for it here. */
+#dropzone::part(dropzone) {
+  gap: var(--wa-space-2xs);
   padding: var(--wa-space-2xl) var(--wa-space-l);
   border: var(--wa-border-width-m) dashed var(--wa-color-surface-border);
   border-radius: var(--wa-border-radius-l);
   background: var(--wa-color-surface-lowered);
-  text-align: center; cursor: pointer;
   transition: border-color .12s, background-color .12s;
 }
-@media (prefers-reduced-motion: reduce) { #dropzone { transition: none; } }
-#dropzone:hover { border-color: var(--accent); }
-#dropzone:focus-visible { outline: var(--wa-focus-ring);
-                          outline-offset: var(--wa-focus-ring-offset); }
-#dropzone[data-dragover] { border-color: var(--accent); border-style: solid;
+@media (prefers-reduced-motion: reduce) {
+  #dropzone::part(dropzone) { transition: none; }
+}
+#dropzone::part(dropzone):hover { border-color: var(--accent); }
+#dropzone:state(dragging)::part(dropzone) {
+  border-color: var(--accent); border-style: solid;
   background: color-mix(in srgb, var(--accent) 10%, var(--wa-color-surface-lowered)); }
-#dropzone[data-file] { border-style: solid; border-color: var(--good);
+#dropzone:not(:state(blank))::part(dropzone) {
+  border-style: solid; border-color: var(--good);
   background: color-mix(in srgb, var(--good) 8%, var(--wa-color-surface-lowered)); }
+
+/* The three OSM explanations are the switches' own hints now, so they are wired to
+   the control by `aria-describedby`. Two corrections that buys us: the component hint
+   sits 0.5em below the label where the panel's other nine hints sit at wa-gap-3xs (the
+   slotted span keeps its caption classes, so only the slot's margin needs pulling
+   back), and `align-self` keeps the host from stretching `base` — which carries
+   `cursor: pointer` — across the whole row now that a paragraph lives inside an
+   inline-flex host, turning blank space into a toggle for a real analysis option. */
+#advanced wa-switch::part(hint) { max-inline-size: 72ch; margin-block-start: var(--wa-space-3xs); }
+#advanced wa-switch::part(base) { align-self: start; }
+/* The slotted icon is light DOM; the card's icon is ::part(file-icon) and is left
+   alone, so this only ever hits the one in the zone. */
+#dropzone > [slot="dropzone"] { align-items: center; }
 #dropzone wa-icon { font-size: 1.75rem; color: var(--ink-3); }
-#dropzone[data-file] wa-icon { color: var(--good-text); }
-#dropzone[data-file] #dropzone-empty,
-#dropzone:not([data-file]) #dropzone-chosen { display: none; }
-#dropzone-name { overflow-wrap: anywhere; }
+#dropzone:not(:state(blank)) wa-icon { color: var(--good-text); }
+#dropzone::part(file-name) { overflow-wrap: anywhere; white-space: normal; }
 /* the "or" between the two inputs — one control, two doors — is two <wa-divider>s in
    a wa-cluster (index.html). Their --color/--width are the same border token the old
    ::before/::after pair hand-rolled. The rules are invisible until the kit loader
@@ -442,8 +490,9 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 .sk-cites { columns: 2; column-gap: 40px; }
 @media (max-width: 760px) { .sk-cites { columns: 1; } }
 .sk-cites > wa-skeleton { block-size: .8em; margin-bottom: 7px; break-inside: avoid; }
-.sk-figures { display: grid; gap: var(--wa-space-m);
-              grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+/* `#footer-figures` has no rule of its own: the skeleton carries the same
+   `wa-grid wa-gap-m` + `--min-column-size:230px` deck.js 1443 gives the hydrated
+   element, so the grid does not reflow when the real figures land. */
 
 /* A pending section is not a broken section: it keeps its heading, its
    ordinal, its kicker and its nav entry, and only the evidence is grey.
@@ -461,8 +510,11 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    the real map appears. */
 #netmap-frame { inline-size: 100%; }
 
-/* ---- errors surfaced by app.js (worker `error`, a CORS failure, a bad zip) */
-#landing-error:not([hidden]), #run-error:not([hidden]) { display: block; }
+/* ---- errors surfaced by app.js (worker `error`, a CORS failure, a bad zip)
+   #landing-error is a wa-callout now and owns its own `display: flex`; forcing
+   `display: block` on it from here would beat the shadow rule and stack the icon
+   above the message. #run-error is still a plain div, so its half stays. */
+#run-error:not([hidden]) { display: block; }
 
 /* == STRATEGY-CSS-START =====================================================
    EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S, AND IS CUT OUT OF THE SAVED

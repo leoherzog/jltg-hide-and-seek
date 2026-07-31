@@ -220,28 +220,26 @@
       <wa-card>
         <form id="landing-form" class="wa-stack wa-gap-l">
 
-          <!-- a real drag-and-drop target: drop, click and keyboard all land here -->
-          <div id="dropzone" tabindex="0" role="button" aria-describedby="dropzone-hint">
-            <wa-icon name="file-zipper"></wa-icon>
-            <div id="dropzone-empty" class="wa-stack wa-gap-3xs">
+          <!-- <wa-file-input> is the drop zone. It renders a `<label for>` wrapped
+               around a native file input, so click, tap and keyboard activation are
+               all the browser's own — there is no `fileInput.click()` anywhere in the
+               open path, which is precisely what used to leave this dead on Chrome and
+               Firefox for Android. It also owns the drag handling and renders the
+               chosen file as a card, so app.js no longer draws either.
+
+               `accept` deliberately omits `application/x-zip-compressed`: Android
+               resolves the picker intent from these MIME types and that non-standard
+               one is not in its MimeTypeMap. The component re-checks `accept` against
+               the file *name* after the fact (fileMatchesAccept), so a zip the picker
+               hands back typed as application/octet-stream still gets through. -->
+          <wa-file-input id="dropzone" name="file" accept=".zip,application/zip">
+            <div slot="dropzone" class="wa-stack wa-gap-2xs">
+              <wa-icon name="file-zipper"></wa-icon>
               <span class="wa-heading-s">Drop a GTFS <code>.zip</code> here</span>
               <span class="wa-caption-s wa-color-text-quiet">or click to choose one from your disk</span>
             </div>
-            <div id="dropzone-chosen" class="wa-stack wa-gap-3xs">
-              <span id="dropzone-name" data-role="filename" class="wa-heading-s"></span>
-              <span id="dropzone-size" class="wa-caption-s wa-color-text-quiet"></span>
-            </div>
-            <!-- `wa-visually-hidden-force`, NOT `wa-visually-hidden`: the kit gates the
-                 latter on `:not(:focus-within)` (utilities/visually-hidden.css 2), so
-                 focusing this input drops the clip and native.css lays a full-size
-                 "Choose File" control out inside the drop zone. It is driven only by
-                 `fileInput.click()` (app.js 345), so it is also taken out of the tab
-                 order — it is an implementation detail of #dropzone, which is the real
-                 control, and a focusable descendant would make that button's own role
-                 ambiguous (axe `nested-interactive`). -->
-            <input type="file" id="file-input" name="file" accept=".zip,application/zip,application/x-zip-compressed" class="wa-visually-hidden-force" tabindex="-1" aria-hidden="true">
-          </div>
-          <p id="dropzone-hint" class="wa-caption-s wa-color-text-quiet">A GTFS feed is a zip of CSV files — <code>stops.txt</code>, <code>trips.txt</code>, <code>stop_times.txt</code> and friends. Nothing else is read.</p>
+            <span slot="hint" class="wa-caption-s wa-color-text-quiet">A GTFS feed is a zip of CSV files — <code>stops.txt</code>, <code>trips.txt</code>, <code>stop_times.txt</code> and friends. Nothing else is read.</span>
+          </wa-file-input>
 
           <!-- two wa-dividers rather than a bespoke grid with ::before/::after rules.
                --spacing:0 because the wa-stack parent owns the vertical rhythm; flex:1
@@ -252,10 +250,16 @@
             <wa-divider style="--spacing:0;flex:1"></wa-divider>
           </div>
 
-          <label class="wa-stack wa-gap-3xs">
-            <span class="wa-caption-xs wa-text-uppercase">Feed URL</span>
-            <input type="url" id="opt-url" name="url" class="wa-input" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip">
-          </label>
+          <!-- `data-opt="url"` is load-bearing here, not decoration. `findUrlInput`
+               (app.js 376) used to reach this field through its third fallback,
+               `input[type="url"]` — and a <wa-input>'s real input lives in a shadow
+               root, where that selector cannot see it. Without the attribute
+               `readSource` reads no URL at all and Analyse answers a pasted link by
+               claiming nothing was supplied. -->
+          <wa-input type="url" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
+          <!-- Page prose, deliberately NOT `slot="hint"`: 72ch of CORS explanation
+               belongs beside the field, not inside its accessible description and
+               not inside its width. -->
           <!-- Honest, because the failure is not the reader's fault and not fixable
                from this page. -->
           <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens the browser refuses the request before this page ever sees it, and there is nothing either of us can do about it from here — download the zip yourself and drop it in above. Same answer, one extra step.</p>
@@ -273,115 +277,101 @@
 
               <div id="landing-fields" class="wa-grid wa-gap-m" style="--min-column-size:220px">
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Game size</span>
-                  <select id="opt-size" data-opt="sizeOverride" name="size" class="wa-select">
-                    <option value="">Infer from the map</option>
-                    <option value="small">Small</option>
-                    <option value="medium">Medium</option>
-                    <option value="large">Large</option>
-                  </select>
-                  <span class="wa-caption-xs wa-color-text-quiet">Sets the deck, the hiding period and the zone radius unless you override those too.</span>
-                </label>
+                <!-- "Infer from the map" is the PLACEHOLDER, not a fourth option with
+                     an empty value: `wa-option` documents that values may not contain
+                     spaces because they are space-delimited when `multiple` is set, so
+                     an empty one is a shape the component never promises to round-trip.
+                     Unselected, `.value` is `''`, `orNull` (app.js 407) turns that into
+                     null, and readOptions leaves `sizeOverride` alone — which is what
+                     inferring *is*. `with-clear` is what gets the reader back there
+                     after picking a size; its button only appears once one is set. -->
+                <wa-select id="opt-size" data-opt="sizeOverride" name="size" label="Game size"
+                           placeholder="Infer from the map" with-clear
+                           hint="Sets the deck, the hiding period and the zone radius unless you override those too.">
+                  <wa-option value="small">Small</wa-option>
+                  <wa-option value="medium">Medium</wa-option>
+                  <wa-option value="large">Large</wa-option>
+                </wa-select>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Zone radius</span>
-                  <!-- `step="any"`, and it matters: HTML's step base is `min`, so
-                       `min="1" step="10"` would validate 1, 11, 21 … and reject 400,
-                       500, 800 and the rulebook's own 402.336. A stepMismatch inside a
-                       collapsed <wa-details> suppresses the submit event with no
-                       focusable control to hang a bubble on, so the form would simply
-                       stop working. app.js 513 already rejects `<= 0` in words. -->
-                  <input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" class="wa-input" min="1" step="any" inputmode="decimal" placeholder="from the game size">
-                  <span class="wa-caption-xs wa-color-text-quiet">Metres. How far from a stop a hider may be.</span>
-                </label>
+                <!-- `step="any"`, and it matters: HTML's step base is `min`, so
+                     `min="1" step="10"` would validate 1, 11, 21 … and reject 400,
+                     500, 800 and the rulebook's own 402.336. A stepMismatch inside a
+                     collapsed <wa-details> suppresses the submit event with no
+                     focusable control to hang a bubble on, so the form would simply
+                     stop working. app.js 513 already rejects `<= 0` in words.
+                     wa-input declares `step` as a plain property, so the literal
+                     string "any" survives to the inner input untouched. -->
+                <wa-input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" min="1" step="any" inputmode="decimal" placeholder="from the game size" label="Zone radius" hint="Metres. How far from a stop a hider may be."></wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Hiding period</span>
-                  <input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" class="wa-input" min="1" step="1" inputmode="numeric" placeholder="from the game size">
-                  <span class="wa-caption-xs wa-color-text-quiet">Minutes the hider gets before the seekers start.</span>
-                </label>
+                <wa-input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" min="1" step="1" inputmode="numeric" placeholder="from the game size" label="Hiding period" hint="Minutes the hider gets before the seekers start."></wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Start stop</span>
-                  <input type="text" id="opt-start-stop" data-opt="startStopId" name="start-stop" class="wa-input" spellcheck="false" placeholder="stop_id — inferred hub">
-                  <span class="wa-caption-xs wa-color-text-quiet">A <code>stop_id</code> from the feed. Overrides the inferred round-start station.</span>
-                </label>
+                <!-- Hint as a slotted span, not the attribute: the attribute is set as
+                     text and would print the <code> tags. -->
+                <wa-input type="text" id="opt-start-stop" data-opt="startStopId" name="start-stop" spellcheck="false" placeholder="stop_id — inferred hub" label="Start stop">
+                  <span slot="hint">A <code>stop_id</code> from the feed. Overrides the inferred round-start station.</span>
+                </wa-input>
 
-                <div class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Border shape</span>
-                  <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" class="wa-visually-hidden-label">
-                    <wa-radio value="bbox" appearance="button" size="s">Rectangle</wa-radio>
-                    <wa-radio value="circle" appearance="button" size="s">Circle</wa-radio>
-                  </wa-radio-group>
-                  <span class="wa-caption-xs wa-color-text-quiet">Out-of-border features do not exist for this game, so this changes real answers.</span>
-                </div>
+                <!-- The group's own `label` is the visible one now, so the field is
+                     labelled once instead of twice — a caption span that labelled
+                     nothing, plus a duplicate label hidden with
+                     `wa-visually-hidden-label`. `hint` puts the sentence in the
+                     fieldset's `aria-describedby`, where it was in no accessible
+                     relationship to the control before. -->
+                <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Out-of-border features do not exist for this game, so this changes real answers.">
+                  <wa-radio value="bbox" appearance="button" size="s">Rectangle</wa-radio>
+                  <wa-radio value="circle" appearance="button" size="s">Circle</wa-radio>
+                </wa-radio-group>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Border box</span>
-                  <input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" class="wa-input" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E">
-                  <span class="wa-caption-xs wa-color-text-quiet">Four decimal degrees, south west north east. Blank fits the box to the network.</span>
-                </label>
+                <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four decimal degrees, south west north east. Blank fits the box to the network."></wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Departure time</span>
-                  <input type="time" id="opt-departure" data-opt="departure" name="departure" class="wa-input" step="1" value="09:00:00">
-                  <span class="wa-caption-xs wa-color-text-quiet">When the clock starts on the representative day.</span>
-                </label>
+                <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="When the clock starts on the representative day."></wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Board slack</span>
-                  <!-- `step="1"`: the unit is seconds and any non-negative integer is
-                       legal (generate.py 216, `type=int`). `step="30"` would have made
-                       45 a stepMismatch and killed the submit silently, exactly as
-                       described on the zone-radius field above. -->
-                  <input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" class="wa-input" min="0" step="1" inputmode="numeric" value="0">
-                  <span class="wa-caption-xs wa-color-text-quiet">Seconds of grace for making a connection. Zero assumes you sprint.</span>
-                </label>
+                <!-- `step="1"`: the unit is seconds and any non-negative integer is
+                     legal (generate.py 216, `type=int`). `step="30"` would have made
+                     45 a stepMismatch and killed the submit silently, exactly as
+                     described on the zone-radius field above. -->
+                <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Seconds of grace for making a connection. Zero assumes you sprint."></wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Analysis date</span>
-                  <input type="date" id="opt-as-of" data-opt="asOf" name="as-of" class="wa-input">
-                  <!-- Blank is the feed's own start date (feed.js 1395, generate.py
-                       2567; README 265). Nothing anywhere ranks dates by busyness —
-                       `s1Representative` (service.js 296) deliberately breaks a tie
-                       toward the QUIETER day. -->
-                  <span class="wa-caption-xs wa-color-text-quiet">Which calendar date to read the schedule for. Clamped into the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one.</span>
-                </label>
+                <!-- Blank is the feed's own start date (feed.js 1395, generate.py
+                     2567; README 265). Nothing anywhere ranks dates by busyness —
+                     `s1Representative` (service.js 296) deliberately breaks a tie
+                     toward the QUIETER day; the hint says so. -->
+                <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Clamped into the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Exclude stops</span>
-                  <input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" class="wa-input" spellcheck="false" placeholder="stop_id, stop_id, …">
-                  <span class="wa-caption-xs wa-color-text-quiet">Out-of-play stations. Comma-separated <code>stop_id</code>s.</span>
-                </label>
+                <!-- Slotted hints again, for the <code> the attribute cannot carry. -->
+                <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops">
+                  <span slot="hint">Out-of-play stations. Comma-separated <code>stop_id</code>s.</span>
+                </wa-input>
 
-                <label class="wa-stack wa-gap-3xs">
-                  <span class="wa-caption-xs wa-text-uppercase">Exclude routes</span>
-                  <input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" class="wa-input" spellcheck="false" placeholder="route_id, route_id, …">
-                  <span class="wa-caption-xs wa-color-text-quiet">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
-                </label>
+                <wa-input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" spellcheck="false" placeholder="route_id, route_id, …" label="Exclude routes">
+                  <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
+                </wa-input>
 
               </div>
 
-              <div class="wa-stack wa-gap-3xs">
-                <wa-switch id="opt-no-osm" data-opt="noOsm" name="no-osm" size="s">Skip OpenStreetMap (much faster)</wa-switch>
-                <span class="wa-caption-xs wa-color-text-quiet" style="max-inline-size:72ch">Overpass and Nominatim are the slow part of a run, by a wide margin. Skipping them keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at, so the score says so out loud.</span>
-              </div>
+              <!-- The explanation is the switch's own `hint` slot, not a sibling span:
+                   slotted, it is what the switch's `aria-describedby` points at, so the
+                   prose is finally read out with the control instead of sitting beside
+                   it unassociated. It has to stay a DIRECT child — slot detection is
+                   `:scope > [slot="hint"]` — and it keeps its caption classes so it
+                   matches the ten hints above it; the reading width now comes from
+                   `#advanced wa-switch::part(hint)` in styles.css. -->
+              <wa-switch id="opt-no-osm" data-opt="noOsm" name="no-osm" size="s">Skip OpenStreetMap (much faster)
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Overpass and Nominatim are the slow part of a run, by a wide margin. Skipping them keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at, so the score says so out loud.</span>
+              </wa-switch>
 
-              <div class="wa-stack wa-gap-3xs">
-                <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore cached OpenStreetMap answers</wa-switch>
-                <span class="wa-caption-xs wa-color-text-quiet" style="max-inline-size:72ch">Overpass answers are cached in this browser and reused, which is what makes a second run of the same map fast. Turn this on to refetch them — a full run against the public mirrors, several minutes, and only worth it if the map itself has changed.</span>
-              </div>
+              <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore cached OpenStreetMap answers
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Overpass answers are cached in this browser and reused, which is what makes a second run of the same map fast. Turn this on to refetch them — a full run against the public mirrors, several minutes, and only worth it if the map itself has changed.</span>
+              </wa-switch>
 
               <!-- `offline` is live end to end — app.js 560, worker.js 236,
                    cache.js 224 — and CONTRACT §(c) does NOT list it among the options
                    dropped as meaningless in a browser. Without a control here
                    `readControl` returns undefined and app.js 560-561 is a dead branch
                    the reader can never reach. -->
-              <div class="wa-stack wa-gap-3xs">
-                <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only cached OpenStreetMap answers</wa-switch>
-                <span class="wa-caption-xs wa-color-text-quiet" style="max-inline-size:72ch">The mirror image of the switch above: a cache miss becomes an error instead of a fetch. Nothing goes out to the network, so a run either reproduces exactly what an earlier one saw or stops and tells you which query it could not answer. Useful on a plane, or when you want two runs to be comparable.</span>
-              </div>
+              <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only cached OpenStreetMap answers
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The mirror image of the switch above: a cache miss becomes an error instead of a fetch. Nothing goes out to the network, so a run either reproduces exactly what an earlier one saw or stops and tells you which query it could not answer. Useful on a plane, or when you want two runs to be comparable.</span>
+              </wa-switch>
             </div>
           </wa-details>
 
@@ -392,12 +382,18 @@
             <span class="wa-caption-s wa-color-text-quiet">A city-sized feed takes a few minutes, most of it waiting on OpenStreetMap.</span>
           </div>
 
-          <!-- `role="alert"`: `showFormError` (app.js 626) writes the callout here and
-               unhides it without moving focus, and wa-callout carries no implicit
-               role — so without this the primary action of the page silently does
-               nothing for a screen-reader user. `hidden` is cleared before the
-               content lands, so the region is exposed when the message arrives. -->
-          <div id="landing-error" data-role="formerror" role="alert" hidden></div>
+          <!-- The callout is shipped here rather than built as a string: `showFormError`
+               (app.js 579) now only unhides it and writes the message text.
+               `role="alert"` is explicit because wa-callout carries no implicit role —
+               its render() is two bare divs — and without it the primary action of the
+               page silently does nothing for a screen-reader user. app.js unhides
+               BEFORE writing, so the region is in the a11y tree when the message
+               arrives, and blanks the text on clear so re-submitting an unfixed form
+               is still a mutation the AT can see. -->
+          <wa-callout id="landing-error" data-role="formerror" role="alert" variant="danger" appearance="filled-outlined" hidden>
+            <wa-icon slot="icon" name="triangle-exclamation"></wa-icon>
+            <p class="wa-body-s" data-role="formerrortext"></p>
+          </wa-callout>
         </form>
       </wa-card>
     </div>
@@ -702,7 +698,7 @@
        off the error page. app.js settles these two in place instead. -->
   <footer slot="footer" data-when="report" data-section="footer" data-stage="feed" data-state="pending" aria-busy="true">
     <div class="wa-stack wa-gap-m">
-      <div id="footer-figures" class="sk-figures">
+      <div id="footer-figures" class="wa-grid wa-gap-m" style="--min-column-size:230px">
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:9rem"></wa-skeleton></span>
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:8rem"></wa-skeleton></span>
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:9rem"></wa-skeleton></span>
