@@ -145,7 +145,7 @@ export function waIcon(name, opts = {}) {
 }
 
 /**
- * `<wa-card>` with optional header/footer/image slots.
+ * `<wa-card>` with optional header/footer slots.
  *
  * Passing a header or footer adds the `with-header` / `with-footer` attributes,
  * which WebAwesome requires for the slot to be laid out.
@@ -155,9 +155,8 @@ export function waIcon(name, opts = {}) {
  * @returns {string}
  */
 export function waCard(bodyHtml, opts = {}) {
-  const { headerHtml = '', footerHtml = '', imageHtml = '', className = '', ...rest } = opts;
+  const { headerHtml = '', footerHtml = '', className = '', ...rest } = opts;
   const slots = join(
-    imageHtml ? el('div', imageHtml, { slot: 'media' }) : '',
     headerHtml ? el('div', headerHtml, { slot: 'header' }) : '',
     bodyHtml,
     footerHtml ? el('div', footerHtml, { slot: 'footer' }) : '',
@@ -166,7 +165,6 @@ export function waCard(bodyHtml, opts = {}) {
     className: className || null,
     withHeader: Boolean(headerHtml),
     withFooter: Boolean(footerHtml),
-    withImage: Boolean(imageHtml),
     ...rest,
   });
 }
@@ -279,29 +277,9 @@ export function waProgressRing(value, opts = {}) {
  */
 export function waSwitch(label, opts = {}) {
   const { checked = false, size = 's', ...rest } = opts;
-  return el('wa-switch', esc(label), { checked: checked || null, size, ...rest });
+  return el('wa-switch', esc(label), { checked, size, ...rest });
 }
 
-
-/**
- * `<wa-radio-group>` of `[value, label]` pairs, both escaped.
- * @param {string} name @param {Array<[string,string]>} options @param {Object} [opts]
- * @returns {string}
- */
-export function waRadioGroup(name, options, opts = {}) {
-  const {
-    value = '', label = '', orientation = 'horizontal', size = 's', ...rest
-  } = opts;
-  const radios = options.map(([val, lbl]) => el('wa-radio', esc(lbl), { value: val })).join('');
-  return el('wa-radio-group', radios, {
-    name,
-    value: value || null,
-    label: label || null,
-    orientation,
-    size,
-    ...rest,
-  });
-}
 
 /**
  * `<wa-copy-button>` carrying `payload` as its `value` (escaped as an attribute).
@@ -315,27 +293,6 @@ export function waRadioGroup(name, options, opts = {}) {
 export function waCopyButton(payload, opts = {}) {
   const { label = 'Copy', ...rest } = opts;
   return el('wa-copy-button', '', { value: payload, copyLabel: label, ...rest });
-}
-
-/**
- * `<wa-sparkline>` over a numeric series (per-zone departure profile).
- *
- * The series goes in `data`, SPACE-separated: the component reads
- * `this.data.trim().split(/\s+/)` and has no `value` property at all. `comma:false` is
- * load-bearing for the same reason — grouped thousands would put a comma inside a
- * number, and the split would not see it. Anything that fails `parseFloat` is dropped
- * silently, and fewer than two surviving points renders nothing.
- *
- * Pass `label`: it is the component's accessible name, and a bare sparkline has no
- * textual equivalent for assistive tech.
- *
- * @param {ReadonlyArray<number>} values @param {Object} [opts]
- * @param {string} [opts.label] accessible name
- * @returns {string}
- */
-export function waSparkline(values, opts = {}) {
-  const data = Array.from(values, (v) => num(v, 2, { comma: false })).join(' ');
-  return el('wa-sparkline', '', { data, ...opts });
 }
 
 /**
@@ -375,23 +332,6 @@ export function waChart(chartType, configJson, opts = {}) {
     type: chartType,
     ...opts,
   });
-}
-
-/**
- * `<wa-tab-group>` from `[panelName, tabLabel, panelHtml]` triples.
- *
- * Defined, deliberately unused. A tab hides n−1 panels from Ctrl+F and from print,
- * puts no state in the URL, and cannot hold a map or a canvas here (see
- * `waAccordion`). A collapsed accordion label still shows its content's headline; an
- * inactive tab shows nothing.
- *
- * @param {Array<[string,string,string]>} tabs @param {Object} [opts]
- * @returns {string}
- */
-export function waTabGroup(tabs, opts = {}) {
-  const heads = tabs.map(([name, label]) => el('wa-tab', esc(label), { panel: name })).join('');
-  const panels = tabs.map(([name, , body]) => el('wa-tab-panel', body, { name })).join('');
-  return el('wa-tab-group', heads + panels, opts);
 }
 
 /**
@@ -456,13 +396,18 @@ export function chip(text, iconName = '', opts = {}) {
  * `rightHtml` are markup. Rubric is never collapsed: it is what makes a headline
  * number checkable rather than decorative.
  *
+ * `opts.label` is the bar's accessible name and must be plain text — `labelHtml` is
+ * often an anchor, and `wa-progress-bar` puts `label` straight into `aria-label`.
+ * Without it every bar on the page announces as the generic "Progress".
+ *
  * @param {string} labelHtml @param {number} valuePct @param {string} rightHtml
  * @param {Object} [opts]
+ * @param {string} [opts.label]
  * @returns {string}
  */
 export function meter(labelHtml, valuePct, rightHtml, opts = {}) {
-  const { flank = '6rem', ...rest } = opts;
-  const left = el('div', join(labelHtml, waProgressBar(valuePct)), {
+  const { flank = '6rem', label = '', ...rest } = opts;
+  const left = el('div', join(labelHtml, waProgressBar(valuePct, { label })), {
     className: 'wa-stack wa-gap-3xs',
   });
   return el('div', join(left, rightHtml), {
@@ -580,7 +525,7 @@ export function searchInput(inputId, opts = {}) {
   return el('label', join(
     el('span', esc(label), { className: 'wa-visually-hidden' }),
     voidEl('input', {
-      type: 'search', id: inputId, className: 'wa-input', placeholder,
+      type: 'search', id: inputId, placeholder,
     }),
   ));
 }
@@ -591,15 +536,11 @@ export function searchInput(inputId, opts = {}) {
  * `native.css` already gives `<blockquote>` its leading border, quiet colour and
  * serif face, so this costs no CSS. Exactly one per page.
  *
- * @param {string} text @param {Object} [opts] @param {string} [opts.attribution]
+ * @param {string} text
  * @returns {string}
  */
-export function pullQuote(text, opts = {}) {
-  const { attribution = '' } = opts;
-  const cite = attribution
-    ? el('footer', esc(attribution), { className: 'wa-caption-s wa-color-text-quiet' })
-    : '';
-  return el('blockquote', el('p', esc(text), { className: 'wa-longform-xl' }) + cite);
+export function pullQuote(text) {
+  return el('blockquote', el('p', esc(text), { className: 'wa-longform-xl' }));
 }
 
 // ── page-level composition helpers ───────────────────────────────────────────
@@ -620,17 +561,14 @@ export function pullQuote(text, opts = {}) {
  * @returns {string}
  */
 export function section(sectionId, number, title, bodyHtml, opts = {}) {
-  const {
-    kicker = '', lede = '', answerHtml = '',
-    answerVariant = 'neutral', answerIcon = 'circle-info',
-  } = opts;
+  const { kicker = '', lede = '', answerHtml = '' } = opts;
   const head = join(
     kicker ? el('p', esc(kicker), { className: 'kicker wa-caption-s wa-text-uppercase' }) : '',
     el('h2', esc(title), { className: 'wa-heading-2xl', dataN: number }),
     lede ? el('p', esc(lede), { className: 'wa-body-l' }) : '',
   );
   const answer = answerHtml
-    ? waCallout(answerHtml, { variant: answerVariant, appearance: 'plain', icon: answerIcon })
+    ? waCallout(answerHtml, { variant: 'neutral', appearance: 'plain', icon: 'circle-info' })
     : '';
   return el(
     'section',
@@ -699,8 +637,8 @@ export function provChip(...ids) {
 /**
  * A `<table>` from plain-text headers and **pre-escaped** row cells.
  *
- * Row cells are markup (so a cell can hold a `wa-tag`); headers are text. Wrapped in
- * a `wa-scroller` by default because long tables must scroll inside their own
+ * Row cells are markup (so a cell can hold a `wa-tag`); headers are text. Always
+ * wrapped in a `wa-scroller`, because long tables must scroll inside their own
  * container, never the page body.
  *
  * @param {ReadonlyArray<string>} headers
@@ -709,13 +647,13 @@ export function provChip(...ids) {
  * @returns {string}
  */
 export function dataTable(headers, rows, opts = {}) {
-  const { className = '', scrollable = true, ...rest } = opts;
+  const { className = '', ...rest } = opts;
   const thead = el('thead', el('tr', headers.map((h) => el('th', esc(h))).join('')));
   const tbody = el('tbody', rows.map(
     (row) => el('tr', row.map((c) => el('td', c)).join('')),
   ).join(''));
   const table = el('table', thead + tbody, { className: className || null, ...rest });
-  return scrollable ? waScroller(table) : table;
+  return waScroller(table);
 }
 
 /**
@@ -726,12 +664,10 @@ export function dataTable(headers, rows, opts = {}) {
  * does not have to be parsed to render the verdict.
  *
  * @param {string} blockId @param {*} payload
- * @param {Object} [opts] @param {number} [opts.floatDp]
  * @returns {string}
  */
-export function jsonBlock(blockId, payload, opts = {}) {
-  const floatDp = opts.floatDp !== undefined ? opts.floatDp : 6;
-  return el('script', jsonSafe(jdump(payload, { floatDp })),
+export function jsonBlock(blockId, payload) {
+  return el('script', jsonSafe(jdump(payload, { floatDp: 6 })),
     { type: 'application/json', id: blockId });
 }
 

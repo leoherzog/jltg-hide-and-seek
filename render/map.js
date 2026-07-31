@@ -2,15 +2,13 @@
  * render/map.js — §04 At a Glance, §05 The Map You're Playing On, §06 Getting Around.
  *
  * Ported from generate.py S4:
- *   index_key_numbers       11718  + _s4_chip_group 11739, _s4_table 11760,
- *                                    _s4_legend 11773, _s4_swatch 11780,
+ *   index_key_numbers       11718  + _s4_legend 11773, _s4_swatch 11780,
  *                                    _s4_card_header 11784               → §04 `#numbers`
  *   index_network_map       11986                                        → §05 `#network`
  *   index_transit_reality   11877  + _s4_headway_bin 11797, _s4_heatmap_rows 11805,
  *                                    _s4_heatmap_table 11815, _s4_heatmap 11846,
- *                                    _s4_travel_rows 11032, _s4_chart_max 11075
- *                                                                        → §06 `#transit`
- *   the per-day views       10724–11032 (_s4_day_view … _s4_banner_html)
+ *                                    _s4_chart_max 11075                 → §06 `#transit`
+ *   the per-day views       10724–11032 (_s4_day_view … _s4_tiles_html)
  *
  * The shared S4 formatting helpers (`_s4_dist`, `_s4_area`, `_s4_val`, `_s4_plural`,
  * `_s4_natural_key`, `_s4_swatch`, `_s4_card_header`) and four of the day-view helpers
@@ -26,24 +24,24 @@
  * `../lib/core.js`. No `toFixed`, no `Intl`, no arithmetic inside a template literal.
  *
  * DETERMINISM. No clock, no randomness, and no unsorted iteration of an object whose
- * key order could vary. The two sorts below (`_s4_heatmap_rows`, `_s4_travel_rows`)
- * carry the Python's full tie-break tuple for exactly that reason.
+ * key order could vary. The sort below (`_s4_heatmap_rows`) carries the Python's full
+ * tie-break tuple for exactly that reason.
  *
  * @module render/map
  */
 
 import {
-  num, pct, mins, hhmm, prettyDate, rhu, quantile, jdump,
+  num, pct, mins, hhmm, prettyDate, quantile, jdump,
 } from '../lib/core.js';
 
 import {
-  esc, el, join, waIcon, waCard, waScroller, waDetails, waSwitch, waCopyButton,
+  esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton,
   chip, kpi, section, subhead, provChip,
 } from './html.js';
 
 import {
   S4_ORDINAL,
-  s4Dist, s4Area, s4Plural, s4Signed, s4JoinWords,
+  s4Dist, s4Area, s4Plural, s4JoinWords,
   s4Swatch, s4CardHeader,
   s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4WorstDay, s4LiveQuestions,
 } from './verdict.js';
@@ -150,66 +148,8 @@ function startStopName(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · SHARED MARKUP HELPERS (generate.py 11739–11795)
+// S4 · SHARED MARKUP HELPERS (generate.py 11773–11795)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * A filter chip row: a `wa-radio-group` of button-appearance radios.
- *
- * The skeleton's `waRadioGroup` renders plain radios; the drafts' filters are
- * button-appearance ones, and the selection is the group's `value`. Built from the
- * sanctioned `wa-radio-group` / `wa-radio` pair either way. An option may carry a
- * third element, its icon name; the word always stays.
- *
- * @param {string} groupId @param {string} name
- * @param {ReadonlyArray<[string,string]|[string,string,string]>} options
- * @param {Object} opts @param {string} opts.label @param {string} [opts.value]
- * @returns {string}
- */
-export function s4ChipGroup(groupId, name, options, opts = {}) {
-  const { label, value = '' } = opts;
-  const list = Array.from(options || []);
-  if (!list.length) return '';
-  const radios = list.map((opt) => el(
-    'wa-radio',
-    join(opt.length > 2 && opt[2] ? waIcon(opt[2]) : '', esc(opt[1])),
-    { value: opt[0], appearance: 'button', size: 's' },
-  )).join('');
-  return el('wa-radio-group', radios, {
-    id: groupId,
-    name,
-    size: 's',
-    orientation: 'horizontal',
-    label,
-    value: value || list[0][0],
-    className: 'wa-visually-hidden-label',
-  });
-}
-
-/**
- * A `<table>` whose rows can carry attributes (the filters need `data-status`).
- *
- * Cells are pre-escaped markup, headers are plain text — the same contract as
- * `dataTable`, which cannot attach per-row attributes.
- *
- * @param {ReadonlyArray<string>} headers
- * @param {ReadonlyArray<[Object, ReadonlyArray<string>]>} rows
- * @param {Object} [opts] @param {string} [opts.tableId] @param {string} [opts.className]
- * @returns {string}
- */
-export function s4Table(headers, rows, opts = {}) {
-  const { tableId = '', className = 'wa-zebra-rows wa-hover-rows' } = opts;
-  const thead = el('thead', el('tr', Array.from(headers, (h) => el('th', esc(h))).join('')));
-  const body = Array.from(rows, ([rowAttrs, cells]) => el(
-    'tr',
-    Array.from(cells, (c) => el('td', c)).join(''),
-    rowAttrs || {},
-  )).join('');
-  return waScroller(el('table', thead + el('tbody', body), {
-    id: tableId || null,
-    className,
-  }));
-}
 
 /**
  * A `wa-cluster` of `.sw` swatches — the drafts' map legend.
@@ -452,178 +392,6 @@ export function s4TilesHtml(report, dayKey) {
     ), { className: 'wa-stack wa-gap-xs' }));
   }
   return join(...groups);
-}
-
-/**
- * The day strip: four figures, one sentence, one fitness delta.
- * @param {Object} report @param {string} dayKey @returns {Object}
- */
-export function s4Banner(report, dayKey) {
-  const v = s4DayView(report, dayKey);
-  const label = s4DayLabel(report, dayKey);
-  const day = s4DayByKey(report, dayKey);
-  const size = report.size || {};
-  const perDay = (report.fitness && report.fitness.perDay) || {};
-  const best = s4BestDay(report);
-  const score = (dayKey in perDay) ? perDay[dayKey] : null;
-  const bestScore = (best in perDay) ? perDay[best] : null;
-  const delta = (score === null || bestScore === null) ? null : score - bestScore;
-
-  const headway = v.medianHeadwayMin;
-  const midday = v.middayHeadwayP25P50P75;
-  let cadence;
-  let cadenceNote;
-  if (Array.isArray(midday) && midday.length === 3
-      && midday[0] !== null && midday[0] !== undefined) {
-    cadence = `${num(midday[0])}–${num(midday[2])} min`;
-    cadenceNote = 'midday quartiles';
-  } else if (headway !== null && headway !== undefined) {
-    cadence = mins(headway);
-    cadenceNote = 'median per stop';
-  } else {
-    cadence = '—';
-    cadenceNote = 'no service';
-  }
-
-  const nDates = day ? ((day.dayType || {}).dates || []).length : 0;
-  const asOf = (report.provenance || {}).asOf || '';
-  const repDate = String(v.date || asOf || '') || '20000101';
-  let note = `${num(v.trips || 0)} trips across ${num(v.servedStops || 0)} stops, `
-    + `${num(v.nZones || 0)} hiding zones, and `
-    + `${pct(Number(v.reachableZoneShare || 0.0))} of them reachable inside the `
-    + `${num(size.hidingPeriodMin || 0)}-minute hiding period. `
-    + "The median stop's last departure is "
-    + `${hhmm(Math.trunc(Number(v.medianLastDepartureS || 0)))}. `
-    + `${num(nDates)} ${nDates === 1 ? 'date' : 'dates'} in this feed run this pattern; `
-    + `${prettyDate(repDate)} is the one every number on this page is measured on.`;
-  if (delta !== null && delta < -0.05) {
-    note += ` Map fitness on this day is ${num(score, 1)}, ${s4Signed(delta)} against `
-      + `${s4DayLabel(report, best)}.`;
-  }
-
-  let variant;
-  if (delta === null || delta >= -2.0) variant = 'success';
-  else if (delta >= -10.0) variant = 'warning';
-  else variant = 'danger';
-
-  return {
-    key: dayKey,
-    label,
-    variant,
-    routes: `${num(v.routes || 0)} of ${num(feedRouteCount(report))}`,
-    cadence,
-    cadenceNote,
-    span: `${hhmm(Math.trunc(Number(v.firstDepartureS || 0)))}–`
-      + `${hhmm(Math.trunc(Number(v.lastDepartureS || 0)))}`,
-    note,
-    score: score === null ? null : num(score, 1),
-    delta: delta === null ? null : s4Signed(delta),
-  };
-}
-
-/**
- * The day strip's inner markup. `wa-callout`'s variant is set by app.js, because the
- * element itself is rendered once and reused.
- *
- * The day's heading leads, the four figures read across, and the 55-word paragraph —
- * which was in the way of everything under it — is one tap down. Nothing is dropped:
- * the cadence's "midday quartiles" qualifier moves into that paragraph as words, and
- * the paragraph itself is verbatim.
- *
- * @param {Object} report @param {string} dayKey @returns {string}
- */
-export function s4BannerHtml(report, dayKey) {
-  const b = s4Banner(report, dayKey);
-  const figures = [
-    ['Routes running', b.routes],
-    ['How often', b.cadence],
-    ['Service window', b.span],
-  ];
-  if (b.score !== null) {
-    figures.push(['Map fitness today',
-      b.score + ((b.delta && b.delta !== '0.0') ? ` · ${b.delta}` : '')]);
-  }
-  const note = `How often: ${b.cadence}, ${b.cadenceNote}. ${b.note}`;
-  return join(
-    el('div', join(
-      el('p', join(waIcon('calendar-day'), esc(`${b.label} service`)), {
-        className: 'wa-heading-xs wa-cluster wa-gap-2xs wa-align-items-center',
-      }),
-      el('div', figures.map(([caption, value]) => el('div', join(
-        el('span', esc(value), { className: 'wa-heading-s' }),
-        el('span', esc(caption), {
-          className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet',
-        }),
-      ), { className: 'wa-stack wa-gap-3xs' })).join(''),
-      { className: 'wa-cluster wa-gap-l' }),
-    ), { className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-m' }),
-    waDetails('What that means on the ground',
-      el('p', esc(note), { className: 'wa-body-s wa-color-text-quiet' }),
-      { appearance: 'plain' }),
-  );
-}
-
-/**
- * The ride-time chart's rows for one day, sorted by travel time (no-service last).
- *
- * The colour rule is stated in the card's caption verbatim, because a bar colour a
- * reader cannot reconstruct is decoration rather than information.
- *
- * @param {Object} report @param {string} dayKey
- * @returns {Array<{name:string,label:string,minutes:number,avail:boolean,tone:string,note:string,tip:string}>}
- */
-export function s4TravelRows(report, dayKey) {
-  const hp = Number((report.size || {}).hidingPeriodMin || 0);
-  const label = s4DayLabel(report, dayKey);
-  const rows = [];
-  for (const s of report.travelSamples || []) {
-    const per = (s.perDay || {})[dayKey] || {};
-    const rawMinutes = per.minutes;
-    const transfers = per.transfers;
-    const routes = Array.from(per.routes || [], (r) => String(r));
-    const name = String(s.name || s.stopId || '');
-    const short = name.length <= 36 ? name : `${name.slice(0, 35)}…`;
-    if (rawMinutes === null || rawMinutes === undefined) {
-      rows.push({
-        name,
-        label: short,
-        minutes: 0.0,
-        avail: false,
-        tone: 'none',
-        note: `no service on a ${label}`,
-        tip: el('b', esc(name)) + esc(`No service on a ${label}.`),
-      });
-      continue;
-    }
-    const minutes = Number(rawMinutes);
-    let tone;
-    let verdict;
-    if (minutes > hp) {
-      tone = 'bust';
-      verdict = `busts the ${num(hp)}-minute hiding period`;
-    } else if (minutes > 0.75 * hp || (transfers || 0) >= 2) {
-      tone = 'tight';
-      verdict = 'fits, but with no slack or two changes';
-    } else {
-      tone = 'fits';
-      verdict = 'fits the hiding period comfortably';
-    }
-    const leg = s4JoinWords(routes.map((r) => `route ${r}`)) || 'walking';
-    const tip = el('b', esc(name)) + esc(
-      `${mins(minutes, 1)} from the start location on ${leg}, `
-      + `${num(transfers || 0)} ${(transfers || 0) === 1 ? 'change' : 'changes'} — ${verdict}.`,
-    );
-    rows.push({
-      name, label: short, minutes: rhu(minutes, 1), avail: true, tone, note: '', tip,
-    });
-  }
-  // Python: sort(key=lambda r: (not r["avail"], r["minutes"], r["name"]))
-  rows.sort((a, b) => {
-    if (a.avail !== b.avail) return a.avail ? -1 : 1;
-    if (a.minutes !== b.minutes) return a.minutes - b.minutes;
-    return cmpStr(a.name, b.name);
-  });
-  return rows;
 }
 
 /**
@@ -954,9 +722,6 @@ export function renderTransitReality(payload) {
     { kicker: 'How long things take', lede, answerHtml: answer });
 }
 
-/** The name the brief asks for; `renderTransitReality` is the name CONTRACT §(a) pins. */
-export { renderTransitReality as renderTransit };
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // S4 · §05 THE MAP YOU'RE PLAYING ON (generate.py 11986)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1102,7 +867,7 @@ export function renderNetworkMap(payload) {
     },
   );
 
-  const shape = String(v.networkShape || 'unknown').split('-').join(' ');
+  const shape = String(v.networkShape).split('-').join(' ');
   const lede = 'The raw playing field: every stop with service on the selected day, and the '
     + `${num(zones.length)} hiding zones one zone per `
     + `${radius} circle produces. `
@@ -1132,29 +897,4 @@ export function renderNetworkMap(payload) {
 
 export {
   s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4WorstDay,
-};
-
-// Python-name aliases, matching the ones `./verdict.js` publishes.
-export {
-  s4DayView as _s4_day_view,
-  s4DayOrder as _s4_day_order,
-  s4DayLabel as _s4_day_label,
-  s4BestDay as _s4_best_day,
-  s4WorstDay as _s4_worst_day,
-};
-export {
-  s4DayByKey as _s4_day_by_key,
-  s4Tiles as _s4_tiles,
-  s4TilesHtml as _s4_tiles_html,
-  s4Banner as _s4_banner,
-  s4BannerHtml as _s4_banner_html,
-  s4TravelRows as _s4_travel_rows,
-  s4ChartMax as _s4_chart_max,
-  s4ChipGroup as _s4_chip_group,
-  s4Table as _s4_table,
-  s4Legend as _s4_legend,
-  s4HeadwayBin as _s4_headway_bin,
-  s4HeatmapRows as _s4_heatmap_rows,
-  s4HeatmapTable as _s4_heatmap_table,
-  s4Heatmap as _s4_heatmap,
 };

@@ -396,12 +396,11 @@ function flagChip(flag) {
  * @property {Object<string,number>} axes @property {Object<string,number>} axisMax
  * @property {Object<string,number>} bars
  * @property {string[]} flags @property {boolean} excluded @property {string} excludeReason
- * @property {string[]} stopIds @property {string[]} routeIds @property {string[]} routeNames
+ * @property {string[]} stopIds @property {string[]} routeNames
  * @property {number|null} travelMin
- * @property {number} survK @property {number} pinWorst @property {number} meanSurv
  * @property {Object[]} threats @property {Object[]} metrics
  * @property {Object[]} spots @property {number} spotsTotal
- * @property {Object<string,number>} inventory @property {Object<string,string>} admin
+ * @property {Object<string,number>} inventory
  * @property {ServiceView} service
  */
 
@@ -487,10 +486,6 @@ export function zoneViews(report) {
     const rawInv = (geo.zoneInventory || {})[zid] || {};
     for (const k of keysOf(rawInv)) if (rawInv[k]) inventory[k] = rawInv[k];
 
-    const admin = Object.create(null);
-    const rawAdmin = (((geo.admin || {}).perZone) || {})[zid] || {};
-    for (const k of keysOf(rawAdmin)) admin[k] = rawAdmin[k];
-
     const spots = ((geo.legalSpots || {})[zid]) || [];
     const flags = Array.from(score.flags || []);
 
@@ -541,18 +536,13 @@ export function zoneViews(report) {
       excluded: Boolean(score.excluded),
       excludeReason: score.excludeReason || '',
       stopIds: Array.from(zone.stopIds || []),
-      routeIds: Array.from(zone.routeIds || []),
       routeNames,
       travelMin,
-      survK: score.survK,
-      pinWorst: score.pinWorst,
-      meanSurv: score.meanSurv,
       threats: Array.from(score.threats || []),
       metrics: Array.from(score.metrics || []),
       spots: spots.slice(0, SPOTS_SHIPPED),
       spotsTotal: spots.length,
       inventory,
-      admin,
       service,
     });
   }
@@ -560,9 +550,8 @@ export function zoneViews(report) {
 }
 
 /**
- * @typedef {{id:string, miles:number, label:string, status:string, why:string,
- *            usable:boolean}} RadarChip
- * @typedef {{key:string, qid:string, label:string, count:number, status:string,
+ * @typedef {{miles:number, label:string, why:string, usable:boolean}} RadarChip
+ * @typedef {{key:string, label:string, count:number,
  *            why:string, usable:boolean, reachMi:number|null}} CatChip
  *
  * `reachMi` is the tentacle chip's own reach in miles (`TENTACLE_ID_REACH_MI`), and is
@@ -599,10 +588,8 @@ export function modeChips(report) {
     const miles = RADAR_ID_MILES[q.id];
     if (miles === undefined) continue;
     radar.push({
-      id: q.id,
       miles,
       label: q.label,
-      status: q.status,
       why: q.why,
       usable: q.status === 'functional' || q.status === 'weak',
     });
@@ -621,10 +608,8 @@ export function modeChips(report) {
       const features = pois[key];
       chips.push({
         key,
-        qid: q.id,
         label: q.label,
         count: counts[key] || 0,
-        status: q.status,
         why: q.why,
         usable: (q.status === 'functional' || q.status === 'weak')
           && Array.isArray(features) && features.length > 0,
@@ -656,8 +641,7 @@ export function modeChips(report) {
  * `simulator.js` is written against it.
  *
  * @param {Object} report
- * @returns {{categories: Object<string, PoiCategory>, capped: string[], cap: number,
- *            available: boolean}}
+ * @returns {{categories: Object<string, PoiCategory>, capped: string[], cap: number}}
  */
 export function poiCategories(report) {
   const rep = report || {};
@@ -701,7 +685,6 @@ export function poiCategories(report) {
     categories,
     capped,
     cap: MAX_POI_PER_CATEGORY,
-    available: Boolean(geo.available),
   };
 }
 
@@ -723,12 +706,12 @@ function axisMeter(view, axis) {
   if (!view.axisMax[axis]) {
     return meter(label, 0, el('span', esc('not measured'), {
       className: 'wa-caption-s wa-color-text-quiet',
-    }), { flank: '3rem' });
+    }), { flank: '3rem', label: AXIS_PLAIN[axis][0] });
   }
   const right = el('span', esc(`${num(view.axes[axis], 1)} / ${num(view.axisMax[axis], 0)}`), {
     className: 'wa-caption-s wa-color-text-quiet',
   });
-  return meter(label, view.bars[axis], right, { flank: '3rem' });
+  return meter(label, view.bars[axis], right, { flank: '3rem', label: AXIS_PLAIN[axis][0] });
 }
 
 /**
@@ -859,7 +842,7 @@ function mapCard(report) {
   const radiusLabel = s4Dist(report, size.zoneRadiusM || 0, 2);
 
   // A mutually exclusive set of six, so it is a `wa-radio-group` of button-appearance
-  // radios — the same native pair `s4ChipGroup` (render/map.js 169) builds for the
+  // radios — the same native pair `s4ChipGroup` (render/deck.js 259) builds for the
   // report's filter rows, and the same reason: the group carries the role, the label,
   // arrow-key navigation and a real checked state, where a row of `wa-button`s
   // conveyed the selection by fill colour and told assistive tech nothing at all.

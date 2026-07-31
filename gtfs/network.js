@@ -33,7 +33,6 @@
 
 import {
   DEFAULT_DEPARTURE,
-  EVENING_WINDOW,
   HALF_MILE_M,
   HEADWAY_WINDOW,
   M_PER_KM,
@@ -116,8 +115,8 @@ export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.
  * The rulebook's own size parameters (GUIDE.md "Choosing Game Size", SEEKING.md
  * question tiers). Every field here is a transcription EXCEPT `requiredHours`,
  * which is inferred and marked as such on each entry — see the note below.
- * `SIZES` in rules/catalogue.js carries the same table and the same one
- * inference.
+ * `SIZES` in rules/catalogue.js is now only the catalogue-size lookup; it no
+ * longer carries this table or this inference.
  * `_S1_SIZE_PARAMS`, generate.py line 2124.
  *
  * `requiredHours` is a playing DAY, not the whole game. The rulebook states a
@@ -230,16 +229,13 @@ function heapPop(h) {
  *
  * @param {string[]} stopIds
  * @param {number} radiusM
- * @param {Object<string, number>|Map<string, number>} stopEvents
+ * @param {Object<string, number>} stopEvents
  * @param {Object<string, [number, number]>} pos  stop_id → projected metres
  * @returns {string[]} centre stop ids, sorted
  */
 export function zoneCover(stopIds, radiusM, stopEvents, pos) {
   const ids = Array.from(new Set(stopIds)).sort(cmpStr);
   if (!ids.length) return [];
-  const eventsOf = stopEvents instanceof Map
-    ? (sid) => stopEvents.get(sid)
-    : (sid) => stopEvents[sid];
 
   const cell = Math.max(1.0, radiusM);
   const grid = new GridIndex(cell);
@@ -260,7 +256,7 @@ export function zoneCover(stopIds, radiusM, stopEvents, pos) {
   /** @type {string[]} */
   const picks = [];
   const heap = ids.map((sid) => {
-    const raw = eventsOf(sid);
+    const raw = stopEvents[sid];
     return [-neighbours(sid).length, -Math.trunc(raw === undefined ? 0 : raw), sid];
   });
   heapify(heap);
@@ -482,7 +478,6 @@ export function radarLiveness(stopIds, pos, radiiM) {
       for (let k = 0; k < radii.length; k++) if (d <= radii[k]) counts[k]++;
     }
   }
-  if (!sampled) return zeros();
   const out = Object.create(null);
   for (let k = 0; k < radii.length; k++) out[radii[k]] = counts[k] / sampled;
   return out;
@@ -508,8 +503,8 @@ export function s1Percentiles(values, probs) {
  * Everything that is a property of one service day. Called once per day type.
  * `_s1_day_metrics`, generate.py line 3584.
  *
- * **Every key of the returned object is read by name** — by `rules/score.js`, by the
- * renderers, and by `networkMetrics` itself. Do not rename one without grepping.
+ * The keys are read **by name** — by `rules/score.js`, by the renderers, and by
+ * `networkMetrics` itself. Do not rename one without grepping.
  *
  * @param {object} feed @param {object} day a `ServiceDay`
  * @param {Projection|{lat0:number,lon0:number}} projLike
@@ -528,7 +523,7 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
   const centresHalf = zoneCover(served, HALF_MILE_M, events, pos);
 
   const points = served.map((sid) => pos[sid]);
-  const [hull, hullArea, diameter] = s1HullAndShape(points);
+  const [, hullArea, diameter] = s1HullAndShape(points);
   const [cx, cy, mecR] = minEnclosingCircle(points);
   const [mecLon, mecLat] = proj.lonlat(cx, cy);
   const latLon = served.map((sid) => [feed.stops[sid].lat, feed.stops[sid].lon]);
@@ -555,7 +550,6 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
   };
 
   const midday = windowed(MIDDAY_WINDOW);
-  const evening = windowed(EVENING_WINDOW);
 
   // a stop counts as "30-minute" when a single route-direction beats 30 min
   const loW = hmsToS(HEADWAY_WINDOW[0]) || 0;
@@ -657,14 +651,6 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
 
   const multiRoute = routeCounts.filter((c) => c >= 2).length;
   const tripleRoute = routeCounts.filter((c) => c >= 3).length;
-  let routeCountSum = 0;
-  for (const c of routeCounts) routeCountSum += c;
-
-  const percentiles = s1Percentiles(lastDepartures, [0.05, 0.25, 0.5, 0.75, 0.95]);
-  const lastBusPercentilesS = Object.create(null);
-  for (const k of Object.keys(percentiles).sort(cmpStr)) {
-    lastBusPercentilesS[k] = Math.trunc(percentiles[k]);
-  }
 
   const reachWithinHidingPeriodBySize = Object.create(null);
   const reachableZoneShareBySize = Object.create(null);
@@ -680,7 +666,6 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
     dayKey: day.dayType.key,                     // day_key
     dayLabel: day.dayType.label,                 // day_label
     date: day.dayType.date,                      // date
-    datesRepresented: day.dayType.dates.length,  // dates_represented
     trips: day.trips,                            // trips
     stopEvents: day.stopEvents,                  // stop_events
     servedStops: served.length,                  // served_stops
@@ -690,50 +675,33 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
     spanHours,                                   // span_hours
     nZones: centres.length,                      // n_zones
     nZonesHalfMile: centresHalf.length,          // n_zones_half_mile
-    zoneCentreIds: centres,                      // zone_centre_ids
     bbox: box.map((v) => coord(v)),              // bbox
     hullSqM: hullArea,                           // hull_sq_m
     bboxSqM: bboxArea,                           // bbox_sq_m
     diameterM: diameter,                         // diameter_m
     mec: [coord(mecLat), coord(mecLon), mecR],   // mec
-    hullLonlat: hull.map(([px, py]) => {         // hull_lonlat — [lon, lat] pairs
-      const ll = proj.lonlat(px, py);
-      return [coord(ll[0]), coord(ll[1])];
-    }),
     medianHeadwayMin: medians.length ? s1Median(medians) : null,   // median_headway_min
     medianWorstGapMin: worst.length ? s1Median(worst) : null,      // median_worst_gap_min
     middayHeadwayP25P50P75: midday.length                          // midday_headway_p25_p50_p75
       ? [0.25, 0.5, 0.75].map((p) => quantile(midday, p)) : null,
-    eveningHeadwayP25P50P75: evening.length                        // evening_headway_p25_p50_p75
-      ? [0.25, 0.5, 0.75].map((p) => quantile(evening, p)) : null,
-    headwayBaseStops: base.length,               // headway_base_stops
     frequentStops: frequent.length,              // frequent_stops
     frequentShare: s1Share(frequent.length, base.length),   // frequent_share
     share30min: s1Share(within30.length, base.length),      // share_30min
     medianLastDepartureS: lastDepartures.length              // median_last_departure_s
       ? Math.trunc(s1Median(lastDepartures)) : day.lastDeparture,
-    lastBusPercentilesS,                         // last_bus_percentiles_s
     transferStops2plus: multiRoute,              // transfer_stops_2plus
     transferStops3plus: tripleRoute,             // transfer_stops_3plus
     multiRouteStopShare: s1Share(multiRoute, served.length),      // multi_route_stop_share
-    routesPerStopMean: s1Share(routeCountSum, served.length),     // routes_per_stop_mean
     // NOT `Math.max(...routeCounts)`: this array has one entry per served stop and
     // spread blows the argument limit on a national feed. Loop.
     routesPerStopMax: maxOf(routeCounts),        // routes_per_stop_max
     stopDensityPerSqMi: s1Share(served.length, servedSqMi),  // stop_density_per_sq_mi
     zoneDensityPerSqMi: s1Share(centres.length, servedSqMi), // zone_density_per_sq_mi
-    tripsPerServedStop: s1Share(day.trips, served.length),   // trips_per_served_stop
-    stopEventsPerServedStop: s1Share(day.stopEvents, served.length), // stop_events_per_served_stop
-    tripsPerSqMi: s1Share(day.trips, servedSqMi),            // trips_per_sq_mi
     hubTravelP50Min: hubTimes.length ? quantile(hubTimes, 0.50) : null, // hub_travel_p50_min
     hubTravelP95Min: hubTimes.length ? quantile(hubTimes, 0.95) : null, // hub_travel_p95_min
-    hubTravelMaxMin: hubTimes.length ? hubTimes[hubTimes.length - 1] : null, // hub_travel_max_min
     t90Min: t90,                                 // t90_min
-    t90OriginSample: p90s.length,                // t90_origin_sample
     isolatedZoneShare: s1Share(isolated, centres.length),    // isolated_zone_share
     eveningZoneShareBySize: eveningShare,        // evening_zone_share_by_size
-    reachWithinMinutes: reachByMinutes,          // reach_within_minutes
-    reachableZonesWithinMinutes: reachableCentres, // reachable_zones_within_minutes
     reachWithinHidingPeriodBySize,               // reach_within_hiding_period_by_size
     reachableZoneShareBySize,                    // reachable_zone_share_by_size
   };
@@ -780,8 +748,8 @@ export function s1ProvisionalSize(metrics) {
  *
  * Returns the flat object documented in CONTRACT §(b) `Metrics` (`servedStops`,
  * `nZones`, `hullSqM`, `diameterM`, `t90Min`, `medianHeadwayMin`, `frequentShare`,
- * `hubDominance`, `weekendRatio`, `spanHours`, `lastBusPercentilesS`, …), with every
- * per-day quantity nested under `perDay[dayKey]`.
+ * `hubDominance`, `weekendRatio`, `spanHours`, …), with every per-day quantity
+ * nested under `perDay[dayKey]`.
  *
  * Three choices that are baked in and must not be re-litigated:
  *   * route-km uses the **longest shape per (routeId, directionId)** — summing
@@ -799,7 +767,7 @@ export function s1ProvisionalSize(metrics) {
  *
  * @param {object} feed @param {object[]} days `ServiceDay`s
  * @param {Projection|{lat0:number,lon0:number}} projLike
- * @param {object|null} hub @param {number} radiusM
+ * @param {object} hub @param {number} radiusM
  * @returns {object} a `Metrics`
  */
 export function networkMetrics(feed, days, projLike, hub, radiusM) {
@@ -808,7 +776,7 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
   if (!ordered.length) throw new RangeError('networkMetrics needs at least one service day');
 
   const key = ['metrics', feed.sha256, ordered.map((d) => d.dayType.key).join(SEP),
-    hub ? hub.stopId : 'null', Number(radiusM).toFixed(4)].join(SEP);
+    hub.stopId, Number(radiusM).toFixed(4)].join(SEP);
   const memo = s1Cache(feed, 'metrics_memo', () => new Map());
   if (memo.has(key)) return memo.get(key);
 
@@ -817,7 +785,7 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
     if (d.trips > best.trips
       || (d.trips === best.trips && cmpStr(d.dayType.key, best.dayType.key) > 0)) best = d;
   }
-  const hubStop = hub ? hub.stopId : null;
+  const hubStop = hub.stopId;
 
   /** @type {Object<string, object>} */
   const perDay = Object.create(null);
@@ -828,11 +796,10 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
   // A shallow copy, exactly like the Python `dict(...)`: the nested objects stay
   // shared with `perDay[bestKey]`, only the top level is independent.
   const head = Object.assign(Object.create(null), perDay[best.dayType.key]);
-  delete head.zoneCentreIds;
 
   const stations = s1Cache(feed, `stations:${proj.lat0.toFixed(9)}`,
     () => clusterStations(Object.keys(feed.stops).sort(cmpStr).map((s) => feed.stops[s]), proj));
-  const [bothKm, oneKm] = s1RouteKm(feed);
+  const [, oneKm] = s1RouteKm(feed);
 
   // Which calendar weekday runs which day type. Keyed on the calendar, not on the
   // day-type name, so a feed whose Mon–Fri split into per-weekday types still
@@ -888,9 +855,6 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
     baseNames.add(s.baseName || s.name);
   }
 
-  const radarHitRateMi = Object.create(null);
-  for (const m of S1_RADAR_MILES) radarHitRateMi[m] = radar[m * M_PER_MILE];
-
   const dowDayType = Object.create(null);
   for (let d = 0; d < 7; d++) dowDayType[String(d)] = dowType.has(d) ? dowType.get(d) : null;
 
@@ -899,35 +863,23 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
     stations: stations.length,                       // stations
     distinctBaseNames: baseNames.size,               // distinct_base_names
     zoneRadiusM: Number(radiusM),                    // zone_radius_m
-    routeKmBothDirs: bothKm,                         // route_km_both_dirs
     routeKmOneDir: oneKm,                            // route_km_one_dir
-    routeMiBothDirs: bothKm * M_PER_KM / M_PER_MILE, // route_mi_both_dirs
-    hubDominance: hub ? hub.routeShare : null,       // hub_dominance
-    hubTripShare: hub ? hub.tripShare : null,        // hub_trip_share
-    hubStopId: hub ? hub.stopId : null,              // hub_stop_id
-    networkShape: hub ? hub.shape : 'unknown',       // network_shape
+    hubDominance: hub.routeShare,                    // hub_dominance
+    hubTripShare: hub.tripShare,                     // hub_trip_share
+    hubStopId: hub.stopId,                           // hub_stop_id
+    networkShape: hub.shape,                         // network_shape
     weekendRatio,                                    // weekend_ratio
     satTripRatio: saturday ? s1Share(saturday.trips, weekday.trips) : null, // sat_trip_ratio
     sunTripRatio: sunday ? s1Share(sunday.trips, weekday.trips) : null,     // sun_trip_ratio
-    satStopRatio: saturday                            // sat_stop_ratio
-      ? s1Share(saturday.servedStops, weekday.servedStops) : null,
-    sunStopRatio: sunday                              // sun_stop_ratio
-      ? s1Share(sunday.servedStops, weekday.servedStops) : null,
-    weekdayDayKey: weekday.dayKey,                   // weekday_day_key
     saturdayDayKey: saturday ? saturday.dayKey : null, // saturday_day_key
     sundayDayKey: sunday ? sunday.dayKey : null,     // sunday_day_key
     dowDayType,                                      // dow_day_type
     noServiceDates: deadDates,                       // no_service_dates
-    reducedServiceDates: reducedDates,               // reduced_service_dates
     fullServiceDateShare: s1Share(                   // full_service_date_share
       windowDays - deadDates.length - reducedDates.length, windowDays),
     playableDayWeightBySize: playable,               // playable_day_weight_by_size
     radarHitRate: radar,                             // radar_hit_rate
-    radarHitRateMi,                                  // radar_hit_rate_mi
-    dayKeys: ordered.map((d) => d.dayType.key),      // day_keys
     bestDay: best.dayType.key,                       // best_day
-    feedWindow: [feed.feedStart, feed.feedEnd],      // feed_window
-    feedWindowDays: windowDays,                      // feed_window_days
     perDay,                                          // per_day
   });
 

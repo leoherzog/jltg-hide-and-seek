@@ -58,14 +58,15 @@
     <!-- THE PROGRESS BAR LIVES IN THE HEADER. `total` may grow as the worker
          discovers work (CONTRACT §(d)), so the label carries the words and the
          bar carries the fraction; neither is allowed to look finished early. -->
-    <!-- The `data-role` attributes are app.js's documented second-choice selector
-         (see `pick()` / `readControl()`): without them `ensureProgressUi()` builds a
-         SECOND progress block and this one never moves. `progressnote` and
-         `progresswait` are the two readouts that fallback would also have created —
-         the per-stage note, and the "still working, N min on this step" heartbeat
-         that keeps an eight-minute Overpass wait from reading as a hang. -->
+    <!-- The `data-role` attributes are now app.js's ONLY selector for these nodes
+         (see `pick()` / `readControl()`); the id-based fallback that used to build a
+         progress block at runtime is gone, so renaming or dropping one of these
+         attributes silently stops the bar rather than degrading to a second copy.
+         `progressnote` and `progresswait` are the two readouts — the per-stage note,
+         and the "still working, N min on this step" heartbeat that keeps an
+         eight-minute Overpass wait from reading as a hang. -->
     <div id="hydration" data-role="progress" data-when="running" class="wa-stack wa-gap-3xs">
-      <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress" class="wa-visually-hidden-label"></wa-progress-bar>
+      <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress"></wa-progress-bar>
       <span id="hydration-status" data-role="progresslabel" class="wa-caption-xs wa-color-text-quiet" role="status" aria-live="polite">Starting…</span>
       <span id="hydration-note" data-role="progressnote" class="wa-caption-xs wa-color-text-quiet"></span>
       <span id="hydration-wait" data-role="progresswait" class="wa-caption-xs wa-color-text-quiet" role="status" aria-live="polite"></span>
@@ -102,7 +103,7 @@
     <span class="wa-caption-s wa-color-text-quiet wa-cluster wa-gap-2xs wa-desktop-only">
       <wa-icon name="location-dot"></wa-icon><span id="nowat"></span>
     </span>
-    <wa-progress-bar id="readbar" value="0" label="Reading progress" class="wa-visually-hidden-label" style="--track-height:3px"></wa-progress-bar>
+    <wa-progress-bar id="readbar" value="0" label="Reading progress" style="--track-height:3px"></wa-progress-bar>
   </div>
 
   <!-- navigation rail · complete from the first paint of the REPORT. The groups
@@ -232,7 +233,7 @@
                one is not in its MimeTypeMap. The component re-checks `accept` against
                the file *name* after the fact (fileMatchesAccept), so a zip the picker
                hands back typed as application/octet-stream still gets through. -->
-          <wa-file-input id="dropzone" name="file" accept=".zip,application/zip">
+          <wa-file-input id="dropzone" name="file" accept=".zip,application/zip" label="GTFS feed file" class="wa-visually-hidden-label">
             <div slot="dropzone" class="wa-stack wa-gap-2xs">
               <wa-icon name="file-zipper"></wa-icon>
               <span class="wa-heading-s">Drop a GTFS <code>.zip</code> here</span>
@@ -332,9 +333,9 @@
                      described on the zone-radius field above. -->
                 <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Seconds of grace for making a connection. Zero assumes you sprint."></wa-input>
 
-                <!-- Blank is the feed's own start date (feed.js 1395, generate.py
+                <!-- Blank is the feed's own start date (feed.js 1282, generate.py
                      2567; README 265). Nothing anywhere ranks dates by busyness —
-                     `s1Representative` (service.js 296) deliberately breaks a tie
+                     `s1Representative` (service.js 309) deliberately breaks a tie
                      toward the QUIETER day; the hint says so. -->
                 <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Clamped into the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
 

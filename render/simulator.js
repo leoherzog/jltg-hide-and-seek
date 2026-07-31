@@ -336,7 +336,8 @@ function buildInstance(root, report) {
   // ── reader state (generate.py:14908–14916) ─────────────────────────────────
   let mode = 'explore';
   /* the first dossier zone, but only if it is one we can actually show; a zoneId in
-     `dossierZoneIds` with no `ZoneScore` would otherwise open on "Select a zone." */
+     `dossierZoneIds` with no `ZoneScore` would otherwise leave `selected` naming a zone
+     `byId` does not hold, and the dossier with nothing to render. */
   const opening = (report.dossierZoneIds || []).find((id) => byId.has(id));
   let selected = opening || (views[0] && views[0].id) || null;
   let seeker = null;
@@ -536,8 +537,6 @@ function buildInstance(root, report) {
          on where in the circle the hider stands */
       return second - bd <= 2 * RAD ? 'edge' : 'yes';
     }
-
-    return 'un';
   }
 
   /**
@@ -1068,14 +1067,14 @@ function buildInstance(root, report) {
         'div',
         join(
           el('div', join(
-            el('span', v.rank === null ? '—' : `#${num(v.rank)}`, {
+            el('span', `#${num(v.rank)}`, {
               className: 'wa-caption-s wa-color-text-quiet',
             }),
             el('span', esc(v.name), { className: 'wa-heading-xs' }),
             el('span', esc(routes) + (off ? ' · no service' : ''), {
               className: 'wa-caption-xs wa-color-text-quiet',
             }),
-            waProgressBar(v.max ? (100 * v.overall) / v.max : 0, { label: v.name }),
+            waProgressBar((100 * v.overall) / v.max, { label: v.name }),
           ), { className: 'wa-stack wa-gap-3xs' }),
           el('span', num(v.overall, 1), { className: 'wa-heading-xs' }),
         ),
@@ -1167,7 +1166,9 @@ function buildInstance(root, report) {
         measured ? `${num(view.axes[a], 1)}/${num(view.axisMax[a], 1)}` : esc('not measured'),
         { className: 'wa-caption-s' },
       );
-      return meter(label, measured ? view.bars[a] || 0 : 0, right, { flank: '3rem' });
+      return meter(label, measured ? view.bars[a] || 0 : 0, right, {
+        flank: '3rem', label: (AXIS_PLAIN[a] || [a])[0],
+      });
     }).join('');
   }
 
@@ -1279,12 +1280,6 @@ function buildInstance(root, report) {
     const score = $('s-score');
     if (!body) return;
     const view = byId.get(selected);
-    if (!view) {
-      body.innerHTML = el('p', esc('Select a zone.'), { className: 'wa-body-s' });
-      if (title) title.textContent = 'Zone dossier';
-      if (score) score.textContent = '';
-      return;
-    }
     if (title) {
       title.textContent = (view.rank === null ? '' : `#${num(view.rank)} `) + view.name;
     }
@@ -1447,7 +1442,7 @@ function buildInstance(root, report) {
    * One mutually-exclusive option row, as the native pair.
    *
    * A `wa-radio-group` of button-appearance radios, exactly as `s4ChipGroup`
-   * (render/map.js 169) builds the report's filter rows — the group carries the role,
+   * (render/deck.js 259) builds the report's filter rows — the group carries the role,
    * the accessible label, arrow-key navigation and a real checked state, which a row
    * of `wa-button`s swapping `appearance` carried in fill colour alone. The helper
    * itself cannot be reused because it has no way to disable an option, and a dead
@@ -1460,11 +1455,10 @@ function buildInstance(root, report) {
    *
    * @param {string} groupId @param {string} label
    * @param {ReadonlyArray<{value:string,text:string,usable:boolean,why:string}>} items
-   * @param {string} value @param {string} empty @param {(v: string) => void} onPick
+   * @param {string} value @param {(v: string) => void} onPick
    * @returns {string} the markup; the caller writes it and binds the group
    */
-  function optionGroup(groupId, label, items, value, empty, onPick) {
-    if (!items.length) return el('p', esc(empty), { className: 'wa-caption-s' });
+  function optionGroup(groupId, label, items, value, onPick) {
     const radios = items.map((it) => el('wa-radio', join(
       esc(it.text),
       it.usable ? '' : waIcon('ban', { label: 'unavailable' }),
@@ -1531,7 +1525,6 @@ function buildInstance(root, report) {
           value: String(r.miles), text: r.label, usable: r.usable, why: r.why,
         })),
         String(opt.radar),
-        'No radar radius is live on this map.',
         (v) => { opt.radar = Number(v); paint(); },
       );
     } else if (mode === 'match' || mode === 'measure' || mode === 'tentacle') {
@@ -1542,7 +1535,6 @@ function buildInstance(root, report) {
           value: c.key, text: `${c.label} (${num(c.count)})`, usable: c.usable, why: c.why,
         })),
         opt.cat || '',
-        'No mapped category is live for this question type on this map.',
         (v) => { opt.cat = v; paint(); },
       );
     }
@@ -1556,7 +1548,6 @@ function buildInstance(root, report) {
         if (h.lat === undefined || h.lon === undefined) return;
         if (seedButton.dataset.seed === 'leg') {
           const v = byId.get(selected);
-          if (!v) return;
           thermoA = { lat: h.lat, lon: h.lon };
           thermoB = { lat: v.lat, lon: v.lon };
           drawLeg();

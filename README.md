@@ -198,8 +198,6 @@ Every question in the deck gets one of six verdicts:
   nobody anything
 - **dead** — there are none, so it always returns null (which still costs the seekers a question
   and still pays the hider a card)
-- **unaskable** / **unknown** — structurally impossible here, or needs data this pipeline doesn't
-  carry
 
 The dead list is the useful part, and it's usually longer than the list of things the map is missing:
 one absent feature can kill two questions, because the deck asks about several of them in both the

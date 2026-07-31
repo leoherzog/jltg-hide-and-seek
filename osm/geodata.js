@@ -60,9 +60,7 @@ import {
 // One rulebook feature category and the exact selector that realises it.
 //
 // `selector` is Overpass QL with `{{bbox}}` unsubstituted; it is printed verbatim
-// next to every count on the page so a player can re-run it. `needsGeometry` marks
-// the categories where a distance or a polygon test is required (fetch `out geom`),
-// versus the ones where a count or a centre suffices.
+// next to every count on the page so a player can re-run it.
 //
 // The category table is the S1/S2/S3 interface: S2 fetches it, S3 asks questions of
 // it, S4 prints the selectors. Counts in the comments are the measured reference
@@ -73,7 +71,6 @@ import {
  * @property {string} key
  * @property {string} label
  * @property {string} selector
- * @property {boolean} needsGeometry
  * @property {string} note
  */
 
@@ -83,7 +80,6 @@ function cat(key, label, selector, opts = {}) {
     key,
     label,
     selector,
-    needsGeometry: opts.needsGeometry === true,
     note: opts.note !== undefined ? opts.note : '',
   });
 }
@@ -92,7 +88,6 @@ function cat(key, label, selector, opts = {}) {
 export const GEO_CATEGORIES = Object.freeze([
   cat('park', 'Park',
     'nwr["leisure"="park"]["name"]({{bbox}});', {
-      needsGeometry: true,
       note: 'Not garden/nature_reserve/recreation_ground — a map app gives those different icons.',
     }),  // 214
   cat('museum', 'Museum', 'nwr["tourism"="museum"]["name"]({{bbox}});'),  // 10
@@ -119,7 +114,6 @@ export const GEO_CATEGORIES = Object.freeze([
     }),  // 0
   cat('commercial_airport', 'Commercial airport',
     'nwr["aeroway"="aerodrome"]["iata"]({{bbox}});', {
-      needsGeometry: true,
       note: "The iata filter is what makes it 'commercial'; without it, private grass strips count.",
     }),  // 1
   cat('mountain', 'Mountain', 'node["natural"~"^(peak|volcano)$"]["name"]({{bbox}});'),  // 0
@@ -134,7 +128,6 @@ export const GEO_CATEGORIES = Object.freeze([
     'nwr["natural"="water"]["name"]["water"!~"^(pool|reflecting_pool)$"]'
     + '["leisure"!="swimming_pool"]({{bbox}});'
     + 'way["waterway"~"^(river|canal)$"]["name"]({{bbox}});', {
-      needsGeometry: true,
       note: 'The name filter is the measuring question\'s own wording — "any named body of '
         + 'water on your maps app, excluding pools": 999 water features exist, 75 are named. '
         + 'It belongs to THIS question only. Curse of the Water Weight says "marked", not '
@@ -685,7 +678,6 @@ function categoryQuery(category, bbox) {
  */
 async function fetchCategory(cache, category, bbox, proj, progress, log) {
   const selector = ovSelector(category);
-  if (!selector) return [];
   const opts = { keepRings: keepRingsFor(category.key), keepTags: keepTagsFor(category.key) };
   const query = categoryQuery(category, bbox);
   progress.start(`geo:overpass ${category.key}`);
@@ -1269,22 +1261,6 @@ function cuisineDetail(restaurants, hostCountry) {
   };
 }
 
-/**
- * Bucket `cuisine` tags into single-foreign-country cuisines for Distant Cuisine.
- * (generate.py `classify_cuisines`, line 5751)
- *
- * Only **adjective tokens** map to a country (`mexican`→MX, `thai`→TH, …).
- * Super-national tokens (`asian`, `mediterranean`, `latin_american`, `fusion`) and
- * dish tokens (`pizza`, `sushi`, `ramen`, `pho`, `kebab`) are rejected — promoting
- * dishes to countries is a judgement call that changes the count, so the rule is
- * strict and the rejected-token list is printed so a player can override.
- *
- * Returns `ISO-3166-1 alpha-2 → count`, excluding the host country.
- */
-export function classifyCuisines(restaurants, hostCountry) {
-  return cuisineDetail(restaurants, hostCountry).perCountry;
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Candidate legal endgame spots
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1319,13 +1295,11 @@ function spotPublic(tags) {
  *
  * `pathOkIds` is a `Set` of `'type/id'` strings, or `null` when the path join was not
  * attempted or failed — in which case EVERY spot is marked verify-on-the-ground.
- * (The Python reads it off `geo.path_ok_ids`; `geo.pathOkIds` is honoured too.)
  *
  * @returns {Object<string, Array<Object>>} zoneId → LegalSpot[]
  */
 export function legalEndgameSpots(zones, geo, proj, radiusM, pathOkIds) {
-  const pathOk = pathOkIds !== undefined ? pathOkIds
-    : (geo.pathOkIds !== undefined ? geo.pathOkIds : null);
+  const pathOk = pathOkIds;
   const labels = new Map(GEO_CATEGORIES.map((c) => [c.key, c.label]));
 
   /** @type {Array<[Object, number, boolean]>} */
@@ -1719,9 +1693,7 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
     1 + GEO_FETCH_GROUPS.length + 1 + 1 + isInBatches + 1 + 1 + 1);
 
   // ── 1. one-request map-level audit ────────────────────────────────────────
-  const auditPairs = GEO_CATEGORIES
-    .filter((c) => ovSelector(c))
-    .map((c) => [c.key, ovSelector(c)]);
+  const auditPairs = GEO_CATEGORIES.map((c) => [c.key, ovSelector(c)]);
   const auditQueryText = countsQuery(bbox, auditPairs);
   progress.start('geo:overpass category audit');
   let counts;
@@ -1816,7 +1788,6 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
   // ── 3. provenance rows, one per category ─────────────────────────────────
   for (const category of GEO_CATEGORIES) {
     const selector = ovSelector(category);
-    if (!selector) continue;
     const counted = counts[category.key];
     if (counted === undefined) continue;
     queries.push({

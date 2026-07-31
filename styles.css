@@ -11,7 +11,6 @@
   --wa-font-family-heading:  "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   --wa-font-family-longform: "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   --wa-font-family-code:     ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  --wa-font-family-ui:       system-ui, -apple-system, "Segoe UI", sans-serif;  /* custom: WA has no UI-family role */
   --wa-font-size-scale: 1.0625;          /* base 17px, matches the old body */
   --wa-line-height-normal: 1.62;
   --wa-font-weight-heading: 700;
@@ -64,7 +63,9 @@
   --warn-text:  var(--wa-color-warning-on-quiet);
   --crit:       var(--wa-color-danger-fill-loud);
   --crit-text:  var(--wa-color-danger-on-quiet);
-  --sans:  var(--wa-font-family-ui);
+  /* WA has four family roles — body, heading, code, longform — and no UI role, so
+     this one is ours and stays out of the reserved --wa-* namespace. */
+  --sans:  system-ui, -apple-system, "Segoe UI", sans-serif;
   --serif: var(--wa-font-family-longform);
   --mono:  var(--wa-font-family-code);
 
@@ -112,10 +113,10 @@
 wa-button, wa-tag, wa-radio, wa-radio-group, wa-switch,
 wa-callout, wa-details, wa-progress-bar, [class*="wa-caption-"],
 .wa-heading-s, .wa-heading-xs, th {
-  --wa-font-family-body: var(--wa-font-family-ui);
-  font-family: var(--wa-font-family-ui);
+  --wa-font-family-body: var(--sans);
+  font-family: var(--sans);
 }
-sup[data-cite] { font-family: var(--wa-font-family-ui); font-size: 10px; font-weight: 700; }
+sup[data-cite] { font-family: var(--sans); font-size: 10px; font-weight: 700; }
 /* wa-input is deliberately NOT in the list above. That rule sets `font-family` on the
    host, and wa-input's inner control is `font-family: inherit` — the sans face would
    land on the value the reader types, which is serif today. So the UI voice is applied
@@ -131,7 +132,7 @@ sup[data-cite] { font-family: var(--wa-font-family-ui); font-size: 10px; font-we
 #landing-fields wa-input::part(label),
 #landing-fields wa-select::part(label),
 #opt-border-shape::part(form-control-label) {
-  font-family: var(--wa-font-family-ui);
+  font-family: var(--sans);
   font-size: var(--wa-font-size-xs);
   font-weight: var(--wa-font-weight-body);
   color: var(--wa-color-text-quiet);
@@ -141,7 +142,7 @@ sup[data-cite] { font-family: var(--wa-font-family-ui); font-size: 10px; font-we
 #landing-fields wa-input::part(hint),
 #landing-fields wa-select::part(hint),
 #opt-border-shape::part(hint) {
-  font-family: var(--wa-font-family-ui);
+  font-family: var(--sans);
   font-size: var(--wa-font-size-xs);
   line-height: var(--wa-line-height-condensed);
 }
@@ -583,6 +584,21 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 #s-table th[aria-sort='descending'] button::after { content: ' \2193'; }
 #s-table td { white-space: nowrap; }
 
+/* The selected row. render/simulator.js:1393 writes `data-sel` on the row it opened
+   the dossier for, and without this the click had no visible answer at all — the
+   dossier is a sticky column away and the table never said which row it belonged to.
+   `#ztable tr[data-sel] td` in the CLI (generate.py:15810); the tint sits on the cells
+   because a `<tr>` background is painted under its cells, not over them. */
+#s-table tr[data-sel] td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* The rail's no-service cards. render/simulator.js:1090 writes `data-off` on every
+   card for a zone no trip serves that day; the state was otherwise carried only by the
+   ' · no service' words appended to the route line, which is the one channel a reader
+   scanning forty cards does not read. `.zrow[data-off]` in the CLI (generate.py:1722).
+   Fading the whole card is deliberate — the rank, the score and the bar are all
+   meaningless for an unserved zone, so none of them should read as live. */
+#s-list [data-off] { opacity: .55; }
+
 /* ---- MapLibre markers. They are DOM nodes MapLibre owns, outside WebAwesome and
    outside any shadow root; WA has no marker, no map-label pill and no crosshair, so
    this is the same "permanent keep" §6 makes for the map internals. They carry data
@@ -592,7 +608,7 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 #s-map [data-zmark]:hover, #s-map [data-zmark][data-sel] { z-index: 5; }
 #s-map [data-zlbl] {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  white-space: nowrap; font-family: var(--wa-font-family-ui);
+  white-space: nowrap; font-family: var(--sans);
   font-size: var(--wa-font-size-xs); font-weight: var(--wa-font-weight-bold);
   color: var(--wa-color-text-normal);
   background: color-mix(in srgb, var(--wa-color-surface-raised) 78%, transparent);
@@ -638,7 +654,7 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
                                            pointer-events: none; }
 #s-map [data-zcross] { position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center;
-  font: var(--wa-font-weight-bold) var(--wa-font-size-2xl)/1 var(--wa-font-family-ui);
+  font: var(--wa-font-weight-bold) var(--wa-font-size-2xl)/1 var(--sans);
   color: var(--wa-color-text-normal);
   text-shadow: 0 0 4px var(--wa-color-surface-raised), 0 0 8px var(--wa-color-surface-raised); }
 

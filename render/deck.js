@@ -79,8 +79,8 @@ import { QUESTIONS } from '../rules/catalogue.js';
 // rides in the chip's `title`, in `data-status` (which the filter keys on) and in §07's
 // "What these words mean" list.
 //
-// These six words are this generator's, not the rulebook's: a case-insensitive search of
-// the whole rulebook finds no "functional", "weak", "degenerate" or "unaskable" anywhere.
+// These words are this generator's, not the rulebook's: a case-insensitive search of
+// the whole rulebook finds no "functional", "weak" or "degenerate" anywhere.
 // rules/audit.js declares them ("THE SIX VERDICTS"), so nothing on the page may present
 // them as rules — they are analysis, and a reader who mistakes a judgement call for a
 // rule will argue the wrong thing at the table.
@@ -89,11 +89,10 @@ const S4_STATUS_TAG = Object.freeze({
   weak: Object.freeze(['barely helps', 'circle-half-stroke', 'warning', 'accent']),
   degenerate: Object.freeze(['always the same answer', 'equals', 'neutral', 'filled']),
   dead: Object.freeze(["can't be answered here", 'circle-xmark', 'danger', 'accent']),
-  unaskable: Object.freeze(['impossible on this map', 'ban', 'brand', 'outlined']),
   unknown: Object.freeze(['not checked', 'circle-question', 'neutral', 'outlined']),
 });
 
-// The six statuses in the order the deck itself degrades, with the sentence §07's
+// The statuses in the order the deck itself degrades, with the sentence §07's
 // definition list prints. An ordered array rather than an object so the list is stable
 // and so `Object.keys()`'s integer-key hoisting can never reach it.
 const S4_STATUS_DEF = Object.freeze([
@@ -102,26 +101,24 @@ const S4_STATUS_DEF = Object.freeze([
   Object.freeze(['degenerate', 'Only one qualifying thing is on the map, so every zone answers '
     + 'identically. It buys the seekers nothing and still pays you a card.']),
   Object.freeze(['dead', 'Nothing on this map can answer it, so it is a wasted draw.']),
-  Object.freeze(['unaskable', 'The rules of the question itself cannot be satisfied here.']),
   Object.freeze(['unknown', 'It could not be evaluated on this run, so it is excluded from the '
     + 'score rather than guessed at.']),
 ]);
 
-// The same six statuses as a counting phrase: "7 work · 3 barely help". The chip label
+// The same statuses as a counting phrase: "7 work · 3 barely help". The chip label
 // is a noun ("works"), a count needs a verb, and "7 works" reads as a bug.
 const S4_STATUS_COUNT = Object.freeze({
   functional: 'work',
   weak: 'barely help',
   degenerate: 'always answer the same',
   dead: "can't be answered",
-  unaskable: 'impossible here',
   unknown: 'not checked',
 });
 
 // The status order every count, chip row and sort key uses. This is the order the deck
 // degrades in, not alphabetical, and it is the same order `S4_STATUS_DEF` prints.
 const S4_STATUS_ORDER = Object.freeze([
-  'functional', 'weak', 'degenerate', 'dead', 'unaskable', 'unknown',
+  'functional', 'weak', 'degenerate', 'dead', 'unknown',
 ]);
 
 const S4_ACTION_TAG = Object.freeze({
@@ -413,9 +410,9 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
  * The one-word status survives in the chip's `title`, in the row's `data-status`
  * and in §07's definition list — the phrase is the UI, the term is the record.
  *
- * The `title` says whose word it is. The six statuses are this report's vocabulary
- * (see `S4_STATUS_TAG`), and calling them the rulebook's turned six judgement calls
- * into six rules ~98 times per report.
+ * The `title` says whose word it is. These statuses are this report's vocabulary
+ * (see `S4_STATUS_TAG`), and calling them the rulebook's turned judgement calls
+ * into rules ~98 times per report.
  *
  * (generate.py `_s4_status_tag`, line 12122.)
  *
@@ -1161,6 +1158,10 @@ export function renderProvenance(payload) {
   const fingerprintRows = [
     ['', 'Feed sha256', String(p.feedSha256 || '')],
     ['generator', 'Generator', `${p.generator || GENERATOR} ${p.version || VERSION}`],
+    // `memory` is the answer to "why did this run refetch everything?": IndexedDB
+    // could not be opened, so the cache lived and died with the run. Printed
+    // always rather than only when degraded, so its absence is never ambiguous.
+    ['', 'Cache backend', String(p.cacheBackend || '')],
     // verbatim, every argument and all: this string *is* the determinism claim, and
     // truncating it would be removing content.
     ['argv', 'Arguments', (p.argv || []).map((a) => String(a)).join(' ') || '(none)'],
@@ -1500,12 +1501,16 @@ export function renderFooter(payload) {
 
 /**
  * Per-table interaction state, preserved across every re-render of its section.
+ *
+ * `search` exists only for a table that has a search box: the curses table declares
+ * `searchId: null` below and no `#csearch` element is ever emitted, so it carries none.
+ *
  * @type {Object<string, {sortKey: string|null, sortDir: number, filter: string,
- *                        search: string, pageSize: string, page: number}>}
+ *                        search?: string, pageSize: string, page: number}>}
  */
 const DECK_STATE = {
   qtable: { sortKey: null, sortDir: 1, filter: 'all', search: '', pageSize: 'all', page: 0 },
-  ctable: { sortKey: null, sortDir: 1, filter: 'all', search: '', pageSize: 'all', page: 0 },
+  ctable: { sortKey: null, sortDir: 1, filter: 'all', pageSize: 'all', page: 0 },
 };
 
 /** The no-spending switch is one switch for the whole page, not per table. */
@@ -1642,8 +1647,11 @@ function applyRows(spec) {
     else if (group.hasAttribute('value')) want = group.getAttribute('value');
   }
   st.filter = want;
-  const q = input ? String(input.value || '').trim().toLowerCase() : st.search;
-  st.search = q;
+  let q = st.search || '';
+  if (input) {
+    q = String(input.value || '').trim().toLowerCase();
+    st.search = q;
+  }
 
   const rows = Array.from(table.tBodies[0].rows);
   const passing = [];

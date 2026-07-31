@@ -246,8 +246,8 @@ export async function runPipeline(options, source, emit) {
   try {
     progress.begin(0, 'Reading the feed');
     feed = await loadFeed(source, cache, {
-      onProgress: (received, total) => {
-        if (total) progress.report(received / total, 'Downloading the feed');
+      onProgress: ({ done, total }) => {
+        if (total) progress.report(done / total, 'Reading the feed');
       },
     });
     progress.finish();
@@ -378,7 +378,7 @@ export async function runPipeline(options, source, emit) {
     // generate.py line 15726: `--start` is resolved here, not inside infer.js,
     // and the departure `or` chain lets a literal '00:00:00' fall through to 09:00.
     origin = opts.startStopId || hub.stopId;
-    depS = hmsToS(opts.departure || DEFAULT_DEPARTURE) || hmsToS(DEFAULT_DEPARTURE) || 32400;
+    depS = hmsToS(opts.departure || DEFAULT_DEPARTURE) || hmsToS(DEFAULT_DEPARTURE);
 
     progress.begin(6, 'Sampling ride times');
     // The CLI computes this last; CONTRACT.md §(d) needs it in the `'network'`
@@ -461,7 +461,7 @@ export async function runPipeline(options, source, emit) {
     const defs = Object.create(null);
     for (const d of catalogueFor(size)) defs[d.id] = d;
     const live = questions.filter(
-      (q) => q.status === 'functional' || q.status === 'weak' || q.status === 'unaskable',
+      (q) => q.status === 'functional' || q.status === 'weak',
     );
     for (let i = 0; i < live.length; i++) {
       const q = live[i];
@@ -535,9 +535,7 @@ export async function runPipeline(options, source, emit) {
       fitness = score.scoreFitness(metrics, questions, zones, zoneScores, size, days);
       // `fitnessCaps(metrics, questions, zones, size, days)` — the Python signature
       // (generate.py line 9356). It does not take `zoneScores`.
-      caps = score.fitnessCaps
-        ? score.fitnessCaps(metrics, questions, zones, size, days)
-        : [];
+      caps = score.fitnessCaps(metrics, questions, zones, size, days);
       const zoneById = Object.create(null);
       for (const z of zones) zoneById[z.zoneId] = z;
       dossiers = score.selectDossiers(ranked, zoneScores, zoneById, size.zoneRadiusM);
@@ -744,13 +742,13 @@ function wireFeed(feed) {
   };
 }
 
-/** `Options` minus `source`, which may be a `File` the page already holds. */
+/**
+ * `Options` as the page receives them. `source` is deliberately absent from
+ * `DEFAULT_PIPELINE_OPTIONS` — the run message carries the file or the URL
+ * separately — so anything under that key is already a plain string.
+ */
 function wireOptions(opts) {
-  const out = { ...opts };
-  if (out.source && typeof out.source !== 'string') {
-    out.source = String(out.source.name || 'uploaded.zip');
-  }
-  return out;
+  return { ...opts };
 }
 
 /**
@@ -806,7 +804,8 @@ if (IN_WORKER) {
     if (started) return;
     started = true;
 
-    const source = msg.file || msg.url || (msg.options && msg.options.source) || '';
+    // `readSource` on the main thread sets exactly one of `file` / `url`.
+    const source = msg.file || msg.url;
     const post = (out) => self.postMessage(out);
     runPipeline(msg.options || {}, source, post).catch((err) => {
       post({

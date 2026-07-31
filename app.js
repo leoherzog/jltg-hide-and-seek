@@ -24,7 +24,6 @@ import {
   WA_KIT, MAPLIBRE_CSS, MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
   IMPERIAL_COUNTRIES, DEFAULT_DEPARTURE, BOARD_SLACK_S,
   num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
-  miles, km, sqmi,
 } from './lib/core.js';
 
 import {
@@ -227,7 +226,6 @@ const state = {
   finished: false,
   fatal: false,
   progress: { pct: 0, done: 0, total: 0, stage: '', label: '' },
-  runtimeInjected: 0,
   /** @type {number|null} */ heartbeat: null,
   /** Seconds since the last `progress` message. Chrome only — never a report value. */
   waitedS: 0,
@@ -289,13 +287,6 @@ export function boot() {
   const form = pick('#runform', 'form[data-role="runform"]', 'form');
   if (form) {
     form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      startRun(form);
-    });
-  }
-  const go = pick('#run', '[data-role="run"]');
-  if (go && (!form || go.form !== form)) {
-    go.addEventListener('click', (event) => {
       event.preventDefault();
       startRun(form);
     });
@@ -446,9 +437,7 @@ function readOptions(form) {
   const options = { ...DEFAULT_OPTIONS };
 
   const noOsm = readControl(form, 'noOsm');
-  const useOsm = readControl(form, 'useOsm');
-  if (typeof useOsm === 'boolean') options.useOsm = useOsm;
-  else if (typeof noOsm === 'boolean') options.useOsm = !noOsm;
+  if (typeof noOsm === 'boolean') options.useOsm = !noOsm;
 
   const asOf = orNull(readControl(form, 'asOf'));
   if (asOf !== null) {
@@ -458,7 +447,7 @@ function readOptions(form) {
     else options.asOf = digits;
   }
 
-  const size = orNull(readControl(form, 'sizeOverride')) || orNull(readControl(form, 'size'));
+  const size = orNull(readControl(form, 'sizeOverride'));
   if (size !== null) {
     if (!['small', 'medium', 'large'].includes(size)) errors.push('Game size must be small, medium or large.');
     else options.sizeOverride = size;
@@ -699,8 +688,6 @@ function enterRunningState(src) {
   if (landing) landing.hidden = true;
   const report = pick('#report', '[data-role="report"]', 'main');
   if (report) report.hidden = false;
-  document.documentElement.setAttribute('data-run', 'running');
-  ensureProgressUi();
   setProgress({
     stage: 'feed',
     label: src.file ? `Reading ${src.file.name}` : 'Fetching the feed',
@@ -708,22 +695,6 @@ function enterRunningState(src) {
     total: 100,
   });
   startHeartbeat();
-}
-
-/**
- * The header progress readout, built here when the shell did not ship one. A run with
- * OSM is eight minutes long; a page with no readout at all is not an option.
- */
-function ensureProgressUi() {
-  if (pick('#runprogress', '[data-role="progress"]', '#runbar', '[data-role="progressbar"]')) return;
-  const slot = pick('[slot="subheader"]', 'header', 'main');
-  if (!slot) return;
-  slot.insertAdjacentHTML('beforeend', el('div', join(
-    el('wa-progress-bar', '', { id: 'runbar', value: '0', label: 'Analysis progress' }),
-    el('p', '', { id: 'runstage', className: 'wa-caption-s' }),
-    el('p', '', { id: 'runnote', className: 'wa-caption-xs wa-color-text-quiet' }),
-    el('p', '', { id: 'runwait', className: 'wa-caption-xs wa-color-text-quiet' }),
-  ), { id: 'runprogress', className: 'wa-stack wa-gap-3xs', dataRunOnly: true }));
 }
 
 /**
@@ -740,12 +711,12 @@ function startHeartbeat() {
     if (state.finished || state.fatal) {
       clearInterval(state.heartbeat);
       state.heartbeat = null;
-      const out = pick('#runwait', '[data-role="progresswait"]');
+      const out = pick('[data-role="progresswait"]');
       if (out) out.textContent = '';
       return;
     }
     state.waitedS += 5;
-    const out = pick('#runwait', '[data-role="progresswait"]');
+    const out = pick('[data-role="progresswait"]');
     if (!out) return;
     if (state.waitedS < 30) {
       out.textContent = '';
@@ -935,7 +906,6 @@ function finish(report) {
   mountChrome();
   mountDayChrome();
   injectRuntime();
-  document.documentElement.setAttribute('data-run', 'done');
   // `ready` retires the header progress block (`[data-when='running']`) and leaves
   // the report visible; it must be set even if a section threw, because the
   // alternative is a page stuck behind the running-state chrome.
@@ -965,7 +935,7 @@ function finish(report) {
  */
 function setProgress(msg) {
   state.waitedS = 0;
-  const waited = pick('#runwait', '[data-role="progresswait"]');
+  const waited = pick('[data-role="progresswait"]');
   if (waited) waited.textContent = '';
   const done = Number(msg.done) || 0;
   const total = Number(msg.total) || 0;
@@ -979,18 +949,18 @@ function setProgress(msg) {
     label: msg.label || state.progress.label,
   };
 
-  const bar = pick('#runbar', '[data-role="progressbar"]', 'wa-progress-bar[data-run-progress]');
+  const bar = pick('[data-role="progressbar"]');
   if (bar) {
     bar.value = rhu(value, 1);
     bar.setAttribute('value', String(rhu(value, 1)));
   }
-  const label = pick('#runstage', '[data-role="progresslabel"]');
+  const label = pick('[data-role="progresslabel"]');
   if (label) label.textContent = state.progress.label || '';
 
   const root = state.progress.stage.split(':')[0];
-  const note = pick('#runnote', '[data-role="progressnote"]');
+  const note = pick('[data-role="progressnote"]');
   if (note) note.textContent = STAGE_NOTE[root] || '';
-  const host = pick('#runprogress', '[data-role="progress"]');
+  const host = pick('[data-role="progress"]');
   if (host) host.setAttribute('data-stage', root);
 }
 
@@ -1333,21 +1303,22 @@ function fatalError(stage, message) {
     state.worker.terminate();
     state.worker = null;
   }
-  document.documentElement.setAttribute('data-run', 'failed');
   // Not `landing`: that would put the pick-a-feed card back under the error and hide
   // the error's own container. `failed` shows the report region and hides the run
   // chrome, which is exactly what is wanted.
   setShellState('failed');
-  const card = waCard(join(
+  // The stack goes on an inner wrapper, not the card host: the host's own flex items
+  // are wa-card's shadow header/body/footer, so a gap there opens a seam under the
+  // header instead of spacing these two paragraphs.
+  const card = waCard(el('div', join(
     el('p', esc(String(message || 'The run stopped and did not say why.')), { className: 'wa-body-m' }),
     el('p', esc('Nothing on this page was written from a partial answer — the run stopped here '
       + 'rather than filling the gap. Reload and try another feed, or the same one again: the '
       + 'commonest causes are a link that is not a GTFS zip and a feed that is missing '
       + 'stop_times.txt.'), { className: 'wa-body-s wa-color-text-quiet' }),
-  ), {
+  ), { className: 'wa-stack wa-gap-m' }), {
     headerHtml: el('h2', join(waIcon('triangle-exclamation'), esc(`Stopped during “${stage}”`)),
       { className: 'wa-heading-l wa-cluster wa-gap-xs wa-align-items-center' }),
-    className: 'wa-stack wa-gap-m',
   });
   const slot = pick('#run-error', '[data-role="runerror"]');
   if (slot) {
@@ -1374,10 +1345,6 @@ function fatalError(stage, message) {
       host.removeAttribute('aria-busy');
     }
     pruneNav();
-  } else {
-    const main = pick('main', '#report', '[data-role="report"]') || document.body;
-    main.innerHTML = el('div', card, { className: 'wa-stack wa-gap-l', dataRunOnly: true });
-    main.hidden = false;
   }
   const landing = pick('#landing', '[data-role="landing"]');
   if (landing) landing.hidden = true;
@@ -1392,17 +1359,6 @@ function fatalError(stage, message) {
 function imperial(report) {
   const code = String((report.geo && report.geo.admin && report.geo.admin.countryCode) || '').toLowerCase();
   return IMPERIAL_COUNTRIES.includes(code);
-}
-
-/** A distance, in the map's own units. */
-function dist(report, metres, dp = 2) {
-  return imperial(report) ? miles(metres, dp) : km(metres, dp);
-}
-
-/** An area, in the map's own units. */
-function area(report, sqMetres, dp = 1) {
-  if (imperial(report)) return sqmi(sqMetres, dp);
-  return `${num(sqMetres / 1000000.0, dp)} km²`;
 }
 
 /** A delta with an explicit sign and a real minus glyph: '−10.2', '+3.0', '0'. */
@@ -1846,8 +1802,9 @@ function questionsPayload(report) {
     selector: q.selector, why: q.why,
     surv_mean: q.survMean === null || q.survMean === undefined ? null : rhu(q.survMean, 4),
     borderline: q.borderline,
-    // `draw` / `keep` come from the catalogue, which lives in the worker; the audit
-    // rows carry them through when the worker attaches them and are null otherwise.
+    // `draw` / `keep` are the card price from the catalogue: `auditQuestions` copies
+    // them onto every audit row from the question definition it scored, and they ride
+    // across the wire with the rest of the row.
     draw: q.draw === undefined ? null : q.draw,
     keep: q.keep === undefined ? null : q.keep,
   }));
@@ -1889,7 +1846,6 @@ function stopsPayload(report) {
   return {
     stops,
     zones,
-    stops_omitted: !withinCap,
     rings: zones.length <= MAX_MAP_ZONE_RINGS,
   };
 }
@@ -1972,16 +1928,7 @@ function mountDayChrome() {
   const keys = dayOrder(report);
 
   // ── the banner, first child of <main> ──────────────────────────────────────
-  let banner = $id('daybanner');
-  if (!banner) {
-    const main = pick('main', '#report', '[data-role="report"]');
-    if (main) {
-      banner = document.createElement('wa-callout');
-      banner.id = 'daybanner';
-      banner.setAttribute('appearance', 'filled-outlined');
-      main.insertBefore(banner, main.firstChild);
-    }
-  }
+  const banner = $id('daybanner');
   if (banner && keys.length) {
     const opening = bestDay(report);
     banner.setAttribute('variant', dayBanner(report, opening).variant);
@@ -2055,10 +2002,9 @@ function mountDayChrome() {
  * takes — which is exactly where it needs to be for `data-run-only` to strip it.
  *
  * @returns {HTMLElement|null} the `#strategy` root, or null when there is nothing to
- *   render (no report yet, no zones, or the renderer threw).
+ *   render (no zones, or the renderer threw). Callers gate on `state.finished`.
  */
 function mountStrategy() {
-  if (!state.finished) return null;
   const existing = $id('strategy');
   if (existing) return existing;
   let html = '';
@@ -2815,7 +2761,6 @@ function injectRuntime() {
   script.setAttribute('data-jltg-runtime', '');
   script.textContent = pageRuntimeSource();
   document.body.appendChild(script);
-  state.runtimeInjected += 1;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2935,7 +2880,7 @@ async function buildStandalonePage() {
   // Anything that only makes sense while a run is in flight: the landing form, the
   // progress readout, the download button itself.
   for (const node of clone.querySelectorAll('[data-run-only], #landing, [data-role="landing"],'
-    + ' #runprogress, [data-role="progress"], #download, [data-role="download"],'
+    + ' [data-role="progress"], #download, [data-role="download"],'
     + ' [data-state="empty"]')) {
     node.remove();
   }

@@ -23,7 +23,7 @@ import {
   HUB_SNAP_M, HUB_RADIAL_MIN, HUB_SEMI_RADIAL_MIN,
   QUARTER_MILE_M, HALF_MILE_M, SQM_PER_SQMI, M_PER_MILE,
   DEFAULT_DEPARTURE, HEADWAY_WINDOW, SERVICE_DAY_SECONDS,
-  coord, rhu, num, hmsToS, lowerMedian, quantile,
+  coord, rhu, num, hmsToS, lowerMedian,
 } from '../lib/core.js';
 import {
   Projection, bboxOf, bboxExpand, minEnclosingCircle,
@@ -262,11 +262,10 @@ function s1BboxGeojson(bbox) {
 /**
  * A 96-gon approximating the border circle. `_s1_circle_geojson`, line 4084.
  * @param {number} lat @param {number} lon @param {number} radiusM
- * @param {{steps?: number}} [opts]
  * @returns {object}
  */
-function s1CircleGeojson(lat, lon, radiusM, opts = {}) {
-  const steps = opts.steps === undefined ? 96 : opts.steps;
+function s1CircleGeojson(lat, lon, radiusM) {
+  const steps = 96;
   const ring = [];
   for (let k = 0; k <= steps; k++) {
     const theta = 2 * Math.PI * (k % steps) / steps;
@@ -343,11 +342,13 @@ export function inferBorder(feed, day, hub, size, projLike, options) {
       + `${allowed.length} stops; using every served stop`);
     inMap = allowed;
   }
-  // `tuple(sorted(set(served) - set(in_map)))`.
+  // `len(set(served) - set(in_map))` — only the count is used, so the difference is
+  // counted rather than materialised and sorted.
   const inMapSet = new Set(inMap);
-  const trimmed = Array.from(new Set(served.filter((sid) => !inMapSet.has(sid)))).sort(cmpStr);
-  if (trimmed.length) {
-    LOG.info(`border: ${trimmed.length} of ${served.length} served stops are outside `
+  let trimmedCount = 0;
+  for (const sid of new Set(served)) if (!inMapSet.has(sid)) trimmedCount++;
+  if (trimmedCount) {
+    LOG.info(`border: ${trimmedCount} of ${served.length} served stops are outside `
       + `the ${Math.floor(budget / 60)}-minute reach of the hub`);
   }
 
@@ -387,12 +388,10 @@ export function inferBorder(feed, day, hub, size, projLike, options) {
   return {
     kind,
     bbox: padded.map(coord),
-    rawBbox: raw.map(coord),
     circle: [coord(circle[0]), coord(circle[1]), circle[2]],
     padM: pad,
     geojson,
     areaSqM: area,
-    trimmedStopIds: trimmed,
   };
 }
 
@@ -623,9 +622,9 @@ export function travelTimeSamples(feed, days, zones, originStopId, departureS, p
       if (run !== null && run !== undefined && has(run.arrivalS, zid)) {
         const journey = buildJourney(day, run, zid);
         entry.minutes = rhu((run.arrivalS[zid] - departureS) / 60.0, 1);
-        entry.transfers = has(run.rounds, zid) ? run.rounds[zid] : 0;
+        entry.transfers = run.rounds[zid];
         const routeSet = new Set();
-        for (const leg of (journey ? journey.legs : [])) {
+        for (const leg of journey.legs) {
           if (leg.mode === 'transit' && leg.routeId) routeSet.add(leg.routeId);
         }
         entry.routes = Array.from(routeSet).sort(cmpStr);
@@ -656,11 +655,11 @@ export function travelTimeSamples(feed, days, zones, originStopId, departureS, p
  * The GTFS-only inputs the question layer needs, in one bundle.
  *
  * Keys: `has_rail` (any `route_type` in the rail-ish set — a pure-GTFS
- * determination that kills four questions on a bus-only feed), `route_types`,
- * `routes_by_zone`, `station_name_lengths`, `metro_route_ids`,
- * `multi_route_stop_share`, and `u_turn` (the fraction of stops with ≥2 routes and
- * the median wait for a *different* route inside the U-Turn card's 0.5/0.5/1-hour
- * window — that curse is decided by GTFS, not OSM).
+ * determination that kills four questions on a bus-only feed), `routes`,
+ * `routes_by_zone`, `station_name_lengths`, `metro_route_ids`, and `u_turn` (the
+ * fraction of stops with ≥2 routes and the median wait for a *different* route
+ * inside the U-Turn card's 0.5/0.5/1-hour window — that curse is decided by GTFS,
+ * not OSM).
  *
  * The key names are **snake_case, exactly as in the Python**: the question audit
  * looks these up by name and this bundle is a lookup table, not a typed record.
@@ -672,9 +671,6 @@ export function gtfsQuestionFacts(feed, days, zones, stations) {
   const best = (days && days.length) ? maxBy(days, (d) => [d.trips, d.dayType.key]) : null;
   const routeIdsSorted = Object.keys(feed.routes).sort(cmpStr);
 
-  const typeSet = new Set();
-  for (const rid of routeIdsSorted) typeSet.add(feed.routes[rid].routeType);
-  const routeTypes = Array.from(typeSet).sort((a, b) => a - b);
   const railIds = routeIdsSorted.filter((rid) => S1_RAIL_TYPES.includes(feed.routes[rid].routeType));
 
   const zonesSorted = zones.slice().sort((a, b) => cmpStr(a.zoneId, b.zoneId));
@@ -684,21 +680,11 @@ export function gtfsQuestionFacts(feed, days, zones, stations) {
     routesByZone[z.zoneId] = Array.from(z.routeIds);
     nameLengths[z.zoneId] = nameLen(z.name);
   }
-  /** @type {Object<string, number>} */ const zoneRouteCount = Object.create(null);
-  for (const z of zones) zoneRouteCount[z.zoneId] = z.routeIds.length;
-
-  const stationLengths = stations.map((s) => nameLen(s.name)).sort((a, b) => a - b);
-  const allLengths = stationLengths.length
-    ? stationLengths
-    : zones.map((z) => nameLen(z.name)).sort((a, b) => a - b);
-  const rawLengths = Object.keys(feed.stops).sort(cmpStr)
-    .map((sid) => nameLen(feed.stops[sid].name)).sort((a, b) => a - b);
 
   // ── Curse of the U-Turn: is there a second line to escape onto, and how long
   //    would you wait for it? ────────────────────────────────────────────────
   let multiShare = 0.0;
   /** @type {number[]} */ const waits = [];
-  /** @type {Map<string, number>} */ const perStopWait = new Map();
   if (best !== null) {
     const extras = s1Extras(best);
     const served = Array.from(best.servedStopIds);
@@ -732,48 +718,15 @@ export function gtfsQuestionFacts(feed, days, zones, stations) {
         }
       }
       if (gaps.length) {
-        const med = s1Median(gaps);
-        perStopWait.set(sid, med);
-        waits.push(med);
+        waits.push(s1Median(gaps));
       }
     }
   }
 
-  const servedTotal = best !== null ? best.servedStopIds.length : 0;
-  let within30 = 0;
-  let within60 = 0;
-  for (const w of perStopWait.values()) {
-    if (w <= 30) within30++;
-    if (w <= 60) within60++;
-  }
-  let zonesWithTwo = 0;
-  let zoneCount = 0;
-  for (const zid of Object.keys(zoneRouteCount)) {
-    zoneCount++;
-    if (zoneRouteCount[zid] >= 2) zonesWithTwo++;
-  }
   const uTurn = {
     multi_route_stop_share: multiShare,
-    stops_with_alternative: perStopWait.size,
-    served_stops: servedTotal,
     median_wait_other_route_min: waits.length ? s1Median(waits) : null,
-    share_within_30min: s1Share(within30, servedTotal),
-    share_within_60min: s1Share(within60, servedTotal),
-    zone_share_with_two_routes: s1Share(zonesWithTwo, zoneCount),
   };
-
-  // NOTE (kept from the Python): despite the name, `route_type_names` maps a
-  // route_type — stringified — to a *route_id*, and the dict comprehension means
-  // the LAST route of that type in route_id order wins.
-  /** @type {Object<string, string>} */ const routeTypeNames = Object.create(null);
-  for (const rid of routeIdsSorted) routeTypeNames[String(feed.routes[rid].routeType)] = rid;
-
-  let namesContainingStation = 0;
-  for (const sid of Object.keys(feed.stops)) {
-    if (String(feed.stops[sid].name || '').toLowerCase().includes('station')) {
-      namesContainingStation++;
-    }
-  }
 
   /** @type {Object<string, object>} */ const routesOut = Object.create(null);
   for (const rid of routeIdsSorted) {
@@ -789,32 +742,9 @@ export function gtfsQuestionFacts(feed, days, zones, stations) {
 
   return {
     has_rail: Boolean(railIds.length),
-    route_types: routeTypes,
-    route_type_names: routeTypeNames,
     metro_route_ids: railIds,
     routes_by_zone: routesByZone,
-    zone_route_count: zoneRouteCount,
     station_name_lengths: nameLengths,
-    station_name_lengths_all: allLengths,
-    station_name_length_stats: {
-      min: allLengths.length ? allLengths[0] : 0,
-      p25: allLengths.length ? quantile(allLengths, 0.25) : 0,
-      median: allLengths.length ? quantile(allLengths, 0.50) : 0,
-      p75: allLengths.length ? quantile(allLengths, 0.75) : 0,
-      max: allLengths.length ? allLengths[allLengths.length - 1] : 0,
-      count: allLengths.length,
-    },
-    stop_name_length_stats: {
-      min: rawLengths.length ? rawLengths[0] : 0,
-      p25: rawLengths.length ? quantile(rawLengths, 0.25) : 0,
-      median: rawLengths.length ? quantile(rawLengths, 0.50) : 0,
-      p75: rawLengths.length ? quantile(rawLengths, 0.75) : 0,
-      max: rawLengths.length ? rawLengths[rawLengths.length - 1] : 0,
-      count: rawLengths.length,
-    },
-    names_containing_station: namesContainingStation,
-    stations: stations.length,
-    multi_route_stop_share: multiShare,
     u_turn: uTurn,
     routes: routesOut,
   };

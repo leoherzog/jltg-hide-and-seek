@@ -767,8 +767,8 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
     // Patterns are keyed on the stop sequence alone (the RAPTOR definition), so a
     // pattern can in principle carry trips of two different routes. Keep the
     // per-trip route so a reconstructed journey never names the wrong line.
-    const tripRoutes = ids.map((t) => (tripRoute.get(t) || ['', ''])[0]);
-    const head = tripRoute.get(ids[0]) || ['', ''];
+    const tripRoutes = ids.map((t) => tripRoute.get(t)[0]);
+    const head = tripRoute.get(ids[0]);
     const pi = patterns.length;
     const stopsIdx = new Int32Array(nOff);
     for (let off = 0; off < nOff; off++) stopsIdx[off] = index.byId.get(stopKeys[off]);
@@ -796,9 +796,6 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
   for (let i = 0; i < atStop.length; i++) {
     for (const pair of atStop[i]) { asPat[cursor] = pair[0]; asOff[cursor] = pair[1]; cursor++; }
   }
-
-  let overtaking = 0;
-  for (const p of patterns) if (!p.sortedCols) overtaking++;
 
   let first = Infinity;
   let last = -Infinity;
@@ -853,10 +850,6 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
     },
     // `_s1_slack`, generate.py line 3010. Read back by raptor.js.
     _s1Slack: Math.trunc(boardSlackS),
-    // `_s1_overtaking` is not in the Python; the CLI logs it. Kept as a field so
-    // the worker can report "N of M patterns overtake themselves" without
-    // re-deriving it.
-    _s1Overtaking: overtaking,
   };
 }
 
@@ -865,7 +858,7 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Synthesise stations by single-link clustering of stops within `radiusM`.
+ * Synthesise stations by single-link clustering of stops within `STATION_CLUSTER_M`.
  *
  * Honours `parentStation` first when the feed populates it; otherwise pure
  * geometry. Union-find over grid-accelerated pairs. Measured knee on the reference
@@ -874,11 +867,9 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
  *
  * @param {object[]} stops  `Stop` records
  * @param {Projection|{lat0:number,lon0:number}} projLike
- * @param {{radiusM?: number}} [opts]
  * @returns {object[]} `Station` records, sorted by stationId
  */
-export function clusterStations(stops, projLike, opts = {}) {
-  const radiusM = opts.radiusM === undefined ? STATION_CLUSTER_M : opts.radiusM;
+export function clusterStations(stops, projLike) {
   const proj = Projection.from(projLike);
   const ordered = Array.from(stops).sort((a, b) => cmpStr(a.stopId, b.stopId));
   if (!ordered.length) return [];
@@ -914,15 +905,14 @@ export function clusterStations(stops, projLike, opts = {}) {
 
   const pos = Object.create(null);
   for (const s of ordered) pos[s.stopId] = proj.xy(s.lat, s.lon);
-  const cell = Math.max(1.0, radiusM);
-  const grid = new GridIndex(cell);
+  const grid = new GridIndex(STATION_CLUSTER_M);
   for (const sid of ids) grid.add(sid, pos[sid][0], pos[sid][1]);
   for (const sid of ids) {
     const x = pos[sid][0];
     const y = pos[sid][1];
-    for (const item of grid.near(x, y, radiusM)) {
+    for (const item of grid.near(x, y, STATION_CLUSTER_M)) {
       const other = item[0];
-      if (other !== sid && Math.hypot(x - item[1], y - item[2]) <= radiusM) {
+      if (other !== sid && Math.hypot(x - item[1], y - item[2]) <= STATION_CLUSTER_M) {
         union(slot.get(sid), slot.get(other));
       }
     }

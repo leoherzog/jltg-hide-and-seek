@@ -80,13 +80,12 @@ const S4_SOURCE_TAG = Object.freeze({
   interp: Object.freeze(['warning', 'Our call', 'scale-balanced', 'interpretation']),
 });
 
-// The four findings quadrants, in the drafts' order, with their swatch colour, the
+// The findings quadrants, in the drafts' order, with their swatch colour, the
 // WebAwesome colour utility that tints the card's leading edge, and the icon that
 // makes the tone legible without the colour.
 const S4_QUADRANTS = Object.freeze([
   Object.freeze(['plus', 'What the map does well', 'var(--good)', 'wa-success', 'circle-check']),
   Object.freeze(['minus', 'What works against it', 'var(--crit)', 'wa-danger', 'circle-xmark']),
-  Object.freeze(['benefit', 'Practical upsides for players', 'var(--accent)', 'wa-brand', 'circle-check']),
   Object.freeze(['concern', 'Risks needing a house rule', 'var(--warn)', 'wa-warning', 'triangle-exclamation']),
 ]);
 
@@ -344,22 +343,6 @@ export function s4JoinWords(items, conjunction = 'and') {
   return `${kept.slice(0, -1).join(', ')} ${conjunction} ${kept[kept.length - 1]}`;
 }
 
-// Python-name aliases, so the other renderers can import whichever spelling they
-// reached for. Same functions, no second implementation.
-export {
-  s4Imperial as _s4_imperial,
-  s4Dist as _s4_dist,
-  s4Area as _s4_area,
-  s4Val as _s4_val,
-  s4MetricValue as _s4_metric_value,
-  s4RampText as _s4_ramp_text,
-  s4Points as _s4_points,
-  s4Signed as _s4_signed,
-  s4JoinWords as _s4_join_words,
-  s4Plural as _s4_plural,
-  s4NaturalKey as _s4_natural_key,
-};
-
 // ── per-day views (generate.py 10726–10800) ──────────────────────────────────
 
 /**
@@ -550,7 +533,9 @@ function s4BandLadder(report) {
       title: `${num(cut, 1)} and up`,
     }));
   }
-  return el('div', tags.join(''), { className: 'wa-cluster wa-gap-3xs', role: 'list' });
+  return el('ul', tags.map((t) => el('li', t)).join(''), {
+    className: 'wa-cluster wa-gap-3xs wa-list-plain',
+  });
 }
 
 /**
@@ -598,7 +583,7 @@ function s4SubscoreMeters(report) {
       esc(num(s.earnedTenths / 10.0, 1)),
       el('span', esc(` / ${num(s.maxTenths / 10.0, 0)}`), { className: 'wa-color-text-quiet' }),
     ), { className: 'wa-caption-s' });
-    rows.push(meter(label, pctage, right, { flank: '3.5rem' }));
+    rows.push(meter(label, pctage, right, { flank: '3.5rem', label: `${s.id} · ${s.name}` }));
   }
   if (rows.length === 0) return '';
   return el('div', rows.join(''), {
@@ -906,7 +891,7 @@ export function s4VerdictTitle(report) {
   const size = cap((report.size || {}).name || '');
   const f = report.fitness || {};
   const band = (f.score !== null && f.score !== undefined) ? f.band : 'Partly measurable';
-  if (shape && shape !== 'unknown') return `${band}: a ${shape} ${size} map`;
+  if (shape) return `${band}: a ${shape} ${size} map`;
   return `${band}: a ${size} map`;
 }
 
@@ -926,7 +911,9 @@ export function renderVerdict(payload) {
   const f = report.fitness;
   const size = report.size;
   if (!f || !size) return '';
-  const si = report.sizeInference || { axes: [], verdict: size.name, note: '', unanimous: true, clamped: false };
+  // `size` and `sizeInference` come out of one `inferGameSize` call and are posted in
+  // the same `'network'` payload, so a report with a `size` always has both.
+  const si = report.sizeInference;
 
   /** @type {Object<string, Object>} */
   const mit = {};
@@ -944,7 +931,7 @@ export function renderVerdict(payload) {
   if (size.inferred) {
     lead = `This map is a ${cap(si.verdict)} map. `
       + 'Four independent axes vote on that, and they are in the table above.';
-    lead += ` ${si.note ? si.note : (si.unanimous ? 'All of them agree.' : 'They do not all agree.')}`;
+    lead += ` ${si.note}`;
     if (!si.unanimous) {
       lead += ' Where the axes disagree the vote resolves down, to the smaller and quieter '
         + 'game, and the disagreement is worth reading as a warning: a map that looks '
@@ -1253,7 +1240,7 @@ export function renderScoreTrace(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §03's second half — the four findings quadrants as colour-utility `wa-card`s.
+ * §03's second half — the findings quadrants as colour-utility `wa-card`s.
  *
  * Three fixes over the old §08. The card's **heading is the finding's sentence**,
  * with its machine-built title demoted to the caption above it, because ten of these
@@ -1269,7 +1256,8 @@ function s4FindingsHalf(report) {
   for (const [quadrant, title, colour, tint, icon] of S4_QUADRANTS) {
     const items = findings.filter((x) => x.quadrant === quadrant);
     if (!items.length) continue;
-    const variant = tint.startsWith('wa-') ? tint.slice(3) : tint;
+    // Every tint in `S4_QUADRANTS` is a `wa-` colour utility; the variant is its suffix.
+    const variant = tint.slice(3);
     const cards = [];
     for (const item of items) {
       const severity = String(item.severity || '');
@@ -1415,7 +1403,7 @@ export function renderYourGame(payload) {
   for (const r of recs) if (r.required) required += 1;
   const nRules = recs.length;
   const answer = el('p', esc(
-    `${num((quads.plus || 0) + (quads.benefit || 0))} things this map does well, `
+    `${num(quads.plus || 0)} things this map does well, `
     + `${num((quads.minus || 0) + (quads.concern || 0))} that fight you, and ${num(nRules)} house `
     + `${s4Plural(nRules, 'rule')} — ${num(required)} of them your group has to agree on.`,
   ), { className: 'wa-body-s' });

@@ -76,7 +76,7 @@ async function main() {
     return 2;
   }
 
-  // A `Blob` with a `name` is what `fetchFeedZip` duck-types a picked `File` as:
+  // A `Blob` with a `name` is what `_s1ReadSource` (gtfs/feed.js) duck-types a picked `File` as:
   // it has `.arrayBuffer()`, so the bytes are read directly with no network and no
   // cache. Node 24 has `Blob` and `File` globally; `File` is used when available so
   // the harness exercises exactly the browser path.

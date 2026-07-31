@@ -25,7 +25,7 @@
  * @module gtfs/raptor.js
  */
 
-import { BOARD_SLACK_S, MAX_TRANSFERS } from '../lib/core.js';
+import { MAX_TRANSFERS } from '../lib/core.js';
 
 /** `_S1_INF` / `_S1_NEG_INF`, generate.py lines 2115–2116. Both fit an Int32Array. */
 const S1_INF = 1000000000;
@@ -68,8 +68,7 @@ function uniqueSorted(ids) {
  * @param {object} day @returns {number}
  */
 export function s1Slack(day) {
-  const v = day && day._s1Slack;
-  return Math.trunc(v === undefined || v === null ? BOARD_SLACK_S : v);
+  return Math.trunc(day._s1Slack);
 }
 
 /**
@@ -135,11 +134,9 @@ function labelRounds(count, n, fill) {
  * @param {object} day  a `ServiceDay`
  * @param {string[]} originStopIds
  * @param {number} departureS
- * @param {{maxTransfers?: number}} [opts]
  * @returns {object} a `TravelTimes`
  */
-export function raptor(day, originStopIds, departureS, opts = {}) {
-  const maxTransfers = opts.maxTransfers === undefined ? MAX_TRANSFERS : opts.maxTransfers;
+export function raptor(day, originStopIds, departureS) {
   const index = day.stopIndex;
   const patterns = day.patterns;
   const atStop = day.patternAtStop;
@@ -147,7 +144,7 @@ export function raptor(day, originStopIds, departureS, opts = {}) {
   const slack = s1Slack(day);
   const n = index.ids.length;
   const P = patterns.length;
-  const K = Math.max(1, Math.trunc(maxTransfers) + 1);   // K transit legs ⇒ K−1 transfers
+  const K = MAX_TRANSFERS + 1;                           // K transit legs ⇒ K−1 transfers
   const dep0 = Math.trunc(departureS);
 
   const best = new Int32Array(n);
@@ -182,7 +179,7 @@ export function raptor(day, originStopIds, departureS, opts = {}) {
     anySeed = true;
   }
   if (!anySeed) {
-    return { originStopIds: origins, departureS: dep0, arrivalS: {}, rounds: {} };
+    return { departureS: dep0, arrivalS: {}, rounds: {} };
   }
 
   /**
@@ -297,7 +294,6 @@ export function raptor(day, originStopIds, departureS, opts = {}) {
     rounds[sid] = Math.max(0, roundOf[i] - 1);
   }
   return {
-    originStopIds: origins,
     departureS: dep0,
     arrivalS,
     rounds,
@@ -317,11 +313,9 @@ export function raptor(day, originStopIds, departureS, opts = {}) {
  * input to the `S2 exit_margin` metric.
  *
  * @param {object} day @param {string[]} targetStopIds @param {number} arriveByS
- * @param {{maxTransfers?: number}} [opts]
  * @returns {Object<string, number>} stop_id → latest departure seconds
  */
-export function raptorReverse(day, targetStopIds, arriveByS, opts = {}) {
-  const maxTransfers = opts.maxTransfers === undefined ? MAX_TRANSFERS : opts.maxTransfers;
+export function raptorReverse(day, targetStopIds, arriveByS) {
   const index = day.stopIndex;
   const patterns = day.patterns;
   const atStop = day.patternAtStop;
@@ -329,7 +323,7 @@ export function raptorReverse(day, targetStopIds, arriveByS, opts = {}) {
   const slack = s1Slack(day);
   const n = index.ids.length;
   const P = patterns.length;
-  const K = Math.max(1, Math.trunc(maxTransfers) + 1);
+  const K = MAX_TRANSFERS + 1;
   const arrive0 = Math.trunc(arriveByS);
 
   const best = new Int32Array(n);
@@ -507,7 +501,6 @@ export function buildJourney(day, times, destStopId) {
       i = boardI;
       k -= 1;
     }
-    if (k < 0) break;
   }
   legs.reverse();
   if (!legs.length) return { minutes: 0.0, transfers: 0, legs: [] };

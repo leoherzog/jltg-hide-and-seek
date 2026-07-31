@@ -1,5 +1,5 @@
 // web/osm/overpass.js — the Overpass + Nominatim transport layer.
-// Port of generate.py S2 lines 4862–5487 (`_ov_bbox` … `_is_in_areas`).
+// Port of the transport half of generate.py S2 (lines 4862–5487, from `_ov_bbox`).
 //
 // Worker-side module: no DOM. Every network round-trip goes through
 // `httpFetch` from ../lib/http.js, which owns the mirror failover, the retries
@@ -27,25 +27,10 @@ import {
   OVERPASS_COURTESY_SLEEP_S,
   NOMINATIM_COURTESY_SLEEP_S,
 } from '../lib/http.js';
-import { cacheKey16 } from '../lib/cache.js';
-// One constant, three consumers (Right Turn, Luxury Car, street density) — so
-// they can never disagree about what a street is. It lives in geodata.js per
-// CONTRACT.md §(a); the resulting import cycle is safe because the binding is
-// only ever read inside a function body, never at module-evaluation time.
-import { CAR_STREET_SELECTOR } from './geodata.js';
 
 // ── tuning constants (S2-local, generate.py lines 4691–4694) ─────────────────
 
-export const OVERPASS_QL_TIMEOUT_S = 300;  // the [timeout:N] header inside the QL itself
 export const OVERPASS_TILE_DEG = 0.1;      // ≤0.1° squares when a single-shot fetch fails
-export const IS_IN_BATCH = 150;            // zone centres per batched is_in request
-
-// generate.py lines 4730 and 4735. Defined here rather than in geodata.js
-// because the fetch path is the only thing that reads them, and one definition
-// beats two that can drift. Both are frozen sorted arrays, not Sets, so they
-// are clone-safe; use `.includes()`.
-export const GEO_DENSITY_ONLY = Object.freeze(['building']);
-export const RING_CATEGORIES = Object.freeze(['commercial_airport', 'park', 'water']);
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
@@ -59,33 +44,6 @@ function warn(...args) {
   if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
     console.warn(...args);
   }
-}
-
-/**
- * Wrap an `onProgress(done, total, label)` callback so it can never break the
- * pipeline, and so callers may omit it.
- * @param {((done: number, total: number, label: string) => void)|undefined|null} onProgress
- * @returns {(done: number, total: number, label: string) => void}
- */
-function progressor(onProgress) {
-  if (typeof onProgress !== 'function') return () => {};
-  return (done, total, label) => {
-    try {
-      onProgress(done, total, label);
-    } catch {
-      // A UI callback is not allowed to fail a fetch.
-    }
-  };
-}
-
-/** True for the offline-cache sentinel, which every caller must re-raise. */
-function isCacheMiss(exc) {
-  return Boolean(exc) && exc.name === 'CacheMiss';
-}
-
-/** Message text of anything that was thrown. */
-function why(exc) {
-  return exc instanceof Error ? exc.message : String(exc);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -113,16 +71,6 @@ export function ovSub(selector, bbox) {
 }
 
 /**
- * The selector for a category, resolving the ones that live in a shared constant.
- * @param {import('./geodata.js').GeoCategory|{key: string, selector: string}} category
- * @returns {string}
- */
-export function ovSelector(category) {
-  if (category.key === 'car_street') return CAR_STREET_SELECTOR;
-  return category.selector;
-}
-
-/**
  * `[out:json][timeout:N];` — the header every query carries.
  *
  * `timeoutS` is a parameter because the optional legal-path join deliberately asks
@@ -130,83 +78,31 @@ export function ovSelector(category) {
  * generate.py line 4700): it is an enhancement, and it must not be allowed to hold
  * a mirror for five minutes.
  *
- * @param {number} [timeoutS]
+ * @param {number} timeoutS
  * @returns {string}
  */
-export function ovHeader(timeoutS = OVERPASS_QL_TIMEOUT_S) {
+export function ovHeader(timeoutS) {
   return `[out:json][timeout:${timeoutS}];`;
 }
 
 /**
- * The 16-hex handle the cache entry is named after — printed in §Provenance.
- * ASYNC, because `sha256Text` is (`crypto.subtle.digest` returns a Promise).
- * @param {string} query
- * @returns {Promise<string>}
- */
-export function queryCacheKey(query) {
-  return cacheKey16(query);
-}
-
-/**
- * `out geom` everywhere a distance or a ring is compared; `out center qt` only
- * for the pure density tally (buildings), per specs/osm.md §1.4 and §3.1.
- * @param {{key: string}} category
- * @param {{densityOnly?: ReadonlyArray<string>}} [opts]
- * @returns {string}
- */
-export function outDirective(category, opts = {}) {
-  const densityOnly = opts.densityOnly || GEO_DENSITY_ONLY;
-  return densityOnly.includes(category.key) ? 'out center qt;' : 'out geom;';
-}
-
-/**
  * Assemble one Overpass QL request. This is the single QL writer every builder
- * below goes through, so the header can never drift between them.
+ * goes through, so the header can never drift between them.
  *
- * A statement is either a raw string appended verbatim, or an object:
- *   `{selector}`  — wrapped in `( … );` with `{{bbox}}` substituted
- *   `{raw}`       — emitted verbatim in the selector's place (used by `is_in`)
- *   `{out}`       — the out directive that follows it
- *   `{count}`     — append `out count;` as an explicit statement terminator
+ * `web/osm/geodata.js` builds the QL body itself — it is the module that knows what
+ * a category is — and calls `overpassQL(body, bbox, {timeoutS})`, where `body` is one
+ * already-joined run of statements whose `{{bbox}}` placeholders still need
+ * substituting. That is the form generate.py's own builders use (`_ov_header() + …`,
+ * line 4989), and it is the only way to pass `LEGAL_PATH_QL_TIMEOUT_S`. An `is_in`
+ * body carries no `{{bbox}}` at all, so substitution is then a no-op.
  *
- * TWO CALL SHAPES, and both are load-bearing. `web/osm/geodata.js` builds the QL
- * body itself — it is the module that knows what a category is — and calls
- * `overpassQL(bodyText, bbox, {timeoutS})`, where `bodyText` is one already-joined
- * run of statements whose `{{bbox}}` placeholders still need substituting. That is
- * the form generate.py's own builders use (`_ov_header() + …`, line 4989), and it is
- * the only way to pass `LEGAL_PATH_QL_TIMEOUT_S`. The array form below is this
- * module's own. Dispatch is on the first argument's type: a bbox is an array, a body
- * is a string, and neither can be mistaken for the other.
- *
- * @param {[number, number, number, number]|string|null} bbox bbox, or the QL body
- * @param {Array<string|{selector?: string, raw?: string, out?: string, count?: boolean}>
- *        |[number, number, number, number]} statements statements, or the bbox
- * @param {{timeoutS?: number}} [opts] body form only
+ * @param {string} body one already-joined run of statements
+ * @param {[number, number, number, number]} bbox
+ * @param {{timeoutS: number}} opts
  * @returns {string}
  */
-export function overpassQL(bbox, statements, opts = {}) {
-  // ── body form: overpassQL(body, bbox, {timeoutS}) ────────────────────────
-  if (typeof bbox === 'string') {
-    const body = bbox;
-    const box = statements;
-    const header = ovHeader(opts.timeoutS === undefined
-      ? OVERPASS_QL_TIMEOUT_S : opts.timeoutS);
-    // `is_in` queries carry no `{{bbox}}` at all; substitution is then a no-op.
-    return header + (box ? ovSub(body, box) : body);
-  }
-
-  let out = ovHeader();
-  for (const st of statements) {
-    if (typeof st === 'string') {
-      out += st;
-      continue;
-    }
-    if (st.raw !== undefined && st.raw !== null) out += st.raw;
-    else out += `(${ovSub(st.selector, bbox)});`;
-    if (st.out) out += st.out;
-    if (st.count) out += 'out count;';
-  }
-  return out;
+export function overpassQL(body, bbox, opts) {
+  return ovHeader(opts.timeoutS) + ovSub(body, bbox);
 }
 
 /**
@@ -221,34 +117,29 @@ export function overpassQL(bbox, statements, opts = {}) {
  * CORS-safelisted and overpass-api.de answers it with `Access-Control-Allow-Origin: *`;
  * any other header would provoke a preflight the mirrors do not answer.
  *
+ * `attemptsPerEndpoint` and `timeoutS` are forwarded to `httpFetch`; a caller that
+ * omits them gets `httpFetch`'s own defaults. The optional legal-path join is the
+ * one caller that sets them, deliberately buying a smaller budget than the run's.
+ *
  * @param {import('../lib/cache.js').Cache} cache
  * @param {string} query
- * @param {{onProgress?: Function, label?: string, done?: number, total?: number}} [opts]
+ * @param {{attemptsPerEndpoint?: number, timeoutS?: number}} [opts]
  * @returns {Promise<Object>}
  */
 export async function overpassQuery(cache, query, opts = {}) {
-  const report = progressor(opts.onProgress);
-  const label = opts.label || 'Overpass';
-  const done = opts.done || 0;
-  const total = opts.total || 1;
-
-  report(done, total, label);
-  let body;
-  try {
-    body = await httpFetch(cache, {
-      kind: 'overpass',
-      cacheKey: query,
-      ext: 'json',
-      endpoints: OVERPASS_ENDPOINTS,
-      method: 'POST',
-      data: query,
-      courtesySleepS: OVERPASS_COURTESY_SLEEP_S,
-    });
-  } finally {
-    // Advance even on failure: a dead tile still consumed its slot, and a bar
-    // that stalls on an error reads as a hang.
-    report(done + 1, total, label);
-  }
+  const body = await httpFetch(cache, {
+    kind: 'overpass',
+    cacheKey: query,
+    ext: 'json',
+    endpoints: OVERPASS_ENDPOINTS,
+    method: 'POST',
+    data: query,
+    courtesySleepS: OVERPASS_COURTESY_SLEEP_S,
+    // Only spread a key the caller actually supplied, so `httpFetch`'s own
+    // retry/timeout policy stays in charge of every other request.
+    ...(opts.attemptsPerEndpoint === undefined ? {} : { attemptsPerEndpoint: opts.attemptsPerEndpoint }),
+    ...(opts.timeoutS === undefined ? {} : { timeoutS: opts.timeoutS }),
+  });
 
   // A poisoned cache entry would make every later run reproduce the failure,
   // so drop it before throwing.
@@ -273,101 +164,6 @@ export async function overpassQuery(cache, query, opts = {}) {
   }
   if (remark) warn(`overpass remark: ${remark}`);
   return data;
-}
-
-/**
- * Split an `out …; out count;`-per-statement response into per-statement blocks.
- *
- * Overpass returns every statement's elements concatenated in statement order with
- * nothing between them, so the trailing `out count;` of each statement is used as
- * an explicit terminator *and* as a checksum: the block length must equal the
- * count. Without this, a partially failed query silently shifts every category's
- * features onto the wrong category.
- *
- * @param {Object} data
- * @param {number} expected
- * @param {string} what
- * @returns {Array<Array<Object>>}
- */
-export function splitStatements(data, expected, what) {
-  /** @type {Array<Array<Object>>} */
-  const blocks = [];
-  /** @type {Array<Object>} */
-  let current = [];
-  for (const element of (data && Array.isArray(data.elements) ? data.elements : [])) {
-    if (element && element.type === 'count') {
-      const tags = element.tags || {};
-      const raw = tags.total;
-      const totalV = raw === undefined || raw === null
-        ? current.length
-        : Number.parseInt(String(raw), 10);
-      const totalN = Number.isFinite(totalV) ? totalV : current.length;
-      if (totalN !== current.length) {
-        throw new Error(
-          `Overpass ${what}: statement ${blocks.length} returned ${current.length} `
-          + `elements but counted ${totalN}`,
-        );
-      }
-      blocks.push(current);
-      current = [];
-    } else {
-      current.push(element);
-    }
-  }
-  if (current.length) {
-    throw new Error(`Overpass ${what}: ${current.length} trailing elements with no count marker`);
-  }
-  if (blocks.length !== expected) {
-    throw new Error(`Overpass ${what}: expected ${expected} statements, got ${blocks.length}`);
-  }
-  return blocks;
-}
-
-/**
- * The exact QL text `overpassCounts` sends — also the cache key.
- * @param {[number, number, number, number]} bbox
- * @param {ReadonlyArray<[string, string]>} selectors
- * @returns {string}
- */
-export function countsQuery(bbox, selectors) {
-  return overpassQL(bbox, selectors.map(([, sel]) => ({ selector: sel, count: true })));
-}
-
-/**
- * Map-level audit in ONE request, using `out count`.
- *
- * `selectors` is `[key, selector]` pairs; each becomes a statement followed by
- * `out count;`. Responses come back as `type:"count"` elements **in statement
- * order**, so assert the count matches before zipping — a partially failed query
- * silently returns fewer, and mis-zipping would attribute one category's count to
- * another. 28 categories cost one request and ~4 kB.
- *
- * @param {import('../lib/cache.js').Cache} cache
- * @param {[number, number, number, number]} bbox
- * @param {ReadonlyArray<[string, string]>} selectors
- * @param {{onProgress?: Function, label?: string}} [opts]
- * @returns {Promise<Object<string, number>>}
- */
-export async function overpassCounts(cache, bbox, selectors, opts = {}) {
-  const query = countsQuery(bbox, selectors);
-  const data = await overpassQuery(cache, query, {
-    onProgress: opts.onProgress,
-    label: opts.label || 'Overpass feature audit',
-  });
-  const counts = data.elements.filter((e) => e && e.type === 'count');
-  if (counts.length !== selectors.length) {
-    throw new Error(
-      `Overpass count audit: asked ${selectors.length} statements, got ${counts.length} counts`,
-    );
-  }
-  /** @type {Object<string, number>} */
-  const out = {};
-  for (let i = 0; i < selectors.length; i++) {
-    const raw = (counts[i].tags || {}).total;
-    const n = raw === undefined || raw === null ? 0 : Number.parseInt(String(raw), 10);
-    out[selectors[i][0]] = Number.isFinite(n) ? n : 0;
-  }
-  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -739,138 +535,6 @@ export function tileBbox(bbox) {
   return out;
 }
 
-/**
- * The exact single-category QL — also the cache key for the provenance row.
- * @param {{key: string, selector: string}} category
- * @param {[number, number, number, number]} bbox
- * @param {{densityOnly?: ReadonlyArray<string>}} [opts]
- * @returns {string}
- */
-export function categoryQuery(category, bbox, opts = {}) {
-  return overpassQL(bbox, [{
-    selector: ovSelector(category),
-    out: outDirective(category, opts),
-  }]);
-}
-
-/**
- * Fetch one category bbox-wide and reduce it to `Poi` records.
- *
- * Uses `out geom` when a real centroid or a ring is required and `out center qt`
- * otherwise. Applies the representative-point rule, deduplicates a node inside a
- * same-category polygon in favour of the polygon, and returns sorted by
- * `(osmType, osmId)`.
- *
- * When the size guard trips (`OVERPASS_WAY_BUDGET`, above 150,000 ways), tiles the
- * bbox into ≤0.1° squares, caches per tile, and reports `onPartial()` — a size
- * failure must never become a `0` that reads as "this category does not exist here".
- * A cold run on a new city takes about eight minutes, so `onProgress` fires around
- * every tile.
- *
- * @param {import('../lib/cache.js').Cache} cache
- * @param {{key: string, selector: string}} category
- * @param {[number, number, number, number]} bbox
- * @param {import('../lib/geo.js').Projection} proj
- * @param {{onProgress?: Function, onPartial?: Function, densityOnly?: ReadonlyArray<string>,
- *          ringCategories?: ReadonlyArray<string>}} [opts]
- * @returns {Promise<Array<Object>>}
- */
-export async function fetchCategory(cache, category, bbox, proj, opts = {}) {
-  const densityOnly = opts.densityOnly || GEO_DENSITY_ONLY;
-  const ringCategories = opts.ringCategories || RING_CATEGORIES;
-  const selector = ovSelector(category);
-  if (!selector) return [];
-  const keepRings = ringCategories.includes(category.key);
-  const keepTags = !densityOnly.includes(category.key);
-  const directive = outDirective(category, { densityOnly });
-  const query = overpassQL(bbox, [{ selector, out: directive }]);
-
-  try {
-    const data = await overpassQuery(cache, query, {
-      onProgress: opts.onProgress,
-      label: `Overpass: ${category.key}`,
-    });
-    return parseOverpass(data.elements, category.key, proj, { keepRings, keepTags });
-  } catch (exc) {
-    if (isCacheMiss(exc)) throw exc;
-    // A too-big or timed-out fetch degrades to tiles.
-    warn(`category ${category.key} failed whole-bbox (${why(exc)}); tiling`);
-  }
-
-  /** @type {Map<string, Object>} */
-  const merged = new Map();
-  let failures = 0;
-  const tiles = tileBbox(bbox);
-  for (let i = 0; i < tiles.length; i++) {
-    const tile = tiles[i];
-    const tileQuery = overpassQL(tile, [{ selector, out: directive }]);
-    let data;
-    try {
-      data = await overpassQuery(cache, tileQuery, {
-        onProgress: opts.onProgress,
-        label: `Overpass: ${category.key} (tiled)`,
-        done: i,
-        total: tiles.length,
-      });
-    } catch (exc) {
-      if (isCacheMiss(exc)) throw exc;
-      // One dead tile is a floor, not a zero.
-      failures += 1;
-      warn(`category ${category.key} tile ${ovBbox(tile)} failed: ${why(exc)}`);
-      continue;
-    }
-    for (const poi of parseOverpass(data.elements, category.key, proj, { keepRings, keepTags })) {
-      merged.set(`${poi.osmType} ${poi.osmId}`, poi);
-    }
-  }
-  if (failures) {
-    warn(`category ${category.key}: ${failures} tiles failed; count is a floor`);
-    if (typeof opts.onPartial === 'function') opts.onPartial(category.key, failures);
-  }
-  return Array.from(merged.values())
-    .sort((a, b) => cmpStr(a.osmType, b.osmType) || (a.osmId - b.osmId));
-}
-
-/**
- * Fetch several categories in ONE request, attributing results by count marker.
- *
- * Returns `[category key → pois, cacheKey]`. On any failure the caller falls back
- * to per-category fetches, which cost more requests but survive one bad selector.
- *
- * @param {import('../lib/cache.js').Cache} cache
- * @param {ReadonlyArray<{key: string, selector: string}>} categories
- * @param {[number, number, number, number]} bbox
- * @param {import('../lib/geo.js').Projection} proj
- * @param {string} label
- * @param {{onProgress?: Function, densityOnly?: ReadonlyArray<string>,
- *          ringCategories?: ReadonlyArray<string>}} [opts]
- * @returns {Promise<[Object<string, Array<Object>>, string]>}
- */
-export async function fetchGroup(cache, categories, bbox, proj, label, opts = {}) {
-  const densityOnly = opts.densityOnly || GEO_DENSITY_ONLY;
-  const ringCategories = opts.ringCategories || RING_CATEGORIES;
-  const query = overpassQL(bbox, categories.map((category) => ({
-    selector: ovSelector(category),
-    out: outDirective(category, { densityOnly }),
-    count: true,
-  })));
-  const data = await overpassQuery(cache, query, {
-    onProgress: opts.onProgress,
-    label: `Overpass: ${label}`,
-  });
-  const blocks = splitStatements(data, categories.length, `group ${label}`);
-  /** @type {Object<string, Array<Object>>} */
-  const out = {};
-  for (let i = 0; i < categories.length; i++) {
-    const category = categories[i];
-    out[category.key] = parseOverpass(blocks[i], category.key, proj, {
-      keepRings: ringCategories.includes(category.key),
-      keepTags: !densityOnly.includes(category.key),
-    });
-  }
-  return [out, await cacheKey16(query)];
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Nominatim and administrative divisions
 // ═══════════════════════════════════════════════════════════════════════════
@@ -916,30 +580,21 @@ export function nominatimUrl(lat, lon) {
  *
  * @param {import('../lib/cache.js').Cache} cache
  * @param {number} lat @param {number} lon
- * @param {{onProgress?: Function}} [opts]
  * @returns {Promise<Object>}
  */
-export async function nominatimReverse(cache, lat, lon, opts = {}) {
-  const report = progressor(opts.onProgress);
+export async function nominatimReverse(cache, lat, lon) {
   const params = nominatimParams(lat, lon);
   const key = nominatimUrl(lat, lon);
-  const label = 'Nominatim reverse geocode';
 
-  report(0, 1, label);
-  let body;
-  try {
-    body = await httpFetch(cache, {
-      kind: 'nominatim',
-      cacheKey: key,
-      ext: 'json',
-      endpoints: [NOMINATIM_ENDPOINT],
-      method: 'GET',
-      params,
-      courtesySleepS: NOMINATIM_COURTESY_SLEEP_S,
-    });
-  } finally {
-    report(1, 1, label);
-  }
+  const body = await httpFetch(cache, {
+    kind: 'nominatim',
+    cacheKey: key,
+    ext: 'json',
+    endpoints: [NOMINATIM_ENDPOINT],
+    method: 'GET',
+    params,
+    courtesySleepS: NOMINATIM_COURTESY_SLEEP_S,
+  });
 
   let data;
   try {
@@ -949,61 +604,4 @@ export async function nominatimReverse(cache, lat, lon, opts = {}) {
     throw new Error(`Nominatim: non-JSON response (${exc && exc.name ? exc.name : 'SyntaxError'})`);
   }
   return (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
-}
-
-/**
- * The exact QL one batched containment request sends — also its cache key.
- * @param {ReadonlyArray<[number, number]>} batch `[lat, lon]` pairs
- * @returns {string}
- */
-export function isInQuery(batch) {
-  return overpassQL(null, batch.map(([lat, lon]) => ({
-    raw: `is_in(${f6(lat)},${f6(lon)});`,
-    out: 'out tags;',
-    count: true,
-  })));
-}
-
-/**
- * Batched `is_in` containment lookup. Returns per-point tag objects and cache keys.
- *
- * `is_in` yields **area** objects, so a `relation.a[...]` filter silently returns
- * nothing; the result is filtered on the returned elements' own tags instead. The
- * `out count;` after each `out tags;` is what makes a batched response separable —
- * without it every point's hierarchy is one undifferentiated list.
- *
- * @param {import('../lib/cache.js').Cache} cache
- * @param {ReadonlyArray<[number, number]>} points
- * @param {{onProgress?: Function}} [opts]
- * @returns {Promise<[Array<Array<Object<string, string>>>, string[]]>}
- */
-export async function isInAreas(cache, points, opts = {}) {
-  /** @type {Array<Array<Object<string, string>>>} */
-  const perPoint = [];
-  /** @type {string[]} */
-  const keys = [];
-  const batches = Math.max(1, Math.ceil(points.length / IS_IN_BATCH));
-  let n = 0;
-  for (let start = 0; start < points.length; start += IS_IN_BATCH) {
-    const batch = points.slice(start, start + IS_IN_BATCH);
-    const query = isInQuery(batch);
-    const data = await overpassQuery(cache, query, {
-      onProgress: opts.onProgress,
-      label: 'Overpass: administrative containment',
-      done: n,
-      total: batches,
-    });
-    n += 1;
-    keys.push(await cacheKey16(query));
-    for (const block of splitStatements(data, batch.length, 'is_in')) {
-      perPoint.push(block.map((e) => {
-        const raw = (e && e.tags) || {};
-        /** @type {Object<string, string>} */
-        const tags = {};
-        for (const k of Object.keys(raw).sort(cmpStr)) tags[String(k)] = String(raw[k]);
-        return tags;
-      }));
-    }
-  }
-  return [perPoint, keys];
 }

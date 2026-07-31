@@ -1,0 +1,3 @@
+# rules/audit.js carries NUL bytes as cache-key separators, which makes git
+# classify it binary and hide every change to it from `git diff` and `grep`.
+rules/audit.js diff

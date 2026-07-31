@@ -20,6 +20,7 @@ import {
   rhu, num, pct, mins, miles, hhmm, quantile,
 } from '../lib/core.js';
 import { bboxOf, bboxContains, Projection } from '../lib/geo.js';
+import { cacheBackend } from '../lib/cache.js';
 import { QUESTIONS, INTERPRETATIONS } from './catalogue.js';
 import {
   globalQuestionOrder, s3JointBlockShare, s3ReferenceSeeker, s3Answer, s3Join,
@@ -157,7 +158,6 @@ function s3QuestionStats(questions, size) {
   const total = scored.length;
   const functional = scored.filter((q) => q.status === 'functional');
   const weak = scored.filter((q) => q.status === 'weak');
-  const dead = scored.filter((q) => q.status === 'dead' || q.status === 'degenerate');
   const liveShare = total ? (functional.length + 0.5 * weak.length) / total : null;
 
   /** @type {Object<string, {n: number, functional: number, dead: number}>} */
@@ -199,15 +199,11 @@ function s3QuestionStats(questions, size) {
 
   return {
     total,
-    functional: functional.length,
-    weak: weak.length,
-    dead: dead.length,
     liveShare,                          // live_share
     categoryDepth: depth,               // category_depth
     categoriesWithLive: anyLive,        // categories_with_live
     meanQuality,                        // mean_quality
     randomizeRisk: randomize,           // randomize_risk
-    perCategory: perCat,                // per_category
   };
 }
 
@@ -1376,7 +1372,7 @@ function s3FindingDetail(metric, metrics, questions) {
   }
   if (mid === 'F1') {
     return `The busiest stop carries ${pct(r)} of all routes, and the network reads as `
-      + `${get(metrics, 'networkShape') || 'unknown'}.`;
+      + `${get(metrics, 'networkShape')}.`;
   }
   if (mid === 'F2') return `${pct(r)} of zones have no other zone within two zone radii.`;
   if (mid === 'F3') return `${pct(r)} of served stops carry a second route.`;
@@ -1599,7 +1595,7 @@ export function deriveRecommendations(reportParts) {
       const currency = getNum(row, 'currency_type', '');
       const transfers = getNum(row, 'transfers', '');
       let note = '';
-      if (transfers !== '' && transfers !== null && transfers !== undefined) {
+      if (transfers !== '') {
         note = String(transfers) !== '0'
           ? ' Transfers are included.'
           : ' Transfers are not included, so budget a fare per boarding.';
@@ -1818,6 +1814,13 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
     excludedStops: Array.from(get(opts, 'excludeStops') || []),   // excluded_stops
     excludedRoutes: Array.from(get(opts, 'excludeRoutes') || []), // excluded_routes
     llmUsed: false,                             // llm_used — the LLM path is dropped in the port
+    // No Python counterpart: the CLI's cache is a directory and is always persistent.
+    // The browser's is IndexedDB when it can be opened and a per-run Map when it
+    // cannot (a locked-down profile, private browsing, Node), and the fallback is
+    // otherwise completely silent — a reader whose value here is `memory` now knows
+    // why the next run refetched the whole feed. Read from the module rather than
+    // taken as an argument because the Cache never reaches the scoring layer.
+    cacheBackend: cacheBackend(),
     interpretations,
     degradations: Array.from(degradations || []),
   };

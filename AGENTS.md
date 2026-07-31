@@ -97,7 +97,7 @@ a `Report`; both renderers consume that object and **format only — they never 
   index for per-zone inventories, representative-point derivation (the rulebook measures to the
   map *icon*), admin-division resolution, and the curse predicates.
 - **S3 rules** — the rulebook catalogue as data, the question-viability engine
-  (functional / weak / degenerate / dead / unaskable / unknown), the answer-signature and
+  (functional / weak / degenerate / dead), the answer-signature and
   survival computation that measures information resistance, the curse audit, and both scoring
   models with a full explainable trace.
 - **S4 render_index**, **S5 render_strategy** — the two pages.

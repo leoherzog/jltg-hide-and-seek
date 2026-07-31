@@ -50,29 +50,29 @@ embedded JSON block; it is built from `state.report` in memory, and it is exclud
 | `lib/geo.js` | **Contract agent (done)** | worker+main | geometry toolkit |
 | `lib/cache.js` | Infra agent | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
 | `lib/http.js` | Infra agent | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
-| `gtfs/feed.js` | GTFS agent | worker | `loadFeed`, `parseCsv`, `unzip`, `normaliseTimes`, `feedWindow` |
+| `gtfs/feed.js` | GTFS agent | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow` |
 | `gtfs/service.js` | GTFS agent | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates` |
 | `gtfs/raptor.js` | GTFS agent | worker | `raptor`, `raptorReverse`, `buildJourney` |
 | `gtfs/network.js` | Network agent | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
 | `gtfs/infer.js` | Network agent | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
 | `osm/overpass.js` | OSM agent | worker | `overpassQL`, `overpassQuery`, `parseOverpass`, `tileBbox`, `nominatimReverse` |
 | `osm/geodata.js` | OSM agent | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
-| `rules/catalogue.js` | Rules agent | worker+main | `QUESTIONS`, `CURSES`, `SIZES`, `RADAR_MILES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. |
+| `rules/catalogue.js` | Rules agent | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
 | `rules/audit.js` | Rules agent | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
 | `rules/score.js` | Score agent | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
 
 ### `lib/core.js` — exported symbols (already written)
 
-Constants: `GENERATOR VERSION USER_AGENT M_PER_MILE M_PER_KM QUARTER_MILE_M HALF_MILE_M
+Constants: `GENERATOR VERSION M_PER_MILE M_PER_KM QUARTER_MILE_M HALF_MILE_M
 SQM_PER_SQMI EARTH_R_M WALK_SPEED_MPS WALK_RADIUS_M WALK_CIRCUITY BOARD_SLACK_S
 MAX_TRANSFERS DEFAULT_DEPARTURE SERVICE_DAY_SECONDS HEADWAY_WINDOW MIDDAY_WINDOW
 EVENING_WINDOW FREQUENT_HEADWAY_MIN STATION_CLUSTER_M HUB_SNAP_M T90_ORIGIN_STRIDE
 RADAR_SAMPLE_PAIRS RADAR_DEAD_HIGH RADAR_DEAD_LOW SEEKER_SAMPLE_CAP
 SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN WA_KIT MAPLIBRE_CSS
-MAPLIBRE_JS TILES_LIGHT TILES_DARK IMPERIAL_COUNTRIES CONST`
+MAPLIBRE_JS TILES_LIGHT TILES_DARK IMPERIAL_COUNTRIES`
 
-Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS isoDate prettyDate
-dowOf dateRange lowerMedian quantile normalise _normalise jdump sha256Bytes sha256Text`
+Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
+dowOf dateRange lowerMedian quantile normalise jdump sha256Bytes sha256Text`
 
 Notes:
 * `num(x, dp = 0, {comma = true})`. Python keyword args are a trailing options object.
@@ -83,7 +83,7 @@ Notes:
 * `rhu` is round-**half-up** implemented on the shortest round-trip decimal string. Verified equal to `Decimal(repr(x)).quantize(…, ROUND_HALF_UP)` on the boundary cases (`2.675→2.68`, `1.005→1.01`, `0.145→0.15`, `-0.5→-1`). Do not "simplify" it to `toFixed`.
 * `num(-0.4)` returns `'-0'`. Python does too. Kept deliberately.
 * `hhmm`/`hhmmss` never modulo 86400. `hhmm(87360) === '24:16'`.
-* `dowOf`/`dateRange`/`isoDate`/`prettyDate` are pure calendar arithmetic on `'YYYYMMDD'`. **Never** `new Date(string)` — that reads the host timezone. `prettyDate` hard-codes English abbreviations so it cannot follow the browser locale.
+* `dowOf`/`dateRange`/`prettyDate` are pure calendar arithmetic on `'YYYYMMDD'`. **Never** `new Date(string)` — that reads the host timezone. `prettyDate` hard-codes English abbreviations so it cannot follow the browser locale.
 
 ### `lib/geo.js` — exported symbols (already written)
 
@@ -141,7 +141,6 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {number} lat            // lat, degrees
  * @property {number} lon            // lon, degrees
  * @property {string} code           // code, default ''
- * @property {string} locationType   // location_type, default '0'
  * @property {string} parentStation  // parent_station, default ''
  */
 
@@ -358,7 +357,6 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {string} key            // key
  * @property {string} label          // label
  * @property {string} selector       // selector — Overpass QL with `{{bbox}}` UNSUBSTITUTED; printed verbatim on the page
- * @property {boolean} needsGeometry // needs_geometry — true ⇒ fetch `out geom`, a distance/polygon test is required
  * @property {string} note           // note
  */
 
@@ -483,7 +481,8 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
 /**
  * @typedef {Object} QuestionAudit   // class QuestionAudit, line 6450. One question's verdict — the core of §07.
  * @property {string} id @property {string} category @property {string} label @property {string} text
- * @property {'functional'|'weak'|'degenerate'|'dead'|'unaskable'|'unknown'} status // status
+ * @property {'functional'|'weak'|'degenerate'|'dead'} status // status
+ *   // `unaskable`/`unknown` are gone: no map can earn either, so nothing downstream branches on them.
  * @property {number} quality              // quality — 0..1, normalised per category
  * @property {number|null} instances       // instances — in-border N; null when not evaluated
  * @property {number|null} coverage        // coverage — photo questions: share of zones with the subject
@@ -491,6 +490,8 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  * @property {string} why                  // why — one sentence, printed next to the status
  * @property {number|null} survMean        // surv_mean — mean surv over Z, for the funnel. FILLED IN PLACE by scoreZones; render questions AFTER scoring.
  * @property {boolean} borderline          // borderline — would flip under a modestly larger border
+ * @property {number} draw                 // draw — card draw price, copied from the catalogue question definition
+ * @property {number} keep                 // keep — card keep price, copied from the catalogue question definition
  */
 
 /**
@@ -638,7 +639,6 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  * @property {number} fullServiceDateShare
  * @property {Object<string,number>} playableDayWeightBySize
  * @property {Object<string,number>} radarHitRate            // radius in METRES (string key) → hit rate
- * @property {Object<string,number>} radarHitRateMi          // radius in MILES (string key) → hit rate
  * @property {string[]} dayKeys @property {string} bestDay
  * @property {[string,string]} feedWindow @property {number} feedWindowDays
  * @property {Object<string, DayMetrics>} perDay             // dayKey → DayMetrics
@@ -938,13 +938,8 @@ waScroller(bodyHtml, { orientation='horizontal', ...attrs })
 waProgressBar(value, { label='', ...attrs })           // value 0..100, rounded to 1 dp via num()
 waProgressRing(value, { label='', innerHtml='', ...attrs })
 waSwitch(label, { checked=false, size='s', ...attrs })
-waRadioGroup(name, options, { value='', label='', orientation='horizontal', size='s', ...attrs })
-                                                        // options: Array<[value, label]>, both escaped
 waCopyButton(payload, { label='Copy', ...attrs })
-waSparkline(values, { label, ...attrs })                // number[] → space-separated `data`
-                                                        // (num(v, 2, {comma:false}); a comma would break the split)
 waChart(chartType, configJson, opts = {})               // configJson MUST come from jdump()
-waTabGroup(tabs, opts = {})                             // Array<[panelName, tabLabel, panelHtml]>
 waAccordion(items, { mode='single-collapsible', appearance='plain', headingLevel='4', ...attrs })
                                                         // items: Array<[itemId, labelHtml, bodyHtml, expanded]>
 
@@ -966,8 +961,9 @@ jsonBlock(blockId, payload, { floatDp = 6 })            // escapes '</' as '<\\/
 
 Behavioural notes that must survive the port (they are load-bearing, not style):
 
-* `waTabGroup` is **defined and deliberately unused**. A tab hides n−1 panels from Ctrl+F
-  and from print, puts no state in the URL, and cannot hold a map or a canvas.
+* **Never introduce tabs.** A tab hides n−1 panels from Ctrl+F and from print, puts no
+  state in the URL, and cannot hold a map or a canvas. A `waTabGroup` helper existed
+  unused for this reason and has been deleted; the prohibition is the part that matters.
 * **Never** put a map or a chart inside `waAccordion` or `waScroller`. MapLibre and
   Chart.js read their container size once, at construction; a collapsed item has none.
 * `chip()` is the **only** sanctioned way to render a question status, a curse action, a

@@ -1458,7 +1458,6 @@ SHARED_CSS = r"""/* ══ 1. THEME TOKENS — LIGHT ═════════
   --wa-font-family-heading:  "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   --wa-font-family-longform: "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   --wa-font-family-code:     ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  --wa-font-family-ui:       system-ui, -apple-system, "Segoe UI", sans-serif;  /* custom: WA has no UI-family role */
   --wa-font-size-scale: 1.0625;          /* base 17px, matches the old body */
   --wa-line-height-normal: 1.62;
   --wa-font-weight-heading: 700;
@@ -1511,7 +1510,9 @@ SHARED_CSS = r"""/* ══ 1. THEME TOKENS — LIGHT ═════════
   --warn-text:  var(--wa-color-warning-on-quiet);
   --crit:       var(--wa-color-danger-fill-loud);
   --crit-text:  var(--wa-color-danger-on-quiet);
-  --sans:  var(--wa-font-family-ui);
+  /* WA has four family roles — body, heading, code, longform — and no UI role, so
+     this one is ours and stays out of the reserved --wa-* namespace. */
+  --sans:  system-ui, -apple-system, "Segoe UI", sans-serif;
   --serif: var(--wa-font-family-longform);
   --mono:  var(--wa-font-family-code);
 
@@ -1559,10 +1560,10 @@ SHARED_CSS = r"""/* ══ 1. THEME TOKENS — LIGHT ═════════
 wa-button, wa-tag, wa-badge, wa-radio, wa-radio-group, wa-switch, wa-input, wa-select,
 wa-callout, wa-details, wa-progress-bar, [class*="wa-caption-"],
 .wa-heading-s, .wa-heading-xs, th {
-  --wa-font-family-body: var(--wa-font-family-ui);
-  font-family: var(--wa-font-family-ui);
+  --wa-font-family-body: var(--sans);
+  font-family: var(--sans);
 }
-sup[data-cite] { font-family: var(--wa-font-family-ui); font-size: 10px; font-weight: 700; }
+sup[data-cite] { font-family: var(--sans); font-size: 10px; font-weight: 700; }
 
 /* ══ 4. PAGE FURNITURE ════════════════════════════════════════════════════ */
 html { scroll-behavior: smooth; scroll-padding-top: 7rem; }

@@ -32,15 +32,14 @@
  * `hmsToS(hhmmss(n)) === n` for every integer, negatives included.
  *
  * The interning tables are `Map<string, number>` internally. Their iteration order
- * is first-seen, which is a deterministic function of the input bytes, but nothing
- * that reaches output iterates them unsorted anyway — use `sortedTripIds()`.
+ * is first-seen, which is a deterministic function of the input bytes, and nothing
+ * that reaches output iterates them unsorted anyway.
  *
  * Downstream code should never touch the arrays directly. Use:
  *
  *     const st = stopTimesOf(feed);
  *     st.length                     // number of rows
  *     st.tripId(i) / st.stopId(i)   // strings
- *     st.seq(i)                     // number
  *     st.arrival(i) / st.departure(i)  // seconds, or null when blank
  *     st.dist(i)                    // number, or null
  *     st.rowAt(i)                   // a plain GTFS row dict (allocates — not for hot loops)
@@ -65,9 +64,7 @@
  * target engine, which is relied on exactly where CPython's stable `list.sort` is.
  */
 
-import {
-  dateRange, dowOf, hhmmss, hmsToS, lowerMedian, sha256Bytes,
-} from '../lib/core.js';
+import { hhmmss, hmsToS, sha256Bytes } from '../lib/core.js';
 import { httpFetch } from '../lib/http.js';
 
 // ── logging ───────────────────────────────────────────────────────────────────
@@ -88,8 +85,6 @@ export function setFeedLogger(sink) {
 
 // ── private constants ─────────────────────────────────────────────────────────
 
-const _S1_DOW_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-const _S1_DOW_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const _S1_DIR_SUFFIX = /\s*\((NB|SB|EB|WB)\)$/;
 const _S1_RAIL_TYPES = [0, 1, 2, 5, 7, 11, 12];
 
@@ -122,34 +117,6 @@ export function s1Median(values) {
   if (!n) throw new RangeError('median of an empty sequence');
   const half = n >> 1;
   return (n % 2) ? s[half] : (s[half - 1] + s[half]) / 2;
-}
-
-/**
- * Consecutive differences of an already-sorted, de-duplicated departure vector.
- * @param {number[]|Int32Array} times
- * @returns {number[]}
- */
-export function s1Gaps(times) {
-  const out = [];
-  for (let i = 1; i < times.length; i++) out.push(times[i] - times[i - 1]);
-  return out;
-}
-
-/**
- * One departure per trip (the first), sorted.
- *
- * 592 of the reference feed's 5,620 trips revisit a stop; without this a loop
- * terminus reports a fake 0-minute headway.
- * @param {Array<[string, number]>} pairs `[trip_id, seconds]`
- * @returns {number[]}
- */
-export function s1Dedupe(pairs) {
-  const seen = new Map();
-  for (const [tripId, t] of pairs) {
-    const prev = seen.get(tripId);
-    if (prev === undefined || t < prev) seen.set(tripId, t);
-  }
-  return Array.from(seen.values()).sort((a, b) => a - b);
 }
 
 /**
@@ -297,10 +264,10 @@ async function* inflateStream(slice) {
  * @param {Uint8Array|ArrayBuffer} bytes the whole archive
  * @param {{filter?: (basename: string, name: string) => boolean}} [opts]
  *   `filter` is consulted per member; only members that pass are returned. Nothing
- *   is decompressed until you call `bytes()` or `stream()`.
+ *   is decompressed until you call `stream()`.
  * @returns {Promise<Array<{name:string, basename:string, method:number,
  *   compressedSize:number, size:number,
- *   stream:() => AsyncGenerator<Uint8Array>, bytes:() => Promise<Uint8Array>}>>}
+ *   stream:() => AsyncGenerator<Uint8Array>}>>}
  */
 export async function unzip(bytes, opts = {}) {
   const { filter = null } = opts;
@@ -404,15 +371,6 @@ export async function unzip(bytes, opts = {}) {
     const entry = {
       name, basename: base, method, compressedSize: compSize, size,
       stream() { return memberStream(buf, dv, entry); },
-      async bytes() {
-        const parts = [];
-        let total = 0;
-        for await (const chunk of memberStream(buf, dv, entry)) { parts.push(chunk); total += chunk.length; }
-        const all = new Uint8Array(total);
-        let o = 0;
-        for (const part of parts) { all.set(part, o); o += part.length; }
-        return all;
-      },
       _localOffset: localOffset,
     };
     out.push(entry);
@@ -577,31 +535,6 @@ function dictify(header, fields) {
   return o;
 }
 
-/**
- * Parse CSV text with `csv.DictReader` semantics.
- *
- * @param {string} text
- * @param {{onRow?: (row: Object<string,string>) => void}} [opts]
- *   With `onRow` the rows are streamed and the row count is returned; without it
- *   an array of row dicts is returned.
- * @returns {Object<string,string>[]|number}
- */
-export function parseCsv(text, opts = {}) {
-  const { onRow = null } = opts;
-  const rows = onRow ? null : [];
-  let header = null;
-  let count = 0;
-  const parser = new CsvParser((fields) => {
-    if (header === null) { header = fields.map((f) => f.trim()); return; }
-    const row = dictify(header, fields);
-    count++;
-    if (onRow) onRow(row); else rows.push(row);
-  });
-  parser.push(String(text));
-  parser.end();
-  return onRow ? count : rows;
-}
-
 /** Stream a zip member's bytes through the CSV parser. `onRecord` sees raw fields. */
 async function streamCsv(entry, onRecord) {
   const parser = new CsvParser(onRecord);
@@ -697,11 +630,8 @@ class StopTimes {
     this._cap = n;
   }
 
-  tripKey(i) { return this.trip[i]; }
-  stopKey(i) { return this.stop[i]; }
   tripId(i) { return this.tripIds[this.trip[i]]; }
   stopId(i) { return this.stopIds[this.stop[i]]; }
-  seq(i) { return this.seqv[i]; }
   arrival(i) { const v = this.arrv[i]; return v === MISSING ? null : v; }
   departure(i) { const v = this.depv[i]; return v === MISSING ? null : v; }
   dist(i) {
@@ -712,9 +642,6 @@ class StopTimes {
 
   setArrival(i, seconds) { this.arrv[i] = seconds === null ? MISSING : seconds; }
   setDeparture(i, seconds) { this.depv[i] = seconds === null ? MISSING : seconds; }
-
-  /** Every distinct trip_id seen, sorted. */
-  sortedTripIds() { return this.tripIds.slice().sort(cmpStr); }
 
   /** Materialise one row as a plain GTFS dict. Allocates — not for hot loops. */
   rowAt(i) {
@@ -947,7 +874,9 @@ function _s1WindowDates(tables) {
  *
  * @param {string|File|Blob|ArrayBuffer|Uint8Array} source a GTFS URL or a picked file
  * @param {Object} cache the worker's `Cache`
- * @param {{onProgress?: Function}} [opts]
+ * @param {{onProgress?: (info:{table:string, done:number, total:number}) => void}} [opts]
+ *        called once per `*.txt` before it is parsed, and once more when the last
+ *        one is done — `done`/`total` count tables, not bytes.
  * @returns {Promise<Object>} a `Feed` (CONTRACT.md §(b))
  */
 export async function loadFeed(source, cache, opts = {}) {
@@ -974,9 +903,8 @@ export async function loadFeed(source, cache, opts = {}) {
   for (const row of tables.stops) {
     const sid = String(row.stop_id || '').trim();
     const loc = String(row.location_type || '0').trim() || '0';
-    // 1=station, 2/3/4=entrance/node/area. (`loc` can never be '' after the `|| '0'`
-    // above; the second arm of the Python test is dead and is kept as it stands.)
-    if (!sid || (loc !== '0' && loc !== '')) continue;
+    // 1=station, 2/3/4=entrance/node/area.
+    if (!sid || loc !== '0') continue;
     const lat = s1Float(row.stop_lat);
     const lon = s1Float(row.stop_lon);
     if (lat === null || lon === null) continue;
@@ -988,8 +916,6 @@ export async function loadFeed(source, cache, opts = {}) {
       baseName: s1BaseName(name) || name,
       lat,
       lon,
-      code: String(row.stop_code || '').trim(),
-      locationType: '0',
       parentStation: String(row.parent_station || '').trim(),
     };
   }
@@ -1142,45 +1068,6 @@ export function tripRows(feed) {
       out.set(st.tripIds[k], Int32Array.from(sorted));
     }
     return out;
-  });
-}
-
-/**
- * `service_id → trips.txt rows`.
- * @param {Object} feed @returns {Map<string, Object[]>}
- */
-export function tripsByService(feed) {
-  return s1Cache(feed, 'trips_by_service', () => {
-    const out = new Map();
-    for (const trip of feed.tables.trips) {
-      const sid = String(trip.service_id || '').trim();
-      const list = out.get(sid);
-      if (list) list.push(trip); else out.set(sid, [trip]);
-    }
-    return out;
-  });
-}
-
-/**
- * `[calendar rows, Map<date, [[service_id, exception_type], …]>]` — built once.
- * @param {Object} feed @returns {[Object[], Map<string, Array<[string,string]>>]}
- */
-export function calendarIndex(feed) {
-  return s1Cache(feed, 'calendar_index', () => {
-    const cal = (feed.tables.calendar || []).filter((r) => String(r.service_id || '').trim());
-    const exc = new Map();
-    for (const row of (feed.tables.calendar_dates || [])) {
-      const date = String(row.date || '').trim();
-      const sid = String(row.service_id || '').trim();
-      if (!date || !sid) continue;
-      const pair = [sid, String(row.exception_type || '1').trim()];
-      const list = exc.get(date);
-      if (list) list.push(pair); else exc.set(date, [pair]);
-    }
-    for (const list of exc.values()) {
-      list.sort((a, b) => cmpStr(a[0], b[0]) || cmpStr(a[1], b[1]));
-    }
-    return [cal, exc];
   });
 }
 
@@ -1407,184 +1294,4 @@ export function feedWindow(feed, asOf) {
     chosen = end;
   }
   return [start, end, chosen];
-}
-
-/**
- * The service_ids running on `date`, sorted.
- *
- * Handles both conventions in one pass: `calendar.txt` weekday bitmasks within the
- * row's date range, then `calendar_dates.txt` exceptions (type 1 adds, type 2
- * removes). A feed with only `calendar_dates` signals a no-service day by the date's
- * *absence*, so an empty result is meaningful, not an error.
- *
- * (Python returns a `frozenset`; CONTRACT.md §(b) maps that to a sorted Array.)
- * @param {Object} feed @param {string} date @returns {string[]}
- */
-export function activeServices(feed, date) {
-  const [cal, exc] = calendarIndex(feed);
-  const dow = _S1_DOW_NAMES[dowOf(date)];
-  const out = new Set();
-  for (const row of cal) {
-    const s = String(row.start_date || '');
-    const e = String(row.end_date || '');
-    if (s <= date && date <= e && String(row[dow] || '0') === '1') {
-      out.add(String(row.service_id || '').trim());
-    }
-  }
-  for (const [sid, kind] of (exc.get(date) || [])) {
-    if (kind === '1') out.add(sid); else out.delete(sid);
-  }
-  return Array.from(out).sort(cmpStr);
-}
-
-/**
- * `[{date, services, count}]` for every serviced date in the window, ascending.
- * @param {Object} feed @param {string} start @param {string} end
- * @returns {Array<{date:string, services:string[], count:number}>}
- */
-export function dateProfiles(feed, start, end) {
-  return s1Cache(feed, `date_profiles:${start}:${end}`, () => {
-    const perService = new Map();
-    for (const [sid, rows] of tripsByService(feed)) perService.set(sid, rows.length);
-    const out = [];
-    for (const date of dateRange(start, end)) {
-      const services = activeServices(feed, date);
-      if (!services.length) continue;
-      let count = 0;
-      for (const s of services) count += perService.get(s) || 0;
-      // a service_id with no trips is not a service day
-      if (count === 0) continue;
-      out.push({ date, services, count });
-    }
-    return out;
-  });
-}
-
-/**
- * Pick the representative date of a group: lower-median trip count, then the
- * **middle** date among the ones tied at that count.
- *
- * Lower median is the rulebook-safe choice — a tie between a busy and a quiet
- * pattern must resolve to the quiet one, or the page promises service it does not
- * have (the reference feed's two Sunday patterns differ by 3½ hours of span).
- * Taking the middle tied date rather than the first avoids landing on a partial
- * first week, which is a common feed artefact; it is still a pure function of the
- * sorted date list.
- *
- * @param {Array<{date:string, services:string[], count:number}>} dates
- * @returns {{date:string, services:string[], count:number}}
- */
-export function s1Representative(dates) {
-  const counts = dates.map((d) => d.count);
-  const target = Math.trunc(lowerMedian(counts));
-  const tied = dates.filter((d) => d.count === target).map((d) => d.date).sort(cmpStr);
-  const date = tied[Math.floor(tied.length / 2)];
-  const hit = dates.find((d) => d.date === date);
-  return { date, services: hit.services, count: target };
-}
-
-/**
- * Group the validity window into distinguishable service-day types.
- *
- * For each day-of-week, list every date whose active-service set is non-empty, count
- * trips, and pick the date with the **lower median** trip count as representative.
- * Conventional buckets come first; a bucket only splits when its member weekdays run
- * genuinely different amounts of service (school-term Tuesdays must not split Mon–Fri,
- * but a Friday-only night network must not be averaged into it).
- *
- * Returns them in calendar order (weekday, Saturday, Sunday, …). This matters more
- * than it looks: the reference feed has two Sunday patterns whose spans differ by
- * 3½ hours, and picking "the first Sunday" would flip a headline fact.
- *
- * @param {Object} feed @param {string} start @param {string} end
- * @returns {Array<Object>} DayType[] (CONTRACT.md §(b))
- */
-export function dayTypes(feed, start, end) {
-  const profiles = dateProfiles(feed, start, end);
-  if (!profiles.length) {
-    throw new Error("no date in the feed's validity window has any service");
-  }
-
-  const byDow = new Map();
-  for (const p of profiles) {
-    const d = dowOf(p.date);
-    const list = byDow.get(d);
-    if (list) list.push(p); else byDow.set(d, [p]);
-  }
-
-  /** @type {Array<[string, string, number[]]>} */
-  const groups = [];
-  const weekdayDows = Array.from(byDow.keys()).filter((d) => d <= 4).sort((a, b) => a - b);
-  if (weekdayDows.length) {
-    const medians = new Map();
-    for (const d of weekdayDows) {
-      medians.set(d, Math.trunc(lowerMedian(byDow.get(d).map((p) => p.count))));
-    }
-    const values = Array.from(medians.values());
-    const lo = Math.min(...values);
-    const hi = Math.max(...values);
-    if (lo > 0 && hi / lo <= 1.5 && weekdayDows.length > 1) {
-      groups.push(['weekday', 'Weekday', weekdayDows]);
-    } else {
-      for (const d of weekdayDows) groups.push([`dow${d}`, _S1_DOW_LABELS[d], [d]]);
-    }
-  }
-  if (byDow.has(5)) groups.push(['saturday', 'Saturday', [5]]);
-  if (byDow.has(6)) groups.push(['sunday', 'Sunday', [6]]);
-
-  const out = [];
-  for (const [key, label, dows] of groups) {
-    const member = [];
-    for (const dow of dows) member.push(...byDow.get(dow));
-    member.sort((a, b) => cmpStr(a.date, b.date));         // dates are unique across the window
-    const rep = s1Representative(member);
-    out.push({
-      key,
-      label,
-      date: rep.date,
-      dates: member.map((p) => p.date),
-      serviceIds: rep.services.slice().sort(cmpStr),
-      trips: rep.count,
-      tripCounts: member.map((p) => p.count),
-    });
-  }
-
-  const rank = { weekday: 0, saturday: 5, sunday: 6 };
-  const rankOf = (k) => (k in rank ? rank[k] : s1Int(k.slice(3), 9));
-  out.sort((a, b) => (rankOf(a.key) - rankOf(b.key)) || cmpStr(a.key, b.key));
-  LOG.info(`day types: ${out.map((t) => `${t.key}=${t.date}(${t.trips} trips)`).join(', ')}`);
-  return out;
-}
-
-/**
- * Return `[noServiceDates, reducedServiceDates]` inside the window.
- *
- * A date is no-service when `activeServices` is empty. It is reduced-service when its
- * trip count is below 80% of the representative day for its weekday. Both feed the
- * `D3 full_service_date_share` metric and catch school-term-only feeds.
- *
- * @param {Object} feed @param {string} start @param {string} end
- * @returns {[string[], string[]]}
- */
-export function noServiceDates(feed, start, end) {
-  const profiles = dateProfiles(feed, start, end);
-  const served = new Set(profiles.map((p) => p.date));
-  const dead = dateRange(start, end).filter((d) => !served.has(d));
-
-  const byDow = new Map();
-  for (const p of profiles) {
-    const d = dowOf(p.date);
-    const list = byDow.get(d);
-    if (list) list.push(p.count); else byDow.set(d, [p.count]);
-  }
-  const reference = new Map();
-  for (const d of Array.from(byDow.keys()).sort((a, b) => a - b)) {
-    reference.set(d, Math.trunc(lowerMedian(byDow.get(d))));
-  }
-
-  const reduced = profiles
-    .filter((p) => p.count < 0.8 * reference.get(dowOf(p.date)))
-    .map((p) => p.date)
-    .sort(cmpStr);
-  return [dead, reduced];
 }
