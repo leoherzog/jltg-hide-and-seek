@@ -146,6 +146,12 @@ sup[data-cite] { font-family: var(--sans); font-size: 10px; font-weight: 700; }
   font-size: var(--wa-font-size-xs);
   line-height: var(--wa-line-height-condensed);
 }
+/* One field in the grid is a URL, which does not fit a 220px column: `1 / -1` spans
+   whatever number of tracks `repeat(auto-fill, …)` resolved to at this width, so it
+   is full-bleed at every breakpoint without a media query. It stays inside the grid
+   rather than moving out below it so it keeps the label and hint styling above and
+   sits in the reading order its label claims. */
+#landing-fields .field-wide { grid-column: 1 / -1; }
 
 /* ══ 4. PAGE FURNITURE ════════════════════════════════════════════════════ */
 html { scroll-behavior: smooth; scroll-padding-top: 7rem; }
@@ -517,19 +523,12 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    above the message. #run-error is still a plain div, so its half stays. */
 #run-error:not([hidden]) { display: block; }
 
-/* == STRATEGY-CSS-START =====================================================
-   EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S, AND IS CUT OUT OF THE SAVED
-   FILE. `inlineStyles()` (app.js) slices the span between these two sentinels
-   before it embeds this sheet, so the report a reader downloads carries no rule
-   naming `strategy`, `#s-map`, `#s-controls`, `#s-detail`, `#s-table` or any of the
-   marker attributes — the download is report-only, and a stylesheet that describes
-   the guide's whole DOM would give it away as surely as the markup would.
-
-   This is `generate.py`'s own partition (`INDEX_CSS` 10527 vs `STRATEGY_CSS` 1674,
-   and the note at 1449) expressed the only way one document can express it: the CLI
-   writes two files and simply hands each its own text. Keep the two markers exactly
-   as spelled — app.js matches them literally — and put nothing here that the report
-   view needs.
+/* == STRATEGY CSS ===========================================================
+   EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S. It mirrors `generate.py`'s own
+   partition (`INDEX_CSS` 10527 vs `STRATEGY_CSS` 1674, and the note at 1449): the
+   CLI writes two files and hands each its own text, and one document expresses the
+   same split as one delimited span. Nothing reads these markers programmatically —
+   they are a boundary for readers. Put nothing here that the report view needs.
 
    Zero new classes below. Every rule is scoped to an id or to a data attribute the
    view already carries for behaviour — the same precedent as `#qcontrols`,
@@ -658,4 +657,4 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
   color: var(--wa-color-text-normal);
   text-shadow: 0 0 4px var(--wa-color-surface-raised), 0 0 8px var(--wa-color-surface-raised); }
 
-/* == STRATEGY-CSS-END ===================================================== */
+/* == END STRATEGY CSS ===================================================== */

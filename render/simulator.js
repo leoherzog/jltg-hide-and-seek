@@ -36,8 +36,7 @@
 // answer matrix), because a seeker the reader placed a second ago is not in any
 // precomputed sample. Everything here comes out of `state.report` in memory —
 // `geo.pois` via `poiCategories()`, zone centres via `zoneViews()` — which is also why
-// the guide ships no `<script type="application/json">` block and therefore has
-// nothing to strip from the Save download.
+// the guide ships no `<script type="application/json">` block of its own.
 //
 // THE ONE STRUCTURAL DIFFERENCE FROM THE CLI. The CLI has one document per page and
 // can bind to bare ids at parse time. The browser port has both pages in one document
@@ -210,8 +209,8 @@ function feature(geometry, properties = {}) {
  * feature is canvas rather than DOM — so `wa-tooltip`, which anchors to an element,
  * cannot be used (styles.css:210 records the reason). `#tt` is the page's existing
  * one-off panel; this is a local ten-line binder rather than a call into app.js's
- * `bindTT`, because that function lives inside `PAGE_RUNTIME_JS`, which is written
- * verbatim into the saved file and must never learn that this view exists.
+ * `bindTT`, because that function lives inside `PAGE_RUNTIME_JS`, a verbatim port of
+ * the CLI's page JS that must stay one and never learn that this view exists.
  *
  * `htmlFor` is a *function*: markers are built once and repainted in place, so the
  * tip has to read the current mode and answer rather than a string captured at build.

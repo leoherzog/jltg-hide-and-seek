@@ -739,9 +739,9 @@ export function renderTransitReality(payload) {
  * This function only emits the `#netmap` host and the copy around it; MapLibre itself is
  * attached afterwards by `buildMap` inside app.js's `PAGE_RUNTIME_JS`, which guards on
  * MapLibre being absent and omits the map rather than throwing. The builder lives in
- * that inlined runtime and not in this module on purpose: `buildStandalonePage` writes
- * the runtime into the downloaded file verbatim, and a saved page cannot import
- * `./render/map.js`. A second copy here would be the one that never runs.
+ * that inlined runtime and not in this module on purpose: the runtime is a verbatim
+ * port of the CLI's page JS, and the CLI builds its map there. A second copy here
+ * would be the one that never runs.
  *
  * Never wrap the map in a `wa-scroller`.
  *

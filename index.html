@@ -34,10 +34,10 @@
 <meta name="description" content="Is your city's transit system a good map for Jet Lag: The Game's Hide+Seek? Drop in a GTFS feed and find out — hiding zones, question audit, curse deck and a 100-point map-fitness score, computed in your browser.">
 <title>Hide and Seek — Map Fitness Report</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl/dist/maplibre-gl.min.css">
-<link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.10.0/styles/themes/default.css" />
-<link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.10.0/styles/native.css" />
-<link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.10.0/styles/utilities.css" />
-<script type="module" src="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.10.0/webawesome.loader.js"></script>
+<link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0/styles/themes/default.css" />
+<link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0/styles/native.css" />
+<link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0/styles/utilities.css" />
+<script type="module" src="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0/webawesome.loader.js"></script>
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body data-state="landing">
@@ -63,8 +63,8 @@
          progress block at runtime is gone, so renaming or dropping one of these
          attributes silently stops the bar rather than degrading to a second copy.
          `progressnote` and `progresswait` are the two readouts — the per-stage note,
-         and the "still working, N min on this step" heartbeat that keeps an
-         eight-minute Overpass wait from reading as a hang. -->
+         and the "still working, N min on this step" heartbeat that keeps a quiet
+         stretch of a cold run from reading as a hang. -->
     <div id="hydration" data-role="progress" data-when="running" class="wa-stack wa-gap-3xs">
       <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress"></wa-progress-bar>
       <span id="hydration-status" data-role="progresslabel" class="wa-caption-xs wa-color-text-quiet" role="status" aria-live="polite">Starting…</span>
@@ -73,15 +73,8 @@
     </div>
 
     <div class="wa-cluster wa-gap-2xs wa-align-items-center">
-      <!-- Save the finished report as one self-contained file, the same artifact
-           the CLI writes. app.js enables it on `done` and reaches it through
-           `pick('#download', '[data-role="download"]')`; disabled until then,
-           because half a report is not a report. -->
-      <wa-button id="download" data-role="download" data-when="report" appearance="outlined"
-                 size="s" variant="neutral" disabled>
-        <wa-icon slot="start" name="download"></wa-icon>Save
-      </wa-button>
-      <!-- id="color-scheme-button" must not change: COLOR_SCHEME_JS binds it unguarded. -->
+      <!-- id="color-scheme-button" must not change: the inline colour-scheme script at
+           the foot of this file binds it unguarded. -->
       <wa-button id="color-scheme-button" appearance="plain" size="s" variant="neutral">
         <wa-icon slot="start" name="circle-half-stroke"></wa-icon>Theme
       </wa-button>
@@ -346,6 +339,26 @@
 
                 <wa-input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" spellcheck="false" placeholder="route_id, route_id, …" label="Exclude routes">
                   <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
+                </wa-input>
+
+                <!-- Full width, `#landing-fields .field-wide` in styles.css: a URL is
+                     the one value here that does not fit a 220px column.
+
+                     Deliberately NOT `type="url"`, unlike the feed field above. That
+                     one is the primary control and sits outside <wa-details>; this one
+                     is an override inside a panel that ships collapsed, where a
+                     typeMismatch is precisely the failure the zone-radius note
+                     describes — the submit event is suppressed with no focusable
+                     control to hang the browser's bubble on, so the form appears to
+                     stop working. `readOptions` validates it in words instead, and
+                     says which field is wrong.
+
+                     Blank means the published bucket, named once in
+                     `osm/worldfile.js` as DEFAULT_WORLD_BASE_URL. The placeholder does
+                     not repeat it: two copies of a URL is one copy too many, and the
+                     one that would go stale is this one. -->
+                <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="field-wide" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
+                  <span slot="hint">Where the prebuilt OpenStreetMap files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one. Point it at a local static server to try a build before it ships; it has to answer HTTP range requests and expose <code>content-range</code> to CORS, or the files read as corrupt.</span>
                 </wa-input>
 
               </div>

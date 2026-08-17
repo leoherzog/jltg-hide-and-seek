@@ -45,6 +45,7 @@ import {
   setInferLogger,
 } from './gtfs/infer.js';
 import { collectGeodata, emptyGeoData } from './osm/geodata.js';
+import { openWorld, worldStatsLine, DEFAULT_WORLD_BASE_URL } from './osm/worldfile.js';
 import { catalogueFor } from './rules/catalogue.js';
 import {
   answerSignature, survivalFractions, globalQuestionOrder, auditQuestions,
@@ -70,6 +71,13 @@ const GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
  */
 const DEFAULT_PIPELINE_OPTIONS = Object.freeze({
   useOsm: true,
+  // Null, not the URL: this is an OVERRIDE, and it has to be distinguishable from
+  // "the reader typed the default back in by hand". `openWorld`'s own parameter
+  // default is the one place the published bucket is named, and a null here resolves
+  // to it at the call site — a null passed straight into `openWorld(baseUrl = …)`
+  // would NOT trigger the parameter default, which is the trap this comment exists
+  // to close.
+  worldBaseUrl: null,
   asOf: null,
   sizeOverride: null,
   zoneRadiusM: null,
@@ -409,24 +417,32 @@ export async function runPipeline(options, source, emit) {
 
   // ── S2 geodata ────────────────────────────────────────────────────────────
   //
-  // CONTRACT.md §(f)1: Overpass failure is not fatal. `--no-osm` is the same path
-  // with a different note.
+  // CONTRACT.md §(f)1: a failed map-file read is not fatal. `--no-osm` is the same
+  // path with a different note.
   let geo;
-  progress.begin(7, 'Asking OpenStreetMap');
+  progress.begin(7, 'Reading the map files');
   if (opts.useOsm) {
     try {
-      geo = await collectGeodata(cache, opts, border, zones, proj, size.zoneRadiusM, {
+      // One manifest fetch, then every category is a Range request against an
+      // immutable file. `opts.worldBaseUrl` exists so a build can be pointed at a
+      // local static server before it is published — the Advanced panel's "Map file
+      // base URL" field sets it, and null means "the published bucket".
+      const baseUrl = opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL;
+      if (opts.worldBaseUrl) log('info', `reading the map files from ${baseUrl}`);
+      const world = await openWorld(baseUrl);
+      geo = await collectGeodata(world, opts, border, zones, proj, size.zoneRadiusM, {
         onProgress: progress.sink(),
         onLog: (level, message) => log(level === 'warning' ? 'warn' : level, message),
       });
+      log('info', worldStatsLine(world));
     } catch (err) {
       const name = (err && err.name) ? err.name : 'Error';
       log('warn', `OSM layer unavailable: ${err && err.message ? err.message : err}`);
       nonFatal('geo', err);
-      degrade(`OpenStreetMap could not be reached (${name}), so every question, curse `
-        + 'and score that needs map features is excluded rather than guessed at.');
+      degrade(`The OpenStreetMap files could not be read (${name}), so every question, `
+        + 'curse and score that needs map features is excluded rather than guessed at.');
       geo = emptyGeoData(border.bbox,
-        'Overpass was unreachable; OSM-backed scores are excluded.');
+        'The map files were unreachable; OSM-backed scores are excluded.');
     }
   } else {
     // Not `--no-osm`: there is no command line here. The reader flipped a switch

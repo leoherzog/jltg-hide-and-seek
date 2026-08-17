@@ -1,0 +1,585 @@
+{
+  "_comment": [
+    "The world-file build table. One entry per category that ships as a global",
+    "FlatGeobuf; `osm/geodata.js` GEO_CATEGORIES stays the source of truth for what a",
+    "category MEANS, and this file is the mechanical translation of its Overpass",
+    "selector into the two tools the CI build uses.",
+    "",
+    "`filter` is an osmium tags-filter expression list. It is deliberately WIDER than",
+    "the selector: osmium tags-filter cannot express negation or presence-of-a-second-",
+    "key, so it does the cheap key=value cut and `where` does the rest. Widening is",
+    "safe (a superset is filtered down later); narrowing silently loses features, so",
+    "never move a condition from `where` into `filter` without checking it is",
+    "expressible.",
+    "",
+    "`where` is OGR SQL evaluated against the exported attributes. Field names are the",
+    "raw OSM keys, so `natural` needs quoting. It must reproduce the Overpass selector",
+    "EXACTLY — this is the line that decides whether a world-file run and an Overpass",
+    "run give the same answer, and a mismatch is silent.",
+    "",
+    "`post` names a Python predicate in build.py's POST_FILTERS that runs after `where`,",
+    "for the one condition OGR SQL cannot express: parsing a maxspeed string. Absent",
+    "for every other category.",
+    "",
+    "`geometry` is the per-layer `osmium export --geometry-types` list, and it is the",
+    "double-emit fix (PLAN.md Phase 0): osmium exports a closed way ONCE PER REQUESTED",
+    "TYPE, so asking every layer for point,linestring,polygon wrote every closed way",
+    "twice — its polygon plus the same ring as a zero-area linestring — inflating",
+    "counts up to 2x. The class is derived from the selector and OSM tagging reality:",
+    "",
+    "  point           the filter only admits nodes (mountain, bench).",
+    "  point,polygon   area tags. A closed way exports once, as its polygon; an",
+    "                  UNCLOSED way carrying an area tag is a mapping error and is",
+    "                  dropped (Overpass would have returned it as a stray line).",
+    "  point,linestring,polygon + dedup",
+    "                  genuinely mixed layers — a lake is a polygon and a river a",
+    "                  linestring in the same file — where the linestring reading must",
+    "                  survive, so build.py drops a way's linestring only when the",
+    "                  same way was also exported as a polygon.",
+    "",
+    "THE point,polygon AUDIT. `point,polygon` is a claim about OSM tagging — that no",
+    "mapper legitimately draws this feature as an open way — and getting it wrong loses",
+    "features with no error anywhere. Every layer in that class was re-checked against",
+    "its selector's tagging semantics AND measured on two extracts with different",
+    "mapping cultures (Michigan and Germany), counting distinct entities that export as",
+    "a linestring and never as a polygon — i.e. exactly what the class drops:",
+    "",
+    "  advertising      56/772 (7.3%) MI, 816/35,816 (2.3%) DE  → RECLASSIFIED, mixed.",
+    "                   The only structural loss. See its own comment.",
+    "  shelter          0 MI, 24/99,512 (0.02%) DE              → kept point,polygon",
+    "  pitch            0 MI, 61/453,498 (0.01%) DE             → kept point,polygon",
+    "  park             0 MI, 2/14,196 DE                       → kept point,polygon",
+    "  shop             1/27,295 MI, 0/486,941 DE               → kept point,polygon",
+    "  place_of_worship 0 MI, 1/72,054 DE                       → kept point,polygon",
+    "  fast_food        0 MI, 1/44,034 DE                       → kept point,polygon",
+    "  park museum movie_theater hospital library zoo aquarium amusement_park",
+    "  golf_course foreign_consulate commercial_airport rail_station toilets grocery",
+    "  newsagent restaurant cafe                                → exactly 0 on both",
+    "",
+    "The kept ones are all the same judgement, and it is deliberate rather than a",
+    "tolerance threshold: `amenity`, `tourism`, `shop`, `office`, `leisure`, `landuse`,",
+    "`aeroway=aerodrome` and `railway=station` describe a place, and OSM documents no",
+    "linear form for any of them — an open way carrying one is a mapping error, which",
+    "is what the residual handful are (Michigan's single `shop` open way was inspected",
+    "and is one). Overpass would have returned them as stray unrenderable lines; a POI",
+    "placed on such a line is worse than its absence. Whereas the keys that DO have a",
+    "documented linear form are, all of them, already mixed: advertising, railway=",
+    "platform / public_transport=platform, natural=coastline, waterway=river/canal,",
+    "railway=rail.",
+    "",
+    "`admin` is the deliberate outlier: 40.7% MI / 72.1% DE of its pre-`where` entities",
+    "are open ways, and every one is a boundary MEMBER way the filter has to drag along",
+    "so osmium can assemble the relations. The client discarded them on read anyway —",
+    "that is what `geometry: polygon` (Phase 1 R3) is FOR. See `_admin_comment`.",
+    "",
+    "One more thing this class drops, and the measurement above already counts it: a",
+    "CLOSED way tagged `area=no` is a linestring to osmium regardless of its other tags,",
+    "so it never reaches a point,polygon layer either. It is folded into the numbers",
+    "above and is a rounding error in both extracts.",
+    "",
+    "`green` is in the mixed class for an exactness reason, not a tagging one: it is a",
+    "term of the curse_animal_habitat partition identity (see _curse_comment), which",
+    "holds feature-for-feature only if every term counts each OSM object exactly once.",
+    "Dropping green's unclosed-way mapping errors while the count-only terms keep",
+    "theirs would break the identity by exactly those errors.",
+    "",
+    "`count_only: true` marks a layer the client only ever COUNTS via the R-tree",
+    "(worldCount reads no feature bytes). build.py ships those as 2-point bbox-diagonal",
+    "linestrings with no properties — identical envelopes, so every search result is",
+    "unchanged (PLAN.md Phase 1 R1) — and dedups them on (osm_type, osm_id).",
+    "",
+    "The genuinely dense categories — building, street, footpath, car_street, bridge,",
+    "tree — are NOT here. They are counts, not icons, and shipping their geometry",
+    "globally is tens of gigabytes in service of tallies. They build into the sparse",
+    "density grid instead; see `density` below.",
+    "",
+    "restaurant, cafe, fast_food and shop were also once on that exclusion list and are",
+    "back as real features on purpose. They are not dense at planet scale (~2M",
+    "restaurants worldwide), and `cuisineDetail` in osm/geodata.js reads the `cuisine`",
+    "tag off individual restaurant features — a grid cell cannot answer that."
+  ],
+
+  "categories": [
+    {
+      "key": "park",
+      "filter": ["nwr/leisure=park"],
+      "where": "leisure = 'park' AND name IS NOT NULL",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "museum",
+      "filter": ["nwr/tourism=museum"],
+      "where": "tourism = 'museum' AND name IS NOT NULL",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "movie_theater",
+      "filter": ["nwr/amenity=cinema"],
+      "where": "amenity = 'cinema' AND name IS NOT NULL",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "hospital",
+      "filter": ["nwr/amenity=hospital"],
+      "where": "amenity = 'hospital' AND name IS NOT NULL",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "library",
+      "filter": ["nwr/amenity=library"],
+      "where": "amenity = 'library' AND name IS NOT NULL",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "zoo",
+      "filter": ["nwr/tourism=zoo"],
+      "where": "tourism = 'zoo'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "aquarium",
+      "filter": ["nwr/tourism=aquarium"],
+      "where": "tourism = 'aquarium'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "amusement_park",
+      "filter": ["nwr/tourism=theme_park"],
+      "where": "tourism = 'theme_park'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "golf_course",
+      "filter": ["nwr/leisure=golf_course"],
+      "where": "leisure = 'golf_course' AND name IS NOT NULL AND (golf IS NULL OR golf <> 'driving_range')",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "foreign_consulate",
+      "filter": ["nwr/office=diplomatic"],
+      "where": "office = 'diplomatic' AND diplomatic IN ('consulate', 'consulate_general') AND (consulate IS NULL OR consulate <> 'honorary')",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "commercial_airport",
+      "filter": ["nwr/aeroway=aerodrome"],
+      "where": "aeroway = 'aerodrome' AND iata IS NOT NULL",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "mountain",
+      "filter": ["n/natural=peak,volcano"],
+      "where": "\"natural\" IN ('peak', 'volcano') AND name IS NOT NULL",
+      "geometry": "point"
+    },
+    {
+      "key": "rail_station",
+      "filter": ["nwr/railway=station,halt"],
+      "where": "railway IN ('station', 'halt')",
+      "geometry": "point,polygon"
+    },
+    {
+      "_comment": [
+        "The selector is `railway=rail AND highspeed=yes`, with a documented fallback to",
+        "`maxspeed >= 200 km/h` accepting '200', '200 km/h' and '125 mph'. OGR SQL cannot",
+        "parse those strings, so `where` keeps every candidate carrying EITHER key and the",
+        "`highspeed` post-filter does the numeric comparison in Python. Dropping the post",
+        "step would tag every ordinary rail line on Earth as high-speed.",
+        "",
+        "Mixed geometry: rail ways are linear, but a closed way (a test loop, a balloon",
+        "loop) exports as a polygon too, and the linestring reading must survive for every",
+        "open way — so this takes the dedup route rather than a polygon-only export."
+      ],
+      "key": "high_speed_rail",
+      "filter": ["w/railway=rail"],
+      "where": "railway = 'rail' AND (highspeed = 'yes' OR maxspeed IS NOT NULL)",
+      "post": "highspeed",
+      "geometry": "point,linestring,polygon",
+      "dedup": true
+    },
+    {
+      "_comment": [
+        "Genuinely mixed: named lakes are polygons, rivers and canals are linestrings,",
+        "and a handful of natural=water nodes exist. The dedup drops the zero-area",
+        "linestring copy of every closed lake way."
+      ],
+      "key": "water",
+      "filter": ["nwr/natural=water", "w/waterway=river,canal"],
+      "where": "(\"natural\" = 'water' AND name IS NOT NULL AND (water IS NULL OR water NOT IN ('pool', 'reflecting_pool')) AND (leisure IS NULL OR leisure <> 'swimming_pool')) OR (waterway IN ('river', 'canal') AND name IS NOT NULL)",
+      "geometry": "point,linestring,polygon",
+      "dedup": true
+    },
+    {
+      "_comment": [
+        "Coastline ways are linear shore segments, but a small island IS one closed",
+        "natural=coastline way, which exports as both a polygon and its ring — hence",
+        "mixed with dedup rather than linestring-only, which would change what a closed",
+        "island way ships as."
+      ],
+      "key": "coastline",
+      "filter": ["w/natural=coastline"],
+      "where": "\"natural\" = 'coastline'",
+      "geometry": "point,linestring,polygon",
+      "dedup": true
+    },
+    {
+      "key": "place_of_worship",
+      "filter": ["nwr/amenity=place_of_worship"],
+      "where": "amenity = 'place_of_worship'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "toilets",
+      "filter": ["nwr/amenity=toilets"],
+      "where": "amenity = 'toilets'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "shelter",
+      "filter": ["nwr/amenity=shelter"],
+      "where": "amenity = 'shelter'",
+      "geometry": "point,polygon"
+    },
+    {
+      "_comment": [
+        "Genuinely mixed: platforms are mapped as nodes, as linear ways along the",
+        "platform edge, and as areas. The linear form is common and must survive."
+      ],
+      "key": "platform",
+      "filter": ["nwr/railway=platform", "nwr/public_transport=platform"],
+      "where": "railway = 'platform' OR public_transport = 'platform'",
+      "geometry": "point,linestring,polygon",
+      "dedup": true
+    },
+    {
+      "key": "grocery",
+      "filter": ["nwr/shop=supermarket,greengrocer,convenience,grocery,farm"],
+      "where": "shop IN ('supermarket', 'greengrocer', 'convenience', 'grocery', 'farm')",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "newsagent",
+      "filter": ["nwr/shop=newsagent,books,kiosk,stationery"],
+      "where": "shop IN ('newsagent', 'books', 'kiosk', 'stationery')",
+      "geometry": "point,polygon"
+    },
+    {
+      "_comment": [
+        "Genuinely mixed, and the one layer the point,polygon class got WRONG. An",
+        "`advertising=*` value describes a physical object, not a piece of land, so",
+        "`area=*` semantics never apply to it and mappers draw a billboard's FACE as a",
+        "short two-node way — a valid, documented mapping, not an error. Classified",
+        "point,polygon those ways were never exported at all: 56 of 772 distinct",
+        "entities lost in Michigan (7.3%) and 816 of 35,816 in Germany (2.3%), silently.",
+        "Sampled losses are `advertising=billboard` / `sign` / `yes` on open ways.",
+        "",
+        "So it takes the platform route — all three types plus the dedup pass — which",
+        "keeps the linear faces AND still collapses the closed billboard structures that",
+        "osmium double-emits."
+      ],
+      "key": "advertising",
+      "filter": ["nwr/advertising"],
+      "where": "advertising IS NOT NULL",
+      "geometry": "point,linestring,polygon",
+      "dedup": true
+    },
+    {
+      "_comment": [
+        "Mixed for the R2 identity, not for tagging reality: landuse is an area tag, but",
+        "green is the positive term of the curse_animal_habitat partition (see",
+        "_curse_comment) and the identity is exact only if every term counts each OSM",
+        "object exactly once — including the unclosed-way mapping errors the count-only",
+        "terms keep as single records."
+      ],
+      "key": "green",
+      "filter": ["nwr/landuse=forest,grass,meadow,village_green,recreation_ground"],
+      "where": "landuse IN ('forest', 'grass', 'meadow', 'village_green', 'recreation_ground')",
+      "geometry": "point,linestring,polygon",
+      "dedup": true
+    },
+    {
+      "key": "pitch",
+      "filter": ["nwr/leisure=pitch,playground,recreation_ground,garden,nature_reserve"],
+      "where": "leisure IN ('pitch', 'playground', 'recreation_ground', 'garden', 'nature_reserve')",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "bench",
+      "filter": ["n/amenity=bench"],
+      "where": "amenity = 'bench'",
+      "geometry": "point"
+    },
+    {
+      "_comment": [
+        "restaurant carries the `cuisine` tag that Curse of the Distant Cuisine counts off",
+        "individual features. It must stay a feature category — a density cell cannot say",
+        "which country's cuisine is served inside it."
+      ],
+      "key": "restaurant",
+      "filter": ["nwr/amenity=restaurant"],
+      "where": "amenity = 'restaurant'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "cafe",
+      "filter": ["nwr/amenity=cafe"],
+      "where": "amenity = 'cafe'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "fast_food",
+      "filter": ["nwr/amenity=fast_food"],
+      "where": "amenity = 'fast_food'",
+      "geometry": "point,polygon"
+    },
+    {
+      "key": "shop",
+      "filter": ["nwr/shop"],
+      "where": "shop IS NOT NULL",
+      "geometry": "point,polygon"
+    }
+  ],
+
+  "_curse_comment": [
+    "CURSE_PREDICATE_SELECTORS in osm/geodata.js are map-wide COUNTS, not features, and",
+    "several of them deliberately differ from the same-named GEO_CATEGORIES selector —",
+    "curse `water` says 'marked', the category says 'named', and the two differ by 8:1.",
+    "Where a curse predicate is exactly a shipped category the client re-counts that",
+    "file; the ones below are the ones that are NOT, so they get their own layer. They",
+    "are counted, never drawn, so they carry `count_only` and ship as bbox diagonals",
+    "with no properties (PLAN.md Phase 1 R1).",
+    "",
+    "curse `bridge`, `car_street` and `building` are answered by the density grid, and",
+    "curse `grocery`, `shop`, `print_source` and `tumble_ground` are exactly the",
+    "grocery / shop / newsagent / pitch category files.",
+    "",
+    "curse_animal_habitat is DELETED (PLAN.md Phase 1 R2) — it was 45% a copy of",
+    "`green`. Its count is reconstructed client-side as an exact partition identity:",
+    "",
+    "  count(curse_animal_habitat)",
+    "    == count(green) - count(green_recreation_ground) + count(animal_delta)",
+    "",
+    "with the old selector",
+    "  A = leisure IN (park, nature_reserve)",
+    "      OR landuse IN (forest, grass, meadow, village_green)",
+    "      OR (natural = water AND name)",
+    "and green G = landuse IN (forest, grass, meadow, village_green,",
+    "recreation_ground). `landuse` is single-valued, so G minus its recreation_ground",
+    "members is EXACTLY A's landuse line, and animal_delta is exactly A's other two",
+    "lines with the landuse-line members removed — no feature is counted twice and",
+    "none is missed. Both derived layers are count_only diagonals over UNCHANGED",
+    "envelopes, so the identity holds for every bbox the R-tree is asked about.",
+    "See CURSE_ANIMAL_HABITAT_TERMS in osm/geodata.js, which consumes this identity."
+  ],
+  "curse_layers": [
+    {
+      "key": "curse_water",
+      "filter": ["nwr/natural=water", "nwr/landuse=reservoir,basin", "w/waterway=river,canal"],
+      "where": "(\"natural\" = 'water' AND (water IS NULL OR water NOT IN ('pool', 'reflecting_pool')) AND (leisure IS NULL OR leisure <> 'swimming_pool')) OR landuse IN ('reservoir', 'basin') OR waterway IN ('river', 'canal')",
+      "count_only": true
+    },
+    {
+      "key": "curse_cairn_terrain",
+      "filter": ["nwr/natural=scree,bare_rock,beach,shingle,wood"],
+      "where": "\"natural\" IN ('scree', 'bare_rock', 'beach', 'shingle', 'wood')",
+      "count_only": true
+    },
+    {
+      "key": "curse_travel_agent_stop",
+      "filter": [
+        "nwr/leisure=park,garden,playground",
+        "nwr/amenity=library,place_of_worship,marketplace,townhall",
+        "w/highway=pedestrian"
+      ],
+      "where": "leisure IN ('park', 'garden', 'playground') OR amenity IN ('library', 'place_of_worship', 'marketplace', 'townhall') OR highway = 'pedestrian'",
+      "count_only": true
+    },
+    {
+      "_comment": [
+        "R2 subtraction term: green's recreation_ground members, ALL of them —",
+        "single-valued landuse makes count(green) minus this exactly the habitat",
+        "selector's landuse line."
+      ],
+      "key": "green_recreation_ground",
+      "filter": ["nwr/landuse=recreation_ground"],
+      "where": "landuse = 'recreation_ground'",
+      "count_only": true
+    },
+    {
+      "_comment": [
+        "R2 addition term: the habitat selector's leisure and named-water lines, with",
+        "features already counted by green's landuse line excluded so the identity",
+        "never double-counts. recreation_ground members are NOT excluded here — they",
+        "are cancelled by the subtraction term instead."
+      ],
+      "key": "animal_delta",
+      "filter": ["nwr/leisure=park,nature_reserve", "nwr/natural=water"],
+      "where": "(leisure IN ('park', 'nature_reserve') OR (\"natural\" = 'water' AND name IS NOT NULL)) AND (landuse IS NULL OR landuse NOT IN ('forest', 'grass', 'meadow', 'village_green'))",
+      "count_only": true
+    }
+  ],
+
+  "_density_comment": [
+    "The categories that are tallies rather than icons. Their planet-wide geometry is",
+    "tens of gigabytes and every question asked of them is a count, so they build into",
+    "one sparse grid instead: a FlatGeobuf of POINTS, one per populated cell, carrying",
+    "an integer column per category. Same file format, same R-tree, same HTTP Range",
+    "client as everything else — a bbox query over it returns the cells the map covers",
+    "and the counts are summed client-side. A zero-valued count is OMITTED from its",
+    "cell (PLAN.md Phase 1 R4): `worldDensity` skips zeros on read, so absent == 0 by",
+    "construction and the bytes are pure savings.",
+    "",
+    "THIS IS AN APPROXIMATION AND IT REPLACES AN EXACT NUMBER. Today `building` is",
+    "fetched as points and counted per zone exactly. A cell is attributed to a zone when",
+    "its CENTRE falls inside the zone circle, so a cell straddling the circle edge lands",
+    "wholly in or wholly out. At `cell_deg` = 0.002 (~220 m at the equator) against the",
+    "~400 m zone radius that is a boundary error on the order of a tenth of the circle's",
+    "area. Map-wide counts — which is what every curse predicate and the street-density",
+    "figure actually read — stay exact: they are a sum over every cell in the bbox and",
+    "no feature is counted twice, because each is attributed to exactly one cell.",
+    "",
+    "`osm/geodata.js` marks per-zone density figures approximate in provenance. Do not",
+    "quietly present them as measured counts.",
+    "",
+    "street and car_street overlap by design (a residential road is both); they are",
+    "separate columns because Right Turn, Luxury Car and the street-density figure ask",
+    "different questions, and CAR_STREET_SELECTOR is the constant that keeps them honest."
+  ],
+  "density": {
+    "cell_deg": 0.002,
+    "layers": [
+      {
+        "key": "building",
+        "filter": ["w/building"],
+        "where": "building IS NOT NULL"
+      },
+      {
+        "key": "street",
+        "filter": ["w/highway"],
+        "where": "highway IS NOT NULL AND highway NOT IN ('motorway', 'motorway_link', 'trunk_link', 'construction', 'proposed', 'raceway')"
+      },
+      {
+        "key": "car_street",
+        "filter": ["w/highway"],
+        "where": "highway IN ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link') AND (motor_vehicle IS NULL OR motor_vehicle <> 'no') AND (access IS NULL OR access <> 'no')"
+      },
+      {
+        "key": "footpath",
+        "filter": ["w/highway=footway,path,pedestrian,steps,cycleway,track"],
+        "where": "highway IN ('footway', 'path', 'pedestrian', 'steps', 'cycleway', 'track')"
+      },
+      {
+        "key": "bridge",
+        "filter": ["w/bridge"],
+        "where": "bridge IS NOT NULL AND bridge <> 'no' AND (highway IS NOT NULL OR railway IS NOT NULL)"
+      },
+      {
+        "key": "tree",
+        "filter": ["n/natural=tree"],
+        "where": "\"natural\" = 'tree'"
+      }
+    ]
+  },
+
+  "_admin_comment": [
+    "The administrative layer replaces Overpass `is_in`. `adminInfo` in osm/geodata.js",
+    "asks two things of it: which admin areas contain a zone centre, and what the",
+    "country code and the ISO3166-2 level are. Both are answered by a polygon layer of",
+    "boundary=administrative relations at the levels the ladder can reach.",
+    "",
+    "Levels 2–10 only. Level 2 carries ISO3166-1, which is the free fallback when the",
+    "Nominatim reverse geocode is unreachable — that fallback is load-bearing, and it is",
+    "why ISO3166-1 and ISO3166-2 are pinned into runtime_columns.",
+    "",
+    "This is the one layer where geometry must be kept whole: containment is the entire",
+    "question, so a representative point is useless and rings are always retained.",
+    "`geometry: polygon` (PLAN.md Phase 1 R3) because only assembled relation polygons",
+    "answer it: the member ways the filter necessarily drags along (osmium export needs",
+    "them to assemble the relations — `-R` is NOT usable here) mostly carry",
+    "boundary=administrative themselves and used to ship as linestrings, 72% of the",
+    "layer, every one discarded by the client on read."
+  ],
+  "admin": {
+    "filter": ["r/boundary=administrative"],
+    "where": "boundary = 'administrative' AND admin_level IN ('2', '3', '4', '5', '6', '7', '8', '9', '10')",
+    "geometry": "polygon"
+  },
+
+  "_include_tags_comment": [
+    "The tag columns osmium export writes. Pinning this list is what gives the",
+    "GeoJSONSeq a stable schema, which is what lets ogr2ogr build a FlatGeobuf without",
+    "scanning the whole stream to discover fields. Every key referenced by any `where`",
+    "above MUST appear here, plus everything in runtime_columns."
+  ],
+  "include_tags": [
+    "ISO3166-1",
+    "ISO3166-1:alpha2",
+    "ISO3166-2",
+    "access",
+    "admin_level",
+    "advertising",
+    "aeroway",
+    "amenity",
+    "boundary",
+    "bridge",
+    "building",
+    "consulate",
+    "cuisine",
+    "diplomatic",
+    "entry",
+    "foot",
+    "golf",
+    "highspeed",
+    "highway",
+    "iata",
+    "landuse",
+    "leisure",
+    "maxspeed",
+    "motor_vehicle",
+    "name",
+    "name:en",
+    "natural",
+    "office",
+    "opening_hours",
+    "public_transport",
+    "railway",
+    "shop",
+    "tourism",
+    "water",
+    "waterway"
+  ],
+
+  "_runtime_columns_comment": [
+    "What actually SHIPS on a feature (PLAN.md Phase 1 R5): the columns the client",
+    "reads at runtime, verified by grepping osm/*.js and rules/score.js —",
+    "  osm_type/osm_id   identity: featuresToPois, every tie-break sort, and the",
+    "                    Phase-3 shard merge's dedup key. Never strip at shard level.",
+    "  name              display + POI records (worldfile.js)",
+    "  name:en           the admin ladder prefers it (geodata.js adminInfo)",
+    "  natural           synthCoastline's polygonal-water test (geodata.js)",
+    "  cuisine           Curse of the Distant Cuisine (cuisineTokens)",
+    "  access/foot/entry SPOT_ACCESS_TAG_KEYS — legal-spot accessibility",
+    "  opening_hours     spotOpenAllHours — legal-spot hours demotion",
+    "  admin_level, ISO3166-1, ISO3166-1:alpha2, ISO3166-2",
+    "                    worldAdminAreas + the ordinal ladder anchor.",
+    "Everything else in include_tags exists only so a `where` clause can see it, and",
+    "ogr2ogr -select projects it away per layer (intersected with the columns the",
+    "layer's features actually carry, because -select hard-fails on a missing field)."
+  ],
+  "runtime_columns": [
+    "osm_type",
+    "osm_id",
+    "name",
+    "name:en",
+    "natural",
+    "cuisine",
+    "access",
+    "foot",
+    "entry",
+    "opening_hours",
+    "admin_level",
+    "ISO3166-1",
+    "ISO3166-1:alpha2",
+    "ISO3166-2"
+  ]
+}

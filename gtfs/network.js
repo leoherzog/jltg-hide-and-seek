@@ -72,8 +72,6 @@ import {
 } from './service.js';
 import { raptor } from './raptor.js';
 
-export { clusterStations };
-
 // ── private constants (generate.py lines 2119–2136) ──────────────────────────
 
 /**

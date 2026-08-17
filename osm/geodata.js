@@ -4,11 +4,18 @@
  * Port of generate.py lines 4454–6356 (everything in S2 except the raw transport,
  * which lives in ./overpass.js). WORKER SIDE ONLY — no DOM, no window, no document.
  *
- * Etiquette is a hard requirement, not a nicety: ONE bbox-wide query per category
- * group, never one per stop (1,493 stops × 16 categories would be 24,000 requests
- * and a ban). The whole reference dataset was six Overpass calls and one Nominatim
- * call. Overpass bbox order is (S, W, N, E) — the opposite of GeoJSON. Mirror
- * failover is required; the main endpoint 504'd on five of six first attempts.
+ * NO NETWORK SERVICE IS CALLED FROM HERE ANY MORE. This module used to be a client of
+ * two shared free services — Overpass for features and Nominatim for the place name —
+ * with mirror failover, ≤0.1° tiling fallbacks and 3 s courtesy sleeps, because
+ * etiquette was a hard requirement rather than a nicety. Both are gone. Every feature,
+ * count and administrative boundary now comes from the prebuilt world files
+ * (`./worldfile.js`), which are immutable, rate-limit-free, and read with HTTP Range
+ * requests against an R2 bucket.
+ *
+ * The GEO_CATEGORIES selectors below are still Overpass QL, and stay that way: they are
+ * the DEFINITION of each category, they are printed verbatim in provenance so a player
+ * can re-run one, and `tools/osm-world/categories.json` is a mechanical translation of
+ * them that has to be checkable against something.
  *
  * Budget on the reference map: ~10 requests, ~40 MB, once, then cached. Every
  * round-trip is announced through `onProgress(done, total, label)` because the user
@@ -33,25 +40,22 @@
  *      `legal-spot-path-filter` provenance row is `partial`, and a note says so.
  *      `available` stays `true`. This is NOT case 1 and must not read like it.
  *
- * Everything between those two — a dead group, a dead tile, a dead category, a dead
- * Nominatim, a dead is_in, a dead curse audit — degrades in place with a warning and
- * a `partial` provenance row.
+ * Everything between those two — a category missing from the manifest, an unreadable
+ * layer, an unreadable density grid, an unreadable admin layer — degrades in place with
+ * a warning and a `partial` provenance row.
  */
 
 import {
-  num, pct, quantile, sha256Text,
+  num, pct, quantile,
 } from '../lib/core.js';
 import {
   Projection, GridIndex, haversineM, bboxExpand, bboxContains,
   polygonArea, pointInRing, segPointDist, ringWithin,
 } from '../lib/geo.js';
 import {
-  OVERPASS_ENDPOINTS, NOMINATIM_ENDPOINT, OVERPASS_WAY_BUDGET,
-} from '../lib/http.js';
-import { CacheMiss } from '../lib/cache.js';
-import {
-  overpassQL, overpassQuery, parseOverpass, tileBbox, nominatimReverse,
-} from './overpass.js';
+  worldPois, worldCount, worldDensity, worldAdminAreas, adminAreasAt,
+  worldLayerInfo, worldProvenance,
+} from './worldfile.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // The category catalogue — DATA. Do not summarise, do not drop the obscure ones.
@@ -199,17 +203,23 @@ export const LOW_STREETVIEW_COUNTRIES = Object.freeze(
 );
 
 // ── tuning constants (S2-local) ───────────────────────────────────────────────
+//
+// VESTIGIAL, the Overpass ones. This module now reads the prebuilt world files
+// (`./worldfile.js`) and issues no Overpass query at all, so every constant below that
+// describes a request budget — the QL timeout, the tiling degree, the two legal-path
+// timeouts — no longer governs anything here. They are kept because the selectors and
+// the budgets are still the DEFINITION of each category and each refinement, they are
+// printed in provenance, and `tools/osm-world/categories.json` is a translation of them
+// that has to be checkable against something. Do not tune them expecting an effect.
 
-export const OVERPASS_QL_TIMEOUT_S = 300;      // the [timeout:N] header inside the QL itself
-export const OVERPASS_TILE_DEG = 0.1;          // ≤0.1° squares when a single-shot fetch fails
+          // ≤0.1° squares when a single-shot fetch fails
 export const CATEGORY_FEATURE_BUDGET = 40000;  // above this, a category is counted but not fetched
-export const IS_IN_BATCH = 150;                // zone centres per batched is_in request
+                // zone centres per batched is_in request
 export const LEGAL_SPOTS_PER_ZONE = 40;        // cap on the per-zone shortlist (page size guard)
 export const TOILET_WIDE_FACTOR = 1.5;         // A1's "just outside the circle" fallback ring
 export const REDUNDANT_PAIR_FRACTION = 0.05;   // 1/20 of the map diagonal (specs/osm.md §7.4)
-export const LEGAL_PATH_RADIUS_M = 5;          // OSM analogue of the rulebook's 10 ft
-export const LEGAL_PATH_QL_TIMEOUT_S = 120;    // the optional path join gets a small server budget
-export const LEGAL_PATH_HTTP_TIMEOUT_S = 150.0;// …and one attempt per mirror, not two
+          // OSM analogue of the rulebook's 10 ft
+// …and one attempt per mirror, not two
 // Buffering every walkable way by 5 m is the most expensive thing this program can ask
 // a shared free service to do. Measured on the reference bbox (84,466 non-motorway
 // highway ways) it timed out on all three mirrors, twice, costing 7½ minutes for an
@@ -219,34 +229,109 @@ export const LEGAL_PATH_HTTP_TIMEOUT_S = 150.0;// …and one attempt per mirror,
 export const LEGAL_PATH_JOIN_WAY_BUDGET = 40000;
 export const SPOT_VERIFY_WEIGHT = 0.5;         // restrictive opening_hours ⇒ half weight
 
-// Which categories are fetched as features, grouped into as few Overpass requests
-// as the size guard allows. One request per group; statements are separated in the
-// response by `out count;` markers so attribution is never guessed.
-export const GEO_FETCH_GROUPS = Object.freeze([
-  Object.freeze(['landmarks', Object.freeze([
-    'advertising', 'amusement_park', 'aquarium', 'bench', 'coastline',
-    'commercial_airport', 'foreign_consulate', 'golf_course', 'high_speed_rail',
-    'hospital', 'library', 'mountain', 'movie_theater', 'museum', 'newsagent',
-    'platform', 'rail_station', 'shelter', 'toilets', 'zoo'])]),
-  Object.freeze(['areas', Object.freeze(['park', 'water'])]),
-  Object.freeze(['amenities', Object.freeze([
-    'cafe', 'fast_food', 'grocery', 'place_of_worship', 'restaurant', 'shop', 'tree'])]),
-  Object.freeze(['cover', Object.freeze(['green', 'pitch'])]),
-]);
-
-// Descriptive: the categories no group fetches. They are counted map-wide and never
-// pulled as features, because they are densities rather than icons and their geometry
-// would be tens of megabytes in service of no question.
-export const GEO_COUNT_ONLY = Object.freeze(['bridge', 'car_street', 'footpath', 'street']);
-
 // Fetched with `out center qt` — a pure density tally, the one place where the
 // bbox centre is acceptable (specs/osm.md §3.1).
 export const GEO_DENSITY_ONLY = Object.freeze(['building']);
 
+// ── the world-file layer map ─────────────────────────────────────────────────
+//
+// Every category above is answered by one of exactly three things now, and which one
+// it is decides how honest its number can be:
+//
+//   a FEATURE layer   real geometry, exact count, usable for distance and containment
+//   the DENSITY grid  a per-cell tally, exact map-wide, APPROXIMATE per zone
+//   nothing           absent from the build, so the category degrades
+//
+// `GEO_DENSITY_GRID_CATEGORIES` is the second set. It is the same list as the density
+// layers in tools/osm-world/categories.json, and the two must agree: a key here that
+// the build does not produce silently becomes a zero, which reads as "this map has no
+// streets" rather than as a missing layer.
+export const GEO_DENSITY_GRID_CATEGORIES = Object.freeze(
+  ['bridge', 'building', 'car_street', 'footpath', 'street', 'tree'],
+);
+
+// `curse_animal_habitat` was the second-largest layer in the build and almost all of
+// it was a copy of `green`, which every build already ships. It is no longer built;
+// its count is reconstructed from a partition identity instead (PLAN.md §Phase 1 R2).
+//
+// The identity is exact, and it is exact because `landuse` is single-valued. Writing
+// the two selectors out:
+//
+//   green                = landuse ∈ {forest, grass, meadow, village_green,
+//                                     recreation_ground}
+//   curse_animal_habitat = landuse ∈ {forest, grass, meadow, village_green}
+//                          ∪ leisure ∈ {park, nature_reserve}
+//                          ∪ (natural = water ∧ name)
+//
+// No feature carries two `landuse` values, so `green` minus its `recreation_ground`
+// members is precisely the first line of the habitat selector — not an estimate of it
+// — and `animal_delta` is built to be exactly the remaining two lines with the
+// `landuse` members already removed, so the three terms never double-count a feature.
+//
+// Counting is per-feature over unchanged envelopes: `worldCount` walks an R-tree of
+// bounding boxes, and a feature's bbox is the same bbox whichever of these layers it
+// was written into. So the sum is the same upper bound the deleted layer would have
+// returned, bit for bit — including the deliberate over-count of a feature whose bbox
+// clips the map while its geometry does not, which is what makes a zero here safe to
+// act on (see `curseCounts`).
+//
+// Order is load-bearing for term 0: `curseLayerCount` treats the FIRST term as the
+// base layer — the superset the later terms carve pieces out of. A base absent from
+// the manifest refuses the whole expression; a later term absent counts as 0 (unless
+// the manifest is marked partial). The correction terms after the base may be
+// reordered freely; the base must stay first.
+export const CURSE_ANIMAL_HABITAT_TERMS = Object.freeze([
+  Object.freeze([1, 'green']),
+  Object.freeze([-1, 'green_recreation_ground']),
+  Object.freeze([1, 'animal_delta']),
+]);
+
+// Curse predicates whose selector is NOT the same as the same-named category's, so
+// they ship as their own world-file layer. `water` is the one that matters: the curse
+// says "marked", the category says "named", and they differ by 8:1 on a real map.
+// Everything absent from this map is answered either by a category layer of the same
+// name or by the density grid — see `curseCounts`.
+//
+// The third element, where present, is a FALLBACK EXPRESSION: a signed sum of other
+// layers that equals the named layer's count exactly, used only when the build did
+// not ship the named layer. See `CURSE_ANIMAL_HABITAT_TERMS`.
+export const CURSE_WORLD_LAYERS = Object.freeze([
+  Object.freeze(['water', 'curse_water']),
+  Object.freeze(['cairn_terrain', 'curse_cairn_terrain']),
+  Object.freeze(['travel_agent_stop', 'curse_travel_agent_stop']),
+  Object.freeze(['animal_habitat', 'curse_animal_habitat', CURSE_ANIMAL_HABITAT_TERMS]),
+]);
+
+// Curse predicates that are exactly a category layer already fetched, and the ones the
+// density grid answers. Split out so `curseCounts` never has to guess which is which.
+export const CURSE_FROM_CATEGORY = Object.freeze(
+  ['grocery', 'shop', 'print_source', 'tumble_ground'],
+);
+export const CURSE_FROM_DENSITY = Object.freeze(['bridge', 'car_street', 'building']);
+
+// `print_source` and `tumble_ground` are the curse names for categories the catalogue
+// calls something else.
+export const CURSE_CATEGORY_ALIASES = Object.freeze({
+  print_source: 'newsagent',
+  tumble_ground: 'pitch',
+});
+
 // Rings are kept only where a containment test is actually asked for. The photo
 // questions ask "is the hider standing in a park", the matching/measuring ones ask
 // about the icon; the two predicates must never be interchanged.
-export const RING_CATEGORIES = Object.freeze(['commercial_airport', 'park', 'water']);
+//
+// `commercial_airport` was in this list and is not any more. Its rings were built,
+// projected and indexed on every run and then read by nothing: `zoneInventory`'s
+// `polygonHits` is the only consumer of a non-`park`, non-`water` ring, and the only
+// key `rules/score.js` ever reads out of it is `park` (score.js 1068, 1088 — a
+// containment test for a bathroom and for shelter). `legalEndgameSpots` uses rings
+// only for `LEGAL_SPOT_CATEGORIES`, which does not list airports; `iconOffsetP90` is
+// called on `pois.park` alone; `synthCoastline` on `pois.water` alone; and nothing in
+// `render/` ever reads `poi.rings` at all. Dropping the key changes no published
+// number: `featuresToPois` computes the representative point, the area and the
+// node-swallowed-by-area dedup from its own planar copy of the outers
+// (`worldfile.js:524-586`), independently of `keepRings`.
+export const RING_CATEGORIES = Object.freeze(['park', 'water']);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LEGAL SPOT HEURISTICS — THE EDITABLE TABLE
@@ -287,15 +372,6 @@ export const SPOT_ACCESS_TAG_KEYS = Object.freeze(['access', 'foot', 'entry']);
 // OSM does not know whether a plaza is locked at night. An ABSENT tag counts as
 // open — that is the surprise, and it is deliberate: most benches carry no hours.
 export const SPOT_ALL_HOURS_VALUES = Object.freeze(['24/7', 'Mo-Su 00:00-24:00']);
-
-// The candidate set the server-side 5 m path join asks about. Wider than
-// LEGAL_SPOT_CATEGORIES on purpose: the join is one request either way, and a
-// superset costs nothing while keeping the filter usable if the table above grows.
-export const LEGAL_PATH_CANDIDATE_SELECTOR =
-  'nwr["leisure"~"^(park|garden|playground|pitch|recreation_ground|common|nature_reserve)$"]({{bbox}});'
-  + 'nwr["amenity"~"^(bench|shelter|library|place_of_worship|toilets|marketplace|townhall)$"]({{bbox}});'
-  + 'nwr["landuse"~"^(forest|grass|meadow|village_green|recreation_ground)$"]({{bbox}});'
-  + 'nwr["public_transport"="platform"]({{bbox}});nwr["railway"="platform"]({{bbox}});';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Curse predicates
@@ -429,6 +505,24 @@ export const ADMIN_ORDINAL_OVERRIDES = Object.freeze({
   it: Object.freeze([4, 6, 8, 9]),      // regione / provincia / comune / circoscrizione
 });
 
+// The same ladder judgements for a world whose `admin` layer was built from Overture
+// divisions (manifest `admin_source: 'overture'`, PLAN.md Phase 2). Overture has no
+// `admin_level`; the build synthesises one per subtype — country=2, dependency=3,
+// region=4, county=6, localadmin=7, locality=8, macrohood=9, neighborhood=10 — and
+// stamps ISO3166-1 only on levels 2–3 and ISO3166-2 only on level 4. The numbers
+// deliberately echo OSM's, but they do NOT mean the same thing (jp municipalities
+// land on 6, not 7; fr communes have no arrondissement level to skip), so the OSM
+// table above must never be consulted for an overture world and vice versa. A country
+// absent here takes the generic path, which for overture always anchors at level 4.
+export const OVERTURE_ADMIN_ORDINAL_OVERRIDES = Object.freeze({
+  fr: Object.freeze([4, 6, 8, 10]),     // region / department / commune / neighbourhood
+  it: Object.freeze([4, 6, 8, 10]),     // regione / provincia / comune / neighbourhood
+  jp: Object.freeze([4, 6, 8, null]),   // prefecture / municipality / ward
+  de: Object.freeze([4, 6, 8, 9]),      // Land / Kreis / Gemeinde / Stadtbezirk
+  gb: Object.freeze([4, 6, 8, 10]),     // constituent country / county / district / parish
+  cn: Object.freeze([4, 6, 7, 8]),      // province / prefecture-city / county / township
+});
+
 // A water body larger than the game map behaves exactly like a coast: its shore is
 // the edge of the playable world. OSM reserves `natural=coastline` for ocean and sea,
 // so a Great Lakes or inland-sea map would otherwise report "no coastline" — which is
@@ -500,27 +594,8 @@ export function geoCategories() {
   return out;
 }
 
-/** The 16-hex handle the cache entry is named after — printed in §Provenance. */
-async function cacheKey16(query) {
-  return (await sha256Text(query)).slice(0, 16);
-}
-
-/**
- * `out geom` everywhere a distance or a ring is compared; `out center qt` only for
- * the pure density tally (buildings), per specs/osm.md §1.4 and §3.1.
- */
-function outDirective(category) {
-  return GEO_DENSITY_ONLY.includes(category.key) ? 'out center qt;' : 'out geom;';
-}
-
 function keepRingsFor(key) { return RING_CATEGORIES.includes(key); }
 function keepTagsFor(key) { return !GEO_DENSITY_ONLY.includes(key); }
-
-/** A cache miss under `--offline` is a hard error and must never be swallowed. */
-function isCacheMiss(err) {
-  return (typeof CacheMiss === 'function' && err instanceof CacheMiss)
-    || (err && err.name === 'CacheMiss');
-}
 
 /** Project a geographic ring (`[lat, lon]` pairs) into planar metres. */
 function planarRing(ring, proj) {
@@ -543,11 +618,6 @@ function maxOf(values) {
   let m = -Infinity;
   for (const v of values) if (v > m) m = v;
   return m;
-}
-
-/** Python truthiness for a possibly-empty dict: `{}` is falsy there, truthy here. */
-function nonEmptyObject(o) {
-  return Boolean(o) && typeof o === 'object' && Object.keys(o).length > 0;
 }
 
 /**
@@ -587,170 +657,16 @@ function noopLog() {}
 // Overpass statement splitting and the one-request count audit
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Split an `out …; out count;`-per-statement response into per-statement blocks.
- *
- * Overpass returns every statement's elements concatenated in statement order with
- * nothing between them, so the trailing `out count;` of each statement is used as an
- * explicit terminator *and* as a checksum: the block length must equal the count.
- * Without this, a partially failed query silently shifts every category's features
- * onto the wrong category.
- */
-function splitStatements(data, expected, what) {
-  const blocks = [];
-  let current = [];
-  for (const element of (data.elements || [])) {
-    if (element && element.type === 'count') {
-      const tags = element.tags || {};
-      const total = tags.total !== undefined ? parseInt(tags.total, 10) : current.length;
-      if (total !== current.length) {
-        throw new Error(`Overpass ${what}: statement ${blocks.length} returned `
-          + `${current.length} elements but counted ${total}`);
-      }
-      blocks.push(current);
-      current = [];
-    } else {
-      current.push(element);
-    }
-  }
-  if (current.length) {
-    throw new Error(`Overpass ${what}: ${current.length} trailing elements with no count marker`);
-  }
-  if (blocks.length !== expected) {
-    throw new Error(`Overpass ${what}: expected ${expected} statements, got ${blocks.length}`);
-  }
-  return blocks;
-}
 
-/** The exact QL text `overpassCounts` sends — also the cache key. */
-function countsQueryBody(selectors) {
-  return selectors.map(([, sel]) => `(${sel});out count;`).join('');
-}
 
-function countsQuery(bbox, selectors) {
-  return overpassQL(countsQueryBody(selectors), bbox, { timeoutS: OVERPASS_QL_TIMEOUT_S });
-}
 
-/**
- * Map-level audit in ONE request, using `out count`.
- *
- * `selectors` is `[key, selector]` pairs; each becomes a statement followed by
- * `out count;`. Responses come back as `type:"count"` elements **in statement
- * order**, so assert the arity before zipping — a partially failed query silently
- * returns fewer, and mis-zipping would attribute one category's count to another.
- * 28 categories cost one request and ~4 kB.
- */
-async function overpassCounts(cache, bbox, selectors) {
-  const data = await overpassQuery(cache, countsQuery(bbox, selectors));
-  const counts = (data.elements || []).filter((e) => e && e.type === 'count');
-  if (counts.length !== selectors.length) {
-    throw new Error(`Overpass count audit: asked ${selectors.length} statements, `
-      + `got ${counts.length} counts`);
-  }
-  const out = {};
-  for (let i = 0; i < selectors.length; i++) {
-    const tags = counts[i].tags || {};
-    out[selectors[i][0]] = parseInt(tags.total !== undefined ? tags.total : 0, 10) || 0;
-  }
-  return out;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Category fetching
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function categoryQuery(category, bbox) {
-  return overpassQL(`(${ovSelector(category)});${outDirective(category)}`, bbox,
-    { timeoutS: OVERPASS_QL_TIMEOUT_S });
-}
 
-/**
- * Fetch one category bbox-wide and reduce it to `Poi` records.
- *
- * Uses `out geom` when geometry is required and `out center qt` for the density
- * tally. Applies the representative-point rule, deduplicates a node inside a
- * same-category polygon in favour of the polygon, and returns sorted by
- * `(osmType, osmId)`.
- *
- * When the size guard trips, tiles the bbox into ≤0.1° squares, caches per tile, and
- * the caller marks the result `partial` — a size failure must never become a `0`
- * that reads as "this category does not exist here".
- */
-async function fetchCategory(cache, category, bbox, proj, progress, log) {
-  const selector = ovSelector(category);
-  const opts = { keepRings: keepRingsFor(category.key), keepTags: keepTagsFor(category.key) };
-  const query = categoryQuery(category, bbox);
-  progress.start(`geo:overpass ${category.key}`);
-  try {
-    const data = await overpassQuery(cache, query);
-    return parseOverpass(data.elements || [], category.key, proj, opts);
-  } catch (exc) {
-    if (isCacheMiss(exc)) throw exc;
-    // A too-big or timed-out fetch degrades to tiles.
-    log('warn', `category ${category.key} failed whole-bbox (${exc}); tiling`);
-  } finally {
-    progress.finish();
-  }
 
-  /** @type {Map<string, Object>} */
-  const merged = new Map();
-  let failures = 0;
-  const tiles = tileBbox(bbox, OVERPASS_TILE_DEG);
-  progress.grow(tiles.length);
-  for (const tile of tiles) {
-    const tileQuery = overpassQL(`(${selector});${outDirective(category)}`, tile,
-      { timeoutS: OVERPASS_QL_TIMEOUT_S });
-    progress.start(`geo:overpass ${category.key} tile ${ovBbox(tile)}`);
-    let data;
-    try {
-      data = await overpassQuery(cache, tileQuery);
-    } catch (exc) {
-      if (isCacheMiss(exc)) throw exc;
-      // One dead tile is a floor, not a zero.
-      failures += 1;
-      log('warn', `category ${category.key} tile ${ovBbox(tile)} failed: ${exc}`);
-      continue;
-    } finally {
-      progress.finish();
-    }
-    for (const poi of parseOverpass(data.elements || [], category.key, proj, opts)) {
-      merged.set(`${poi.osmType}\u001f${poi.osmId}`, poi);
-    }
-  }
-  if (failures) {
-    log('warn', `category ${category.key}: ${failures} tiles failed; count is a floor`);
-  }
-  return Array.from(merged.values()).sort(cmpTypeId);
-}
-
-/**
- * Fetch several categories in ONE request, attributing results by count marker.
- *
- * Returns `[category key → pois, cacheKey]`. On any failure the caller falls back to
- * per-category fetches, which cost more requests but survive one bad selector.
- */
-async function fetchGroup(cache, categories, bbox, proj, label, progress) {
-  const body = categories
-    .map((c) => `(${ovSelector(c)});${outDirective(c)}out count;`)
-    .join('');
-  const query = overpassQL(body, bbox, { timeoutS: OVERPASS_QL_TIMEOUT_S });
-  progress.start(`geo:overpass ${label}`);
-  let data;
-  try {
-    data = await overpassQuery(cache, query);
-  } finally {
-    progress.finish();
-  }
-  const blocks = splitStatements(data, categories.length, `group ${label}`);
-  const out = {};
-  for (let i = 0; i < categories.length; i++) {
-    out[categories[i].key] = parseOverpass(blocks[i], categories[i].key, proj, {
-      keepRings: keepRingsFor(categories[i].key),
-      keepTags: keepTagsFor(categories[i].key),
-    });
-  }
-  return [out, await cacheKey16(query)];
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Spatial index and the two zone predicates
@@ -886,69 +802,9 @@ export function zoneInventory(zones, pois, proj, radiusM) {
   return [iconCounts, polygonHits];
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Nominatim and administrative divisions
-// ═══════════════════════════════════════════════════════════════════════════════
 
-function nominatimParams(lat, lon) {
-  return {
-    addressdetails: '1',
-    extratags: '1',
-    format: 'jsonv2',
-    lat: lat.toFixed(6),
-    lon: lon.toFixed(6),
-    zoom: '10',
-  };
-}
 
-/** The fully-substituted request URL — the cache key and the provenance line. */
-function nominatimUrl(lat, lon) {
-  const params = nominatimParams(lat, lon);
-  return `${NOMINATIM_ENDPOINT}?${Object.keys(params).sort(cmpStr)
-    .map((k) => `${k}=${params[k]}`).join('&')}`;
-}
 
-/** The exact QL one batched containment request sends — also its cache key. */
-function isInQuery(batch, bbox) {
-  const body = batch
-    .map(([lat, lon]) => `is_in(${lat.toFixed(6)},${lon.toFixed(6)});out tags;out count;`)
-    .join('');
-  return overpassQL(body, bbox, { timeoutS: OVERPASS_QL_TIMEOUT_S });
-}
-
-/**
- * Batched `is_in` containment lookup. Returns per-point tag objects and cache keys.
- *
- * `is_in` yields **area** objects, so a `relation.a[...]` filter silently returns
- * nothing; the result is filtered on the returned elements' own tags instead. The
- * `out count;` after each `out tags;` is what makes a batched response separable —
- * without it every point's hierarchy is one undifferentiated list.
- */
-async function isInAreas(cache, points, bbox, progress) {
-  const perPoint = [];
-  const keys = [];
-  for (let start = 0; start < points.length; start += IS_IN_BATCH) {
-    const batch = points.slice(start, start + IS_IN_BATCH);
-    const query = isInQuery(batch, bbox);
-    progress.start('geo:overpass admin containment');
-    let data;
-    try {
-      data = await overpassQuery(cache, query);
-    } finally {
-      progress.finish();
-    }
-    keys.push(await cacheKey16(query));
-    for (const block of splitStatements(data, batch.length, 'is_in')) {
-      perPoint.push(block.map((e) => {
-        const raw = (e && e.tags) || {};
-        const tags = {};
-        for (const k of Object.keys(raw).sort(cmpStr)) tags[String(k)] = String(raw[k]);
-        return tags;
-      }));
-    }
-  }
-  return [perPoint, keys];
-}
 
 /** (generate.py `_admin_level`, line 5489) */
 function adminLevel(tags) {
@@ -958,20 +814,6 @@ function adminLevel(tags) {
   return null;
 }
 
-/**
- * `ISO3166-2-lvl<N>` ⇒ N is the country's first-division `admin_level`.
- * (generate.py `_iso_lvl_from_nominatim`, line 5496)
- */
-function isoLvlFromNominatim(nominatim) {
-  if (!nonEmptyObject(nominatim)) return null;
-  const address = nominatim.address || {};
-  const levels = [];
-  for (const key of Object.keys(address).sort(cmpStr)) {
-    const m = /^ISO3166-2-lvl(\d+)$/.exec(key);
-    if (m) levels.push(parseInt(m[1], 10));
-  }
-  return levels.length ? Math.min(...levels) : null;
-}
 
 /**
  * Resolve the 1st–4th administrative divisions for this map.
@@ -990,31 +832,110 @@ function isoLvlFromNominatim(nominatim) {
  *
  * @returns {Promise<Object>} AdminInfo
  */
-export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
+export async function adminInfo(world, zones, bbox, hooks = {}) {
   const progress = hooks.progress || new Progress(null, 0);
   const log = hooks.log || noopLog;
 
   const ordered = Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId));
-  const points = ordered.map((z) => [z.lat, z.lon]);
-  let perPoint = [];
-  if (points.length) {
-    try {
-      [perPoint] = await isInAreas(cache, points, bbox, progress);
-    } catch (exc) {
-      if (isCacheMiss(exc)) throw exc;
-      // Admin questions degrade to `unknown`.
-      log('warn', `is_in containment lookup failed: ${exc}`);
-      perPoint = [];
+
+  // The admin layer replaces batched Overpass `is_in`, and the shape of the work
+  // changes completely. `is_in` cost one request per 150 zone centres and could not be
+  // cached usefully, because the batch key changed whenever the zone set did. Here the
+  // administrative areas overlapping the map are fetched ONCE and every zone centre is
+  // tested against them locally, so the number of zones stops costing anything at all.
+  /** @type {Array<Object>} */
+  let areas = [];
+  progress.start('geo:world admin areas');
+  try {
+    areas = (await worldAdminAreas(world, bbox)) || [];
+  } catch (exc) {
+    // Admin questions degrade to `unknown`; they never abort the run.
+    log('warn', `admin containment lookup failed: ${exc}`);
+    areas = [];
+  } finally {
+    progress.finish();
+  }
+
+  // The containing areas per zone, kept as AREA objects too: the country census below
+  // needs to know WHICH polygon contained a zone, not just its synthesized tags.
+  const perPointAreas = ordered.map((zone) => adminAreasAt(areas, zone.lat, zone.lon));
+
+  // One entry per zone, in zone order, shaped exactly like the `is_in` tag objects the
+  // rest of this function already consumes — so everything below is untouched.
+  // `name:en` is carried through where the build has it, because the ladder reads
+  // `tags['name:en'] || tags.name` and a multilingual country's bare `name` is the
+  // slash-joined native form ("Schweiz/Suisse/Svizzera/Svizra").
+  const perPoint = perPointAreas.map((zoneAreas) => zoneAreas
+    .map((area) => {
+      /** @type {Object<string, string>} */
+      const tags = { boundary: 'administrative', admin_level: String(area.level) };
+      if (area.name) tags.name = area.name;
+      if (area.nameEn) tags['name:en'] = area.nameEn;
+      if (area.iso1) tags['ISO3166-1'] = area.iso1;
+      if (area.iso2) tags['ISO3166-2'] = area.iso2;
+      return tags;
+    }));
+
+  // ── country identity and the first-division level, from the layer itself ──
+  //
+  // These used to come from a Nominatim reverse geocode, with the OSM tags as the free
+  // fallback when Nominatim was unreachable. The fallback is now the only path, and it
+  // is derived from EVERY area overlapping the map rather than only from the areas that
+  // happen to contain a zone centre — which makes it strictly more robust than the
+  // fallback ever was, and no worse than Nominatim on the one thing Nominatim was
+  // genuinely better at.
+  //
+  // That thing was `ISO3166-2-lvl<N>`: Nominatim reports, as a property of the COUNTRY,
+  // which OSM `admin_level` holds its first administrative division. That anchors the
+  // ordinal ladder for every country absent from `ADMIN_ORDINAL_OVERRIDES`. The local
+  // equivalent is to observe which level actually carries an `ISO3166-2` code, because
+  // ISO 3166-2 is by definition the code of a country's principal subdivision. Same
+  // fact, read off the polygons instead of asked for.
+  let iso2Level = null;
+  for (const area of areas) {
+    // Lowest level carrying an ISO3166-2 code wins: a country's principal subdivision
+    // is the shallowest thing that has one.
+    if (area.iso2 && (iso2Level === null || area.level < iso2Level)) iso2Level = area.level;
+  }
+
+  // Country identity. `areas` is sorted (level, name), and "first area carrying
+  // ISO3166-1" — the old rule — resolves a border-straddling map alphabetically: a
+  // Basel map touching de/ch/fr answered 'de' whatever the game was actually in. The
+  // country is instead the ISO3166-1 polygon CONTAINING the most zone centres, with
+  // the (level, name)-order rule kept as the tie-break and as the fallback when no
+  // zone centre sits in any country polygon — so a single-country map, and a map
+  // with no zones at all, answer exactly as they did before.
+  /** @type {Map<Object, number>} AdminArea (object identity) → zone centres inside */
+  const countryTally = new Map();
+  for (const zoneAreas of perPointAreas) {
+    for (const area of zoneAreas) {
+      if (area.iso1) countryTally.set(area, (countryTally.get(area) || 0) + 1);
     }
   }
+  let countryArea = null;
+  let countryZones = -1;
+  for (const area of areas) {
+    if (!area.iso1) continue;
+    const inside = countryTally.get(area) || 0;
+    if (inside > countryZones) {
+      countryArea = area;
+      countryZones = inside;
+    }
+  }
+  if (countryArea !== null && countryTally.size > 1) {
+    log('info', `country ${JSON.stringify(countryArea.iso1)} by zone census `
+      + `(${countryZones} zone centres; ${countryTally.size} countries touch the map)`);
+  }
+  const iso1Country = countryArea === null ? null : countryArea.iso1.toLowerCase();
+  // Same `name:en` preference the ladder applies — "Switzerland", not the
+  // slash-joined native form.
+  const countryName = countryArea === null ? null
+    : (countryArea.nameEn || countryArea.name || null);
 
   // Per-zone {admin_level: name}, plus the map-wide level census.
   /** @type {Map<string, Map<number, string>>} */
   const perZoneLevels = new Map();
   const levelsPresent = new Set();
-  let iso1Country = null;
-  let iso2Level = null;
-  let countryName = null;
   const pairs = Math.min(ordered.length, perPoint.length);
   for (let i = 0; i < pairs; i++) {
     const zone = ordered[i];
@@ -1026,43 +947,32 @@ export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
       if (level === null || !name) continue;
       ladder.set(level, name);
       levelsPresent.add(level);
-      if (tags['ISO3166-1']) {
-        iso1Country = iso1Country || tags['ISO3166-1'].toLowerCase();
-        countryName = countryName || name;
-      }
-      if (tags['ISO3166-2'] && iso2Level === null) iso2Level = level;
     }
     perZoneLevels.set(zone.zoneId, ladder);
   }
 
-  // Country identity: Nominatim first, `is_in`'s ISO3166-1 tag as the free fallback.
-  let countryCode = null;
+  // Country identity, entirely from the admin layer. `source` is now one value where
+  // it used to be two ('nominatim' / 'is_in'); `'unknown'` still means what it always
+  // meant — no administrative data at all — which is the only value `render/deck.js`
+  // actually branches on.
+  let countryCode = iso1Country;
   let placeName = null;
   let source = 'unknown';
-  if (nonEmptyObject(nominatim)) {
-    const address = nominatim.address || {};
-    const cc = String(address.country_code !== undefined ? address.country_code : '').toLowerCase();
-    countryCode = cc || null;
-    countryName = String(address.country !== undefined ? address.country : '') || countryName;
-    for (const fieldName of ['city', 'town', 'village', 'municipality', 'borough', 'suburb',
-      'county', 'state', 'region']) {
-      if (address[fieldName]) { placeName = String(address[fieldName]); break; }
-    }
-    if (!placeName && nominatim.name) placeName = String(nominatim.name);
-    source = 'nominatim';
-  }
-  if (countryCode === null && iso1Country) {
-    countryCode = iso1Country;
-    source = 'is_in';
-  } else if (source === 'unknown' && perZoneLevels.size) {
-    source = 'is_in';
-  }
+  if (countryCode !== null || perZoneLevels.size) source = 'world';
 
-  // Ordinal ladder. Derived, never guessed.
-  const first = isoLvlFromNominatim(nominatim) || iso2Level || null;
+  // Ordinal ladder. Derived, never guessed. Which override table applies is a
+  // property of the WORLD, not the country: an overture-built admin layer uses
+  // synthetic levels that only look like OSM's (see the table's comment), so the
+  // manifest's `admin_source` picks the table. Absent or 'osm' is today's behavior.
+  const adminSource = String(
+    (world && world.manifest && world.manifest.admin_source) || 'osm',
+  );
+  const overrideTable = adminSource === 'overture'
+    ? OVERTURE_ADMIN_ORDINAL_OVERRIDES : ADMIN_ORDINAL_OVERRIDES;
+  const first = iso2Level;
   /** @type {Object<string, number|null>} */
   const ordinals = { 1: null, 2: null, 3: null, 4: null };
-  const override = ADMIN_ORDINAL_OVERRIDES[countryCode || ''];
+  const override = overrideTable[countryCode || ''];
   if (override) {
     for (let i = 0; i < override.length; i++) {
       const level = override[i];
@@ -1093,7 +1003,9 @@ export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
   // The place name is the municipality that contains the most zone centres, not the
   // one under the bbox centre: the centre of a bounding box is a geometric artefact
   // and on the reference feed it lands in a suburb (Wyoming, MI) while 171 of 393
-  // zones sit in Grand Rapids. Nominatim's answer is the fallback, not the source.
+  // zones sit in Grand Rapids. This was already the source and Nominatim was already
+  // the fallback, so dropping Nominatim leaves the normal path untouched — it only
+  // changes what happens on a map with no zones at all, handled below.
   //
   // Go as specific as the data allows, then take the division containing the most
   // zone centres *within that ordinal*. Ranking candidates by raw zone count across
@@ -1123,6 +1035,21 @@ export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
       break;
     }
   }
+  if (placeName === null) {
+    // No zones, or no named division containing any of them — the one case where
+    // Nominatim used to answer. The local equivalent is the deepest administrative area
+    // covering the middle of the map: a geometric artefact, and worse than the census
+    // above, but it is the same kind of answer Nominatim gave and it needs no network.
+    const [s, w, n, e] = bbox;
+    const covering = adminAreasAt(areas, (s + n) / 2.0, (w + e) / 2.0)
+      .filter((area) => area.name)
+      .sort((a, b) => b.level - a.level || cmpStr(a.name, b.name));
+    if (covering.length) {
+      placeName = covering[0].name;
+      log('info', `place name ${JSON.stringify(placeName)} from the admin area at the `
+        + `map centre (level ${covering[0].level}); no zone census was available`);
+    }
+  }
 
   // Does a boundary LINE cross the map? Ordinal 0 is the international border.
   const wanted = [[0, 2]];
@@ -1132,31 +1059,20 @@ export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
   }
   /** @type {Object<string, boolean>} */
   const borderLevels = {};
-  if (wanted.length) {
-    const body = wanted.map(([ordinal, level]) => (
-      `relation["boundary"="administrative"]["admin_level"="${level}"]`
-      + `({{bbox}})->.a${ordinal};way(r.a${ordinal})({{bbox}});out count;`
-    )).join('');
-    progress.start('geo:overpass admin borders');
-    try {
-      const data = await overpassQuery(cache,
-        overpassQL(body, bbox, { timeoutS: OVERPASS_QL_TIMEOUT_S }));
-      const counts = (data.elements || []).filter((e) => e && e.type === 'count');
-      if (counts.length === wanted.length) {
-        for (let i = 0; i < wanted.length; i++) {
-          const tags = counts[i].tags || {};
-          borderLevels[wanted[i][0]] =
-            (parseInt(tags.total !== undefined ? tags.total : 0, 10) || 0) > 0;
-        }
-      } else {
-        log('warn', `admin border audit returned ${counts.length} of ${wanted.length} counts`);
-      }
-    } catch (exc) {
-      if (isCacheMiss(exc)) throw exc;
-      log('warn', `admin border audit failed: ${exc}`);
-    } finally {
-      progress.finish();
-    }
+  // Answered off the `areas` already in hand, at no further cost. The question is
+  // whether a boundary LINE crosses the map, and the local test for that is whether
+  // more than one area exists at that level — two adjacent areas at one level means the
+  // seam between them runs through the map. An area whose boundary merely surrounds the
+  // whole map does not count, and there is exactly one of those per level.
+  //
+  // A DIVERGENCE from the Overpass form, and a deliberate one. `way(r.a)({{bbox}})`
+  // asked whether any member way of such a relation lies in the bbox, which is the
+  // sharper question; this asks whether the map spans a division at that level. The two
+  // agree except when a map sits entirely inside one division and clips the outer edge
+  // of its parent, where this says no and Overpass said yes.
+  for (const [ordinal, level] of wanted) {
+    const atLevel = areas.filter((area) => area.level === level);
+    borderLevels[ordinal] = atLevel.length > 1;
   }
 
   return {
@@ -1175,6 +1091,114 @@ export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * One curse predicate's count: the layer if the build shipped it, otherwise the
+ * fallback expression.
+ *
+ * The order is deliberate and is the whole backward-compatibility story. A world
+ * built before PLAN.md §Phase 1 R2 — and every fixture world, and any world a reader
+ * points the app at by hand — still carries `curse_animal_habitat`, and for those the
+ * layer is read directly and no arithmetic happens at all. The expression is reached
+ * only when the named layer is genuinely absent from the manifest, which is the new
+ * build's signature. The two agree by construction, so which branch ran is invisible
+ * in the number; it is not invisible in the log, on purpose.
+ *
+ * A missing layer is never an exception: `worldCount` returns null for anything the
+ * manifest does not list. But "not in the manifest" means two different things for
+ * the two kinds of term, because `tools/osm-world/build.py` OMITS a layer whose
+ * selector matched nothing in the region rather than shipping an empty file:
+ *
+ *   - The FIRST term is the base layer (`green` in the one live expression), a
+ *     superset the others carve pieces out of. If it is absent AND the region has
+ *     features the expression should count, the total would be wrong in the
+ *     direction that removes a curse — so an absent base is a refusal, and the
+ *     predicate goes unanswered. Unanswerable is the safe end: the curse stays in
+ *     the deck instead of being removed on the strength of an incomplete total.
+ *
+ *   - A LATER term absent from the manifest is the empty-layer case: a region with
+ *     zero `landuse=recreation_ground` gets no `green_recreation_ground` layer at
+ *     all, and treating that as null used to null the whole expression — deleting
+ *     the animal-habitat predicates from exactly the regions where they were
+ *     answerable. An absent correction term counts as 0, with an info line saying
+ *     so.
+ *
+ * A path-less manifest entry (`merge.py` writes `{"features": 0}` for a layer that is
+ * legitimately empty everywhere) never reaches either bullet: `worldCount` answers 0
+ * for it directly, a genuine zero, so no term is "absent" and no arithmetic is skipped.
+ *
+ * The absent-as-zero reading is only sound for a FULL build, which omits nothing but
+ * genuinely-empty layers. A `--only` run of build.py or merge.py ships a manifest that
+ * is green while missing layers the region does have, and marks itself with
+ * `"partial": true` at the manifest top level. On such a manifest an absent term means
+ * "not built", not "empty", so the expression refuses (warn log) instead of fabricating
+ * a total that is wrong in the direction that removes a curse.
+ *
+ * @param {Object} world
+ * @param {string} layer the layer the build used to ship
+ * @param {ReadonlyArray<readonly [number, string]>|undefined} terms signed fallback sum
+ * @param {[number, number, number, number]} bbox
+ * @param {function(string, string): void} log
+ * @param {string} predicate for the log line only
+ * @returns {Promise<number|null>} null when neither the layer nor the expression exists
+ */
+async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
+  const direct = await worldCount(world, layer, bbox);
+  if (direct !== null) return direct;
+  if (!terms || !terms.length) {
+    log('warn', `curse predicate ${predicate}: no ${layer} layer in the manifest`);
+    return null;
+  }
+
+  let total = 0;
+  const absentAsZero = [];
+  for (let i = 0; i < terms.length; i++) {
+    const [sign, key] = terms[i];
+    const part = await worldCount(world, key, bbox);
+    if (part === null) {
+      // The base layer (term 0) missing means the expression cannot be trusted;
+      // a later term missing means the build had nothing to put in it. See the
+      // doc comment above — the split is what keeps a recreation-ground-free
+      // region from losing an answerable predicate.
+      if (i === 0) {
+        log('warn', `curse predicate ${predicate}: no ${layer} layer in the manifest, and `
+          + `the ${terms.map(([, k]) => k).join(' / ')} substitute needs ${key}, which is `
+          + 'not there either');
+        return null;
+      }
+      if (world.manifest && world.manifest.partial === true) {
+        // A --only build: the manifest is marked partial, so an absent term means
+        // "not built in this run", not "empty region", and zeroing it would fabricate
+        // a total. See the doc comment above.
+        log('warn', `curse predicate ${predicate}: ${key} is absent from a PARTIAL `
+          + 'manifest (a --only build), where absence means not built rather than '
+          + 'empty — the predicate is left unanswered rather than zeroed');
+        return null;
+      }
+      absentAsZero.push(key);
+      continue;
+    }
+    total += sign * part;
+  }
+  if (absentAsZero.length) {
+    log('info', `curse predicate ${predicate}: ${absentAsZero.join(', ')} not in this `
+      + 'build — the build omits a layer whose selector matched nothing, so counted as 0');
+  }
+  // Cannot happen while the layers are the ones this identity was derived over — a
+  // subtracted layer is a strict subset of the layer it is subtracted from, over the
+  // same envelopes. It CAN happen if a build ships mismatched layers, and a negative
+  // count published as a curse total would be a lie in the direction that removes a
+  // curse. Refuse to answer instead.
+  if (total < 0) {
+    log('warn', `curse predicate ${predicate}: the substitute for ${layer} summed to `
+      + `${total}, which means the layers it reads do not partition each other; the `
+      + 'predicate is left unanswered rather than guessed at');
+    return null;
+  }
+  log('info', `curse predicate ${predicate}: ${layer} is not in this build, counted as `
+    + `${terms.map(([s, k]) => `${s < 0 ? '−' : '+'}${k}`).join(' ')} = ${total}`);
+  return total;
+}
+
+/**
  * Evaluate every OSM-decided curse predicate in one `out count` request.
  * (generate.py `curse_predicates`, line 5687 — exported as `curseCounts`)
  *
@@ -1184,22 +1208,53 @@ export async function adminInfo(cache, zones, bbox, nominatim, hooks = {}) {
  * route overlap and wait times) — those are decided elsewhere and must not be
  * invented here.
  */
-export async function curseCounts(cache, bbox, geo, hooks = {}) {
+export async function curseCounts(world, bbox, geo, hooks = {}) {
   const progress = hooks.progress || new Progress(null, 0);
   const log = hooks.log || noopLog;
   const counts = {};
-  let raw = {};
-  progress.start('geo:overpass curse predicates');
+
+  // Each predicate is answered by whichever of the three sources actually defines it,
+  // and the split is data (`CURSE_WORLD_LAYERS`, `CURSE_FROM_CATEGORY`,
+  // `CURSE_FROM_DENSITY`) rather than a chain of special cases. The one that must not
+  // be got wrong is `water`: the curse says "marked", the `water` CATEGORY says
+  // "named", and they differ by 8:1 — so it reads `curse_water`, its own layer, and
+  // never `counts.water`.
+  /** @type {Object<string, number>} */
+  const raw = {};
+
+  progress.start('geo:world curse predicates');
   try {
-    raw = await overpassCounts(cache, bbox, CURSE_PREDICATE_SELECTORS);
+    for (const [predicate, layer, terms] of CURSE_WORLD_LAYERS) {
+      // An upper bound is the right tool here: these are removal tests of the form
+      // "is there none of this on the map", and the only value that has to be exact is
+      // zero. A bounding box that clips the map without its feature entering can turn
+      // a 0 into a 1, which fails SAFE — the curse stays in play rather than being
+      // removed on a technicality.
+      const count = await curseLayerCount(world, layer, terms, bbox, log, predicate);
+      if (count !== null) raw[predicate] = count;
+    }
   } catch (exc) {
-    if (isCacheMiss(exc)) throw exc;
     // The curse audit degrades, it never aborts.
     log('warn', `curse predicate audit failed: ${exc}`);
-    raw = {};
   } finally {
     progress.finish();
   }
+
+  // Predicates that are exactly a category already fetched — no extra read at all.
+  for (const predicate of CURSE_FROM_CATEGORY) {
+    const category = CURSE_CATEGORY_ALIASES[predicate] || predicate;
+    if (Object.prototype.hasOwnProperty.call(geo.counts, category)) {
+      raw[predicate] = geo.counts[category];
+    }
+  }
+  // Predicates the density grid answers. Map-wide grid totals are exact, which is
+  // exactly the property a removal test needs.
+  for (const predicate of CURSE_FROM_DENSITY) {
+    if (Object.prototype.hasOwnProperty.call(geo.counts, predicate)) {
+      raw[predicate] = geo.counts[predicate];
+    }
+  }
+
   for (const [curseId, predicate] of Array.from(CURSE_PREDICATE_MAP)
     .sort((a, b) => cmpStr(a[0], b[0]) || cmpStr(a[1], b[1]))) {
     if (Object.prototype.hasOwnProperty.call(raw, predicate)) counts[curseId] = raw[predicate];
@@ -1425,53 +1480,52 @@ export function legalEndgameSpots(zones, geo, proj, radiusM, pathOkIds) {
 }
 
 /**
- * Ids of candidate spot features within 5 m of a foot-routable way.
- * (generate.py `_fetch_path_adjacent_ids`, line 5891)
+ * Attribute density-grid cells to zones, in place.
  *
- * The join runs **server-side** (`around.paths:5`) and returns `out ids` — a few kB
- * instead of the ~40 MB the foot-way geometry would cost. Returns `null` ids when the
- * query fails, which the caller reports as "the path test could not be applied"
- * rather than silently dropping every spot.
+ * A cell counts toward a zone when its CENTRE is within `radiusM` of the zone centre.
+ * That is the approximation, stated plainly: a cell straddling the circle edge lands
+ * wholly in or wholly out. At the build's 0.002° cells (~220 m) against a ~400 m zone
+ * radius the boundary error is real and is why every density category is marked
+ * `partial` and carries a note.
  *
- * This is the one *optional* request in the pipeline, and the most expensive one for
- * the server (a 5 m buffer around every walkable way in the map). It therefore runs
- * on a deliberately small budget — one attempt per mirror, a short server-side
- * timeout — so a busy Overpass costs the run a couple of minutes and a caveat rather
- * than half an hour.
+ * What it is NOT is a map-wide approximation. The build attributes each feature to
+ * exactly one cell, so the map-wide totals in `counts` are exact sums — and those are
+ * what every curse predicate and the street-density figure actually read. Only the
+ * per-zone numbers here are fuzzy.
  *
- * @returns {Promise<[Set<string>|null, string, number]>}
+ * @param {Object<string, Object<string, number>>} inventory mutated in place
+ * @param {Array<Object>} zones
+ * @param {{cells: Array<{lat: number, lon: number, counts: Object<string, number>}>}} density
+ * @param {Projection} proj @param {number} radiusM
  */
-async function fetchPathAdjacentIds(cache, bbox, progress, log) {
-  const body = `(${FOOT_WAY_SELECTOR})->.paths;`
-    + `(${LEGAL_PATH_CANDIDATE_SELECTOR})->.cand;`
-    + `(node.cand(around.paths:${LEGAL_PATH_RADIUS_M});`
-    + `way.cand(around.paths:${LEGAL_PATH_RADIUS_M});`
-    + `relation.cand(around.paths:${LEGAL_PATH_RADIUS_M}););out ids;`;
-  const query = overpassQL(body, bbox, { timeoutS: LEGAL_PATH_QL_TIMEOUT_S });
-  const key = await cacheKey16(query);
-  progress.start('geo:overpass path proximity join');
-  let data;
-  try {
-    data = await overpassQuery(cache, query, {
-      attemptsPerEndpoint: 1,
-      timeoutS: LEGAL_PATH_HTTP_TIMEOUT_S,
-    });
-    if (!data || !Array.isArray(data.elements)) throw new Error('no elements array');
-  } catch (exc) {
-    if (isCacheMiss(exc)) throw exc;
-    log('warn', `legal-spot path filter unavailable: ${exc}`);
-    return [null, key, 0];
-  } finally {
-    progress.finish();
-  }
-  const ids = new Set();
-  for (const e of data.elements) {
-    if (e && (e.type === 'node' || e.type === 'way' || e.type === 'relation')) {
-      ids.add(`${e.type}/${parseInt(e.id, 10)}`);
+function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
+  if (!density.cells.length) return;
+
+  // Index the cells once, at the zone radius, so a 2,000-zone map does not become a
+  // 2,000 × 50,000 scan. Cell size == query radius is what makes `near`'s 3×3
+  // neighbourhood scan complete; `buildPoiIndex` sizes its index the same way.
+  const index = new GridIndex(Math.max(1.0, radiusM));
+  const cells = Array.from(density.cells)
+    .sort((a, b) => (a.lat - b.lat) || (a.lon - b.lon));
+  cells.forEach((cell, i) => {
+    const [x, y] = proj.xy(cell.lat, cell.lon);
+    index.add(i, x, y);
+  });
+
+  for (const zone of Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId))) {
+    const row = inventory[zone.zoneId] || (inventory[zone.zoneId] = {});
+    const [zx, zy] = proj.xy(zone.lat, zone.lon);
+    // `near` already applies the radius, so there is no second distance test here.
+    for (const id of index.nearKeys(zx, zy, radiusM)) {
+      const cell = cells[id];
+      if (cell === undefined) continue;
+      for (const key of Object.keys(cell.counts).sort(cmpStr)) {
+        row[key] = (row[key] || 0) + cell.counts[key];
+      }
     }
   }
-  return [ids, key, ids.size];
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // The pipeline
@@ -1657,14 +1711,13 @@ export function emptyGeoData(bbox, note) {
  * (generate.py `collect_geodata`, line 6096)
  *
  * Order: the one-request category count audit → geometry fetches for the categories
- * that need it → the POI index → per-zone inventory → Nominatim → admin resolution →
+ * that need it → the POI index → per-zone inventory → admin resolution →
  * curse predicates → cuisines → legal spots. Under `--no-osm`, or if Overpass fails
  * outright, the CALLER returns `emptyGeoData(...)`; every downstream consumer must
  * degrade rather than crash.
  *
  * Budget on the reference map: ~10 requests, ~40 MB, once, then cached.
  *
- * @param {Object} cache
  * @param {Object} opts Options
  * @param {Object} border Border
  * @param {Array<Object>} zones
@@ -1674,7 +1727,7 @@ export function emptyGeoData(bbox, note) {
  *        | function(number, number, string)} [hooks]
  * @returns {Promise<Object>} GeoData
  */
-export async function collectGeodata(cache, opts, border, zones, proj, radiusM, hooks = {}) {
+export async function collectGeodata(world, opts, border, zones, proj, radiusM, hooks = {}) {
   const h = typeof hooks === 'function' ? { onProgress: hooks } : (hooks || {});
   const log = typeof h.onLog === 'function' ? h.onLog : noopLog;
 
@@ -1685,89 +1738,121 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
   /** @type {Array<string>} */
   const notes = [];
 
-  // Estimated round-trips: count audit + 4 groups + buildings + nominatim + is_in
-  // batches + admin borders + curse audit + path join. `total` may grow when a group
-  // falls back to per-category fetches or a category has to be tiled.
-  const isInBatches = zones.length ? Math.ceil(zones.length / IS_IN_BATCH) : 0;
-  const progress = new Progress(h.onProgress,
-    1 + GEO_FETCH_GROUPS.length + 1 + 1 + isInBatches + 1 + 1 + 1);
+  // Estimated round-trips. A world-file run has a very different shape from an Overpass
+  // one: every category is one bbox query against an immutable file, so the total is
+  // known up front and never grows. What used to be a count audit, four group fetches,
+  // a building fetch, ⌈zones/150⌉ is_in batches and a Nominatim reverse geocode is now
+  // one query per category, plus the density grid and the admin layer.
+  const progress = new Progress(h.onProgress, GEO_CATEGORIES.length + 2);
 
-  // ── 1. one-request map-level audit ────────────────────────────────────────
-  const auditPairs = GEO_CATEGORIES.map((c) => [c.key, ovSelector(c)]);
-  const auditQueryText = countsQuery(bbox, auditPairs);
-  progress.start('geo:overpass category audit');
-  let counts;
+  // ── 1. features, one bbox query per category ──────────────────────────────
+  //
+  // There is no separate count audit any more, and that is a real simplification
+  // rather than a shortcut. Overpass had one because asking it for a count was
+  // enormously cheaper than asking it for features, so the pipeline spent a whole
+  // request learning what it could afford. Here the R-tree yields a free upper bound
+  // (`worldCount` walks the index and reads no feature bytes at all) and the exact
+  // count falls out of the fetch itself. The audit collapses into the fetch, and a
+  // category's count and its feature list can no longer disagree.
+  //
+  // `CATEGORY_FEATURE_BUDGET` survives, applied to that free upper bound. Its meaning
+  // has changed though: it was an etiquette limit on what to ask a shared free service
+  // for, and it is now purely a page-size guard.
+  /** @type {Object<string, Array<Object>>} */
+  const pois = {};
+  /** @type {Object<string, number>} */
+  const counts = {};
+  const partialCategories = new Set();
+  let layersRead = 0;
+
+  for (const category of GEO_CATEGORIES) {
+    const key = category.key;
+    // The tallies are answered by the density grid in step 2, not by a feature layer.
+    if (GEO_DENSITY_GRID_CATEGORIES.includes(key)) continue;
+    if (worldLayerInfo(world, key) === null) {
+      // A layer the build did not produce degrades that category and nothing else.
+      partialCategories.add(key);
+      log('warn', `category ${key}: no world-file layer in the manifest`);
+      continue;
+    }
+    progress.start(`geo:world ${key}`);
+    try {
+      const upperBound = await worldCount(world, key, bbox);
+      if (upperBound !== null && upperBound > CATEGORY_FEATURE_BUDGET) {
+        // An upper bound, not a count — say so by marking the category partial.
+        counts[key] = upperBound;
+        partialCategories.add(key);
+        log('warn', `category ${key} has ~${upperBound} features `
+          + `(> ${CATEGORY_FEATURE_BUDGET}): counted, not fetched`);
+        continue;
+      }
+      pois[key] = (await worldPois(world, key, key, bbox, proj, {
+        keepRings: keepRingsFor(key),
+        keepTags: keepTagsFor(key),
+      })) || [];
+      counts[key] = pois[key].length;
+      layersRead += 1;
+    } catch (exc) {
+        // One dead layer is a caveat; all of them dead is the next check.
+      partialCategories.add(key);
+      log('warn', `category ${key} unavailable: ${exc}`);
+    } finally {
+      progress.finish();
+    }
+  }
+
+  // Not one layer readable means the origin is down, which is the whole-OSM-layer
+  // failure CONTRACT.md §(f)1 describes — the caller answers it with `emptyGeoData`.
+  // Overpass signalled that by throwing from the count audit; the equivalent here is
+  // having read nothing at all. Throwing on the FIRST failure instead would turn one
+  // missing layer into a dead OSM section, which is the bug this shape avoids.
+  if (layersRead === 0) {
+    throw new Error('world files: no layer could be read; the origin is unreachable');
+  }
+
+  // ── 2. the density grid: the categories that are tallies, not icons ───────
+  progress.start('geo:world density grid');
+  /** @type {null|{counts: Object<string, number>, cells: Array<Object>, cellDeg: number}} */
+  let density = null;
   try {
-    // Raises ⇒ the caller degrades the whole OSM layer.
-    counts = await overpassCounts(cache, bbox, auditPairs);
+    density = await worldDensity(world, bbox);
+  } catch (exc) {
+    log('warn', `density grid unavailable: ${exc}`);
   } finally {
     progress.finish();
   }
-  const auditKey = await cacheKey16(auditQueryText);
-
-  // ── 2. features, one request per group, per-category fallback ─────────────
-  /** @type {Object<string, Array<Object>>} */
-  const pois = {};
-  /** @type {Object<string, string>} */
-  const fetchKeys = {};
-  const partialCategories = new Set();
-  for (const [label, keys] of GEO_FETCH_GROUPS) {
-    let group = keys.filter((k) => catalogue.has(k)).map((k) => catalogue.get(k));
-    const big = group.filter((c) => (counts[c.key] || 0) > CATEGORY_FEATURE_BUDGET);
-    group = group.filter((c) => !big.includes(c));
-    for (const category of big) {
-      partialCategories.add(category.key);
-      log('warn', `category ${category.key} has ${counts[category.key] || 0} features `
-        + `(> ${CATEGORY_FEATURE_BUDGET}): counted, not fetched`);
-    }
-    if (group.length) {
-      try {
-        const [fetched, key] = await fetchGroup(cache, group, bbox, proj, label, progress);
-        for (const category of group) {
-          pois[category.key] = fetched[category.key] || [];
-          fetchKeys[category.key] = key;
-        }
-      } catch (exc) {
-        if (isCacheMiss(exc)) throw exc;
-        // One bad selector must not kill the group.
-        log('warn', `group ${label} failed (${exc}); falling back to per-category fetches`);
-        progress.grow(group.length);
-        for (const category of group) {
-          try {
-            pois[category.key] = await fetchCategory(cache, category, bbox, proj, progress, log);
-            fetchKeys[category.key] = await cacheKey16(categoryQuery(category, bbox));
-          } catch (inner) {
-            if (isCacheMiss(inner)) throw inner;
-            partialCategories.add(category.key);
-            log('warn', `category ${category.key} unavailable: ${inner}`);
-          }
-        }
-      }
-    }
+  for (const key of GEO_DENSITY_GRID_CATEGORIES) {
+    // ABSENT, NOT ZERO, when the grid could not be read. §(f) rule 3 is the whole
+    // reason: a zero here is indistinguishable from "this map genuinely has no
+    // bridges", and it propagates — `curseCounts` reads `geo.counts` directly, so
+    // Bridge Troll, Luxury Car and Right Turn would all come back `action: remove,
+    // count: 0` ("No bridges on the game map") off a failed fetch, and the street
+    // matching question would flip from functional to dead. Leaving the key unset
+    // sends `auditCurses` down its `count === null` warn branch instead, which is the
+    // honest answer. This is the same guard `mergeDensityIntoInventory` already gets
+    // right below; it was missing only here.
+    if (density) counts[key] = density.counts[key] || 0;
+    // Partial either way: exact map-wide when present, absent when not, and never a
+    // measured per-zone figure.
+    partialCategories.add(key);
   }
-
-  // Buildings: a pure density tally, and the only place `out center` is allowed.
-  const building = catalogue.get('building');
-  if (building !== undefined) {
-    const nBuildings = counts.building || 0;
-    if (nBuildings > 0 && nBuildings <= OVERPASS_WAY_BUDGET) {
-      try {
-        pois.building = await fetchCategory(cache, building, bbox, proj, progress, log);
-        fetchKeys.building = await cacheKey16(categoryQuery(building, bbox));
-      } catch (exc) {
-        if (isCacheMiss(exc)) throw exc;
-        partialCategories.add('building');
-        log('warn', `building density fetch failed: ${exc}`);
-      }
-    } else if (nBuildings > OVERPASS_WAY_BUDGET) {
-      partialCategories.add('building');
-      notes.push(
-        `${num(nBuildings)} buildings is above the ${num(OVERPASS_WAY_BUDGET)}-way fetch `
-        + 'budget, so per-zone building counts were not computed; the map-wide count is exact.',
-      );
-    }
+  if (density) {
+    const cellM = Math.round(density.cellDeg * 111000);
+    notes.push(
+      `Counts for ${GEO_DENSITY_GRID_CATEGORIES.join(', ')} come from a precomputed `
+      + `${num(cellM)} m density grid rather than from individual features — their `
+      + 'geometry is tens of gigabytes worldwide and every question asked of them is a '
+      + 'tally. The map-wide totals are exact. The per-zone figures are approximate: a '
+      + 'grid cell counts wholly inside or wholly outside a zone circle depending on '
+      + 'where its centre falls.',
+    );
+  } else {
+    notes.push(
+      'The precomputed density grid could not be read, so counts of buildings, streets, '
+      + 'footpaths, bridges and trees are missing rather than zero. Every score that '
+      + 'needs them is excluded rather than guessed at.',
+    );
   }
-
   // ── 2b. great-lake and inland-sea shores count as coastline ──────────────
   if (pois.water && pois.water.length) {
     const [shore, shoreNames] = synthCoastline(pois, bbox, proj, log);
@@ -1786,23 +1871,37 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
   }
 
   // ── 3. provenance rows, one per category ─────────────────────────────────
+  //
+  // The `selector` field still carries the Overpass QL, and deliberately: it is the
+  // definition of the category, it is what `tools/osm-world/categories.json` was
+  // mechanically translated FROM, and a player who wants to check a number can still
+  // paste it into overpass-turbo. What changes is `endpoint`, which now names the file
+  // the number actually came from and the planet snapshot it is as of. Printing an
+  // Overpass endpoint next to a world-file count would be a lie about provenance.
   for (const category of GEO_CATEGORIES) {
-    const selector = ovSelector(category);
-    const counted = counts[category.key];
+    const key = category.key;
+    const counted = counts[key];
     if (counted === undefined) continue;
+    const onGrid = GEO_DENSITY_GRID_CATEGORIES.includes(key);
     queries.push({
-      key: category.key,
-      selector: ovSub(selector, bbox),
+      key,
+      selector: ovSub(ovSelector(category), bbox),
       bbox: Array.from(bbox),
       count: counted,
-      cacheKey: fetchKeys[category.key] !== undefined ? fetchKeys[category.key] : auditKey,
-      endpoint: OVERPASS_ENDPOINTS[0],
-      partial: partialCategories.has(category.key),
+      cacheKey: '',
+      endpoint: worldProvenance(world, onGrid ? 'density' : key),
+      partial: partialCategories.has(key),
     });
   }
 
   // ── 4. per-zone inventory (two predicates, never interchanged) ────────────
   const [inventory, polygonHits] = zoneInventory(zones, pois, proj, radiusM);
+  // The density categories have no features to inventory, so their per-zone figures
+  // are attributed from grid cells instead. Merged in rather than computed inside
+  // `zoneInventory` so the exact predicate and the approximate one stay visibly
+  // separate — every consumer of `zoneInventory` reads both out of the same object,
+  // and the note pushed in step 2 is what tells the page which is which.
+  if (density) mergeDensityIntoInventory(inventory, zones, density, proj, radiusM);
 
   /** @type {Object} GeoData */
   const geo = {
@@ -1829,57 +1928,24 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
   };
 
   // ── 5. place, country and the administrative ladder ──────────────────────
-  // Probe the mean of the zone centres, not the bbox centre: the network's centre of
-  // mass is where the map actually is, and a bounding box's middle can easily be a
-  // field. Falls back to the bbox centre when there are no zones at all.
-  const [s, w, n, e] = bbox;
-  let probe;
-  if (zones.length) {
-    const ordered = Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId));
-    probe = [
-      ordered.reduce((acc, z) => acc + z.lat, 0) / ordered.length,
-      ordered.reduce((acc, z) => acc + z.lon, 0) / ordered.length,
-    ];
-  } else {
-    probe = [(s + n) / 2.0, (w + e) / 2.0];
-  }
-  let nominatim = null;
-  progress.start('geo:nominatim reverse geocode');
-  try {
-    const got = await nominatimReverse(cache, probe[0], probe[1]);
-    // Python's `if nominatim:` treats `{}` as absent. Normalise here, once.
-    nominatim = nonEmptyObject(got) ? got : null;
-  } catch (exc) {
-    if (isCacheMiss(exc)) throw exc;
-    // is_in carries the ISO code as a free fallback.
-    log('warn', `Nominatim unavailable (${exc}); falling back to is_in tags`);
-  } finally {
-    progress.finish();
-  }
-  if (nominatim) {
-    const url = nominatimUrl(probe[0], probe[1]);
-    queries.push({
-      key: 'nominatim-reverse',
-      selector: url,
-      bbox: Array.from(bbox),
-      count: 1,
-      cacheKey: await cacheKey16(url),
-      endpoint: NOMINATIM_ENDPOINT,
-      partial: false,
-    });
-  }
-  geo.admin = await adminInfo(cache, zones, bbox, nominatim, { progress, log });
+  //
+  // Was: one Nominatim reverse geocode of the mean of the zone centres, with the OSM
+  // `is_in` tags as the free fallback when it was unreachable. Nominatim is gone and
+  // the fallback is now the whole story — see `adminInfo`. That removes the last
+  // shared-free-service dependency in the pipeline, and with it a 1 req/s rate limit
+  // and a mandatory-User-Agent header a browser cannot set.
+  geo.admin = await adminInfo(world, zones, bbox, { progress, log });
   if (zones.length) {
     const orderedPoints = Array.from(zones)
       .sort((a, b) => cmpStr(a.zoneId, b.zoneId)).map((z) => [z.lat, z.lon]);
     queries.push({
       key: 'admin-containment',
-      selector: `is_in(lat,lon);out tags;out count;  × ${num(zones.length)} zone centres, `
-        + `batched ${IS_IN_BATCH} per request`,
+      selector: 'boundary=administrative, admin_level 2–10, tested locally against '
+        + `${num(zones.length)} zone centres`,
       bbox: Array.from(bbox),
       count: Object.keys(geo.admin.perZone).length,
-      cacheKey: await cacheKey16(isInQuery(orderedPoints.slice(0, IS_IN_BATCH), bbox)),
-      endpoint: OVERPASS_ENDPOINTS[0],
+      cacheKey: '',
+      endpoint: worldProvenance(world, 'admin'),
       partial: Object.keys(geo.admin.perZone).length === 0,
     });
   }
@@ -1889,46 +1955,47 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
   const restaurants = pois.restaurant || [];
   const { perCountry, qualifying, tagged, total, rejected } = cuisineDetail(restaurants, host);
   geo.cuisines = perCountry;
-  geo.curseCounts = await curseCounts(cache, bbox, geo, { progress, log });
+  geo.curseCounts = await curseCounts(world, bbox, geo, { progress, log });
   queries.push({
     key: 'curse-audit',
     selector: CURSE_PREDICATE_SELECTORS
       .map(([k, sel]) => `${k}: ${ovSub(sel, bbox)}`).join('; '),
     bbox: Array.from(bbox),
     count: Object.keys(geo.curseCounts).length,
-    cacheKey: await cacheKey16(countsQuery(bbox, CURSE_PREDICATE_SELECTORS)),
-    endpoint: OVERPASS_ENDPOINTS[0],
+    cacheKey: '',
+    endpoint: worldProvenance(world, 'curse_water'),
     partial: Object.keys(geo.curseCounts).length === 0,
   });
 
   // ── 7. candidate legal endgame spots ─────────────────────────────────────
-  const walkableWays = counts.street || 0;
-  let pathIds = null;
-  let pathKey = '';
-  let pathN = 0;
-  if (walkableWays && walkableWays > LEGAL_PATH_JOIN_WAY_BUDGET) {
-    // The most expensive query in the pipeline is not attempted at all on a large map.
-    log('info', `path proximity join skipped: ${walkableWays} walkable ways `
-      + `> ${LEGAL_PATH_JOIN_WAY_BUDGET}`);
-    notes.push(
-      'The rulebook\'s “within 10 ft of a routable path” test was not evaluated: '
-      + `this map has ${num(walkableWays)} walkable ways, and asking a shared Overpass mirror to `
-      + 'buffer all of them is not a polite request. Every candidate spot below is therefore '
-      + 'marked verify-on-the-ground.',
-    );
-  } else {
-    [pathIds, pathKey, pathN] = await fetchPathAdjacentIds(cache, bbox, progress, log);
-    queries.push({
-      key: 'legal-spot-path-filter',
-      selector: `(${ovSub(FOOT_WAY_SELECTOR, bbox)})->.paths; candidate features `
-        + `(around.paths:${LEGAL_PATH_RADIUS_M}); out ids;`,
-      bbox: Array.from(bbox),
-      count: pathN,
-      cacheKey: pathKey,
-      endpoint: OVERPASS_ENDPOINTS[0],
-      partial: pathIds === null,
-    });
-  }
+  //
+  // The "within 10 ft of a routable path" refinement is GONE, and this is the one
+  // capability the world-file migration loses rather than improves. It worked by
+  // asking Overpass to buffer every walkable way in the map by 5 m and intersect that
+  // with the candidate spots — a server-side spatial join, returning a few kB of ids
+  // instead of the ~40 MB the foot-way geometry would cost. There is no local
+  // equivalent: doing it here would mean shipping the whole walkable network, which is
+  // the single densest thing in OSM and precisely what the density grid exists to
+  // avoid carrying.
+  //
+  // It was already the exception rather than the rule. `LEGAL_PATH_JOIN_WAY_BUDGET` is
+  // 40,000 walkable ways and the reference map alone has 84,466, so the join was
+  // skipped on essentially every real map — and when it was attempted it timed out on
+  // all three mirrors twice, costing 7½ minutes for an optional refinement.
+  //
+  // So this is now the documented, unconditional path: `pathIds` is null, every
+  // candidate spot comes back `verify: true` at `SPOT_VERIFY_WEIGHT`, and the note
+  // says so. That is CONTRACT.md §(f)2's degradation-in-place, made permanent —
+  // `available` stays true and every count on the page is still real.
+  const pathIds = null;
+  notes.push(
+    'The rulebook\'s “within 10 ft of a routable path” test is not evaluated. It '
+    + 'required a server-side spatial join against every walkable way in the map, which '
+    + 'the precomputed map files cannot answer — a global footpath network is the one '
+    + 'layer too dense to ship. Every candidate spot below is therefore marked '
+    + 'verify-on-the-ground, which is what the previous pipeline did on any map larger '
+    + `than ${num(LEGAL_PATH_JOIN_WAY_BUDGET)} walkable ways in any case.`,
+  );
   // Read by legalEndgameSpots only, and never emitted: a Set is not clone-safe.
   geo.legalSpots = legalEndgameSpots(zones, geo, proj, radiusM, pathIds);
 
@@ -1949,13 +2016,6 @@ export async function collectGeodata(cache, opts, border, zones, proj, radiusM, 
       'Distances are measured to a computed area centroid, not to a map app\'s label '
       + `anchor. On this map\'s park polygons the two differ by up to ${num(offset)} m at `
       + `the 90th percentile, which is a real fraction of the ${num(radiusM)} m zone radius.`,
-    );
-  }
-  if (pathIds === null && pathKey) {
-    notes.push(
-      'The “within 10 ft of a routable path” test could not be evaluated (the '
-      + 'Overpass proximity join failed), so every candidate spot below is marked '
-      + 'verify-on-the-ground.',
     );
   }
   notes.push(

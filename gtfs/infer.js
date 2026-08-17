@@ -37,8 +37,6 @@ import {
   zoneCover, S1_SIZE_PARAMS, S1_SIZE_ORDER, s1AxisScores,
 } from './network.js';
 
-export { S1_SIZE_PARAMS, S1_SIZE_ORDER, s1AxisScores };
-
 // ── logging ───────────────────────────────────────────────────────────────────
 // `generate.py` logs through the stdlib `log`. In the worker there is no console
 // worth writing to, so the sink is injectable and defaults to silence. The worker

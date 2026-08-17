@@ -75,7 +75,7 @@ progressively rather than appearing at the end.
 Same two pages as the CLI, but as one document: `render/verdict.js`, `render/map.js` and
 `render/deck.js` are S4, and S5 is a **fragment-only second view** — `render/strategy.js` (markup,
 pure `Report → string`) plus `render/simulator.js` (every DOM mutation in that view). It is reached
-only by `#strategy`, appears in no nav or link, and is excluded from the Save download. See
+only by `#strategy` and appears in no nav or link. See
 `CONTRACT.md` §(g), which also lists the deliberate divergences from the Python.
 
 Renderers **format only — they never compute.** Every number reaching the UI goes through exactly

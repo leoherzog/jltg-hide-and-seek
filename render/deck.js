@@ -1125,7 +1125,7 @@ function s4SourcesIndex(report, factRows) {
 }
 
 /**
- * §09 — feed hash and dates, every Overpass selector with its count, every Nominatim
+ * §09 — feed hash and dates, every category selector with its count and the world
  * lookup, the admin ladder, the generator version and arguments, and the full
  * interpretation list.
  *
@@ -1271,33 +1271,6 @@ export function renderProvenance(payload) {
       headerHtml: s4CardHeader(
         `${num(overpass.length)} OpenStreetMap queries`,
         'One query per category, run against the border and cached by content.',
-      ),
-    }));
-  }
-
-  // The CLI folds Nominatim into `provenance.nominatim` and then never prints it. It
-  // is a network request that decided the country, the units and the whole admin
-  // ladder, so on this page it gets its own rows.
-  const nominatim = sortedBy(p.nominatim || [], (x) => [String(x.cacheKey), String(x.url)]);
-  if (nominatim.length) {
-    const rows = nominatim.map((r) => [{}, [
-      el('span', esc(String(r.place || '—')), { className: 'wa-text-nowrap' }),
-      el('span', esc(String(r.countryCode || '—')), { className: 'wa-text-nowrap' }),
-      el('pre', esc(String(r.url || ''))),
-      el('span', esc(String(r.cacheKey || '')), {
-        className: 'wa-caption-xs wa-color-text-quiet', style: 'font-family:var(--mono)',
-      }),
-    ]]);
-    blocks.push(waCard(join(
-      el('p', esc("One reverse-geocode per distinct place asked about, at Nominatim's one "
-        + 'request per second. The answer is what fixed the country, and the country is what '
-        + 'fixed both the distance units on this page and the meaning of every '
-        + '“administrative division” question.'), { className: 'wa-body-s wa-color-text-quiet' }),
-      s4Table(['Place', 'Country', 'Request', 'Cache key'], rows),
-    ), {
-      headerHtml: s4CardHeader(
-        `${num(nominatim.length)} Nominatim ${s4Plural(nominatim.length, 'lookup')}`,
-        'Reverse geocoding, cached by content, one request at a time.',
       ),
     }));
   }
@@ -1483,9 +1456,9 @@ export function renderFooter(payload) {
 // typed "park" keeps all three across a day switch.
 //
 // COMPOSING WITH app.js. app.js carries its own copy of the CLI's `bindFilter` /
-// `bindSearch` / `bindSpending` — it must, because the downloaded standalone file runs
-// that code and not this module. Both are bound to the same elements, so the two have
-// to agree rather than fight. They agree on one rule:
+// `bindSearch` / `bindSpending` inside `PAGE_RUNTIME_JS` — it must, because that
+// string is a verbatim port of the CLI's page JS. Both are bound to the same
+// elements, so the two have to agree rather than fight. They agree on one rule:
 //
 //     a row is hidden when its chip filter rejects it, OR when data-match is '0'
 //

@@ -1,0 +1,177 @@
+# .github/workflows/world-feature-shards.yml — Phase 4 (see tools/osm-world/PLAN.md
+# §Phase 4). Builds FEATURE layers only (build.py --skip-density) for every "coarse"
+# shard in tools/osm-world/shards.json (~60-70 coarsest Geofabrik regions, written by
+# cover.py — Phase 3) and uploads each shard's output to R2 under shards/feature/<id>/.
+#
+# This workflow does NOT merge shards into the global feature layers. PLAN.md
+# §Phase 4: "the merge does not fit a runner today" — merge runs by hand on kadro:
+#
+#   uv run tools/osm-world/merge.py --shards <dir with one subdir per shard build> \
+#     --admin <overture admin.fgb> --out <dir>
+#
+# Same R2 -> local-subdir handoff note as world-density-shards.yml applies here,
+# with s3://$R2_BUCKET/shards/feature/ instead of shards/density/. Not implemented
+# in this workflow — out of scope, written down so the handoff isn't tribal knowledge.
+#
+# R2 secrets required (repo or environment secrets):
+#   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
+#
+# ASSUMPTION, stated because it matters and I could not verify it: the token in
+# .dev.vars lacks R2 write (README.md / build.py header) — a CI-scoped R2 API token
+# with write must be minted and stored as the four secrets above before this
+# workflow's upload step can succeed. Until then the monthly `schedule` trigger will
+# fail every run; consider commenting it out (leaving workflow_dispatch) until the
+# token exists.
+#
+# Cost model (PLAN.md §Phase 4, unverified against a real CI runner — see
+# world-canary.yml / spike S3, whose result should recalibrate the timeout below):
+#   - RAM flat ~2.4 GB regardless of shard size, so RAM is never the constraint here.
+#   - DISK is: build-shard.sh passes --unlink-source, so build.py DELETES the raw
+#     extract the moment stage 1's filtered intermediate exists (safe: feature
+#     shards never run stage 4, the only later reader of the raw extract). That is
+#     what makes PLAN.md's "peak ~2.6x source" math real — without the deletion the
+#     peak is source + intermediate + outputs (~3.5x: africa's 7.90 GB would peak
+#     ~28 GB against ~22 GB of x64 runner disk and fail). 2.6x bounds a single
+#     coarse shard around ~8.6 GB on these runners — PLAN.md's "<=~8 GB coarse
+#     rule" — hence ONE shard per matrix job below (batch_size 1), unlike density's
+#     batch-of-5: there is no comparable disk headroom to run two coarse shards
+#     back-to-back's worst case with margin.
+#   - ~60-70 coarse shards is nowhere near the 256-matrix cap even at batch_size 1;
+#     chunk-shards.py is used anyway for symmetry with the density workflow and so
+#     a future cover.py re-run producing more/smaller coarse shards doesn't require
+#     touching this file.
+#   - Public repos: unlimited included Actions minutes. Private/Pro: 3,000 min/mo
+#     then $0.005/min (arm64 2-core rate cited in PLAN.md; this workflow runs x64 —
+#     check current pricing). PLAN.md's fallback if overage bites: split
+#     tools/osm-world/ + these workflows into a separate public repo.
+#   - Concurrency defaults to 20 (Free-tier ceiling); raise if this repo has more.
+#
+# NOT verified by running this file: I cannot execute GitHub Actions from here.
+# YAML syntax was checked with PyYAML; behavior is unverified until dispatched.
+
+name: world-feature-shards
+
+on:
+  schedule:
+    # Monthly, offset from world-density-shards.yml's 06:00/3rd so the two don't
+    # both cold-start apt/uv installs across ~100 + ~65 jobs at the same instant.
+    - cron: "0 6 4 * *"
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "Coarse shards per matrix job (default 1 — see disk note above)"
+        required: false
+        default: "1"
+
+concurrency:
+  group: world-feature-shards
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.chunk.outputs.matrix }}
+      count: ${{ steps.chunk.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: chunk shards.json into a matrix
+        id: chunk
+        env:
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '1' }}
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/osm-world/shards.json ]; then
+            echo "::error::tools/osm-world/shards.json not found — run cover.py (Phase 3) and commit it first"
+            exit 1
+          fi
+          python3 tools/osm-world/ci/chunk-shards.py \
+            --kind coarse \
+            --batch-size "$BATCH_SIZE" \
+            --max-jobs 256 \
+            > matrix.json
+          {
+            echo "matrix<<CHUNKEOF"
+            cat matrix.json
+            echo "CHUNKEOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "count=$(jq 'length' matrix.json)" >> "$GITHUB_OUTPUT"
+
+      - name: summary
+        run: |
+          echo "### world-feature-shards" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.chunk.outputs.count }} batch job(s) from tools/osm-world/shards.json[\"coarse\"]" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build (${{ matrix.batch_id }})
+    needs: setup
+    runs-on: ubuntu-latest
+    # Coarse shards can be continent-sized pre-Phase-1-split members (PLAN.md: "six
+    # continents whole" was the pre-split cover) — generous pending S3's real
+    # measurement, and pending confirmation of the disk-driven ~8 GB coarse rule.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check disk headroom
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: install osmium-tool, gdal, uv
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin time
+          python3 -m pip install --user --upgrade uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: build + upload every shard in this batch
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          BATCH_JSON: ${{ toJson(matrix.shards) }}
+        run: |
+          set -euo pipefail
+          chmod +x tools/osm-world/ci/build-shard.sh
+
+          missing=()
+          for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            [ -n "${!v:-}" ] || missing+=("$v")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::missing secrets: ${missing[*]} — see this file's header comment (a CI R2 token must be minted; .dev.vars' token lacks R2 write)"
+            exit 1
+          fi
+
+          echo "$BATCH_JSON" | jq -c '.[]' | while IFS= read -r shard; do
+            id="$(echo "$shard" | jq -r '.id')"
+            pbf_url="$(echo "$shard" | jq -r '.pbf_url')"
+            md5_url="$(echo "$shard" | jq -r '.md5_url')"
+            echo "::group::$id"
+            # A retry is a FULL re-download + rebuild of the shard, NOT a resume:
+            # build-shard.sh rm -rf's its work dir on entry and passes --force
+            # (and --unlink-source deletes the extract mid-build anyway), so
+            # nothing survives between attempts. The retry exists for transient
+            # network/runner failures; its cost is one extra full shard build.
+            attempt=1
+            max_attempts=2
+            until tools/osm-world/ci/build-shard.sh \
+                --kind feature --id "$id" --pbf-url "$pbf_url" --md5-url "$md5_url"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "::error::shard $id failed after $attempt attempt(s)"
+                exit 1
+              fi
+              attempt=$((attempt + 1))
+              echo "::warning::shard $id failed, retrying (attempt $attempt/$max_attempts)"
+              sleep 10
+            done
+            echo "::endgroup::"
+          done

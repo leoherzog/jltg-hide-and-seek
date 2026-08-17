@@ -1702,6 +1702,12 @@ function synthArgv(opts) {
   if (typeof src === 'string' && src) argv.push(src);
   else if (src && typeof src === 'object' && src.name) argv.push(String(src.name));
   if (get(opts, 'useOsm') === false) argv.push('--no-osm');
+  // No such CLI flag — `generate.py` predates the world files — but §(b) asks what was
+  // asked for, not what a shell would accept, and "which copy of the map did these
+  // counts come from" is the single most load-bearing thing a reader can check when
+  // two runs of the same feed disagree. Echoed only when set, so the default run's
+  // argv is byte-identical to what it was before this option existed.
+  if (get(opts, 'worldBaseUrl')) argv.push('--world-base-url', String(opts.worldBaseUrl));
   if (get(opts, 'asOf')) argv.push('--as-of', String(opts.asOf));
   if (get(opts, 'sizeOverride')) argv.push('--size', String(opts.sizeOverride));
   if (nullish(get(opts, 'zoneRadiusM')) !== null) {
@@ -1748,29 +1754,22 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
     agencies = [{ name: feed.agencyName, url: feed.agencyUrl, timezone: feed.timezone }];
   }
 
+  // One row per category. The `nominatim` bucket that used to sit alongside this is
+  // gone: no provenance row starts with 'nominatim' any more, so the branch that
+  // filled it was unreachable and the array was always empty.
   const overpass = [];
-  const nominatim = [];
   const queries = (geo.queries || []).slice()
     .sort((a, b) => cmpStr(a.key, b.key) || cmpStr(a.cacheKey, b.cacheKey));
   for (const q of queries) {
-    if (q.key.startsWith('nominatim')) {
-      nominatim.push({
-        url: q.selector,
-        cacheKey: q.cacheKey,                       // cache_key
-        place: geo.admin.placeName,
-        countryCode: geo.admin.countryCode,         // country_code
-      });
-    } else {
-      overpass.push({
-        key: q.key,
-        selector: q.selector,
-        bbox: Array.from(q.bbox),
-        count: q.count,
-        cacheKey: q.cacheKey,
-        endpoint: q.endpoint,
-        partial: q.partial,
-      });
-    }
+    overpass.push({
+      key: q.key,
+      selector: q.selector,
+      bbox: Array.from(q.bbox),
+      count: q.count,
+      cacheKey: q.cacheKey,
+      endpoint: q.endpoint,
+      partial: q.partial,
+    });
   }
 
   const adminLevels = Object.create(null);
@@ -1793,7 +1792,6 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
     version: VERSION,
     argv: synthArgv(opts),
     overpass,
-    nominatim,
     osmAvailable: geo.available,                // osm_available
     osmNotes: Array.from(geo.notes || []),      // osm_notes
     adminLevels,                                // admin_levels

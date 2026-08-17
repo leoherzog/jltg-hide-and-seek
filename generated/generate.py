@@ -139,7 +139,7 @@ LLM_URL = "http://miniaturo.stingray-yo.ts.net:1234"
 LLM_MODEL = "google/gemma-4-12b-qat"
 
 # ── front-end chrome (copied verbatim from the hand-built drafts) ─────────────
-WA_KIT = "https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.10.0"
+WA_KIT = "https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0"
 MAPLIBRE_CSS = "https://cdn.jsdelivr.net/npm/maplibre-gl/dist/maplibre-gl.min.css"
 MAPLIBRE_JS = "https://cdn.jsdelivr.net/npm/maplibre-gl/+esm"
 TILES_LIGHT = "https://tiles.openfreemap.org/styles/positron"
@@ -974,7 +974,7 @@ class GridIndex:
 #     angle brackets.
 #   * Attribute values always go through `attrs()`, which escapes them.
 #
-# Only WebAwesome 3.10 components that the drafts already use (or that pages.md
+# Only WebAwesome 3.11 components that the drafts already use (or that pages.md
 # explicitly sanctions) get a helper. If there is no helper for it, it is not on
 # the sanctioned list — do not invent one.
 

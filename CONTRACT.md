@@ -10,8 +10,7 @@ comment of any field to find its Python original.
 
 **Scope.** `index.html`, plus `strategy.html` (S5, lines 13741–15653) as a **fragment-only
 second view of the same document** — §(g). S5 adds no worker stage, no `Report` field and no
-embedded JSON block; it is built from `state.report` in memory, and it is excluded from the
-"Save" download by `data-run-only`.
+embedded JSON block; it is built from `state.report` in memory.
 
 ---
 
@@ -23,7 +22,7 @@ embedded JSON block; it is built from `state.report` in memory, and it is exclud
 | No build | No bundler, no TypeScript, no npm runtime dep. Top-level `await` is fine. |
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
-| External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.10.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. All five are exported from `lib/core.js` as `WA_KIT`, `MAPLIBRE_JS`, `MAPLIBRE_CSS`, `TILES_LIGHT`, `TILES_DARK`. |
+| External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. Byte-identity with the Python CLI is *not* required. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. Use a plain `a < b ? -1 : a > b ? 1 : 0` comparator, never `localeCompare` (locale-dependent = non-deterministic). |
@@ -55,7 +54,8 @@ embedded JSON block; it is built from `state.report` in memory, and it is exclud
 | `gtfs/raptor.js` | GTFS agent | worker | `raptor`, `raptorReverse`, `buildJourney` |
 | `gtfs/network.js` | Network agent | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
 | `gtfs/infer.js` | Network agent | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
-| `osm/overpass.js` | OSM agent | worker | `overpassQL`, `overpassQuery`, `parseOverpass`, `tileBbox`, `nominatimReverse` |
+| `osm/flatgeobuf.js` | OSM agent | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
+| `osm/worldfile.js` | OSM agent | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
 | `osm/geodata.js` | OSM agent | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
 | `rules/catalogue.js` | Rules agent | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
 | `rules/audit.js` | Rules agent | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
@@ -68,7 +68,7 @@ SQM_PER_SQMI EARTH_R_M WALK_SPEED_MPS WALK_RADIUS_M WALK_CIRCUITY BOARD_SLACK_S
 MAX_TRANSFERS DEFAULT_DEPARTURE SERVICE_DAY_SECONDS HEADWAY_WINDOW MIDDAY_WINDOW
 EVENING_WINDOW FREQUENT_HEADWAY_MIN STATION_CLUSTER_M HUB_SNAP_M T90_ORIGIN_STRIDE
 RADAR_SAMPLE_PAIRS RADAR_DEAD_HIGH RADAR_DEAD_LOW SEEKER_SAMPLE_CAP
-SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN WA_KIT MAPLIBRE_CSS
+SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN
 MAPLIBRE_JS TILES_LIGHT TILES_DARK IMPERIAL_COUNTRIES`
 
 Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
@@ -102,19 +102,16 @@ Conventions:
 Transcribed here so nobody guesses (generate.py lines 127–139):
 
 ```js
-export const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-];
-export const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/reverse';
 export const HTTP_TIMEOUT_S = 300.0;
 export const HTTP_ATTEMPTS_PER_ENDPOINT = 2;
 export const HTTP_BACKOFF_S = 8.0;            // between attempts on the same endpoint
-export const OVERPASS_COURTESY_SLEEP_S = 3.0; // after every successful fetch
-export const NOMINATIM_COURTESY_SLEEP_S = 1.0;// Nominatim's hard limit is 1 req/s
-export const OVERPASS_WAY_BUDGET = 150000;    // above this, tile the bbox
 ```
+
+`httpFetch` now has exactly one caller — `gtfs/feed.js` downloading the feed zip. The
+Overpass endpoint list, the Nominatim endpoint, both courtesy sleeps and
+`OVERPASS_WAY_BUDGET` are **gone**: the OSM layer reads prebuilt FlatGeobuf world files
+over HTTP Range (`osm/flatgeobuf.js`), which calls `fetch` directly and touches neither
+`lib/http.js` nor the cache. See `tools/osm-world/README.md`.
 
 The LLM constants (`LLM_URL`, `LLM_MODEL`) and everything under `--llm` are **dropped** from
 the port.
@@ -380,21 +377,30 @@ by string; **iteration order is never significant** — sort the keys.
 
 /**
  * @typedef {Object} OverpassQueryRecord  // class OverpassQueryRecord, line 4604.
- * @property {string} key                             // key ('nominatim*' keys are routed to provenance.nominatim)
- * @property {string} selector                        // selector (for nominatim rows, the request URL)
+ * @property {string} key                             // key
+ * @property {string} selector                        // the Overpass QL that DEFINES the category. Retained
+ *                                                    //   deliberately: it is what the world-file build table was
+ *                                                    //   translated from, and a player can still re-run it.
  * @property {[number,number,number,number]} bbox     // bbox
  * @property {number} count                           // count
- * @property {string} cacheKey                        // cache_key
- * @property {string} endpoint                        // endpoint
- * @property {boolean} partial                        // partial — true when a size guard forced a degraded query
+ * @property {string} cacheKey                        // ALWAYS ''. Vestigial — kept so the record shape is stable.
+ * @property {string} endpoint                        // NOT a URL. A world-file description: layer, feature count,
+ *                                                    //   size, planet snapshot, sha256 prefix. See worldProvenance.
+ * @property {boolean} partial                        // TWO meanings now. (1) a size guard forced a degraded query,
+ *                                                    //   as before; (2) for the six density-grid categories, always
+ *                                                    //   true — the map-wide total is EXACT but the per-zone
+ *                                                    //   breakdown is approximate. See §(f) rule 3.
  */
 
 /**
  * @typedef {Object} AdminInfo       // class AdminInfo, line 4617.
  * The administrative-division ladder for this map. `ordinals` maps 1..4 → OSM
- * `admin_level`, DERIVED not guessed: Nominatim's `ISO3166-2-lvl<N>` key literally
- * encodes the country's first-division level, and ordinals 2–4 are the distinct levels
- * present across all zone centres above it. A missing ordinal is `null` and must render
+ * `admin_level`, DERIVED not guessed: the first-division level is the LOWEST
+ * `admin_level` in the map's `admin` layer carrying an `ISO3166-2` code — ISO 3166-2 is
+ * by definition the code of a country's principal subdivision — and ordinals 2–4 are the
+ * distinct levels present across all zone centres above it. This used to come from
+ * Nominatim's `ISO3166-2-lvl<N>` key; it is now read off the polygons instead of asked
+ * for, and no network service is consulted. A missing ordinal is `null` and must render
  * as "no Nth division here", never as a guessed level. Unknown country ⇒ every admin
  * question is `unknown`, NOT `dead`.
  * @property {string|null} countryCode                       // country_code — ISO-3166-1 alpha-2, lowercase
@@ -403,8 +409,20 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {Object<string, number|null>} ordinals          // ordinals — keys '1'..'4' as STRINGS
  * @property {Object<string, Object<string,string>>} perZone // per_zone — zoneId → ordinal('1'..'4') → division name
  * @property {Object<string, boolean>} borderLevels          // border_levels — ordinal → does a boundary line cross the map
- * @property {'nominatim'|'is_in'|'unknown'} source          // source
+ * @property {'world'|'unknown'} source                      // source — 'world' = the admin FlatGeobuf layer
  */
+```
+
+The world-file manifest may carry **`admin_source`** (`tools/osm-world/merge.py` writes
+`"overture"`; absent or `"osm"` means the admin layer is OSM boundary relations and the
+client behaves exactly as documented above). Under `"overture"` the admin layer's levels
+are SYNTHETIC — country=2, dependency=3, region=4, county=6, localadmin=7, locality=8,
+macrohood=9, neighborhood=10; ISO3166-1 appears only on levels 2–3, ISO3166-2 only on
+level 4 — and `adminInfo` consults `OVERTURE_ADMIN_ORDINAL_OVERRIDES` (osm/geodata.js)
+instead of `ADMIN_ORDINAL_OVERRIDES`. The two tables are never mixed: the numbers look
+like OSM `admin_level`s but do not mean the same thing.
+
+```js
 
 /**
  * @typedef {Object} LegalSpot       // one element of GeoData.legalSpots[zoneId]
@@ -412,7 +430,9 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {number} lat @property {number} lon
  * @property {number} weight         // category weight, halved when `verify` is true
  * @property {boolean} enclosed      // inside a park / an enclosing area feature
- * @property {boolean} verify        // restrictive opening_hours ⇒ "verify on the ground"
+ * @property {boolean} verify        // ALWAYS true. Restrictive opening_hours was one cause; the
+ *                                   //   "within 10 ft of a routable path" join that cleared the rest
+ *                                   //   is gone (no local equivalent), so every spot is unverified.
  * @property {string} osm            // '{osmType}/{osmId}'
  * @property {number} distanceM      // distance_m from the zone centre
  */
@@ -422,7 +442,7 @@ by string; **iteration order is never significant** — sort the keys.
  * ABSENT CATEGORIES ARE ABSENT KEYS, and that is load-bearing: a category that was never
  * queried and a category with zero features are different states all the way to the page.
  * Never conflate them.
- * @property {boolean} available                                   // available — false under !useOsm or total Overpass failure
+ * @property {boolean} available                                   // available — false under !useOsm, or when no world-file layer could be read
  * @property {[number,number,number,number]} bbox                  // bbox
  * @property {Object<string, Poi[]>} pois                          // pois — category key → features, sorted by (osmType, osmId)
  * @property {Object<string, number>} counts                       // counts — category key → in-border feature count
@@ -699,7 +719,6 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  * @property {string} generator @property {string} version
  * @property {string[]} argv                       // in the browser: a synthesised echo of the Options form
  * @property {OverpassQueryRecord[]} overpass      // sorted by (key, cacheKey)
- * @property {Array<{url:string,cacheKey:string,place:string|null,countryCode:string|null}>} nominatim
  * @property {boolean} osmAvailable @property {string[]} osmNotes
  * @property {Object<string, number|null>} adminLevels   // '1'..'4'
  * @property {string} adminSource
@@ -762,6 +781,7 @@ Ported from `class Options`, line 159. Dropped as meaningless in a browser: `out
  * @typedef {Object} Options
  * @property {File|string} source        // source — a File picked from disk, or a GTFS URL string
  * @property {boolean} useOsm            // use_osm (CLI `--no-osm` inverted)
+ * @property {string|null} worldBaseUrl  // where the prebuilt world files are served from; null = `DEFAULT_WORLD_BASE_URL` (osm/worldfile.js). No CLI equivalent — the CLI predates the world files.
  * @property {string|null} asOf          // as_of — 'YYYYMMDD', clamped into the feed window
  * @property {'small'|'medium'|'large'|null} sizeOverride // size
  * @property {number|null} zoneRadiusM   // zone_radius_m — metres
@@ -780,6 +800,7 @@ Ported from `class Options`, line 159. Dropped as meaningless in a browser: `out
 export const DEFAULT_OPTIONS = {
   source: '',
   useOsm: true,
+  worldBaseUrl: null,      // resolved to DEFAULT_WORLD_BASE_URL by worker.js, not here
   asOf: null,
   sizeOverride: null,
   zoneRadiusM: null,
@@ -798,7 +819,9 @@ export const DEFAULT_OPTIONS = {
 
 Normalisation the main thread performs before posting (mirrors `parse_args`):
 `departure` gains `':00'` when it has only one colon; `excludeStops` / `excludeRoutes` are
-sorted and deduped; `borderBbox` must be exactly four numbers or it is an error.
+sorted and deduped; `borderBbox` must be exactly four numbers or it is an error;
+`worldBaseUrl` must parse as an http(s) URL or it is an error, and loses any trailing
+slashes (`openWorld` joins with one of its own).
 `source` is carried in the `file` / `url` fields of the `run` message, not inside `options`
 (a `File` is clone-safe, but keeping the two apart makes the protocol readable).
 
@@ -909,7 +932,7 @@ options object. Python's `class_` becomes `className`. Python's `void()` is rena
 * `esc()` is the only way text becomes markup. There is no "I know this is safe" exception
   — feed data contains apostrophes, ampersands and, in the wild, angle brackets.
 * Attribute values always go through `attrs()`, which escapes them.
-* Only WebAwesome 3.10 components with a helper below are sanctioned. If there is no helper
+* Only WebAwesome 3.11 components with a helper below are sanctioned. If there is no helper
   for it, do not invent one.
 
 ```js
@@ -1027,9 +1050,13 @@ else:
 
 Rules that follow from it, and that every module must obey:
 
-1. **Overpass failure is not fatal.** The run continues with `geo.available === false`,
-   empty containers, and a degradation string. `--no-osm` (`options.useOsm === false`) is
-   the same path with a different note.
+1. **A failed map-file read is not fatal.** The run continues with
+   `geo.available === false`, empty containers, and a degradation string. `--no-osm`
+   (`options.useOsm === false`) is the same path with a different note. The trigger used
+   to be an Overpass failure; it is now `collectGeodata` finding that *not one*
+   world-file layer could be read. One unreadable layer degrades that category alone —
+   throwing on the first failure would turn a single missing layer into a dead OSM
+   section, which is the bug that shape exists to avoid.
 2. **Any module receiving an unavailable `GeoData` must return partial results, never
    throw.** Concretely:
    * `auditQuestions` — every OSM-backed question gets `status: 'unknown'` (never `'dead'`,
@@ -1047,6 +1074,17 @@ Rules that follow from it, and that every module must obey:
 3. **Absent ≠ zero.** In `GeoData.counts` / `zoneInventory`, a category that was never
    queried is an **absent key**; a category with zero features is a key with value `0`.
    Never conflate them, all the way to the page.
+
+   **A third state exists since the world-file migration, and it is not either of those.**
+   The six density-grid categories — `building`, `street`, `car_street`, `footpath`,
+   `bridge`, `tree` — are counted but never materialised as features. On every successful
+   run `counts[key]` holds a real, map-wide-**exact** number while `pois[key]` is
+   **permanently absent**, because no `Poi[]` is ever built for them. Before the
+   migration those two keys appeared and disappeared together; they no longer do, and
+   code that infers "not queried" from an absent `pois` key is wrong for these six.
+   Their `zoneInventory` entries are present but **approximate** — a grid cell is
+   attributed to whichever zone circle contains its centre — which is why they are also
+   unconditionally `partial: true`. See `tools/osm-world/README.md`.
 4. **The single service-day degradation.** Fewer than two day types ⇒
    `"single service-day type: no weekend variation in this feed"`. §06 still renders.
 5. Every `degraded` message the worker posts is also appended to `Report.degradations`, so
@@ -1076,8 +1114,8 @@ only ever visible to someone already inside it.
 | Sticky offsets | The report's 7rem clears the header **and** the `[slot='subheader']` strip; the strip is `data-when="report"` and hidden here, so the guide's stack is the header alone. `--s-sticky` is set once on the root under `html:has(body[data-view='strategy'])`, carries the `scroll-padding-top` and inherits into `#s-controls` and `#s-detail`. Do not restate the report's numbers in this view. |
 | Landmark and focus | The guide root carries `role="main"` — the report's `<main>` is `display: none` while the guide is up, and `wa-page` supplies no landmark of its own, so without it the whole view sits outside every landmark region. There is no collision: a hidden element is not in the accessibility tree. `applyRoute` also moves focus to the root (`tabindex="-1"`, `preventScroll`) and `leaveStrategy` mirrors it onto `#top`, because a view swap with a new `document.title` otherwise drops focus to `<body>` silently. Both scrolls are queued **two** frames out, so they land after `PAGE_RUNTIME_JS`'s still-live `openTargeted`, which is bound to the same `hashchange` and would otherwise re-scroll the root to `block: 'center'`. |
 | Not a section | The root is not an entry in `SECTIONS`, so `hydrate`, `mountSection`, `dropSection`, `renumberSections` and `pruneNav` never see it. Its five sections pass the **literal** ordinals `'01'`…`'05'`, never `'--'` — `renumberSections` strips the attribute from every remaining `[data-n='--']` in the document. It carries no `data-state`, so `fatalError`'s `[data-state='skeleton']` sweep cannot take it either. |
-| Mount point | Inside `<wa-page>`, as a sibling of `<main>`, so it inherits the page gutter and the `--content-width` cap — and so it sits inside the node `buildStandalonePage()` clones. |
-| Download exclusion | The root carries **`data-run-only`**, already in `buildStandalonePage`'s strip selector alongside `#landing` / `#runprogress` / `#download`. **No selector change was needed** for the markup — but the markup is only half of it: `inlineStyles()` also cuts the guide's CSS out of the sheet it embeds, between the two sentinels described below, because a stylesheet naming `#s-map` and `body[data-view='strategy']` discloses the guide as surely as its markup would. Nothing is added to the JSON `blocks` array (the view ships no JSON block at all) and nothing is added to `PAGE_RUNTIME_JS`, whose source string is written verbatim into the saved file and must never learn the view exists. The saved `<title>` is built from `report.place`, not from `document.title`, so the guide's title swap cannot leak either. |
+| Mount point | Inside `<wa-page>`, as a sibling of `<main>`, so it inherits the page gutter and the `--content-width` cap. |
+| Kept out of the ported runtime | Nothing about this view is added to `PAGE_RUNTIME_JS`, whose source string is a verbatim port of the CLI's page JS and must stay diffable against it. The view ships no JSON block at all, so nothing is added to the blocks written by `writeDataBlocks` either. Its wiring lives in module code (`render/simulator.js`, `initStrategy`), which is where anything the CLI does not have belongs. |
 | Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the CLI's simulator never consumed it either — it recomputes answers client-side by haversine (`answerFor`, line 14942). `report.geo.pois` crosses `postMessage` whole and is richer than the CLI's `[lon, lat, name]` triples. |
 | Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. The CLI's bare ids collide in a single document: `#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion, `#zmap`/`#ztable` with nothing yet but by luck. The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
 | Controls | The three mutually-exclusive rows — `#s-modes` (question mode), `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same native pair `s4ChipGroup` (`render/map.js` 169) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` itself cannot be reused because it has no way to disable an option. A dead option is a `disabled` radio **and** a printed reason — a disabled control is not focusable, so a `title` on one is reachable by hovering with a pointer and by nothing else. Never express the selection by rewriting `appearance`. |
@@ -1128,15 +1166,11 @@ control-bar rule of `generate.py:1625` had lost `#zcontrols` (now `#s-controls`)
 `[data-band='fair']` had been collapsed onto `good`'s colour, rendering a five-band scale
 in three colours — it gets `--warn` back, as `generate.py:15526` gives it.
 
-### The stylesheet is partitioned, and the partition is load-bearing
+### The stylesheet is partitioned
 
 The CLI writes two files with two stylesheets (`INDEX_CSS` 10527, `STRATEGY_CSS` 1674;
 the note at 1449 is explicit that shipping one into the other was ~19 rules that could
 never match). One document cannot do that, so `styles.css` carries the guide's rules in
-a span delimited by the literal sentinels `/* == STRATEGY-CSS-START` and
-`/* == STRATEGY-CSS-END`, and `inlineStyles()` (`app.js`) cuts that span out before it
-embeds the sheet in the download. **The Save download must never contain a rule naming
-`strategy`, `#s-map`, `#s-controls`, `#s-detail`, `#s-table` or the marker data
-attributes** — a stylesheet describing the guide's DOM discloses the guide as surely as
-the markup would, and stripping `[data-run-only]` from the clone only handles the markup
-half. New guide CSS goes inside the sentinels; nothing the report needs goes there.
+a span delimited by the `/* == STRATEGY CSS` and `/* == END STRATEGY CSS` markers. The
+markers are a boundary for readers — nothing parses them — but the partition still holds:
+new guide CSS goes inside them, and nothing the report needs goes there.

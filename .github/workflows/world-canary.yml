@@ -1,0 +1,244 @@
+# .github/workflows/world-canary.yml — spike S3 (see tools/osm-world/PLAN.md §Phase 4
+# and §Open questions/spikes).
+#
+# S3's question: "one ~1 GB shard on an actual Actions runner (time, disk headroom)"
+# decides the CI cost model that world-density-shards.yml and world-feature-shards.yml
+# are sized against (their comments cite the *estimates* this canary is meant to
+# replace with measurements). This is the workflow to run FIRST, by hand, before
+# trusting either scheduled workflow's timeout/disk assumptions.
+#
+# Scope is deliberately narrow: ONE shard, full pipeline (feature layers + density,
+# i.e. no --skip-density / --only), no R2 upload (no secrets required to run this at
+# all — it uploads its output as a workflow artifact instead, so anyone with repo
+# write access can dispatch it without R2 credentials being minted first). The merge
+# step (tools/osm-world/merge.py) is out of scope everywhere in Phase 4 CI — PLAN.md
+# is explicit that merge does not fit a runner and runs by hand on kadro.
+#
+# NOT verified by running this file: I (the authoring agent) cannot execute GitHub
+# Actions from here. Syntax was checked with PyYAML (see the task's closing report);
+# behavior — wall clock, RSS, disk headroom, whether ubuntu-latest's apt gdal-bin is
+# new enough for build.py's preflight() — is NOT verified and is exactly what
+# dispatching this workflow for real is for.
+
+name: world-canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard_id:
+        description: >-
+          Shard id from tools/osm-world/shards.json's "coarse" array to use, e.g.
+          "europe/austria". Leave blank to auto-pick the first coarse shard at or
+          under ~1.2 GB est_bytes, or fall back to the hardcoded default below if
+          shards.json is not present yet (cover.py, Phase 3, may not have run).
+        required: false
+        default: ""
+
+# Runs by hand only, one at a time is plenty for a spike.
+concurrency:
+  group: world-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    # Generous vs. the ~1 GB shard this targets — S3 exists to find the real number.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── toolchain ────────────────────────────────────────────────────────────
+      # build.py's own preflight() hard-fails on GDAL < 3.5 (needs the FlatGeobuf
+      # writer's default spatial index) rather than silently shipping an unindexed
+      # file — so a too-old apt gdal-bin here shows up as a clear build.py error,
+      # not a mystery. Ubuntu 24.04 (ubuntu-latest as of writing) ships GDAL 3.8+.
+      - name: install osmium-tool, gdal, uv
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin time
+          python3 -m pip install --user --upgrade uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: pick shard
+        id: pick
+        env:
+          SHARD_ID_INPUT: ${{ github.event.inputs.shard_id }}
+        run: |
+          set -euo pipefail
+          # Fallback if shards.json (cover.py output, Phase 3) isn't in the repo yet,
+          # or names an id that no longer resolves: a real, small, stable Geofabrik
+          # extract. ~1 GB-ish as of writing; re-check size if this starts drifting.
+          FALLBACK_ID="europe/austria"
+          FALLBACK_PBF="https://download.geofabrik.de/europe/austria-latest.osm.pbf"
+          FALLBACK_MD5="https://download.geofabrik.de/europe/austria-latest.osm.pbf.md5"
+
+          SHARDS_JSON="tools/osm-world/shards.json"
+          id="$SHARD_ID_INPUT"
+          pbf_url=""
+          md5_url=""
+
+          if [ -f "$SHARDS_JSON" ]; then
+            if [ -n "$id" ]; then
+              read -r pbf_url md5_url < <(
+                jq -r --arg id "$id" \
+                  '.coarse[] | select(.id == $id) | "\(.pbf_url) \(.md5_url)"' \
+                  "$SHARDS_JSON"
+              ) || true
+            else
+              # Closest coarse shard to ~1 GB, per S3's brief.
+              read -r id pbf_url md5_url < <(
+                jq -r '
+                  .coarse
+                  | map(select(.est_bytes != null))
+                  | sort_by((.est_bytes - 1073741824) | if . < 0 then -. else . end)
+                  | .[0]
+                  | "\(.id) \(.pbf_url) \(.md5_url)"
+                ' "$SHARDS_JSON"
+              ) || true
+            fi
+          fi
+
+          if [ -z "${pbf_url:-}" ] || [ -z "${md5_url:-}" ]; then
+            echo "::notice::shards.json missing/stale for '$id' — using hardcoded fallback $FALLBACK_ID"
+            id="$FALLBACK_ID"
+            pbf_url="$FALLBACK_PBF"
+            md5_url="$FALLBACK_MD5"
+          fi
+
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          # Artifact names may not contain '/', and shard ids do (the fallback
+          # "europe/austria" included) — sanitize with the same '/' -> '__'
+          # mapping cover-geometries/ uses for filenames.
+          echo "id_safe=${id//\//__}" >> "$GITHUB_OUTPUT"
+          echo "pbf_url=$pbf_url" >> "$GITHUB_OUTPUT"
+          echo "md5_url=$md5_url" >> "$GITHUB_OUTPUT"
+          echo "picked $id -> $pbf_url" >&2
+
+      - name: download + verify
+        id: fetch
+        env:
+          PBF_URL: ${{ steps.pick.outputs.pbf_url }}
+          MD5_URL: ${{ steps.pick.outputs.md5_url }}
+        run: |
+          set -euo pipefail
+          # Same redirect caveat as build-shard.sh: Geofabrik's .md5 302s to a
+          # dated filename, so compare hashes by hand, never `md5sum -c`.
+          curl -fL --retry 5 --retry-connrefused -o shard.osm.pbf "$PBF_URL"
+          expected="$(curl -fL --retry 5 --retry-connrefused "$MD5_URL" | awk '{print $1}')"
+          got="$(md5sum shard.osm.pbf | awk '{print $1}')"
+          if [ "$got" != "$expected" ]; then
+            echo "::error::md5 mismatch: expected $expected got $got"
+            exit 1
+          fi
+          echo "md5 ok ($got)"
+          echo "bytes=$(stat -c%s shard.osm.pbf)" >> "$GITHUB_OUTPUT"
+
+      - name: disk high-water monitor (background)
+        run: |
+          set -euo pipefail
+          # Each `run:` step is its own shell process, so a plain `&` background job
+          # risks a SIGHUP when THIS step's shell exits before the build step (the
+          # next `run:` block) is even started. A script file + nohup + disown +
+          # closed stdin makes it survive across steps on the same runner VM;
+          # killed explicitly in "stop disk monitor" rather than relying on the
+          # job ending on its own.
+          cat > disk-monitor.sh <<'MONEOF'
+          #!/usr/bin/env bash
+          echo "elapsed_s,avail_kb"
+          start=$SECONDS
+          while true; do
+            avail=$(df -Pk "$1" | awk 'NR==2{print $4}')
+            echo "$((SECONDS - start)),$avail"
+            sleep 5
+          done
+          MONEOF
+          chmod +x disk-monitor.sh
+          nohup ./disk-monitor.sh "$GITHUB_WORKSPACE" \
+            < /dev/null > disk-samples.csv 2> disk-monitor.err &
+          disown
+          echo $! > disk-monitor.pid
+
+      - name: "build (full pipeline: feature layers + density)"
+        run: |
+          set -euo pipefail
+          # No --skip-density, no --only: this is the end-to-end pipeline S3 asks
+          # about, not the density-only / feature-only subsets the two scheduled
+          # workflows use per-shard. No --upload: no R2 secrets in this workflow at
+          # all (see header) — output is picked up as a build artifact below.
+          /usr/bin/time -v uv run tools/osm-world/build.py \
+            --planet shard.osm.pbf \
+            --no-fetch \
+            --no-update \
+            --skip-md5 \
+            --out build/world \
+            --work build/work \
+            --force \
+            2> time.log | tee build.log
+          cat time.log
+
+      - name: stop disk monitor
+        if: always()
+        run: |
+          kill "$(cat disk-monitor.pid)" 2>/dev/null || true
+          wait "$(cat disk-monitor.pid)" 2>/dev/null || true
+
+      - name: summarize
+        if: always()
+        env:
+          SHARD_ID: ${{ steps.pick.outputs.id }}
+          SHARD_BYTES: ${{ steps.fetch.outputs.bytes }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## world-canary — $SHARD_ID"
+            echo
+            echo "shard source: $((SHARD_BYTES / 1000000)) MB"
+            echo
+            echo "### /usr/bin/time -v"
+            echo '```'
+            grep -E \
+              "Elapsed \(wall clock\)|Maximum resident set size|Percent of CPU|Major .*page faults|File system inputs|File system outputs" \
+              time.log || echo "(time.log not found — build likely failed before completion)"
+            echo '```'
+            echo
+            echo "### disk headroom on \$GITHUB_WORKSPACE over the run"
+            if [ -s disk-samples.csv ]; then
+              min_avail_kb=$(tail -n +2 disk-samples.csv | awk -F, 'NR==1{m=$2} {if($2<m)m=$2} END{print m}')
+              start_avail_kb=$(sed -n '2p' disk-samples.csv | cut -d, -f2)
+              echo "- starting free: $((start_avail_kb / 1024)) MB"
+              echo "- minimum free observed (5s polling — a sharper spike can hide between samples): $((min_avail_kb / 1024)) MB"
+              echo "- high-water disk USE = starting free − minimum free ≈ $(( (start_avail_kb - min_avail_kb) / 1024 )) MB"
+            else
+              echo "(no samples captured)"
+            fi
+            echo
+            echo "### build.py summary line"
+            echo '```'
+            tail -n 5 build.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: stage one layer for the artifact
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          cp build/world/manifest.json artifact/ 2>/dev/null || echo "::warning::no manifest.json — build likely failed"
+          # Exactly "one layer" per the task brief, not all 30+: the smallest .fgb,
+          # since the point is eyeballing output shape, not shipping the shard.
+          smallest="$(ls -S build/world/*.fgb 2>/dev/null | tail -n 1 || true)"
+          if [ -n "$smallest" ]; then
+            cp "$smallest" artifact/
+          else
+            echo "::warning::no .fgb layer found to attach"
+          fi
+
+      - name: upload manifest + one layer as artifact (NOT R2)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-canary-${{ steps.pick.outputs.id_safe }}
+          path: artifact/
+          retention-days: 14
+          if-no-files-found: warn

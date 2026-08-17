@@ -21,7 +21,7 @@
  */
 
 import {
-  WA_KIT, MAPLIBRE_CSS, MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
+  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
   IMPERIAL_COUNTRIES, DEFAULT_DEPARTURE, BOARD_SLACK_S,
   num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
 } from './lib/core.js';
@@ -57,6 +57,12 @@ const ORDINAL_PLACEHOLDER = '--';
 /** `class Options` (line 159), minus everything meaningless in a browser. */
 const DEFAULT_OPTIONS = Object.freeze({
   useOsm: true,
+  // An override, and null is the whole of its default. The published bucket is named
+  // once, in `osm/worldfile.js`'s `DEFAULT_WORLD_BASE_URL`, and this file does not
+  // import it: doing so would pull the world-file reader and the FlatGeobuf decoder
+  // onto the main thread to read one string, when the only code that opens a world is
+  // in the worker. Null travels to `worker.js`, which resolves it.
+  worldBaseUrl: null,
   asOf: null,
   sizeOverride: null,
   zoneRadiusM: null,
@@ -111,24 +117,23 @@ const NUMBERED = ['verdict', 'trace', 'yourgame', 'numbers', 'network', 'transit
 /**
  * What each stage is actually doing, in words a waiting human can act on.
  *
- * A cold run with OSM is about eight minutes and almost all of it is spent waiting on
- * shared Overpass mirrors. Four minutes of an unchanged label reads as a hang, so the
- * geo stages say what they are waiting for *and why it is slow*.
+ * No stage waits on a shared, rate-limited service any more — GEO reads the prebuilt
+ * world files — but a cold run still has quiet stretches: the feed unzip, RAPTOR over
+ * every stop, the first range reads of a map. An unchanged label reads as a hang, so
+ * each note says what the stage is doing and, where it matters, why it takes as long
+ * as it does.
  */
 const STAGE_NOTE = {
   feed: 'Downloading and unzipping the GTFS feed.',
   days: 'Working out which service days this feed actually distinguishes.',
   network: 'Running RAPTOR over every stop and covering the map in hiding zones.',
-  geo: 'Querying OpenStreetMap through the public Overpass mirrors. These are shared, '
-    + 'rate-limited volunteer servers and this is by far the slowest part of the run — '
-    + 'several minutes is normal, and the page waits rather than guessing at the answer.',
+  geo: 'Reading the prebuilt OpenStreetMap files. Only the bytes covering this map are '
+    + 'fetched, using HTTP range requests against a spatial index, so this is now one of '
+    + 'the quicker stages rather than the slowest.',
   rules: 'Auditing all 80 questions and 24 curses against this map.',
   score: 'Scoring the city out of 100 and ranking the hiding zones.',
   provenance: 'Collecting the receipts.',
 };
-
-/** The `--` placeholder the download's filename falls back to. */
-const FALLBACK_PLACE = 'this-map';
 
 /**
  * The only door to S5.
@@ -266,18 +271,12 @@ function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-/** A file-name-safe slug. Deterministic: no locale, no clock. */
-function slug(text) {
-  const s = String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return s || FALLBACK_PLACE;
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Boot
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Wire the landing form, the download button and the progress readout, then wait.
+ * Wire the landing form and the progress readout, then wait.
  * Nothing runs until the user hands over a feed.
  */
 export function boot() {
@@ -309,14 +308,6 @@ export function boot() {
   // report the fallback is the landing form — silently, which is the point.
   window.addEventListener('hashchange', applyRoute);
   applyRoute();
-  const dl = pick('#download', '[data-role="download"]');
-  if (dl) {
-    dl.addEventListener('click', (event) => {
-      event.preventDefault();
-      downloadReport();
-    });
-    dl.setAttribute('disabled', '');
-  }
   setProgress({ stage: '', label: 'Waiting for a feed', done: 0, total: 0 });
 }
 
@@ -438,6 +429,27 @@ function readOptions(form) {
 
   const noOsm = readControl(form, 'noOsm');
   if (typeof noOsm === 'boolean') options.useOsm = !noOsm;
+
+  // Validated here rather than in the worker for the same reason every other field
+  // is: a bad value should come back as a sentence under the form, not as a failed
+  // fetch four stages in. Trailing slashes come off here even though `openWorld`
+  // strips them again — this is the string §(b) echoes into the provenance argv, and
+  // two runs of the same bucket typed with and without one must not read as two
+  // different sources.
+  const worldBaseUrl = orNull(readControl(form, 'worldBaseUrl'));
+  if (worldBaseUrl !== null) {
+    let parsed = null;
+    try {
+      parsed = new URL(worldBaseUrl);
+    } catch {
+      errors.push('The map file base URL is not a URL. It needs to start with https://');
+    }
+    if (parsed && parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      errors.push('The map file base URL has to be http:// or https://');
+    } else if (parsed) {
+      options.worldBaseUrl = worldBaseUrl.replace(/\/+$/, '');
+    }
+  }
 
   const asOf = orNull(readControl(form, 'asOf'));
   if (asOf !== null) {
@@ -700,10 +712,12 @@ function enterRunningState(src) {
 /**
  * Say how long the current step has been running.
  *
- * Overpass is a shared volunteer service and a single query can sit for minutes. The
- * pipeline is deterministic and reads no clock; this is page chrome, it is stripped
- * from the downloaded file, and nothing it prints reaches the report. Silence for
- * four minutes reads as a hang, and a hang is the one thing this run is not.
+ * The pipeline is deterministic and reads no clock; this is page chrome, and nothing
+ * it prints reaches the report. It exists because a stage can still go quiet for
+ * longer than a reader will sit still — RAPTOR over a large feed, or a cold map whose
+ * world-file reads are ~40 MB on a slow link — and an unchanging label reads as a
+ * hang, which is the one thing this run is not. Nothing is printed for the first 30 s,
+ * so a warm run never shows it at all.
  */
 function startHeartbeat() {
   if (state.heartbeat) return;
@@ -911,8 +925,6 @@ function finish(report) {
   // alternative is a page stuck behind the running-state chrome.
   setShellState('ready');
   setProgress({ stage: 'done', label: 'Report complete', done: 1, total: 1 });
-  const dl = pick('#download', '[data-role="download"]');
-  if (dl) dl.removeAttribute('disabled');
   if (state.worker) {
     state.worker.terminate();
     state.worker = null;
@@ -1325,7 +1337,7 @@ function fatalError(stage, message) {
     // The shell has a place for this. Use it, and clear away the skeletons that are
     // never going to fill — a stopped run must not leave nine shimmering cards
     // implying work is still happening.
-    slot.innerHTML = el('div', card, { className: 'wa-stack wa-gap-l', dataRunOnly: true });
+    slot.innerHTML = el('div', card, { className: 'wa-stack wa-gap-l' });
     slot.hidden = false;
     for (const husk of [...document.querySelectorAll('[data-state="skeleton"]')]) {
       const id = husk.getAttribute('data-section');
@@ -1400,20 +1412,6 @@ function bestDay(report) {
   const keys = dayOrder(report);
   if (keys.includes(report.selectedDay)) return report.selectedDay;
   return keys.length ? keys[0] : 'weekday';
-}
-
-/**
- * Questions that actually function: functional plus weak. `unaskable` is not counted
- * either, but nothing emits it any more — `rules/audit.js` scores Transit Line like
- * every other matching question. Kept byte-for-byte in step with
- * `render/verdict.js`'s `s4LiveQuestions`, which is the same count.
- */
-function liveQuestions(report) {
-  return (report.questions || []).filter((q) => q.status === 'functional' || q.status === 'weak').length;
-}
-
-function removedCurses(report) {
-  return (report.curses || []).filter((c) => c.action === 'remove');
 }
 
 /**
@@ -1642,8 +1640,8 @@ function tilesHtmlFor(report, dayKey) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // One block per concern, so a page that only wants the verdict never parses the stop
-// list. The blocks are written into the live DOM — not just into the download —
-// because the map and the day switcher read them exactly the way the CLI's page does.
+// list. The blocks are written into the live DOM because the map and the day switcher
+// read them exactly the way the CLI's page does.
 
 /** Above this the map draws zone centres only. (`_S4_MAX_MAP_STOPS`.) */
 const MAX_MAP_STOPS = 5000;
@@ -1853,7 +1851,7 @@ function stopsPayload(report) {
 /**
  * Write (or rewrite) the five JSON blocks into the live DOM.
  *
- * They are written as `<script type="application/json">` so the downloaded page is
+ * They are written as `<script type="application/json">` so the page is
  * self-describing, and so the map, the day switcher and the table filters read their
  * data through exactly the same door the CLI's page uses.
  */
@@ -1990,16 +1988,15 @@ function mountDayChrome() {
 //     never re-rendered, never torn down. No listener is dropped, `#netmap` keeps its
 //     MapLibre instance, and coming back is free.
 //   * The route is **module code**, deliberately. `PAGE_RUNTIME_JS` already has a
-//     `hashchange` listener (`openTargeted`), and that source string is written
-//     verbatim into the downloaded file — so it must never learn that this view
-//     exists. The listener below lives here, where the download cannot reach it.
+//     `hashchange` listener (`openTargeted`), and that source string is a verbatim
+//     port of the CLI's page JS — it must stay one, so it never learns that this view
+//     exists. The listener below lives here, outside the ported text.
 
 /**
  * Build the guide once and insert it inside `<wa-page>`, as a sibling of `<main>`.
  *
  * Sibling-of-`main` is what makes it inherit the page gutter and the `--content-width`
- * cap; child-of-`wa-page` is what puts it inside the clone `buildStandalonePage()`
- * takes — which is exactly where it needs to be for `data-run-only` to strip it.
+ * cap.
  *
  * @returns {HTMLElement|null} the `#strategy` root, or null when there is nothing to
  *   render (no zones, or the renderer threw). Callers gate on `state.finished`.
@@ -2066,11 +2063,11 @@ function applyRoute() {
     }
     // Two frames, not one, and a focus move.
     //
-    // The page runtime's `openTargeted` is live in this document, not only in the
-    // download, and it is bound to `hashchange` too — it resolves `#strategy` to this
-    // very element and scrolls it `block: 'center'`, which on a many-screen root lands
-    // the reader in the middle of the guide. `applyRoute` is bound first, so a single
-    // rAF here is queued first and loses; a second frame puts this last.
+    // The page runtime's `openTargeted` is live in this document and is bound to
+    // `hashchange` too — it resolves `#strategy` to this very element and scrolls it
+    // `block: 'center'`, which on a many-screen root lands the reader in the middle of
+    // the guide. `applyRoute` is bound first, so a single rAF here is queued first and
+    // loses; a second frame puts this last.
     //
     // The focus move is the other half: this is a whole-document view change with a
     // new `document.title`, and everything that had focus is inside the subtree the
@@ -2117,9 +2114,9 @@ function leaveStrategy() {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // A verbatim port of `SHARED_PAGE_JS` (line 1754) and `_S4_INDEX_JS` (line 13048),
-// kept as one source string for one reason: this exact text is what the downloaded
-// file gets, so the artifact a reader saves behaves identically to the page they saw.
-// Maintaining a second, "live" copy in module code would guarantee the two drift.
+// kept as one source string so it stays diffable against the CLI's own text. Rewriting
+// it as module code would let the browser port drift from `generate.py`'s output
+// silently, which is the one thing a port must not do.
 //
 // Two changes from the CLI's copy, both forced by progressive hydration:
 //   * every binding is idempotent — nodes are stamped `data-bound`, one-shot
@@ -2739,10 +2736,10 @@ function pageRuntimeSource() {
  * Run the page runtime against whatever is currently in the DOM.
  *
  * Injected as an inline module rather than imported, for the same reason the CLI
- * inlines it: this is the code path the downloaded file takes, and running it here
- * means the live page and the saved page cannot behave differently. Every binding it
- * makes is idempotent, so re-running it after a later section lands is safe and
- * cheap; the map, in particular, is built once and never rebuilt.
+ * inlines it: running the ported source string is what keeps this page and
+ * `generate.py`'s output the same code path. Every binding it makes is idempotent, so
+ * re-running it after a later section lands is safe and cheap; the map, in
+ * particular, is built once and never rebuilt.
  *
  * It is not run before `#data` and `#stops` exist — `network` is the first stage that
  * gives the map a border, a hub and a stop list.
@@ -2757,198 +2754,9 @@ function injectRuntime() {
   if (spent) spent.remove();
   const script = document.createElement('script');
   script.type = 'module';
-  script.setAttribute('data-run-only', '');
   script.setAttribute('data-jltg-runtime', '');
   script.textContent = pageRuntimeSource();
   document.body.appendChild(script);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Download
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * The colour-scheme script, verbatim from `COLOR_SCHEME_JS` (line 1728).
- *
- * `id="color-scheme-button"` must not change — this binds it unguarded.
- */
-const COLOR_SCHEME_JS = String.raw`/* ---- colour scheme: WA classes, host data-theme, OS preference, localStorage ---- */
-function applyScheme(dark) { document.documentElement.classList.toggle('wa-dark', dark);
-                             document.documentElement.classList.toggle('wa-light', !dark); }
-function getPreferredScheme() {
-  const host = document.documentElement.dataset.theme;          /* artifact-viewer handoff */
-  if (host === 'dark') return true;
-  if (host === 'light') return false;
-  let saved = null; try { saved = localStorage.getItem('wa-color-scheme'); } catch (e) {}
-  if (saved !== null) return saved === 'dark';
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
-}
-applyScheme(getPreferredScheme());
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-  let saved = null; try { saved = localStorage.getItem('wa-color-scheme'); } catch (err) {}
-  if (!saved && !document.documentElement.dataset.theme) applyScheme(e.matches);
-});
-new MutationObserver(() => applyScheme(getPreferredScheme()))
-  .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-document.getElementById('color-scheme-button').addEventListener('click', () => {
-  const toDark = !document.documentElement.classList.contains('wa-dark');
-  applyScheme(toDark);
-  try { localStorage.setItem('wa-color-scheme', toDark ? 'dark' : 'light'); } catch (e) {}
-});`;
-
-/**
- * The secret view's half of `styles.css`, delimited in the sheet itself.
- *
- * The download is report-only, and that has to hold for the CSS as much as for the
- * markup: a stylesheet carrying `body[data-view='strategy']`, `#s-map`, `#s-controls`
- * and the marker attributes would announce the guide's existence and hand over its
- * whole DOM contract, which is exactly what stripping `[data-run-only]` from the
- * markup is for. `generate.py` gets this for free by writing two files with two
- * stylesheets (`INDEX_CSS` 10527 vs `STRATEGY_CSS` 1674, note at 1449); one document
- * has to cut the span out on the way past.
- */
-const STRATEGY_CSS_START = '/* == STRATEGY-CSS-START';
-const STRATEGY_CSS_END = '/* == STRATEGY-CSS-END';
-
-/** Everything between the two sentinels, inclusive, replaced by nothing. */
-function stripStrategyCss(css) {
-  const from = css.indexOf(STRATEGY_CSS_START);
-  if (from === -1) return css;
-  const mark = css.indexOf(STRATEGY_CSS_END, from);
-  // A start with no end means the sheet was edited into a shape this cannot read.
-  // Cutting to the end of the file is the safe direction: the report loses rules it
-  // may want, rather than the download keeping rules it must not have.
-  const to = mark === -1 ? css.length : css.indexOf('*/', mark) + 2;
-  return css.slice(0, from) + css.slice(to < 2 ? css.length : to);
-}
-
-/** The page's own stylesheet, inlined so the saved file needs nothing local. */
-async function inlineStyles() {
-  const links = [...document.querySelectorAll('link[rel="stylesheet"]')]
-    .map((l) => l.getAttribute('href'))
-    .filter((h) => h && !/^https?:/i.test(h));
-  const parts = [];
-  for (const href of links) {
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      const res = await fetch(href);
-      // eslint-disable-next-line no-await-in-loop
-      if (res.ok) parts.push(await res.text());
-    } catch {
-      parts.push(`/* ${href} could not be inlined */`);
-    }
-  }
-  if (!parts.length) {
-    for (const style of document.querySelectorAll('style')) parts.push(style.textContent || '');
-  }
-  return parts.map(stripStrategyCss).join('\n');
-}
-
-/** `_s4_live_questions` / `_s4_removed_curses`, for the `<meta description>`. */
-function pageDescription(report) {
-  const place = report.place || report.feed.agencyName;
-  const size = report.size;
-  const f = report.fitness;
-  return `Is ${place}'s transit system a good map for Jet Lag: The Game's Hide+Seek? `
-    + `${num((report.zones || []).length)} hiding zones, `
-    + `${num(liveQuestions(report))} of ${num((report.questions || []).length)} questions live, `
-    + `${num(removedCurses(report).length)} curses to remove`
-    + (f && f.score !== null ? `, rated ${num(f.score, 1)} of 100.`
-      : ', with the sub-scores that could be measured.')
-    + ` Generated from ${report.feed.agencyName}'s GTFS feed`
-    + (size ? ` for a ${size.name.toUpperCase()} game.` : '.');
-}
-
-/**
- * Serialise the hydrated page to a standalone file — the same artifact the CLI
- * writes.
- *
- * `document()` (line 1369) is reproduced exactly: the WebAwesome kit, MapLibre's
- * stylesheet and the tile styles stay CDN references, because that is what the CLI's
- * output does and inlining a component kit is not something a Blob can do honestly.
- * Everything the *run* produced — the markup, the five JSON blocks, the page script —
- * is inline.
- */
-async function buildStandalonePage() {
-  const report = state.report;
-  const place = report.place || report.feed.agencyName || 'This map';
-  const css = await inlineStyles();
-
-  const page = document.querySelector('wa-page');
-  const bodySource = page || pick('main', '#report') || document.body;
-  const clone = /** @type {HTMLElement} */ (bodySource.cloneNode(true));
-  // Anything that only makes sense while a run is in flight: the landing form, the
-  // progress readout, the download button itself.
-  for (const node of clone.querySelectorAll('[data-run-only], #landing, [data-role="landing"],'
-    + ' [data-role="progress"], #download, [data-role="download"],'
-    + ' [data-state="empty"]')) {
-    node.remove();
-  }
-
-  const blocks = ['data', 'questions-data', 'curses-data', 'stops', 'provenance']
-    .map((id) => {
-      const node = $id(id);
-      return node ? node.outerHTML : '';
-    })
-    .filter((s) => s)
-    .join('\n');
-
-  return [
-    '<!DOCTYPE html>',
-    '<html lang="en" class="wa-theme-default wa-palette-default wa-light wa-cloak">',
-    '<head>',
-    '<meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<meta name="color-scheme" content="light dark">',
-    `<meta name="description" content="${esc(pageDescription(report))}">`,
-    `<title>${esc(`${place} × Hide and Seek — Map Fitness Report`)}</title>`,
-    `<link rel="stylesheet" href="${MAPLIBRE_CSS}">`,
-    `<link rel="stylesheet" href="${WA_KIT}/styles/themes/default.css" />`,
-    `<link rel="stylesheet" href="${WA_KIT}/styles/native.css" />`,
-    `<link rel="stylesheet" href="${WA_KIT}/styles/utilities.css" />`,
-    `<script type="module" src="${WA_KIT}/webawesome.loader.js"></script>`,
-    '<style>',
-    css,
-    '</style>',
-    '</head>',
-    '<body>',
-    // `document()`'s own order: the page, then the JSON blocks, then `#tt`, then the
-    // colour-scheme script, then the page module.
-    clone.outerHTML,
-    blocks,
-    '<div id="tt"></div>',
-    '<script>',
-    COLOR_SCHEME_JS,
-    '</script>',
-    '<script type="module">',
-    pageRuntimeSource(),
-    '</script>',
-    '</body>',
-    '</html>',
-    '',
-  ].join('\n');
-}
-
-/** Hand the file to the browser. */
-async function downloadReport() {
-  if (!state.finished) return;
-  let html;
-  try {
-    html = await buildStandalonePage();
-  } catch (err) {
-    recordDegradation(`The report could not be packaged for download (${err && err.message}).`);
-    return;
-  }
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${slug(state.report.place || state.report.feed.agencyName)}-hide-and-seek.html`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Revoked on the next frame: revoking synchronously races the download in Safari.
-  requestAnimationFrame(() => URL.revokeObjectURL(url));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

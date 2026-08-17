@@ -16,7 +16,7 @@
 //     as a stop name.
 //   * Attribute values always go through `attrs()`, which escapes them.
 //
-// Only WebAwesome 3.10 components that the drafts already use (or that pages.md
+// Only WebAwesome 3.11 components that the drafts already use (or that pages.md
 // explicitly sanctions) get a helper. If there is no helper for it, it is not on the
 // sanctioned list — do not invent one.
 //

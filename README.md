@@ -317,6 +317,12 @@ render/              main-side renderers
 styles.css           the one stylesheet
 CONTRACT.md          authoritative for every shape crossing a module boundary
 tools/smoke.mjs      headless harness: asserts the CLI's golden numbers
+tools/osm-world/     builds the global OpenStreetMap files the web app reads
+  build.py           planet.osm.pbf -> per-category FlatGeobuf -> R2 (uv script)
+  categories.json    the build table: one entry per category, plus the density grid
+  README.md          why FlatGeobuf, what it costs, and what the migration lost
+  test-reader.mjs    checks osm/flatgeobuf.js against a file GDAL wrote
+  test-pipeline.mjs  runs collectGeodata end to end over real HTTP Range requests
 
 generated/           the Python generator and its output
   generate.py        the whole thing (single file, ~16k lines, one dependency)
@@ -352,13 +358,16 @@ sources, and the specs the file's docstring cites, are kept outside this tree.
 - **The OSM layer has only been exercised on a handful of cities**, of small and large size; the
   schedule side on a few more, including heavy-rail systems. Overpass behaviour beyond those is
   unproven.
-- **The path-proximity test is the first thing to fall over.** The rulebook's "within 10 ft of a
-  routable path" check needs a 5 m buffer around every walkable way on the map — the most expensive
-  query in the pipeline. On a large map it isn't attempted at all, because asking a shared mirror to
-  buffer several hundred thousand ways is not a polite request, and on a small one a busy Overpass
-  can still refuse it: three mirrors timing out on three consecutive runs is a real outcome, not a
-  hypothetical. When that happens, candidate hiding spots are still listed, just marked
-  verify-on-the-ground.
+- **The path-proximity test no longer runs in the web app.** The rulebook's "within 10 ft of a
+  routable path" check needs a 5 m buffer around every walkable way on the map. The CLI still asks
+  Overpass to do that server-side, where it is the most expensive query in the pipeline: on a large
+  map it isn't attempted at all, because asking a shared mirror to buffer several hundred thousand
+  ways is not a polite request, and on a small one a busy Overpass can still refuse it — three
+  mirrors timing out on three consecutive runs is a real outcome, not a hypothetical. The web app
+  reads prebuilt map files instead of querying Overpass, and there is no local equivalent of that
+  join short of shipping the global footpath network, so it does not attempt the test at all.
+  Either way candidate hiding spots are still listed, just marked verify-on-the-ground — in the web
+  app, always.
 - **Some of this is interpretation**, and the rulebook is genuinely ambiguous in places. Those spots
   are labelled as interpretations on the page rather than presented as rules — but you and your
   group are still the final authority. It's your game.

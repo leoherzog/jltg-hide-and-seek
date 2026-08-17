@@ -16,8 +16,8 @@
 //
 // WHAT THIS FILE IS. The CLI emits a second document, `strategy.html`, which nothing
 // links to. The browser port has one document, so the guide is a second *view* of it,
-// reachable only by the URL fragment `#strategy` and excluded from the "Save"
-// download by `data-run-only`. Nothing in the report view mentions it. The one link
+// reachable only by the URL fragment `#strategy`. Nothing in the report view mentions
+// it. The one link
 // out of here — the hero's `href="#top"` — is only visible to somebody already
 // inside, which is exactly the CLI's cross-page invariant (generate.py 13539–13550).
 //
@@ -1549,12 +1549,10 @@ function sectionMethod(report) {
  * (app.js 1215–1233) walks its own `NUMBERED` list and then strips `data-n` from
  * every remaining `[data-n="--"]` in the document, which would silently erase them.
  *
- * The returned string is EXACTLY ONE top-level element, and its three attributes are
- * load-bearing: `id="strategy"` is the fragment and the `initStrategy` root,
- * `data-when="strategy"` is what `body:not([data-view='strategy'])` hides, and
- * `data-run-only` is what keeps the whole guide out of the saved file
- * (`buildStandalonePage` already sweeps that selector, app.js 2802). There is no
- * `data-state`: `fatalError` sweeps `[data-state="skeleton"]` (app.js 1397).
+ * The returned string is EXACTLY ONE top-level element, and both its attributes are
+ * load-bearing: `id="strategy"` is the fragment and the `initStrategy` root, and
+ * `data-when="strategy"` is what `body:not([data-view='strategy'])` hides. There is
+ * no `data-state`: `fatalError` sweeps `[data-state="skeleton"]` (app.js 1397).
  *
  * @param {Object} report the complete `Report` (state.report after `finish`)
  * @returns {string} HTML, or ''
@@ -1608,7 +1606,6 @@ export function renderStrategy(report) {
     // collide with the report's `<main>`: a `display: none` element is not in the
     // accessibility tree, and the two are never visible together.
     role: 'main',
-    dataRunOnly: true,
     dataWhen: 'strategy',
     className: 'wa-stack wa-gap-3xl',
   });
