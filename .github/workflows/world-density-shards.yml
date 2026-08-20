@@ -64,11 +64,15 @@
 name: world-density-shards
 
 on:
-  schedule:
-    # Monthly cadence (PLAN.md §Phase 4: "parks and libraries do not move weekly").
-    # 06:00 UTC on the 3rd of the month, offset from the 1st to dodge whatever else
-    # piles onto midnight-on-the-1st across every other repo's monthly cron.
-    - cron: "0 6 3 * *"
+  # Schedule DISABLED until the R2_* secrets exist. Armed, it fires ~100 jobs a
+  # month, every one of which fails at build.py's --upload preflight — no output,
+  # and no notification anybody reads. README §CI: "disable schedule: and
+  # keep workflow_dispatch until then." Re-arm by uncommenting the two live lines.
+  # schedule:
+  #   # Monthly cadence (PLAN.md §Phase 4: "parks and libraries do not move weekly").
+  #   # 06:00 UTC on the 3rd of the month, offset from the 1st to dodge whatever else
+  #   # piles onto midnight-on-the-1st across every other repo's monthly cron.
+  #   - cron: "0 6 3 * *"
   workflow_dispatch:
     inputs:
       batch_size:
