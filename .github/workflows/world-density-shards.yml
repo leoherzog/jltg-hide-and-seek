@@ -1,6 +1,6 @@
 # .github/workflows/world-density-shards.yml — Phase 4 (see tools/osm-world/PLAN.md
 # §Phase 4). Builds the DENSITY grid only (build.py --only density) for every "fine"
-# shard in tools/osm-world/shards.json (the 499-tile finest Geofabrik cover, written
+# shard in tools/osm-world/shards.json (the 512-member finest Geofabrik cover, written
 # by cover.py — Phase 3) and uploads each shard's output to R2 under
 # shards/density/<id>/.
 #
@@ -52,8 +52,8 @@
 #     PLAN.md — this workflow uses ubuntu-latest/x64, check current pricing before
 #     relying on that number). If overage becomes real, PLAN.md's fallback is
 #     splitting tools/osm-world/ + these workflows into a separate public repo.
-#   - Matrix hard cap is 256 jobs/workflow, hence the batching below (499 fine
-#     shards -> ~5 per batch -> ~100 jobs, comfortably under the cap with headroom
+#   - Matrix hard cap is 256 jobs/workflow, hence the batching below (512 fine
+#     shards -> 5 per batch -> 103 jobs, comfortably under the cap with headroom
 #     for cover.py's count changing between runs).
 #   - Concurrency: 20 (Free tier) / 40 (Pro). Defaults to 20 below; raise
 #     max-parallel if this repo is on a plan with more concurrent-job headroom.
@@ -64,7 +64,7 @@
 name: world-density-shards
 
 on:
-  # Schedule DISABLED until the R2_* secrets exist. Armed, it fires ~100 jobs a
+  # Schedule DISABLED until the R2_* secrets exist. Armed, it fires 103 jobs a
   # month, every one of which fails at build.py's --upload preflight — no output,
   # and no notification anybody reads. README §CI: "disable schedule: and
   # keep workflow_dispatch until then." Re-arm by uncommenting the two live lines.
@@ -76,7 +76,7 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Fine shards per matrix job (default 5; ~499/5 ≈ 100 jobs)"
+        description: "Fine shards per matrix job (default 5; 512/5 = 103 jobs)"
         required: false
         default: "5"
 

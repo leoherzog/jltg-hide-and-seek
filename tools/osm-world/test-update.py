@@ -689,6 +689,138 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
         merge.place_admin = real_place_admin
 
 
+def check_cover(cover, failures: list[str]) -> None:
+    """
+    cover.py's fine-membership pass — the first test this file has ever had, added
+    with the fix for the rule it replaced.
+
+    The old rule was "a region that contains no other region is a leaf", which drops
+    any region containing an ENCLAVE and takes all of that region's non-enclave
+    territory out of every shard with it: greater-london went because of enfield,
+    niedersachsen because of bremen, ukraine because of crimean-fed-district. Eight
+    major metropolitan areas and all of Ukraine were in no density shard.
+
+    The replacement keeps a region when its residual — itself minus the members
+    already kept — is still at least KEEP_FRACTION of its OWN area. The fixture
+    below is the smallest thing that pins all three behaviours at once, plus the
+    orientation of the comparison, which is the part that is dangerous to get wrong:
+    the INVERTED form admits continents as density shards.
+    """
+    print("\n=== cover.py fine membership ===")
+    from shapely.geometry import box, mapping, Point  # noqa: PLC0415
+
+    # area 10000: a continent, ~half of it tiled by the countries below
+    # area  2500: country-a, ENTIRELY tiled by its four quarters -> subdivided
+    # area  2500: country-b, containing only a 4 deg² enclave -> NOT subdivided
+    # area   100: an island with nothing inside it
+    shapes = {
+        "continent": box(0, 0, 100, 100),
+        "country-a": box(0, 0, 50, 50),
+        "quarter-sw": box(0, 0, 25, 25), "quarter-se": box(25, 0, 50, 25),
+        "quarter-nw": box(0, 25, 25, 50), "quarter-ne": box(25, 25, 50, 50),
+        "country-b": box(50, 0, 100, 50),
+        "enclave": box(60, 10, 62, 12),
+        "island": box(0, 60, 10, 70),
+    }
+    regions = [cover.Region(rid, f"https://example.invalid/{rid}.osm.pbf", geom)
+               for rid, geom in shapes.items()]
+    expected = {"quarter-sw", "quarter-se", "quarter-nw", "quarter-ne",
+                "country-b", "enclave", "island"}
+
+    members, assigned, uncovered = cover.compute_fine(regions)
+    got = {m.id for m in members}
+    if got == expected:
+        print(f"  ok  {len(got)} members: enclave parent kept, subdivided parent and "
+              "continent dropped")
+    else:
+        failures.append(f"cover membership: expected {sorted(expected)}, got {sorted(got)}")
+
+    # The regression this fix exists for, called out on its own so a failure names it.
+    if "country-b" in got:
+        print("  ok  a region whose only smaller member is an enclave stays in the cover")
+    else:
+        failures.append("cover: the enclave parent was dropped — the leaf-test bug is back")
+
+    # Members must partition, not overlap: two shards counting one density cell is
+    # exactly what --clip-region exists to prevent.
+    overlap = 0.0
+    ids = [m.id for m in members]
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            overlap += assigned[a].intersection(assigned[b]).area
+    if overlap < 1e-9:
+        print(f"  ok  assigned geometries pairwise disjoint (total overlap {overlap:g})")
+    else:
+        failures.append(f"cover: assigned geometries overlap by {overlap:g} deg²")
+
+    # Every point of a kept region belongs to exactly ONE member — including a point
+    # in the parent right next to the enclave, and a point inside the enclave itself.
+    for label, lon, lat, want in (("inside the enclave", 61.0, 11.0, "enclave"),
+                                  ("in the enclave's parent", 80.0, 25.0, "country-b"),
+                                  ("in a subdivided parent", 10.0, 10.0, "quarter-sw")):
+        owners = [m.id for m in members if assigned[m.id].contains(Point(lon, lat))]
+        if owners == [want]:
+            print(f"  ok  a point {label} -> {want}")
+        else:
+            failures.append(f"cover: point {label} ({lon},{lat}) -> {owners}, want [{want}]")
+
+    # THE ORIENTATION OF THE COMPARISON. `residual >= KEEP_FRACTION * area` keeps a
+    # region that is mostly unclaimed; the inverted `residual >= (1 - KEEP_FRACTION) *
+    # area` keeps one that is mostly claimed — which was measured on the real index to
+    # admit europe (34.8 GB), africa and south-america as DENSITY shards. The continent
+    # here sits at a residual ratio of 0.49, between the two thresholds, so it is
+    # admitted under the inverted rule and rejected under the real one.
+    real_fraction = cover.KEEP_FRACTION
+    try:
+        cover.KEEP_FRACTION = 1.0 - real_fraction
+        inverted = {m.id for m in cover.compute_fine(regions)[0]}
+    finally:
+        cover.KEEP_FRACTION = real_fraction
+    if "continent" in inverted and "continent" not in got:
+        print("  ok  the threshold's orientation is load-bearing and pinned")
+    else:
+        failures.append(
+            "cover: the continent's membership does not depend on KEEP_FRACTION's "
+            f"orientation (real={sorted(got)}, inverted={sorted(inverted)}) — the "
+            "fixture no longer pins the comparison direction")
+
+    # MAX_FINE_BYTES is the fail-loud replacement for a bound that used to hold by
+    # construction. Drive it through main() with the network stubbed, and check that
+    # a rejected cover writes NOTHING — the guard runs before either output.
+    real_fetch, real_fill = cover.fetch_index, cover.fill_sizes
+    index = {"features": [
+        {"properties": {"id": rid, "urls": {"pbf": f"https://example.invalid/{rid}.osm.pbf"}},
+         "geometry": mapping(geom)} for rid, geom in shapes.items()]}
+    try:
+        cover.fetch_index = lambda url: (index, "test")
+        def fat_sizes(regions_, workers):
+            for r in regions_:
+                r.est_bytes = cover.MAX_FINE_BYTES + 1 if r.id == "country-b" else 1000
+        cover.fill_sizes = fat_sizes
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "shards.json"
+            geoms_dir = Path(tmp) / "cover-geometries"
+            try:
+                cover.main(["--out", str(out), "--geometries-dir", str(geoms_dir)])
+            except SystemExit as exc:
+                message = str(exc)
+                if "country-b" in message and "MAX_FINE_BYTES" in message:
+                    print("  ok  an oversized fine member is a hard error naming it")
+                else:
+                    failures.append(f"cover: budget guard raised the wrong error: {exc}")
+                if out.exists() or geoms_dir.exists():
+                    failures.append(
+                        "cover: the budget guard wrote output before refusing — a "
+                        "rejected cover must leave shards.json and cover-geometries/ "
+                        "untouched")
+                else:
+                    print("  ok  and wrote neither shards.json nor cover-geometries/")
+            else:
+                failures.append("cover: an oversized fine member did not raise")
+    finally:
+        cover.fetch_index, cover.fill_sizes = real_fetch, real_fill
+
+
 def main() -> int:
     build = load_build()
     failures: list[str] = []
@@ -771,6 +903,8 @@ def main() -> int:
     check_merge_discovery(merge, failures)
     check_merge_manifest(merge, failures)
 
+    check_cover(load_module("cover"), failures)
+
     print()
     if failures:
         for f in failures:
@@ -778,7 +912,7 @@ def main() -> int:
         print(f"{len(failures)} failed")
         return 1
     print("update loop, where-rewriter, geometry classes, density clip + cache, "
-          "and merge discovery/manifest rules behaved as intended")
+          "merge discovery/manifest rules, and the fine cover behaved as intended")
     return 0
 
 

@@ -31,23 +31,44 @@ therefore computed GEOMETRICALLY:
     is strictly larger. (Geofabrik's cutting polygons are buffered, so exact `covers`
     would never fire; 98% absorbs the buffer.)
 
-  * FINE MEMBERSHIP: the GEOMETRIC LEAVES — regions that contain no other region.
-    (A residual-area criterion is wrong here: a continent minus its countries keeps
-    a huge open-ocean residual, so "residual survives" would keep every continent in
-    the cover. The leaves are the finest extracts that exist anywhere; whatever a
-    leaf set fails to cover is reported as `uncovered_deg2` so the gap is measured,
-    not assumed away.)
+  * FINE MEMBERSHIP: every region NOT already subdivided by smaller members. One
+    greedy pass in the difference order below — keep a region when its RESIDUAL,
+    what is left of it after subtracting the members already kept, is still at least
+    KEEP_FRACTION of its OWN area. germany, europe and us-midwest are gone by the
+    time their children have been kept; greater-london, niedersachsen, ukraine and
+    morocco survive, because the only smaller members inside them are ENCLAVES
+    (enfield, bremen, crimean-fed-district, ceuta/melilla) that take a few percent.
+
+    THE FRACTION IS WHAT MAKES THIS SAFE. An earlier version of this file rejected a
+    residual criterion — "a continent minus its countries keeps a huge open-ocean
+    residual, so residual-survives would keep every continent" — which is true of an
+    ABSOLUTE residual and false of a fractional one: that leftover is a small
+    fraction of the continent's own area, so a fractional test drops it. The
+    inverted form (`residual >= (1 - KEEP_FRACTION) * area`) was measured to admit
+    europe at 34.8 GB, africa, south-america, japan and australia as DENSITY shards.
+    Hence the constant is named for what it keeps, not for what it subdivides.
+
+    The rule this replaced — "regions that contain no other region" — is what put
+    eight major metropolitan areas and all of Ukraine outside every shard: any
+    region containing an enclave was dropped whole, and its non-enclave territory
+    went with it. Whatever the cover still misses is reported as uncovered area, so
+    the gap stays measured rather than assumed away.
 
   * THE FINE COVER'S DIFFERENCE ORDER, fixed and documented here because the density
-    builds must reproduce it exactly: leaves sorted by ASCENDING polygon area
+    builds must reproduce it exactly: ALL regions sorted by ASCENDING polygon area
     (lon/lat square degrees, as shipped in index-v1.json), ties broken by region id
-    ascending. Each leaf's assigned disjoint geometry is its polygon MINUS the union
-    of all earlier (smaller) leaves' ORIGINAL polygons:
+    ascending. Membership and assignment are decided in that one pass, so a member's
+    assigned geometry is its polygon MINUS the union of the ORIGINAL polygons of the
+    members KEPT before it:
 
-        assigned(i) = geom(i) − ∪ geom(j)   for all leaves j before i in that order
+        assigned(i) = geom(i) − ∪ geom(j)   for all KEPT MEMBERS j before i
 
-    The `fine` array in shards.json is written IN THIS ORDER, so a consumer can
-    rebuild the assigned geometries from the index without re-deriving the order.
+    "Kept members", not "all earlier regions": a region the pass rejected as already
+    subdivided contributes nothing to any difference, and subtracting one would hand
+    its territory to no shard at all.
+
+    The `fine` array in shards.json is written IN THIS ORDER, so a consumer holding
+    the index can rebuild every assigned geometry from the member list alone.
 
   * `disjoint_neighbors` on each fine entry: the other fine members whose assigned
     geometries touch or intersect it — the shards that can share a boundary density
@@ -112,10 +133,18 @@ INDEX_URL = "https://download.geofabrik.de/index-v1.json"
 # "contained" for both partitions.
 CONTAINMENT_RATIO = 0.98
 
-# Safety net only: a leaf whose assigned disjoint geometry falls below this (square
-# degrees; 1e-4 ≈ 1.2 km² at the equator) would be a leaf entirely swallowed by
-# smaller leaves — which should not exist, so it is dropped WITH a warning.
-MIN_RESIDUAL_DEG2 = 1e-4
+# Fine membership: keep a region when at least this much of its OWN area survives
+# the difference against the members already kept — i.e. smaller members have not
+# already subdivided it. Read the module docstring before touching this: the
+# INVERTED form of the same test admits continents as density shards.
+KEEP_FRACTION = 0.70
+
+# Fail-loud budget guard. The fine partition exists so `stage_density`'s cell dict
+# fits in a runner; that used to be guaranteed by construction ("contains a smaller
+# region" made a continent impossible), and KEEP_FRACTION is a tunable instead. So
+# the bound is now asserted rather than assumed: any fine member above this is a
+# hard error naming it. The largest legitimate member is quebec at ~1.16 GB.
+MAX_FINE_BYTES = 1_500_000_000
 
 
 def log(message: str) -> None:
@@ -186,66 +215,50 @@ def load_regions(index: dict) -> list[Region]:
     return regions
 
 
-def fine_order(regions: list[Region]) -> list[Region]:
-    """THE documented difference order: ascending area, ties by id."""
-    return sorted(regions, key=lambda r: (r.area, r.id))
-
-
-def geometric_leaves(regions: list[Region]) -> list[Region]:
-    """Regions that contain no other region — the finest extracts that exist.
-
-    Containment is the CONTAINMENT_RATIO area rule, never the `parent` field. This
-    is what drops every continent, every subdivided country (germany, since its 16
-    states exist), every combination region (dach, alps, britain-and-ireland,
-    us-midwest, california once norcal/socal exist) — while keeping every region
-    that is itself the finest coverage of its territory."""
-    ordered = sorted(regions, key=lambda r: (r.area, r.id))
-    tree = STRtree([r.geom for r in ordered])
-    leaves: list[Region] = []
-    for i, region in enumerate(ordered):
-        contains_someone = False
-        for j in sorted(tree.query(region.geom)):
-            if j >= i:  # only strictly smaller regions can be contained
-                continue
-            child = ordered[j]
-            inter = region.geom.intersection(child.geom).area
-            if inter >= CONTAINMENT_RATIO * child.area:
-                contains_someone = True
-                break
-        if not contains_someone:
-            leaves.append(region)
-    log(f"fine membership: {len(leaves)} geometric leaves of {len(regions)} regions")
-    return leaves
-
-
 def compute_fine(regions: list[Region]) -> tuple[list[Region], dict[str, object], float]:
-    """The disjoint cover over the leaves: members in difference order, their
-    assigned geometries, and the area (deg²) of the planet's region union NOT
-    covered by any leaf. Each leaf is differenced only against the earlier leaves
-    whose bbox intersects it — identical result to the full sequential difference,
-    since a non-intersecting region subtracts nothing."""
-    ordered = fine_order(geometric_leaves(regions))
+    """The disjoint fine cover: members IN THE DIFFERENCE ORDER, their assigned
+    geometries, and the area (deg²) of the region union no member covers.
+
+    ONE greedy pass over EVERY region, ascending area, ties by id. A region is a
+    member when its residual — itself minus the members already kept — is still at
+    least KEEP_FRACTION of its own area, i.e. those members have not already
+    subdivided it. See the module docstring for why the fraction, and not a leaf
+    test, is the right rule.
+
+    Two details are load-bearing:
+
+    * SUBTRACT ONLY KEPT MEMBERS. Differencing against a region that was itself
+      dropped would carve territory out of a member's assigned polygon and hand it
+      to nobody — a hole of exactly the kind this function was rewritten to close.
+    * Each region is differenced only against the earlier kept members whose BBOX
+      intersects it. That is identical to the full sequential difference, since a
+      non-intersecting region subtracts nothing, and it is what keeps the pass
+      affordable at 555 regions.
+    """
+    ordered = sorted(regions, key=lambda r: (r.area, r.id))
     tree = STRtree([r.geom for r in ordered])
     members: list[Region] = []
     assigned: dict[str, object] = {}
+    kept: set[int] = set()
+    subdivided: list[str] = []
     for i, region in enumerate(ordered):
-        earlier = [j for j in tree.query(region.geom) if j < i]
-        if earlier:
-            residual = region.geom.difference(
-                unary_union([ordered[j].geom for j in earlier]))
-        else:
-            residual = region.geom
-        if residual.area >= MIN_RESIDUAL_DEG2:
+        earlier = [j for j in tree.query(region.geom) if j < i and j in kept]
+        residual = (region.geom.difference(unary_union([ordered[j].geom for j in earlier]))
+                    if earlier else region.geom)
+        if region.area > 0 and residual.area >= KEEP_FRACTION * region.area:
+            kept.add(i)
             members.append(region)
             assigned[region.id] = residual
         else:
-            log(f"WARNING: leaf {region.id} is entirely covered by smaller leaves "
-                "and was dropped from the fine cover")
-    # How much of the union of ALL regions the leaf cover misses — the honest
-    # coverage figure for a leaves-only membership.
+            subdivided.append(region.id)
+    log(f"fine membership: {len(members)} members of {len(regions)} regions "
+        f"({len(subdivided)} already subdivided by smaller members)")
+
+    # How much of the union of ALL regions the member cover misses — the honest
+    # coverage figure, reported rather than assumed away.
     all_union = unary_union([r.geom for r in regions])
-    leaf_union = unary_union([r.geom for r in members])
-    uncovered = all_union.difference(leaf_union).area
+    member_union = unary_union([r.geom for r in members])
+    uncovered = all_union.difference(member_union).area
     log(f"fine cover: {len(members)} disjoint members; uncovered area "
         f"{uncovered:.2f} deg² of {all_union.area:.0f} deg² total")
     return members, assigned, uncovered
@@ -329,7 +342,7 @@ def write_geometries(members: list[Region], assigned: dict[str, object],
                      directory: Path) -> None:
     """One GeoJSON per fine shard: its assigned disjoint polygon, full precision.
 
-    Full precision is deliberate — the assigned geometries partition the leaf union
+    Full precision is deliberate — the assigned geometries partition the member union
     exactly, and rounding each file independently could open slivers of overlap or
     gap along shared boundaries, which is precisely the double/zero-count the clip
     exists to prevent. Stale files (shards gone from the cover) are removed so the
@@ -389,8 +402,8 @@ def main(argv: list[str] | None = None) -> int:
 
     fine_members, assigned, uncovered = compute_fine(regions)
     if uncovered > 1.0:
-        log(f"WARNING: the leaf cover misses {uncovered:.2f} deg² that only "
-            "coarser regions contain — inspect before trusting density totals there")
+        log(f"WARNING: the fine cover misses {uncovered:.2f} deg² that only coarser "
+            "regions contain — inspect before trusting density totals there")
     neighbor_map = neighbors(fine_members, assigned)
 
     if not args.no_sizes:
@@ -405,6 +418,24 @@ def main(argv: list[str] | None = None) -> int:
     log(f"fine: {len(fine_members)} shards, {fine_total / 1e9:.1f} GB total, "
         f"largest {largest_fine.id} at {(largest_fine.est_bytes or 0) / 1e9:.2f} GB")
     log(f"coarse: {len(coarse_members)} shards, {coarse_total / 1e9:.1f} GB total")
+
+    # The fine partition's whole job is to keep `stage_density`'s cell dict inside a
+    # runner. Under the old leaf rule that was true by construction; under
+    # KEEP_FRACTION it is a tunable, so assert it instead of trusting it — and do it
+    # BEFORE writing either output, so a bad cover is never committed.
+    oversized = sorted((r for r in fine_members
+                        if r.est_bytes is not None and r.est_bytes > MAX_FINE_BYTES),
+                       key=lambda r: -(r.est_bytes or 0))
+    if oversized:
+        listed = ", ".join(f"{r.id} ({(r.est_bytes or 0) / 1e9:.2f} GB)"
+                           for r in oversized[:10])
+        raise SystemExit(
+            f"{len(oversized)} fine member(s) exceed MAX_FINE_BYTES "
+            f"({MAX_FINE_BYTES / 1e9:.2f} GB): {listed}. A fine shard is a DENSITY "
+            "shard and its peak RSS scales with populated cells, so an oversized "
+            "member is an out-of-memory job, not a slow one. Most likely "
+            "KEEP_FRACTION is admitting a region its own sub-regions should have "
+            "subdivided — check the membership log above. Nothing was written.")
 
     payload = {
         "generated_from": f"geofabrik index-v1.json {index_date}",

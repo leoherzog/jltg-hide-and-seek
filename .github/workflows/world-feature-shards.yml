@@ -52,13 +52,13 @@
 name: world-feature-shards
 
 on:
-  # Schedule DISABLED until the R2_* secrets exist. Armed, it fires 86 jobs a
+  # Schedule DISABLED until the R2_* secrets exist. Armed, it fires 87 jobs a
   # month, every one of which fails at build.py's --upload preflight — no output,
   # and no notification anybody reads. README §CI: "disable schedule: and
   # keep workflow_dispatch until then." Re-arm by uncommenting the two live lines.
   # schedule:
   #   # Monthly, offset from world-density-shards.yml's 06:00/3rd so the two don't
-  #   # both cold-start apt/uv installs across ~100 + ~65 jobs at the same instant.
+  #   # both cold-start apt/uv installs across 103 + 87 jobs at the same instant.
   #   - cron: "0 6 4 * *"
   workflow_dispatch:
     inputs:

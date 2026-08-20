@@ -395,9 +395,12 @@ fetch and the per-region size HEADs), so an interrupted run cannot leave one upd
 without the other. Two partitions, because the two stage groups have opposite
 constraints:
 
-- **fine — 500 leaves, 78.4 GB** (largest quebec 1.158 GB), for density alone, which is
-  linear in RAM. The array is in the *difference order* (ascending polygon area, ties by
-  id) so a consumer can rebuild the assigned disjoint geometries: Geofabrik's polygons
+- **fine — 512 members, 82.4 GB** (largest quebec 1.158 GB), for density alone, which is
+  linear in RAM. Membership is one greedy pass in the *difference order* (ascending
+  polygon area, ties by id): a region is a member when its residual — itself minus the
+  members already kept — is still at least `KEEP_FRACTION` (70%) of its own area, i.e.
+  smaller members have not already subdivided it. The array ships in that order so a
+  consumer can rebuild the assigned disjoint geometries: Geofabrik's polygons
   overlap by design, and density's exactness rule — each way attributed to exactly one
   cell via its first node — survives sharding only if each shard counts the ways whose
   first node falls in its assigned **disjoint** region. That is enforced at build time:
@@ -414,13 +417,37 @@ constraints:
   build exactly (0 differing cells across 335,516 compared cells); the unclipped merge
   is detectably wrong, inflating the shared boundary band by up to +27.7% per category
   (`tools/osm-world/PLAN.md` §Phase 3 retest has the full comparison).
-- **coarse — 86 regions, each ≤ 8 GB, 81.3 GB**, for the feature layers, which run flat
-  at ~2.4 GB RSS and are bounded by runner disk instead.
+- **coarse — 87 regions, each ≤ 8 GB, 82.2 GB**, for the feature layers, which run flat
+  at ~2.4 GB RSS and are bounded by runner disk instead. It is derived from the fine
+  members' containers, so a hole in the fine partition propagates into this one.
+
+**The membership rule replaced a leaf test, and that is worth knowing about**, because
+the leaf test shipped a cover with holes in it. "A region that contains no other region"
+drops any region containing an **enclave** — and takes all of that region's non-enclave
+territory with it. Twelve regions were lost that way: `greater-london` to `enfield`,
+`niedersachsen` to `bremen`, `provence-alpes-cote-d-azur` to `monaco`, `morocco` to
+`ceuta`/`melilla`, `ukraine` to `crimean-fed-district`, `new-south-wales` to `act`,
+`guangdong` to `macau`, and five more. London, Hanover, Marseille, Casablanca,
+Guangzhou, Sydney, Kyiv and Lviv were in **no density shard at all**, and Ukraine — the
+one whose parent had no other container ≤ cap — had no feature shard either.
+
+The fraction is what makes a residual rule safe here, and an earlier draft rejected one
+for a reason that applies only to an *absolute* residual: "a continent minus its
+countries keeps a huge open-ocean residual." True — but that leftover is a small
+*fraction* of the continent's own area, so a fractional test drops it. The **inverted**
+form (`residual >= (1 - KEEP_FRACTION) * area`) was measured to admit europe at 34.8 GB,
+africa, south-america, japan and australia as *density* shards. `MAX_FINE_BYTES` now
+asserts that bound instead of trusting it — a fine member over 1.5 GB is a hard error
+that writes nothing — and `test-update.py` pins the comparison's direction with a
+fixture whose continent sits between the two thresholds.
 
 Note `index-v1.json`'s `parent` field is a *display* hierarchy, not a tree — `us`,
 `us-midwest` and `us/michigan` are siblings — so the cover is computed geometrically.
-Uncovered area is logged rather than assumed: the coarse cover's 4,251 deg² gap is
-entirely open ocean.
+Uncovered area is logged rather than assumed: the coarse cover's 4,175 deg² gap is
+entirely open ocean — the eight largest pieces are the Indian Ocean, the North Atlantic,
+the Pacific off Mexico, the Arctic north of Alaska, and four more of the same, and no
+populated place falls in it. (It was 4,251 deg² and that claim was *false* before the
+membership fix above: Ukraine was sitting in the gap.)
 
 `merge.py` discovers shard builds **recursively** (an R2 sync nests `us/michigan/` a
 level deeper than a flat scan looks; a directory with `.fgb` files but no
@@ -510,8 +537,8 @@ files' timeouts should be trusted until it has run.
 
 | workflow | shards | matrix | timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
-| `world-density-shards.yml` | fine (500) | batch 5 → ~100 jobs | 90 min | `shards/density/<id>/` |
-| `world-feature-shards.yml` | coarse (86) | batch 1 → 86 jobs | 240 min | `shards/feature/<id>/` |
+| `world-density-shards.yml` | fine (512) | batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
+| `world-feature-shards.yml` | coarse (87) | batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
 
 Both are monthly plus `workflow_dispatch`, `max-parallel` 20, `fail-fast: false`, and
 both fail loudly rather than quietly skipping when `shards.json` is missing or the

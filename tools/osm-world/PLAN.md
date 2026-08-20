@@ -100,9 +100,10 @@ ones. Both within run-to-run variance plus the new stages.
   Overture admin file alone is 32 requests / 7.49 MB for a city bbox — admin is now the
   dominant term.)
 - **Planet PBF** is 94.3 GB (docs in this repo still say 87.6 — stale). The finest
-  disjoint cover of Geofabrik's 555 regions is **500 leaves totalling 78.4 GB**, largest
-  quebec at 1.158 GB (`cover.py`, index dated 2026-08-15 — the hand estimate said 499 /
-  78 GB; the real run finds one more leaf, structure stable across two runs a day apart).
+  disjoint cover of Geofabrik's 555 regions is **512 members totalling 82.4 GB**, largest
+  quebec at 1.158 GB (`cover.py`, re-run 2026-08-19 after the enclave-parent fix; the
+  superseded leaf rule gave 500 / 78.4 GB, and the twelve regions it dropped are the
+  twelve that contain an enclave — see §Phase 3 cover fix).
   Note `index-v1.json`'s `parent` field is a display hierarchy, not a tree — `us`,
   `us-midwest`, `us/michigan` are siblings; the cover must be computed geometrically,
   and `cover.py` does.
@@ -588,16 +589,19 @@ run. The `fine` array is **in the
 difference order** (ascending polygon area, ties by id) so a consumer can rebuild the
 assigned disjoint geometries. Real run against `index-v1.json` 2026-08-15 (555 regions):
 
-- **fine: 500 leaves, 78.4 GB**, largest quebec 1.158 GB, no null sizes.
-- **coarse: 86 regions, each ≤ 8 GB, 81.3 GB**, largest africa 7.90 GB. `dach` (6.2 GB)
+- **fine: 512 members, 82.4 GB**, largest quebec 1.158 GB, no null sizes.
+- **coarse: 87 regions, each ≤ 8 GB, 82.2 GB**, largest africa 7.90 GB. `dach` (6.2 GB)
   is chosen over `germany`; canada 6.41 GB; france 5.06 GB; the US splits into
   midwest/northeast/pacific/south/west; africa, south-america, australia-oceania and
   antarctica stay whole.
 - Uncovered area is **measured, not assumed** — `cover.py` logs `uncovered_deg2`. The
-  coarse cover misses 4,251 deg², located chunk by chunk and **entirely open ocean**
-  (Indian Ocean, N Atlantic, mid-Pacific, Arctic, Black Sea); every sampled piece of
-  extract-less land is covered by a parent region (e.g. Saudi Arabia via `gcc-states`).
-  The leaves-only fine cover misses 19,726 deg² of the 58,770 deg² region union, so
+  coarse cover misses 4,175 deg², located chunk by chunk and **entirely open ocean**
+  (Indian Ocean, N Atlantic, Pacific off Mexico, Arctic, Philippine Sea); every sampled
+  piece of extract-less land is covered by a parent region (e.g. Saudi Arabia via
+  `gcc-states`), and no populated place falls in the gap — a claim that was FALSE at
+  4,251 deg² under the leaf rule, when Ukraine was sitting in it and the "Black Sea"
+  piece was partly Ukrainian land. The fine cover misses 18,574 deg² of the 58,770 deg²
+  region union (19,726 under the leaf rule), so
   **density under-counts there and only there** — ocean.
 
 ### Retest — recursive discovery, `--unlink-source`, `--only` merge-into, and the clip-region fix verified end-to-end
@@ -706,8 +710,8 @@ x64, ≈ 45 GB arm64):**
 | file | trigger | matrix | per-job timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
 | `.github/workflows/world-canary.yml` | `workflow_dispatch` only | one ~1 GB coarse shard | — | none — **needs no secrets** |
-| `.github/workflows/world-density-shards.yml` | monthly + dispatch | 500 fine shards, batch 5 → ~100 jobs | 90 min | `shards/density/<id>/` |
-| `.github/workflows/world-feature-shards.yml` | monthly + dispatch | 86 coarse shards, batch 1 → 86 jobs | 240 min | `shards/feature/<id>/` |
+| `.github/workflows/world-density-shards.yml` | dispatch only (schedule disabled until the R2 secrets exist) | 512 fine shards, batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
+| `.github/workflows/world-feature-shards.yml` | dispatch only (schedule disabled until the R2 secrets exist) | 87 coarse shards, batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
 
 Helpers: `tools/osm-world/ci/chunk-shards.py` (stdlib only; batches `shards.json[kind]`
 into the `strategy.matrix.include` list and **fails cleanly** if a future `cover.py` run
