@@ -691,29 +691,25 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
 
 def check_cover(cover, failures: list[str]) -> None:
     """
-    cover.py's fine-membership pass — the first test this file has ever had, added
-    with the fix for the rule it replaced.
+    cover.py's fine-membership rule: a region is a member when its residual still
+    contains LAND that no member already covers.
 
-    The old rule was "a region that contains no other region is a leaf", which drops
-    any region containing an ENCLAVE and takes all of that region's non-enclave
-    territory out of every shard with it: greater-london went because of enfield,
-    niedersachsen because of bremen, ukraine because of crimean-fed-district. Eight
-    major metropolitan areas and all of Ukraine were in no density shard.
-
-    The replacement keeps a region when its residual — itself minus the members
-    already kept — is still at least KEEP_FRACTION of its OWN area. The fixture
-    below is the smallest thing that pins all three behaviours at once, plus the
-    orientation of the comparison, which is the part that is dangerous to get wrong:
-    the INVERTED form admits continents as density shards.
+    Two proxies preceded it and both shipped holes. "Contains no other region" drops
+    every region containing an ENCLAVE, taking its non-enclave territory along —
+    London, Hanover, Marseille, Casablanca, Guangzhou, Sydney, Kyiv, Lviv. "At least
+    70% uncovered" then dropped one that is 62.9% uncovered — central-america's
+    Lesser Antilles, italy's San Marino. The fixture below is built so that ONE extra
+    region flips the continent in or out, which is the whole rule in one comparison.
     """
     print("\n=== cover.py fine membership ===")
     from shapely.geometry import box, mapping, Point  # noqa: PLC0415
 
-    # area 10000: a continent, ~half of it tiled by the countries below
-    # area  2500: country-a, ENTIRELY tiled by its four quarters -> subdivided
-    # area  2500: country-b, containing only a 4 deg² enclave -> NOT subdivided
-    # area   100: an island with nothing inside it
-    shapes = {
+    # Land: a mainland the countries sit on, an island, and a far archipelago that
+    # only the continent-sized region reaches.
+    land = [box(0, 0, 100, 50), box(0, 60, 10, 70), box(70, 60, 72, 62)]
+    land_mask = (land, cover.STRtree(land))
+
+    base = {
         "continent": box(0, 0, 100, 100),
         "country-a": box(0, 0, 50, 50),
         "quarter-sw": box(0, 0, 25, 25), "quarter-se": box(25, 0, 50, 25),
@@ -722,103 +718,125 @@ def check_cover(cover, failures: list[str]) -> None:
         "enclave": box(60, 10, 62, 12),
         "island": box(0, 60, 10, 70),
     }
-    regions = [cover.Region(rid, f"https://example.invalid/{rid}.osm.pbf", geom)
-               for rid, geom in shapes.items()]
-    expected = {"quarter-sw", "quarter-se", "quarter-nw", "quarter-ne",
-                "country-b", "enclave", "island"}
+    def regions_for(shapes):
+        return [cover.Region(rid, f"https://example.invalid/{rid}.osm.pbf", geom)
+                for rid, geom in shapes.items()]
 
-    members, assigned, uncovered = cover.compute_fine(regions)
+    # ── the archipelago has no extract of its own: the continent is its ONLY source
+    members, assigned, uncovered = cover.compute_fine(regions_for(base), land_mask)
     got = {m.id for m in members}
+    expected = {"quarter-sw", "quarter-se", "quarter-nw", "quarter-ne",
+                "country-b", "enclave", "island", "continent"}
     if got == expected:
-        print(f"  ok  {len(got)} members: enclave parent kept, subdivided parent and "
-              "continent dropped")
+        print("  ok  a region is kept when it is the only source for land")
     else:
-        failures.append(f"cover membership: expected {sorted(expected)}, got {sorted(got)}")
-
-    # The regression this fix exists for, called out on its own so a failure names it.
+        failures.append(f"cover: expected {sorted(expected)}, got {sorted(got)}")
     if "country-b" in got:
-        print("  ok  a region whose only smaller member is an enclave stays in the cover")
+        print("  ok  a region whose only smaller member is an enclave stays in")
     else:
-        failures.append("cover: the enclave parent was dropped — the leaf-test bug is back")
+        failures.append("cover: the enclave parent was dropped — the leaf bug is back")
+    if "country-a" not in got:
+        print("  ok  a region its own sub-regions already cover is dropped")
+    else:
+        failures.append("cover: a fully subdivided region was kept")
+    if uncovered.area <= cover.LAND_EPSILON_DEG2:
+        print(f"  ok  no land left over ({uncovered.area:.6f} deg²)")
+    else:
+        failures.append(f"cover: {uncovered.area:.4f} deg² of land uncovered")
+
+    # ── give the archipelago its own extract and the continent must drop out
+    with_arch = dict(base, **{"archipelago": box(69.5, 59.5, 72.5, 62.5)})
+    got2 = {m.id for m in cover.compute_fine(regions_for(with_arch), land_mask)[0]}
+    if "archipelago" in got2 and "continent" not in got2:
+        print("  ok  and drops out as soon as a smaller region covers that land")
+    else:
+        failures.append(
+            f"cover: the continent did not yield to the archipelago: {sorted(got2)}")
 
     # Members must partition, not overlap: two shards counting one density cell is
     # exactly what --clip-region exists to prevent.
-    overlap = 0.0
-    ids = [m.id for m in members]
+    overlap, ids = 0.0, [m.id for m in members]
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
             overlap += assigned[a].intersection(assigned[b]).area
     if overlap < 1e-9:
-        print(f"  ok  assigned geometries pairwise disjoint (total overlap {overlap:g})")
+        print(f"  ok  assigned geometries pairwise disjoint (overlap {overlap:g})")
     else:
         failures.append(f"cover: assigned geometries overlap by {overlap:g} deg²")
 
-    # Every point of a kept region belongs to exactly ONE member — including a point
-    # in the parent right next to the enclave, and a point inside the enclave itself.
     for label, lon, lat, want in (("inside the enclave", 61.0, 11.0, "enclave"),
                                   ("in the enclave's parent", 80.0, 25.0, "country-b"),
-                                  ("in a subdivided parent", 10.0, 10.0, "quarter-sw")):
+                                  ("in a subdivided parent", 10.0, 10.0, "quarter-sw"),
+                                  ("on the far archipelago", 71.0, 61.0, "continent")):
         owners = [m.id for m in members if assigned[m.id].contains(Point(lon, lat))]
         if owners == [want]:
             print(f"  ok  a point {label} -> {want}")
         else:
-            failures.append(f"cover: point {label} ({lon},{lat}) -> {owners}, want [{want}]")
+            failures.append(f"cover: point {label} -> {owners}, want [{want}]")
 
-    # THE ORIENTATION OF THE COMPARISON. `residual >= KEEP_FRACTION * area` keeps a
-    # region that is mostly unclaimed; the inverted `residual >= (1 - KEEP_FRACTION) *
-    # area` keeps one that is mostly claimed — which was measured on the real index to
-    # admit europe (34.8 GB), africa and south-america as DENSITY shards. The continent
-    # here sits at a residual ratio of 0.49, between the two thresholds, so it is
-    # admitted under the inverted rule and rejected under the real one.
-    real_fraction = cover.KEEP_FRACTION
-    try:
-        cover.KEEP_FRACTION = 1.0 - real_fraction
-        inverted = {m.id for m in cover.compute_fine(regions)[0]}
-    finally:
-        cover.KEEP_FRACTION = real_fraction
-    if "continent" in inverted and "continent" not in got:
-        print("  ok  the threshold's orientation is load-bearing and pinned")
-    else:
-        failures.append(
-            "cover: the continent's membership does not depend on KEEP_FRACTION's "
-            f"orientation (real={sorted(got)}, inverted={sorted(inverted)}) — the "
-            "fixture no longer pins the comparison direction")
+    # ── the two guards, through main(), with the network and the land mask stubbed.
+    # Both must refuse BEFORE writing: a rejected cover that already replaced
+    # cover-geometries/ is worse than none, because the next density build reads it.
+    real_fetch, real_fill, real_land = cover.fetch_index, cover.fill_sizes, cover.load_land
 
-    # MAX_FINE_BYTES is the fail-loud replacement for a bound that used to hold by
-    # construction. Drive it through main() with the network stubbed, and check that
-    # a rejected cover writes NOTHING — the guard runs before either output.
-    real_fetch, real_fill = cover.fetch_index, cover.fill_sizes
-    index = {"features": [
-        {"properties": {"id": rid, "urls": {"pbf": f"https://example.invalid/{rid}.osm.pbf"}},
-         "geometry": mapping(geom)} for rid, geom in shapes.items()]}
-    try:
+    def run_main(shapes, extra=(), fat=None, blind=False):
+        index = {"features": [
+            {"properties": {"id": rid,
+                            "urls": {"pbf": f"https://example.invalid/{rid}.osm.pbf"}},
+             "geometry": mapping(geom)} for rid, geom in shapes.items()]}
         cover.fetch_index = lambda url: (index, "test")
-        def fat_sizes(regions_, workers):
-            for r in regions_:
-                r.est_bytes = cover.MAX_FINE_BYTES + 1 if r.id == "country-b" else 1000
-        cover.fill_sizes = fat_sizes
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "shards.json"
-            geoms_dir = Path(tmp) / "cover-geometries"
-            try:
-                cover.main(["--out", str(out), "--geometries-dir", str(geoms_dir)])
-            except SystemExit as exc:
-                message = str(exc)
-                if "country-b" in message and "MAX_FINE_BYTES" in message:
-                    print("  ok  an oversized fine member is a hard error naming it")
-                else:
-                    failures.append(f"cover: budget guard raised the wrong error: {exc}")
-                if out.exists() or geoms_dir.exists():
-                    failures.append(
-                        "cover: the budget guard wrote output before refusing — a "
-                        "rejected cover must leave shards.json and cover-geometries/ "
-                        "untouched")
-                else:
-                    print("  ok  and wrote neither shards.json nor cover-geometries/")
-            else:
-                failures.append("cover: an oversized fine member did not raise")
+        cover.load_land = lambda *a, **k: land_mask
+        cover.fill_sizes = lambda regions_, workers: [
+            setattr(r, "est_bytes", cover.MAX_FINE_BYTES + 1 if r.id == fat else 1000)
+            for r in regions_]
+        saved = cover.land_area
+        if blind:
+            # Simulate the membership rule going wrong WITHOUT touching the check's
+            # own threshold: a rule that sees no land keeps nothing, and every piece
+            # of land must then show up in the assertion.
+            cover.land_area = lambda geom, land: 0.0
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out, geoms_dir = Path(tmp) / "shards.json", Path(tmp) / "cover-geometries"
+                args = ["--out", str(out), "--geometries-dir", str(geoms_dir)] + list(extra)
+                try:
+                    result = cover.main(args)
+                except SystemExit as exc:
+                    result = exc
+                return result, (out.exists(), geoms_dir.exists())
+        finally:
+            cover.land_area = saved
+
+    try:
+        # A rule that stops keeping enough regions must be caught by the assertion,
+        # not shipped. Raising the land threshold above every residual simulates it.
+        outcome, wrote = run_main(with_arch, blind=True)
+        if isinstance(outcome, SystemExit) and "belong to no density shard" in str(outcome):
+            print("  ok  land belonging to no density shard is a hard error")
+        else:
+            failures.append(f"cover: uncovered-land assertion did not fire: {outcome!r}")
+        if any(wrote):
+            failures.append("cover: the uncovered-land assertion wrote before refusing")
+
+        # The two clauses interacting: make the continent — the archipelago's only
+        # source — too big to build, and that land must surface as uncovered rather
+        # than as an oversized shard nobody could run.
+        outcome, wrote = run_main(base, fat="continent")
+        if isinstance(outcome, SystemExit) and "belong to no density shard" in str(outcome):
+            print("  ok  land whose only source is unbuildable is reported, not shipped")
+        else:
+            failures.append(f"cover: unbuildable-source case did not refuse: {outcome!r}")
+        if any(wrote):
+            failures.append("cover: refused after writing")
+
+        outcome, wrote = run_main(with_arch)
+        if outcome == 0 and all(wrote):
+            print("  ok  a clean cover publishes, and writes both outputs")
+        else:
+            failures.append(f"cover: a clean cover did not publish: {outcome!r} {wrote}")
     finally:
-        cover.fetch_index, cover.fill_sizes = real_fetch, real_fill
+        cover.fetch_index, cover.fill_sizes, cover.load_land = \
+            real_fetch, real_fill, real_land
 
 
 def main() -> int:

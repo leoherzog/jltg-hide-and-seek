@@ -395,51 +395,79 @@ fetch and the per-region size HEADs), so an interrupted run cannot leave one upd
 without the other. Two partitions, because the two stage groups have opposite
 constraints:
 
-- **fine — 512 members, 82.4 GB** (largest quebec 1.158 GB), for density alone, which is
-  linear in RAM. Membership is one greedy pass in the *difference order* (ascending
-  polygon area, ties by id): a region is a member when its residual — itself minus the
-  members already kept — is still at least `KEEP_FRACTION` (70%) of its own area, i.e.
-  smaller members have not already subdivided it. The array ships in that order so a
-  consumer can rebuild the assigned disjoint geometries: Geofabrik's polygons
-  overlap by design, and density's exactness rule — each way attributed to exactly one
-  cell via its first node — survives sharding only if each shard counts the ways whose
-  first node falls in its assigned **disjoint** region. That is enforced at build time:
-  `build-shard.sh` passes the shard's `cover-geometries/` file to **`build.py
-  --clip-region`**, and stage 4 bins a way only when its first node (a tree node: its
-  own location) tests inside the polygon. Without the clip, both neighbours count
-  every way in the overlap buffers and the merged grid double-counts. **Measured
-  overhead** on michigan: the density pass goes 77 s → 87 s (+13%, ~2.5 µs/candidate),
-  peak RSS unchanged, 0.19% of candidates dropped as buffer overlap; German sub-tiles
-  drop proportionally more (a state-level extract's buffer is a bigger share of a
-  smaller polygon) — saarland +8 s on a 23 s pass (0.121% dropped), rheinland-pfalz +17%
-  on a 94 s pass (1.238% dropped). **The fix is verified against ground truth**: a
-  clipped merge of two adjacent German states matches a whole-Germany reference density
-  build exactly (0 differing cells across 335,516 compared cells); the unclipped merge
-  is detectably wrong, inflating the shared boundary band by up to +27.7% per category
-  (`tools/osm-world/PLAN.md` §Phase 3 retest has the full comparison).
+- **fine — 514 members, 114.2 GB** (largest africa 7.90 GB), for density alone, which
+  is linear in RAM. Membership is one greedy pass in the *difference order* (ascending
+  polygon area, ties by id), and the rule is two clauses: **a region is a member when
+  its residual — itself minus the members already kept — still covers LAND, and its
+  extract is small enough to build.** Land is vendored Natural Earth 1:50m
+  (`land-50m.geojson`); the mask decides membership only, while a member's assigned
+  clip stays the full-precision Geofabrik residual, so nothing near a coastline is
+  lost. The array ships in that order so a consumer can rebuild the assigned disjoint
+  geometries: Geofabrik's polygons overlap by design, and density's exactness rule —
+  each way attributed to exactly one cell via its first node — survives sharding only
+  if each shard counts the ways whose first node falls in its assigned **disjoint**
+  region. That is enforced at build time: `build-shard.sh` passes the shard's
+  `cover-geometries/` file to **`build.py --clip-region`**, and stage 4 bins a way
+  only when its first node (a tree node: its own location) tests inside the polygon.
+  Without the clip, both neighbours count every way in the overlap buffers and the
+  merged grid double-counts. **Measured overhead** on michigan: the density pass goes
+  77 s → 87 s (+13%, ~2.5 µs/candidate), peak RSS unchanged, 0.19% of candidates
+  dropped as buffer overlap; German sub-tiles drop proportionally more (a state-level
+  extract's buffer is a bigger share of a smaller polygon) — saarland +8 s on a 23 s
+  pass (0.121% dropped), rheinland-pfalz +17% on a 94 s pass (1.238% dropped). **The
+  fix is verified against ground truth**: a clipped merge of two adjacent German
+  states matches a whole-Germany reference density build exactly (0 differing cells
+  across 335,516 compared cells); the unclipped merge is detectably wrong, inflating
+  the shared boundary band by up to +27.7% per category (`tools/osm-world/PLAN.md`
+  §Phase 3 retest has the full comparison).
 - **coarse — 87 regions, each ≤ 8 GB, 82.2 GB**, for the feature layers, which run flat
   at ~2.4 GB RSS and are bounded by runner disk instead. It is derived from the fine
-  members' containers, so a hole in the fine partition propagates into this one.
+  members' containers.
 
-**The membership rule replaced a leaf test, and that is worth knowing about**, because
-the leaf test shipped a cover with holes in it. "A region that contains no other region"
-drops any region containing an **enclave** — and takes all of that region's non-enclave
-territory with it. Twelve regions were lost that way: `greater-london` to `enfield`,
-`niedersachsen` to `bremen`, `provence-alpes-cote-d-azur` to `monaco`, `morocco` to
-`ceuta`/`melilla`, `ukraine` to `crimean-fed-district`, `new-south-wales` to `act`,
-`guangdong` to `macau`, and five more. London, Hanover, Marseille, Casablanca,
-Guangzhou, Sydney, Kyiv and Lviv were in **no density shard at all**, and Ukraine — the
-one whose parent had no other container ≤ cap — had no feature shard either.
+**Three membership rules were tried here, and the first two shipped covers with holes
+in them** — worth recording, because each looked obviously right at the time.
 
-The fraction is what makes a residual rule safe here, and an earlier draft rejected one
-for a reason that applies only to an *absolute* residual: "a continent minus its
-countries keeps a huge open-ocean residual." True — but that leftover is a small
-*fraction* of the continent's own area, so a fractional test drops it. The **inverted**
-form (`residual >= (1 - KEEP_FRACTION) * area`) was measured to admit europe at 34.8 GB,
-africa, south-america, japan and australia as *density* shards. `MAX_FINE_BYTES` now
-asserts that bound instead of trusting it — a fine member over 1.5 GB is a hard error
-that writes nothing — and `test-update.py` pins the comparison's direction with a
-fixture whose continent sits between the two thresholds.
+1. *"A region that contains no other region."* Drops every region containing an
+   **enclave** and takes its non-enclave territory along: `greater-london` went to
+   `enfield`, `niedersachsen` to `bremen`, `ukraine` to `crimean-fed-district`,
+   `morocco` to `ceuta`/`melilla`, and eight more. London, Hanover, Marseille,
+   Casablanca, Guangzhou, Sydney, Kyiv and Lviv were in **no density shard**, and
+   Ukraine had no feature shard either.
+2. *"A region at least 70% uncovered."* Then drops one that is 62.9% uncovered:
+   `central-america`, taking Trinidad, Barbados, Grenada, St Lucia, Curaçao, Aruba,
+   Cayman and the BVI; and `italy` at 7.0%, taking San Marino.
+
+Both asked about **area** when the question is about **territory**, so both needed a
+threshold, and a threshold on the wrong quantity always has a wrong side. Asking about
+land needs no threshold beyond "is there any", and it makes the guarantee assertable:
+`cover.py` **refuses to write a cover that leaves land to no shard**.
+
+Two details of the land test are measured rather than chosen. Natural Earth's
+coastlines and Geofabrik's cutting polygons disagree by metres, so every residual
+picks up a fringe of thin slivers — `england`'s is **473 pieces** totalling 0.0127 deg²,
+none of them a place — and eroding by ~550 m deletes anything narrower while leaving a
+real place intact (San Marino is one piece of 0.0053 deg² and survives at 0.0038). And
+the 8 GB cap is a **disk** bound, not a memory one: a clipped shard's RSS scales with
+cells inside the clip, so a large extract clipped to a sliver is cheap in memory, but a
+density shard cannot use `--unlink-source` (stage 4 reads the raw extract). Sized off
+`quebec` at 1.5 GB instead, San Marino, Saint-Pierre-et-Miquelon, South Georgia and
+Kerguelen all fell out, because the only extract reaching each is a country file.
+
+**Two consequences to know.** Micro-territories below the mask's resolution — `monaco`,
+`macau`, `tokelau`, `cocos-islands`, `norfolk-island`, `ile-de-clipperton`,
+`ashmore-cartier` — do not get their own shard; their land is covered by the parent
+that contains them (Monaco by `provence-alpes-cote-d-azur`, Macau by `guangdong`,
+Gibraltar by `andalucia`, the Vatican by `centro`), which costs a larger parent extract
+and is **not** a coverage gap. And exactly one piece of land is genuinely uncovered:
+**Diego Garcia** (0.0108 deg², Chagos), whose only source is `asia` at 16.18 GB — twice
+what a runner can hold. Regenerating therefore needs `--allow-uncovered-land`, and the
+expected residue is that one piece:
+
+```sh
+uv run tools/osm-world/cover.py --allow-uncovered-land
+```
+
+If a run reports anything else, investigate before committing it.
 
 Note `index-v1.json`'s `parent` field is a *display* hierarchy, not a tree — `us`,
 `us-midwest` and `us/michigan` are siblings — so the cover is computed geometrically.
@@ -537,7 +565,7 @@ files' timeouts should be trusted until it has run.
 
 | workflow | shards | matrix | timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
-| `world-density-shards.yml` | fine (512) | batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
+| `world-density-shards.yml` | fine (514) | batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
 | `world-feature-shards.yml` | coarse (87) | batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
 
 Both are monthly plus `workflow_dispatch`, `max-parallel` 20, `fail-fast: false`, and

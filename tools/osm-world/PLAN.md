@@ -100,10 +100,10 @@ ones. Both within run-to-run variance plus the new stages.
   Overture admin file alone is 32 requests / 7.49 MB for a city bbox — admin is now the
   dominant term.)
 - **Planet PBF** is 94.3 GB (docs in this repo still say 87.6 — stale). The finest
-  disjoint cover of Geofabrik's 555 regions is **512 members totalling 82.4 GB**, largest
-  quebec at 1.158 GB (`cover.py`, re-run 2026-08-19 after the enclave-parent fix; the
-  superseded leaf rule gave 500 / 78.4 GB, and the twelve regions it dropped are the
-  twelve that contain an enclave — see §Phase 3 cover fix).
+  disjoint cover of Geofabrik's 555 regions is **514 members totalling 114.2 GB**, largest
+  africa at 7.90 GB (`cover.py`, re-run 2026-08-20 under the land rule; the superseded
+  leaf rule gave 500 / 78.4 GB and a 70%-residual rule gave 512 / 82.4 GB, both with
+  holes over inhabited land — see §Phase 3 cover fix).
   Note `index-v1.json`'s `parent` field is a display hierarchy, not a tree — `us`,
   `us-midwest`, `us/michigan` are siblings; the cover must be computed geometrically,
   and `cover.py` does.
@@ -589,7 +589,8 @@ run. The `fine` array is **in the
 difference order** (ascending polygon area, ties by id) so a consumer can rebuild the
 assigned disjoint geometries. Real run against `index-v1.json` 2026-08-15 (555 regions):
 
-- **fine: 512 members, 82.4 GB**, largest quebec 1.158 GB, no null sizes.
+- **fine: 514 members, 114.2 GB**, largest africa 7.90 GB, no null sizes. One piece of
+  land is uncovered by design: Diego Garcia, whose only source is `asia` at 16.18 GB.
 - **coarse: 87 regions, each ≤ 8 GB, 82.2 GB**, largest africa 7.90 GB. `dach` (6.2 GB)
   is chosen over `germany`; canada 6.41 GB; france 5.06 GB; the US splits into
   midwest/northeast/pacific/south/west; africa, south-america, australia-oceania and
@@ -710,7 +711,7 @@ x64, ≈ 45 GB arm64):**
 | file | trigger | matrix | per-job timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
 | `.github/workflows/world-canary.yml` | `workflow_dispatch` only | one ~1 GB coarse shard | — | none — **needs no secrets** |
-| `.github/workflows/world-density-shards.yml` | dispatch only (schedule disabled until the R2 secrets exist) | 512 fine shards, batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
+| `.github/workflows/world-density-shards.yml` | dispatch only (schedule disabled until the R2 secrets exist) | 514 fine shards, batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
 | `.github/workflows/world-feature-shards.yml` | dispatch only (schedule disabled until the R2 secrets exist) | 87 coarse shards, batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
 
 Helpers: `tools/osm-world/ci/chunk-shards.py` (stdlib only; batches `shards.json[kind]`
