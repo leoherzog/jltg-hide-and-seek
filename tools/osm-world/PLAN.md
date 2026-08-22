@@ -701,7 +701,7 @@ x64, ≈ 45 GB arm64):**
   measure**. If private overage matters, split `tools/osm-world/` + workflow into a
   public build repo (nothing in it is sensitive; R2 credentials are env/secrets).
 - R2: bucket CORS must expose `content-range` (`build.py` writes `r2-cors.json`;
-  apply with `wrangler r2 bucket cors put`). The account token in `.dev.vars` currently
+  apply with `wrangler r2 bucket cors set`). The account token in `.dev.vars` currently
   lacks R2 permissions — mint one with R2 write for CI.
 - Cadence: monthly. Parks and libraries do not move weekly; `planet_timestamp` reaches
   every provenance row, and staleness is disclosed, not hidden.

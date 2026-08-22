@@ -55,7 +55,7 @@ import { FlatGeobufReader } from './flatgeobuf.js';
  *
  * Overridable so a build can be tested from a local static server before publishing.
  */
-export const DEFAULT_WORLD_BASE_URL = 'https://world.jltg-hide-and-seek.example/world';
+export const DEFAULT_WORLD_BASE_URL = 'https://jltg.herzog.tech/world';
 
 /**
  * The two identity columns `osmium export -c` is configured to write, via the config's

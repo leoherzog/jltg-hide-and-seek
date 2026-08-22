@@ -1,21 +1,25 @@
-[
-  {
-    "AllowedOrigins": [
-      "*"
-    ],
-    "AllowedMethods": [
-      "GET",
-      "HEAD"
-    ],
-    "AllowedHeaders": [
-      "range",
-      "if-match"
-    ],
-    "ExposeHeaders": [
-      "content-length",
-      "content-range",
-      "etag"
-    ],
-    "MaxAgeSeconds": 86400
-  }
-]
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "*"
+        ],
+        "methods": [
+          "GET",
+          "HEAD"
+        ],
+        "headers": [
+          "range",
+          "if-match"
+        ]
+      },
+      "exposeHeaders": [
+        "content-length",
+        "content-range",
+        "etag"
+      ],
+      "maxAgeSeconds": 86400
+    }
+  ]
+}

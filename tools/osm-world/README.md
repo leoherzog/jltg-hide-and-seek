@@ -159,7 +159,7 @@ like a corrupt file rather than a CORS error. `build.py` writes `r2-cors.json`; 
 with:
 
 ```sh
-wrangler r2 bucket cors put <bucket> --file tools/osm-world/r2-cors.json
+wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
 ```
 
 `.fgb` files are immutable per build and served `max-age=31536000, immutable`;

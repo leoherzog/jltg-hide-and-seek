@@ -1752,16 +1752,24 @@ def stage_manifest(out_dir: Path, table: Table, planet_ts: str | None,
 # The bucket must answer Range requests cross-origin, and it must EXPOSE the range
 # headers — a browser that cannot read Content-Range cannot walk the R2 index, and the
 # failure looks like a corrupt file rather than a CORS error. Apply with:
-#   wrangler r2 bucket cors put <bucket> --file tools/osm-world/r2-cors.json
-R2_CORS = [
-    {
-        "AllowedOrigins": ["*"],
-        "AllowedMethods": ["GET", "HEAD"],
-        "AllowedHeaders": ["range", "if-match"],
-        "ExposeHeaders": ["content-length", "content-range", "etag"],
-        "MaxAgeSeconds": 86400,
-    }
-]
+#   wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
+# NOTE THE `rules` WRAPPER, and the nesting under `allowed`. S3 takes a bare array of
+# AllowedOrigins/AllowedMethods; R2's own API does not, and `wrangler r2 bucket cors
+# set` rejects the S3 shape with "must contain a 'rules' array". Emitting S3's shape
+# made this file unappliable by the one command the docs give for applying it.
+R2_CORS = {
+    "rules": [
+        {
+            "allowed": {
+                "origins": ["*"],
+                "methods": ["GET", "HEAD"],
+                "headers": ["range", "if-match"],
+            },
+            "exposeHeaders": ["content-length", "content-range", "etag"],
+            "maxAgeSeconds": 86400,
+        }
+    ]
+}
 
 
 R2_ENV = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET")
@@ -1837,7 +1845,7 @@ def stage_upload(out_dir: Path, prefix: str) -> None:
             },
         )
     log(f"stage 6: done — remember to apply CORS: "
-        f"wrangler r2 bucket cors put {bucket} --file {cors_path}")
+        f"wrangler r2 bucket cors set {bucket} --file {cors_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
