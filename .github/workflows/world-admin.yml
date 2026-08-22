@@ -93,14 +93,21 @@ env:
   AWS_DEFAULT_REGION: auto
   # Pinned: bump deliberately, with a look at the release notes — this binary
   # reads a 4.47 GB remote parquet scan whose behavior we want reproducible.
-  DUCKDB_VERSION: "1.4.1"
+  # 1.4.x is the LTS bugfix line and is DELIBERATELY preferred over 1.5.x
+  # (latest 1.5.5, checked 2026-08-22): 1.5.0 ships "GEOMETRY Rework: Part 1"
+  # and 1.5.4's notes fix "native geometry parquet stats pruning" — i.e.
+  # 1.5.0–1.5.3 could prune parquet row groups WRONGLY on geometry stats,
+  # which in this build would silently drop division polygons, the invisible
+  # failure class. Revisit 1.5.x once the geometry rework has a few more
+  # patch releases behind it.
+  DUCKDB_VERSION: "1.4.5"
 
 jobs:
   build-admin:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |

@@ -88,7 +88,7 @@ jobs:
       matrix: ${{ steps.chunk.outputs.matrix }}
       count: ${{ steps.chunk.outputs.count }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |
@@ -145,7 +145,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |

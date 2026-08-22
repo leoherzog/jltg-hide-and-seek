@@ -197,7 +197,7 @@ jobs:
       bands: ${{ steps.plan.outputs.bands }}
       cells: ${{ steps.plan.outputs.cells }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |
@@ -316,7 +316,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.plan.outputs.layers_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |
@@ -442,7 +442,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.plan.outputs.bands_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |
@@ -557,7 +557,7 @@ jobs:
     # (OOM, band-set validation) are not transient.
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |
@@ -643,7 +643,7 @@ jobs:
     # No free-disk-space: this job merges nothing and peaks ~5 GB of disk.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |

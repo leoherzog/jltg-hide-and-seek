@@ -45,7 +45,7 @@ jobs:
     # Generous vs. the ~1 GB shard this targets — S3 exists to find the real number.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: runner envelope (this build depends on undocumented headroom)
         run: |
@@ -250,7 +250,7 @@ jobs:
 
       - name: upload manifest + one layer as artifact (NOT R2)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: world-canary-${{ steps.pick.outputs.id_safe }}
           path: artifact/
