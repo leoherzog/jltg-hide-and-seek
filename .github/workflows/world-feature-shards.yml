@@ -66,6 +66,16 @@ on:
         description: "Coarse shards per matrix job (default 1 — see disk note above)"
         required: false
         default: "1"
+  # Callable from world-rebuild.yml (the Phase 6 orchestrator), same input. The
+  # `inputs` context covers both triggers, hence `inputs.batch_size` below
+  # rather than `github.event.inputs.batch_size` (which, under workflow_call,
+  # would read the CALLER's dispatch inputs).
+  workflow_call:
+    inputs:
+      batch_size:
+        required: false
+        type: string
+        default: "1"
 
 concurrency:
   group: world-feature-shards
@@ -97,7 +107,7 @@ jobs:
       - name: chunk shards.json into a matrix
         id: chunk
         env:
-          BATCH_SIZE: ${{ github.event.inputs.batch_size || '1' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '1' }}
         run: |
           set -euo pipefail
           if [ ! -f tools/osm-world/shards.json ]; then

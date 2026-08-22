@@ -90,6 +90,20 @@ on:
         description: "Max accumulated est_bytes per matrix job (default 2 GB; a single larger shard still runs, alone)"
         required: false
         default: "2000000000"
+  # Callable from world-rebuild.yml (the Phase 6 orchestrator), same inputs. The
+  # `inputs` context covers both triggers, hence `inputs.*` below rather than
+  # `github.event.inputs.*` (which, under workflow_call, would read the CALLER's
+  # dispatch inputs).
+  workflow_call:
+    inputs:
+      batch_size:
+        required: false
+        type: string
+        default: "5"
+      max_batch_bytes:
+        required: false
+        type: string
+        default: "2000000000"
 
 concurrency:
   group: world-density-shards
@@ -121,8 +135,8 @@ jobs:
       - name: chunk shards.json into a matrix
         id: chunk
         env:
-          BATCH_SIZE: ${{ github.event.inputs.batch_size || '5' }}
-          MAX_BATCH_BYTES: ${{ github.event.inputs.max_batch_bytes || '2000000000' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '5' }}
+          MAX_BATCH_BYTES: ${{ inputs.max_batch_bytes || '2000000000' }}
         run: |
           set -euo pipefail
           if [ ! -f tools/osm-world/shards.json ]; then
