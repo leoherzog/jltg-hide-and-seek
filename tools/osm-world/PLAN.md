@@ -521,9 +521,10 @@ invisible — both are now designed against in `merge.py`:
    have shown up as "some builds are 2× larger than others". Hence `merge.py`'s **loud
    per-shard `rows == distinct` assert before merging anything** (`--no-assert` to
    override). A bug that a later stage cleans up is a bug you never find.
-3. **H2b is still open**: cross-tile duplication rate per layer, which sizes the merge.
-   The earlier measurement was polluted by the double-emit bug and must be re-taken
-   tiles-only with post-Phase-0 code.
+3. **H2b is still open** (since resolved — see Open questions): cross-tile
+   duplication rate per layer, which sizes the merge. The earlier measurement was
+   polluted by the double-emit bug and must be re-taken tiles-only with
+   post-Phase-0 code.
 
 ### Result — `merge.py`, `cover.py`, `shards.json`
 
@@ -668,11 +669,14 @@ This closes the gap between Phase 3's mechanistic argument for `--clip-region`
 ("without the clip … the merge double-counts") and an actual measurement of what the
 bug looks like and how completely the fix removes it.
 
-**H2b (cross-tile feature-layer duplication rate) is still open.** The retest's shard
-pairs (nested bremen/hamburg/berlin, and the self-merge used to confirm mechanism) are
-either non-adjacent Geofabrik extracts or a deliberate exact self-merge, so cross-shard
-identity dedup on real adjacent boundaries is still not measured — the merge-test's
-0%-duplicates result above remains a lower bound, not a resolution.
+~~**H2b (cross-tile feature-layer duplication rate) is still open.**~~ The retest's
+shard pairs (nested bremen/hamburg/berlin, and the self-merge used to confirm
+mechanism) are either non-adjacent Geofabrik extracts or a deliberate exact
+self-merge, so those 0% results were lower bounds. **Resolved 2026-08-22** by the
+first real global merge (the 3-layer merge canary, run 32587570192, all coarse
+shards pooled): aquarium 1.18%, foreign_consulate 0.372%, green_recreation_ground
+0.291% of pooled rows deduped — see the Open questions table for the full figures
+and the three-layers-only caveat.
 
 ---
 
@@ -840,7 +844,7 @@ Wired this wave, all in `osm/`:
 | S1 | peak RSS of GDAL FlatGeobuf write on a merged multi-GB layer | Option B vs fallback A | **RESOLVED** — 166 MB + 100 B/feature; Option B confirmed |
 | S2 | Overture `locality` admin_level coverage + `division_area` size; fr/de/it/gb deep-level mapping | Phase 2 shape | **RESOLVED** — Overture adopted; synthetic subtype→level map |
 | S3 | one ~1 GB shard on an actual Actions runner (time, disk headroom) | CI cost model | **RESOLVED** — dispatched 2026-08-20, run 32324799596. czech-republic, 944 MB, full pipeline: **19.8 min, 2.19 GB peak RSS, 110% CPU, GDAL 3.8.4 from apt**, 36 layers / 960,750,728 B. Note this ran on a PRIVATE-repo runner (2 vCPU / 8 GB); public is 4 vCPU / 16 GB, so treat it as a pessimistic bound. **Re-run on a PUBLIC runner** (32566905248, 2026-08-22): same shard, **13.8 min** (-30%), 115% CPU, 2.29 GB RSS, identical 36 layers / 0.96 GB. Cores doubled; wall clock fell 30%, not 50%, because the density pass is single-threaded |
-| H2b | cross-tile duplication rate per layer — prior measurement was polluted by the double-emit bug | merge dedup sizing | **OPEN** — merge-test's 0% and the retest's nested-shard 0% are both lower bounds (non-adjacent Geofabrik extracts); still needs a real adjacent-boundary measurement, tiles-only with post-Phase-0 code |
+| H2b | cross-tile duplication rate per layer — prior measurement was polluted by the double-emit bug | merge dedup sizing | **RESOLVED** (2026-08-22, merge-canary run 32587570192) — the first real cross-shard merge over the full 87-member coarse cover (aquarium carried by 70 shards, foreign_consulate by 86), post-Phase-0 code: aquarium 1,699 → 1,679 (**1.18%** deduped), foreign_consulate 5,375 → 5,355 (**0.372%**), green_recreation_ground 194,672 → 194,105 (**0.291%**, via the count_only geometry-bytes dedup). Real adjacent-boundary duplication at last — every prior figure was a 0% lower bound from non-adjacent extracts. Caveat: a **three-layer** rate from a canary, not a whole-world rate; per-layer rates will vary with feature density along Geofabrik's buffers |
 | — | rebuild michigan/germany with the `advertising` fix before any count is published | published numbers | **CLOSED** — michigan-v3 (232,847,376 B, advertising 772) and germany-v3 (3,343,969,105 B, advertising 35,816) built and fully verified; see §Phase 0 Result |
 | — | `green` at ~27 GB global pre-reduction serves a weight-0.5 legal-spot category (`osm/geodata.js:301`) | product call on R6 | open — now 1.57 GB for germany post-Phase-1, so less pressing |
 
@@ -972,6 +976,30 @@ manifest is a live-site break: `--upload` refuses to write a `partial: true`
 manifest to the DEFAULT `<prefix>/manifest.json` (a CI matrix job that forgot
 `--manifest-dest` must not clobber the world), and the band sidecar uploads after
 its band file so its presence marks the band complete.
+
+**First world-admin dispatch (run 32591161893) failed on a GDAL driver gap, and
+the fix removed the dependency rather than patching around it.** ubuntu-latest's
+apt GDAL is built WITHOUT the Arrow/Parquet drivers (82 drivers listed, neither
+present), so `build-admin.sh`'s parquet handoff to ogr2ogr could not open its own
+intermediate — invisible on kadro, whose GDAL has the drivers, and exactly the
+class Phase 4 worried about abstractly ("whether ubuntu-latest's apt GDAL clears
+preflight's version floor"): the gap was drivers, not version, and `command -v`
+can never catch it. Fix: duckdb-spatial's bundled GDAL writes `admin.fgb`
+DIRECTLY (`COPY … TO (FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326',
+LAYER_CREATION_OPTIONS 'SPATIAL_INDEX=YES')`, with `ST_Multi` replacing ogr2ogr's
+`PROMOTE_TO_MULTI`) — no 4.47 GB intermediate, no ogr2ogr step. Verified on a
+Vatican-bbox A/B against the old path run through local GDAL (which has Parquet):
+**identical feature content** (same md5 over sorted-WKT dumps), **identical
+answers through the real client reader** (IT+VA seen; St Peter's → VA only, the
+interior ring held; Rome → IT, never VA; 11 range requests — and a successful
+query proves the spatial index, since the reader's `search` throws without one).
+One cosmetic difference: the layer header says Geometry "Unknown (any)" instead
+of "Multi Polygon"; per-feature types are written and the reader treats the
+header type as a default only. Every GDAL-using workflow job now **preflights its
+drivers by name** right after the apt install (`ogrinfo --formats | grep` — plain
+grep, not `-q`, whose early exit SIGPIPEs ogrinfo and fails the pipeline under
+`pipefail` on success), so the next gap of this kind costs seconds, not a
+3.5-minute build and a driver dump.
 
 Verified locally (2026-08-22): the banded path equals the serial merge **cell for
 cell** on the make-test-world.py world (bands 1/2 + 2/2 → assemble → identical cells
