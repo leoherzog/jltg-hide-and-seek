@@ -197,6 +197,28 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kwargs)
 
 
+def preflight_binaries(needed: tuple[str, ...]) -> None:
+    """Fail in the first second, by name, if a binary this run will shell out to
+    is absent — before any sync, merge, or download has been paid for.
+
+    This is the systematic guard for the kadro-vs-CI class of failure: run
+    32597356160's finalize crashed on a missing `ogrinfo` AFTER 41 merge jobs
+    succeeded, because the one job that ran the manifest-assembly mode was also
+    the one job that never installed GDAL. Environment checks that live in the
+    WORKFLOW can only cover the jobs someone remembered to give them; the code
+    that does the invoking is the only place that knows what the invoked mode
+    actually needs, so main() derives the set per mode and asks here.
+    """
+    missing = [b for b in needed if shutil.which(b) is None]
+    if missing:
+        raise SystemExit(
+            f"missing required binar{'y' if len(missing) == 1 else 'ies'} on "
+            f"PATH: {', '.join(missing)}\n"
+            "  ogrinfo/ogr2ogr → gdal-bin package\n"
+            "  sort            → coreutils\n"
+            "This run would otherwise crash mid-merge or (worse) mid-publish.")
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -1024,6 +1046,16 @@ def main(argv: list[str] | None = None) -> int:
              if on]
     if len(modes) > 1:
         raise SystemExit(f"{' and '.join(modes)} are mutually exclusive")
+    # Every mode publishes through ogrinfo (feature_count / layer_extent);
+    # geometry-transforming modes add ogr2ogr; only density aggregation needs
+    # the external sort. Derived from what each mode's code path invokes — see
+    # preflight_binaries for why this lives here and not (only) in a workflow.
+    if args.assemble_manifests is not None:
+        preflight_binaries(("ogrinfo",))
+    elif args.assemble_density_bands is not None:
+        preflight_binaries(("ogrinfo", "ogr2ogr"))
+    else:
+        preflight_binaries(("ogrinfo", "ogr2ogr", "sort"))
     if args.upload:
         build.check_upload_env()
     if args.admin is not None and not args.admin.exists():

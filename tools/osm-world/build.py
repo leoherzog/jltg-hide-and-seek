@@ -381,12 +381,15 @@ def gdal_version() -> tuple[int, ...]:
 
 def preflight() -> None:
     """Fail before the eight-hour part, not during it."""
-    missing = [b for b in ("osmium", "ogr2ogr") if shutil.which(b) is None]
+    # ogrinfo included since 2026-08-22 (the finalize-job lesson, run
+    # 32597356160): preflight what the code INVOKES — feature_count shells out
+    # to ogrinfo — not just what usually travels together in a package.
+    missing = [b for b in ("osmium", "ogr2ogr", "ogrinfo") if shutil.which(b) is None]
     if missing:
         raise SystemExit(
             f"missing required binary/binaries: {', '.join(missing)}\n"
-            "  osmium  → osmium-tool package\n"
-            "  ogr2ogr → gdal package"
+            "  osmium          → osmium-tool package\n"
+            "  ogr2ogr/ogrinfo → gdal package"
         )
     version = gdal_version()
     if version[:2] < MIN_GDAL:

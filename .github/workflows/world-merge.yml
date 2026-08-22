@@ -685,9 +685,26 @@ jobs:
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
-      - name: install uv
+      # GDAL IS NEEDED HERE TOO: merge.py --assemble-manifests shells out to
+      # ogrinfo for the admin layer's feature count and bbox (place_admin →
+      # feature_count / layer_extent). Its absence is what failed run
+      # 32597356160's finalize — AFTER 41 merge jobs succeeded, though safely
+      # before the manifest upload. merge.py now also preflights the binaries
+      # its mode will invoke, so this class dies in the first second either way.
+      - name: install gdal, uv
         run: |
           set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends gdal-bin
+          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
+          # exist and still lack a driver a step needs — fail here, by name, in
+          # seconds. These four are what merge.py's paths read/write; plain
+          # grep, not -q: under pipefail, -q's early exit kills ogrinfo with
+          # SIGPIPE and fails the pipeline on success.
+          for drv in FlatGeobuf GPKG CSV GeoJSONSeq; do
+            ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
+              || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
+          done
           python3 -m pip install --user --upgrade uv
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
