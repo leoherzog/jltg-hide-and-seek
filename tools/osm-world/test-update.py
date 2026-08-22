@@ -137,10 +137,12 @@ def check_where_rewriter(build, failures: list[str]) -> None:
     # rewrite unchanged, character for character — the rewriter parses SQL, and a parser
     # that reformats what it does not need to touch would rewrite clauses on the planet
     # build for no reason and hide a real change in the diff.
+    # No admin entry: categories.json deliberately carries none (its `_admin_comment`
+    # — the shipped admin layer is Overture's, via merge.py --admin, never built here).
     layers = [*table_raw["categories"], *table_raw["curse_layers"],
-              *table_raw["density"]["layers"], table_raw["admin"]]
+              *table_raw["density"]["layers"]]
     for entry in layers:
-        key = entry.get("key", "admin")
+        key = entry["key"]
         got = build.rewrite_where(entry["where"], every_column, key=key)
         if got != entry["where"]:
             failures.append(

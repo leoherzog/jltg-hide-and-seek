@@ -15,14 +15,24 @@ shards.json (the pinned interface written by cover.py) has the shape:
       "fine":   [{..same.., "disjoint_neighbors": ["..."]}]
     }
 
-This script reads one of those two arrays, groups it into fixed-size batches (a
-GitHub matrix *job* runs one batch, looping over its shards sequentially — that is
-what keeps 499 fine shards under 256 jobs without raising per-job concurrency), and
-prints a JSON array of `{"batch_id", "shards"}` objects suitable for:
+This script reads one of those two arrays, groups it into batches (a GitHub matrix
+*job* runs one batch, looping over its shards sequentially — that is what keeps 514
+fine shards under 256 jobs without raising per-job concurrency), and prints a JSON
+array of `{"batch_id", "shards"}` objects suitable for:
 
     strategy:
       matrix:
         include: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+A batch closes on whichever cap is hit first: `--batch-size` (shard count) or, when
+given, `--max-batch-bytes` (accumulated `est_bytes`). The byte cap exists because
+the fine shards span ~100 kB to 7.90 GB and the density pass is single-threaded, so
+a batch's wall clock tracks its total bytes, not its shard count: with count-only
+batching, whichever fixed batch drew africa was ~10x the work of a typical one and
+blew the workflow timeout while its neighbours finished in minutes. A single shard
+larger than the byte cap still gets a batch — its own, alone; the cap bounds what a
+shard *shares a job with*, it is not an admission test (dropping the shard would
+silently publish a world without africa).
 
 `disjoint_neighbors` (fine-only) is not consumed here, and it is not a merge input
 either: the density exactness rule is enforced at BUILD time (build-shard.sh passes
@@ -43,10 +53,36 @@ import sys
 from pathlib import Path
 
 
-def chunk(items: list, size: int) -> list[list]:
+def chunk(items: list, size: int, max_bytes: int | None = None) -> list[list]:
+    """Greedy, order-preserving batching: close the open batch when adding the next
+    shard would exceed the count cap OR the byte cap, whichever comes first.
+
+    Order-preserving matters only in that it keeps the output stable for a given
+    shards.json — batches have no build-time meaning beyond "these run sequentially
+    on one runner". An oversized shard (est_bytes > max_bytes) opens a fresh batch
+    and the very next shard closes it, so it runs alone rather than being dropped
+    or erroring; every shard appears in exactly one batch either way.
+    """
     if size < 1:
         raise ValueError("batch size must be >= 1")
-    return [items[i:i + size] for i in range(0, len(items), size)]
+    if max_bytes is not None and max_bytes < 1:
+        raise ValueError("max batch bytes must be >= 1")
+    batches: list[list] = []
+    current: list = []
+    current_bytes = 0
+    for item in items:
+        est = int(item["est_bytes"]) if max_bytes is not None else 0
+        if current and (len(current) >= size
+                        or (max_bytes is not None
+                            and current_bytes + est > max_bytes)):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(item)
+        current_bytes += est
+    if current:
+        batches.append(current)
+    return batches
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,8 +93,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kind", required=True, choices=["coarse", "fine"],
                         help="which array of shards.json to batch")
     parser.add_argument("--batch-size", type=int, required=True,
-                        help="shards per matrix job (one job loops over its batch "
-                             "sequentially inside build-shard.sh)")
+                        help="max shards per matrix job (one job loops over its "
+                             "batch sequentially inside build-shard.sh)")
+    parser.add_argument("--max-batch-bytes", type=int, default=None,
+                        help="close a batch early once its accumulated est_bytes "
+                             "would exceed this (default: no byte cap, count-only "
+                             "batching). A single shard over the cap still gets a "
+                             "batch of its own — see the module docstring.")
     parser.add_argument("--max-jobs", type=int, default=256,
                         help="hard cap on emitted matrix entries (GitHub Actions "
                              "limit; default 256)")
@@ -87,12 +128,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {args.shards_json}[\"{args.kind}\"] is empty", file=sys.stderr)
         return 1
 
-    batches = chunk(shards, args.batch_size)
+    if args.max_batch_bytes is not None:
+        # cover.py --no-sizes writes est_bytes: null (it skips the per-region HEAD
+        # requests). Treating null as 0 would silently pack every shard of such a
+        # run into count-capped batches, which is exactly the failure mode the byte
+        # cap exists to prevent — refuse instead.
+        unsized = [s["id"] for s in shards if not s.get("est_bytes")]
+        if unsized:
+            print(
+                f"error: --max-batch-bytes needs est_bytes on every shard, but "
+                f"{len(unsized)} {args.kind} shard(s) have none (first: "
+                f"{unsized[0]}). This shards.json came from a cover.py --no-sizes "
+                "run — regenerate without --no-sizes, or drop --max-batch-bytes.",
+                file=sys.stderr,
+            )
+            return 1
+
+    batches = chunk(shards, args.batch_size, args.max_batch_bytes)
     if len(batches) > args.max_jobs:
+        caps = f"batch-size {args.batch_size}"
+        fix = "Raise --batch-size."
+        if args.max_batch_bytes is not None:
+            caps += f" / max-batch-bytes {args.max_batch_bytes}"
+            fix = "Raise --batch-size and/or --max-batch-bytes."
         print(
-            f"error: {len(shards)} {args.kind} shards at batch-size {args.batch_size} "
-            f"= {len(batches)} matrix jobs, over the --max-jobs cap of {args.max_jobs}. "
-            "Raise --batch-size.",
+            f"error: {len(shards)} {args.kind} shards at {caps} = {len(batches)} "
+            f"matrix jobs, over the --max-jobs cap of {args.max_jobs}. {fix}",
             file=sys.stderr,
         )
         return 1
@@ -107,9 +168,12 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     print(json.dumps(matrix, separators=(",", ":")))
+    caps = f"batch size {args.batch_size}"
+    if args.max_batch_bytes is not None:
+        caps += f", byte cap {args.max_batch_bytes}"
     print(
         f"chunk-shards: {len(shards)} {args.kind} shards -> {len(matrix)} matrix jobs "
-        f"(batch size {args.batch_size})",
+        f"({caps})",
         file=sys.stderr,
     )
     return 0

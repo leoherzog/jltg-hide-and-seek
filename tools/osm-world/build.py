@@ -242,7 +242,6 @@ class Table:
     categories: list[Layer] = field(default_factory=list)
     curse_layers: list[Layer] = field(default_factory=list)
     density_layers: list[Layer] = field(default_factory=list)
-    admin: Layer | None = None
     cell_deg: float = 0.002
     include_tags: tuple[str, ...] = ()
     # The columns the CLIENT reads off a shipped feature, plus the `(osm_type, osm_id)`
@@ -253,11 +252,16 @@ class Table:
 
     @property
     def feature_layers(self) -> list[Layer]:
-        """Everything that ships as real geometry — one FlatGeobuf each."""
-        out = list(self.categories) + list(self.curse_layers)
-        if self.admin is not None:
-            out.append(self.admin)
-        return out
+        """Everything that ships as real geometry — one FlatGeobuf each.
+
+        Deliberately WITHOUT admin: per-extract admin is broken by construction (a
+        boundary relation only assembles inside an extract that contains it whole),
+        and merge.py takes the shipped admin layer from `--admin` — the Overture
+        build — never from anything build.py produced. Building it here was pure
+        waste, measured at 16.5% of pooled feature-shard output. See
+        `_admin_comment` in categories.json.
+        """
+        return list(self.categories) + list(self.curse_layers)
 
 
 def load_table(path: Path) -> Table:
@@ -290,18 +294,14 @@ def load_table(path: Path) -> Table:
         return built
 
     density = raw["density"]
-    admin_entry = dict(raw["admin"])
-    admin_entry.setdefault("key", "admin")
 
+    # No admin here on purpose — categories.json carries no admin entry (see its
+    # `_admin_comment`): the shipped admin layer is Overture's, placed by
+    # merge.py --admin, and a per-extract OSM admin build is discarded unread.
     return Table(
         categories=[layer(e) for e in raw["categories"]],
         curse_layers=[layer(e) for e in raw["curse_layers"]],
         density_layers=[layer(e) for e in density["layers"]],
-        # Containment is the whole question this layer answers, so its rings are never
-        # reduced to a representative point. categories.json pins `geometry: polygon`
-        # (PLAN.md §Phase 1 R3): the 72% of the old layer that was boundary-way
-        # linestrings — which the client discarded on read — is never exported at all.
-        admin=layer(admin_entry),
         cell_deg=float(density["cell_deg"]),
         include_tags=tuple(raw["include_tags"]),
         runtime_columns=tuple(raw["runtime_columns"]),

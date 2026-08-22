@@ -52,9 +52,16 @@
 #     PLAN.md — this workflow uses ubuntu-latest/x64, check current pricing before
 #     relying on that number). If overage becomes real, PLAN.md's fallback is
 #     splitting tools/osm-world/ + these workflows into a separate public repo.
-#   - Matrix hard cap is 256 jobs/workflow, hence the batching below (514 fine
-#     shards -> 5 per batch -> 103 jobs, comfortably under the cap with headroom
-#     for cover.py's count changing between runs).
+#   - Matrix hard cap is 256 jobs/workflow, hence the batching below. Batches are
+#     capped BOTH by count (5) and by accumulated est_bytes (2 GB): the fine shards
+#     span ~100 kB to 7.90 GB and the density pass is single-threaded, so a batch's
+#     wall clock tracks its bytes — a fixed batch of 5 that happened to draw africa
+#     was ~10x a typical batch's work and blew the old 90-min timeout. Against the
+#     committed shards.json the two caps give 514 fine shards -> 113 jobs (was 103
+#     count-only), comfortably under the 256 cap with headroom for cover.py's count
+#     changing between runs. Only the five shards individually over 2 GB (africa,
+#     canada, south-america, us-midwest, italy) exceed the byte cap, and
+#     chunk-shards.py gives each of those a job of its own.
 #   - Concurrency: 20 (Free tier) / 40 (Pro). Defaults to 20 below; raise
 #     max-parallel if this repo is on a plan with more concurrent-job headroom.
 #
@@ -76,9 +83,13 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Fine shards per matrix job (default 5; 514/5 = 103 jobs)"
+        description: "Max fine shards per matrix job (default 5; with the byte cap, 514 shards = 113 jobs)"
         required: false
         default: "5"
+      max_batch_bytes:
+        description: "Max accumulated est_bytes per matrix job (default 2 GB; a single larger shard still runs, alone)"
+        required: false
+        default: "2000000000"
 
 concurrency:
   group: world-density-shards
@@ -111,6 +122,7 @@ jobs:
         id: chunk
         env:
           BATCH_SIZE: ${{ github.event.inputs.batch_size || '5' }}
+          MAX_BATCH_BYTES: ${{ github.event.inputs.max_batch_bytes || '2000000000' }}
         run: |
           set -euo pipefail
           if [ ! -f tools/osm-world/shards.json ]; then
@@ -120,6 +132,7 @@ jobs:
           python3 tools/osm-world/ci/chunk-shards.py \
             --kind fine \
             --batch-size "$BATCH_SIZE" \
+            --max-batch-bytes "$MAX_BATCH_BYTES" \
             --max-jobs 256 \
             > matrix.json
           {
@@ -138,9 +151,14 @@ jobs:
     name: build (${{ matrix.batch_id }})
     needs: setup
     runs-on: ubuntu-latest
-    # "minutes each" per PLAN.md, x up to --batch-size shards sequentially, plus
-    # toolchain setup. Generous pending S3's real measurement — tighten later.
-    timeout-minutes: 90
+    # Sized off S3's public-runner measurement: 944 MB through the full pipeline in
+    # 13.8 min at 115% CPU — the density pass is single-threaded, so wall clock
+    # scales with bytes, ~15 min/GB. A byte-capped 2 GB batch is ~30 min plus
+    # toolchain setup; the bound is the largest single-shard batch, africa at
+    # 7.90 GB ≈ 2 h, doubled by the retry-once wrapper below on a late transient
+    # failure. 350 min covers retried-africa with margin and stays under the
+    # platform's 6-hour job cap.
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       # 20 = GitHub Free-tier concurrent-job ceiling for private repos (PLAN.md

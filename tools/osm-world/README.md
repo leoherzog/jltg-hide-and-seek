@@ -207,8 +207,11 @@ length of those uploads the published manifest pointed at objects that did not e
 containment. One `.fgb` each. Plus five count-only layers — three `curse_*` for the
 curse predicates whose selector deliberately differs from the same-named category, and
 `green_recreation_ground` + `animal_delta`, which exist only to reconstruct a sixth
-count as an identity (below) — and one `admin` layer that replaces Overpass `is_in`.
-**37 layers in all**, which is what a full build logs.
+count as an identity (below). With the density grid, **36 layers in all**, which is
+what a full build logs. The **37th layer of a published world** — `admin`, replacing
+Overpass `is_in` — is not built here at all: it joins at merge time from the Overture
+build (`merge.py --admin`, §below), because a per-extract OSM admin layer is broken by
+construction and was discarded unread.
 
 **The density grid** — `building`, `street`, `car_street`, `footpath`, `bridge`, `tree`.
 These are tallies, not icons: nothing draws them, everything counts them, and their
@@ -276,10 +279,12 @@ no change. `diagonalize_layer` also owns their `(osm_type, osm_id)` dedup. It co
 
 The trade is real and worth stating: this forecloses ever *drawing* a curse feature.
 
-`admin` is the opposite case — containment is the entire question, so its rings are
-always kept whole. It ships `geometry: polygon` because the member ways osmium has to
-drag along to assemble the relations were 72% of the layer and the client discarded
-every one of them on read.
+`admin` is the opposite case — containment is the entire question, so its rings must
+be kept whole — and that is exactly why it has **no entry in this table**: whole rings
+only exist when the relation fits entirely inside the extract, which no shard
+guarantees. The shipped admin layer comes from Overture at merge time (§below);
+`_admin_comment` in `categories.json` records the removal and its measured cost
+(16.5% of pooled feature-shard output built, indexed, uploaded and discarded).
 
 ### The `curse_animal_habitat` identity
 
@@ -601,7 +606,7 @@ files' timeouts should be trusted until it has run.
 
 | workflow | shards | matrix | timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
-| `world-density-shards.yml` | fine (514) | batch 5 → 103 jobs | 90 min | `shards/density/<id>/` |
+| `world-density-shards.yml` | fine (514) | batch ≤5 / ≤2 GB → 113 jobs | 350 min | `shards/density/<id>/` |
 | `world-feature-shards.yml` | coarse (87) | batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
 
 Both are monthly plus `workflow_dispatch`, `max-parallel` 20, `fail-fast: false`, and
@@ -610,9 +615,13 @@ both fail loudly rather than quietly skipping when `shards.json` is missing or t
 will fail every month until a token with R2 write is minted — disable `schedule:` and
 keep `workflow_dispatch` until then.
 
-`tools/osm-world/ci/chunk-shards.py` batches `shards.json` into the matrix and fails
-cleanly if a future cover run would exceed the 256-job cap (the fix is a larger batch
-size, not a code change). `tools/osm-world/ci/build-shard.sh` downloads a shard and
+`tools/osm-world/ci/chunk-shards.py` batches `shards.json` into the matrix. A batch
+closes on whichever cap is hit first — shard count (`--batch-size`) or accumulated
+`est_bytes` (`--max-batch-bytes`, used by the density workflow because the
+single-threaded density pass makes a batch's wall clock track its bytes; a shard
+alone over the byte cap still gets its own job) — and the script fails cleanly if a
+future cover run would exceed the 256-job cap (the fix is a larger cap, not a code
+change). `tools/osm-world/ci/build-shard.sh` downloads a shard and
 **compares md5 hashes by hand** — never `md5sum -c`, whose filename field rejects the
 dated file Geofabrik's sidecar redirects to — then calls `build.py … --upload --prefix`,
 adding `--clip-region cover-geometries/<id>.geojson` for density builds (hard error if
