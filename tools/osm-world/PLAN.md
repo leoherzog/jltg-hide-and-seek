@@ -901,12 +901,55 @@ that needs a workstation.
   have made this cheaper is **rejected**: under sharding `complete_ways` drops an area
   whose vertices all lie outside a shard while its interior covers a node inside it
   (3 of 25 straddlers in a real bremen re-cut), so the swallow must stay in the merge.
-- **155 fine-cover members pull 39.52 GB — 34.6% of the fine cover — to cover 0.25% of
-  assigned land**: africa 7.90 GB for 0.013 deg², canada 6.42 for 0.024, italy 2.22 for
-  0.005 (San Marino, which is real). These are the residual parents the land rule admits
-  where Natural Earth 1:50m disagrees with Geofabrik's cutting polygons. **Open: measure
-  whether those pieces are islands or mask slop before the first full run**, and tighten
-  `LAND_SLOP_DEG` / `LAND_EPSILON_DEG2` if slop. 30.9 GB/month buys 1.8 deg² of sliver.
+- **Only 5.1% of the fine cover buys artifacts, not the ~35% first reported.** Audited
+  2026-08-22 by recomputing `cover.py`'s exact land test against every committed
+  `cover-geometries/<id>.geojson`, decomposing the pieces for all 11 members over 1 GB,
+  and reverse-geocoding each. The committed geometries are trustworthy: fresh residuals
+  recomputed from today's index in `shards.json`'s difference order have **zero**
+  symmetric difference with all 11.
+
+  | member | GB | eroded land deg² | what is actually there | verdict |
+  | --- | ---: | ---: | --- | --- |
+  | australia-oceania | 1.56 | 0.810 | Archipel des Kerguelen | REAL, sole source |
+  | south-america | 4.10 | 0.481 | South Georgia + South Sandwich | REAL, sole source |
+  | canada | 6.42 | 0.019 | Saint-Pierre-et-Miquelon — **~6,000 residents** | REAL, sole source |
+  | africa | 7.90 | 0.011 | Archipel des Crozet | REAL, sole source |
+  | british-columbia | 1.24 | 0.025 | BC outer coast in no `admreg` extract | REAL |
+  | italy | 2.22 | 0.004 | San Marino | REAL, sole source |
+  | england | 1.69 | 0.0004 | inland gaps between county cutting polygons, ~3 km² | REAL but trivial |
+  | **us-midwest** | **2.49** | 0.291 | **open Lake Michigan + Superior surface** | **ARTIFACT** |
+  | **us-northeast** | **1.79** | 0.004 | **open Lake Erie surface** | **ARTIFACT** |
+  | **china** | **1.58** | 0.001 | cross-Amur buffer sliver **inside Russia**, already covered by `siberian-fed-district` | **ARTIFACT** |
+
+  So the four big remotes (19.98 GB) buy real, sole-source, in one case *inhabited*
+  land, and are irreplaceable under the cover's own "no land in no shard" contract.
+  **The waste is 5.86 GB, in three members**, and the "155 members for 0.25% of land"
+  framing was misleading: most of those are legitimate tiny members (tuvalu, nauru,
+  ceuta) costing ~0 GB. Smallness is not waste.
+
+- **The artifacts have one root cause, and no threshold fixes it.** Natural Earth's
+  1:50m *land* layer **does not subtract lakes**, so open Great Lakes surface reads as
+  land. Proven that tuning cannot separate them: sorted by eroded land, real and
+  artifact **interleave** — tuvalu 0.00027 < england 0.00043 < china 0.00088 <
+  melilla 0.00094 < nauru 0.00145 < pitcairn 0.0024 < ceuta 0.0025 < maldives 0.0034 <
+  **us-northeast 0.0035** < San Marino 0.0038. Any `LAND_EPSILON_DEG2` that drops an
+  artifact drops six real territories first. Erosion fails too, in the other direction:
+  the lake pieces are broad rather than thin, so `us-midwest` still has 0.15 deg² at
+  0.05° while San Marino dies at 0.03° and atolls die immediately. **The fix is to
+  subtract Natural Earth's lakes layer from the mask** — that removes `us-midwest` and
+  `us-northeast` (4.28 GB) with nothing real at risk. `china` needs a separate rule (a
+  post-pass dropping a member whose residual land lies wholly inside later buildable
+  members) or 1.58 GB accepted. `england` is genuinely uncovered land with no smaller
+  container anywhere, so only an upstream Geofabrik tiling fix or a documented
+  `--allow-uncovered-land` waiver removes it, at ~13 km² of countryside where the
+  density curses would silently lift.
+
+  Not applied to the 2026-08-22 run, which was already in flight; the artifact members
+  are ~3 jobs / ~90 min of runner time. Apply before the next rebuild. Expected to be
+  cheap: all three sort *after* the members that would otherwise absorb their territory,
+  so dropping them should leave every other assigned geometry byte-identical — verify
+  that before assuming it.
+
 - **Geofabrik etiquette.** The plan pulls ~196 GB/month across 601 files, and 41.45 GB
   of that is **72 extracts downloaded twice** because they are in both covers. Their
   Sept 2025 "Download responsibly!" post says *"If you want data for the whole planet,
