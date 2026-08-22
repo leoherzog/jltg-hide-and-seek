@@ -165,6 +165,39 @@ wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
 `.fgb` files are immutable per build and served `max-age=31536000, immutable`;
 `manifest.json` is served `max-age=300` and is what flips a new build live.
 
+## Where it is published
+
+| | |
+| --- | --- |
+| bucket | `jltg-hide-and-seek` (R2) |
+| public origin | `https://jltg.herzog.tech` — custom domain bound to the bucket |
+| client constant | `DEFAULT_WORLD_BASE_URL` in `osm/worldfile.js`, `https://jltg.herzog.tech/world` |
+| prefix | `world/` for the published world; `shards/{density,feature}/<id>/` for shard output |
+| site | GitHub Pages, `https://leoherzog.github.io/jltg-hide-and-seek/` — so the browser origin CORS must admit is `https://leoherzog.github.io` |
+
+The **repo is public**, and that is a build requirement rather than a preference: a
+private-repo Actions runner is 2 vCPU / 8 GB RAM, a public one is 4 vCPU / 16 GB, and
+the merge depends on public runners' disk (see `PLAN.md` §Phase 6).
+
+**Credentials, verified against the live bucket** — the S3 key pair needs **Object Read
+& Write**, nothing more and nothing less. Write covers `upload_file`, which becomes
+`CreateMultipartUpload`/`UploadPart`/`CompleteMultipartUpload` once an object clears the
+5 GB single-PUT ceiling — the density grid does. Read covers the merge pulling shards
+back with `aws s3 sync` (`ListObjectsV2` + `GetObject`). Cloudflare has no write-only
+tier, so Object Read & Write is the narrowest thing that works. Bucket creation and the
+custom domain are one-time console actions needing Admin; **nothing in CI needs Admin**,
+and browser reads are anonymous.
+
+`wrangler` is a *separate* credential — a Cloudflare API token with `Workers R2
+Storage: Edit`, not the S3 key pair — and it is what applies CORS and would apply a
+lifecycle rule.
+
+**The manifest uploads last, always.** It is the only mutable object and the only thing
+that flips a build live, so every layer it names must be readable before it lands.
+`sorted(out_dir.iterdir())` used to put `manifest.json` 22nd of 38 — ahead of `pitch`,
+`platform`, `rail_station`, `restaurant`, `shop`, `water` and ten more — so for the
+length of those uploads the published manifest pointed at objects that did not exist.
+
 ## What ships, and what does not
 
 **Feature layers** (30) — real geometry, exact counts, usable for distance and
@@ -596,10 +629,24 @@ build.py's stderr on the job log live and in order; an `EXIT` trap prints the re
 non-zero exit, because peak RSS and wall clock are how an OOM kill is told apart from a
 bug, and an OOM-killed process writes no stderr at all.
 
-**The merge is deliberately not in CI.** GDAL's FlatGeobuf writer keeps a hidden unlinked
-temp file *in the output directory* and ignores `CPL_TMPDIR`, so transient disk is double
-the final layer size. RAM is not the problem — the writer measures at ≈ 166 MB +
-100 B/feature, verified to 87M features / 46 GB — disk is.
+**The merge is not in CI *yet*, and the reason has changed.** GDAL's FlatGeobuf writer
+keeps a hidden unlinked temp file *in the output directory* and ignores `CPL_TMPDIR`, so
+transient disk is double the final layer size. RAM is not the problem — the writer
+measures at ≈ 166 MB + 100 B/feature, verified to 87M features / 46 GB — disk is. On a
+workstation that is inconvenient; on a runner it decides the design. A 14-agent
+investigation (`PLAN.md` §Phase 6) concluded the merge **does** fit on a public runner as
+a **per-layer matrix** rather than one serial job, provided the density grid is merged in
+row bands — that single job fails on RAM, ~13.3–21.6 GB against 16 GB, and on the 6-hour
+cap at a measured 11,588 cells/s. `green`, long assumed to be the blocker, merges in
+~1.7 h at ~22.4 GB (not the 34–50 GB a one-country extrapolation suggested).
+
+**Two guards exist because a merge failure is otherwise silent.** `write_union_vrt`
+checks every shard input actually exists before writing the VRT — `inputs` is built from
+what each shard's manifest *claims*, so a file an interrupted `aws s3 sync` never fetched
+resolves to an empty VRT sub-layer, contributes nothing, and publishes a layer short by
+exactly one shard, with no error and a manifest identical in shape to a good one. And a
+merge in which no shard contributes density is a hard error, because the client trusts an
+empty grid as a real zero and lifts three curses on the strength of it.
 
 ## What this loses
 

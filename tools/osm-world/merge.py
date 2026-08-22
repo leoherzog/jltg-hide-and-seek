@@ -332,7 +332,34 @@ def write_union_vrt(layer: str, inputs: list[Path], work: Path) -> Path:
 
     `FieldStrategy=Union` is the entire point: shard schemas are sparse and differ,
     and a plain append silently drops columns first appearing in later shards.
+
+    EVERY INPUT IS CHECKED TO EXIST FIRST, and that check is the only thing standing
+    between a half-synced shard tree and a silently short world. `inputs` is built
+    from what each shard's manifest CLAIMS (`merge_all`: `shard / m["layers"][key]
+    ["path"]`), never from the filesystem — so an object that failed to upload, or a
+    file an interrupted `aws s3 sync` never fetched, still lands in this list. GDAL
+    resolves a missing `<SrcDataSource>` to an empty sub-layer and the union simply
+    contributes nothing: the layer merges, publishes, and is short by exactly one
+    shard, with no error anywhere and a manifest identical in shape to a good one.
+    That is the same class of failure as a shard job that never ran, and the merge
+    cannot tell them apart afterwards — so refuse now, loudly, naming the files.
     """
+    missing = [p for p in inputs if not p.exists() or p.stat().st_size == 0]
+    if missing:
+        raise SystemExit(
+            f"{layer}: {len(missing)} of {len(inputs)} shard input(s) are missing or "
+            f"empty on disk though a shard manifest lists them:\n  "
+            + "\n  ".join(str(p) for p in missing[:10])
+            + (f"\n  … and {len(missing) - 10} more" if len(missing) > 10 else "")
+            + "\n\nThe shard tree is incomplete — most likely a sync that did not "
+              "finish, or a shard whose upload failed after writing its manifest. "
+              "Merging anyway would publish a layer short by those shards with no "
+              "error. Re-sync and re-run.")
+    if not inputs:
+        raise SystemExit(
+            f"{layer}: write_union_vrt called with no inputs. A layer absent from "
+            "every shard is handled by the caller as features: 0; reaching here means "
+            "the layer table and the shard manifests disagree.")
     lines = [
         "<OGRVRTDataSource>",
         f'  <OGRVRTUnionLayer name="{layer}">',

@@ -832,10 +832,81 @@ Wired this wave, all in `osm/`:
 | --- | --- | --- | --- |
 | S1 | peak RSS of GDAL FlatGeobuf write on a merged multi-GB layer | Option B vs fallback A | **RESOLVED** — 166 MB + 100 B/feature; Option B confirmed |
 | S2 | Overture `locality` admin_level coverage + `division_area` size; fr/de/it/gb deep-level mapping | Phase 2 shape | **RESOLVED** — Overture adopted; synthetic subtype→level map |
-| S3 | one ~1 GB shard on an actual Actions runner (time, disk headroom) | CI cost model | **OPEN** — `world-canary.yml` is written; needs a manual dispatch |
+| S3 | one ~1 GB shard on an actual Actions runner (time, disk headroom) | CI cost model | **RESOLVED** — dispatched 2026-08-20, run 32324799596. czech-republic, 944 MB, full pipeline: **19.8 min, 2.19 GB peak RSS, 110% CPU, GDAL 3.8.4 from apt**, 36 layers / 960,750,728 B. Note this ran on a PRIVATE-repo runner (2 vCPU / 8 GB); public is 4 vCPU / 16 GB, so treat it as a pessimistic bound |
 | H2b | cross-tile duplication rate per layer — prior measurement was polluted by the double-emit bug | merge dedup sizing | **OPEN** — merge-test's 0% and the retest's nested-shard 0% are both lower bounds (non-adjacent Geofabrik extracts); still needs a real adjacent-boundary measurement, tiles-only with post-Phase-0 code |
 | — | rebuild michigan/germany with the `advertising` fix before any count is published | published numbers | **CLOSED** — michigan-v3 (232,847,376 B, advertising 772) and germany-v3 (3,343,969,105 B, advertising 35,816) built and fully verified; see §Phase 0 Result |
 | — | `green` at ~27 GB global pre-reduction serves a weight-0.5 legal-spot category (`osm/geodata.js:301`) | product call on R6 | open — now 1.57 GB for germany post-Phase-1, so less pressing |
+
+## Phase 6 — everything in GitHub Actions — **feasible, two conditions**
+
+Investigated 2026-08-22 by a 14-agent fleet (7 research / 3 designs / 3 critiques /
+synthesis) after the canary resolved S3. The question was whether the MERGE and the
+ADMIN build — both hand-run on kadro today — can move into Actions, leaving no step
+that needs a workstation.
+
+**Answer: yes, if (a) the repo is public and (b) the density merge is banded.**
+
+- **Public is not about minutes.** A private-repo standard runner is 2 vCPU / 8 GB RAM;
+  public is 4 vCPU / 16 GB, and a live sample measured **~108 GB actually free**
+  (`/dev/root 145G 37G 108G 26% /`) against the **14 GB GitHub documents**. The merge
+  needs 60–90 GB, so the whole plan rests on headroom that is real today and not
+  promised. The repo was made public 2026-08-22. Every workflow now prints `nproc`,
+  `free -g` and `df -Pk` as its first step so a reversion shows up as a logged number
+  rather than as ENOSPC 400 jobs into a rebuild.
+- **Larger runners are not an option here.** They require a Team/Enterprise
+  *organisation*; this account is a User. Do not design around them.
+- **The density merge is the only job that does not fit, and it fails on RAM.** The
+  merged grid is ~133 M cells (79–243 M band); GDAL's writer at 100–162 B/feature puts
+  that at **13.3–21.6 GB against 16 GB**, and at a measured 11,588 cells/s it is
+  **3.2 h central, 5.8 h at the high band, against the 6 h cap**. Split by row into
+  N = ceil(cells / 30 M) bands and each becomes a ~35 min job at ~3 GB RSS.
+- **`green` was never the blocker.** Extrapolating from czech-republic (63% of that
+  shard's output) gave 34–50 GB; measured across several extracts with different
+  mapping cultures it is **~22.4 GB (band 14.9–27.7)**, and its merge runs ~1.7 h on a
+  real runner. One-country extrapolation was wrong by roughly 2×.
+- Shape: five workflows (the three existing plus `world-admin.yml` and
+  `world-merge.yml`, under a `world-rebuild.yml` orchestrator), **~218 jobs, ~4.5–5 h
+  wall** at the 40-concurrent ceiling. The merge is a **per-layer matrix**, not one
+  serial job — the serial version measured ~5.4 h against the 6 h cap with no
+  checkpointing, so an hour-5 failure would discard the admin build and 36 finished
+  layers. Intermediates move through **R2, never Actions artifacts**: there is no
+  documented artifact size ceiling and a known 4.29 GB failure report.
+- **The `/vsis3` escape hatch does not work.** Writing merge output straight to R2
+  would drop local footprint to 0.87×F, but `publish_layer` does `sha256_file(temp)`
+  then `temp.rename(final)`, and over `/vsis3` a rename is a server-side `CopyObject`
+  — **R2 caps single-part copy at 5 GiB**, which both `water` (7.14 GB) and `green`
+  exceed. Rescuable with multipart `UploadPartCopy`, but that is new untested code.
+
+### What this found that is not about Actions
+
+- **Feature shards still build the `admin` layer `merge.py` discards** — **16.5% of
+  pooled shard output** (13% on czech, 41.7% on ghana), ~11 GB built, uploaded and
+  thrown away per rebuild. Free to remove; nothing reads it.
+- **`opening_hours` is dead weight.** `geodata.js:1990` sets `pathIds = null`, so the
+  `||` at `:1409` short-circuits and `spotOpenAllHours` is never called. ~150–250 MB.
+- **Only `park` and `water` need rings** (`geodata.js:334 RING_CATEGORIES`); the other
+  20 mixed-geometry layers ship polygon rings nothing reads. Replacing them with bbox
+  diagonals plus stored `rep_lat`/`rep_lon` takes the world 62.8 → ~43 GB and green
+  22.4 → ~6 GB. Three constraints on that change, all measured: a bare POINT is smaller
+  still but moves the R-tree envelope and **undercounts by up to 30% on a 2 km map**;
+  the `rep_lat`/`rep_lon` pair is **not optional** (p99 representative shift 116 m on
+  green, **789 m on pitch**, against a 400 m zone radius); and `merge.py:394` re-exports
+  diagonals as `-nlt GEOMETRY`, costing **+13%**. The build-time node-swallow that would
+  have made this cheaper is **rejected**: under sharding `complete_ways` drops an area
+  whose vertices all lie outside a shard while its interior covers a node inside it
+  (3 of 25 straddlers in a real bremen re-cut), so the swallow must stay in the merge.
+- **155 fine-cover members pull 39.52 GB — 34.6% of the fine cover — to cover 0.25% of
+  assigned land**: africa 7.90 GB for 0.013 deg², canada 6.42 for 0.024, italy 2.22 for
+  0.005 (San Marino, which is real). These are the residual parents the land rule admits
+  where Natural Earth 1:50m disagrees with Geofabrik's cutting polygons. **Open: measure
+  whether those pieces are islands or mask slop before the first full run**, and tighten
+  `LAND_SLOP_DEG` / `LAND_EPSILON_DEG2` if slop. 30.9 GB/month buys 1.8 deg² of sliver.
+- **Geofabrik etiquette.** The plan pulls ~196 GB/month across 601 files, and 41.45 GB
+  of that is **72 extracts downloaded twice** because they are in both covers. Their
+  Sept 2025 "Download responsibly!" post says *"If you want data for the whole planet,
+  don't download it piecemeal from us."* The long-term answer is mirroring
+  `planet-latest.osm.pbf` (94.4 GB — less than one month of our pulls) into R2 and
+  cutting extracts ourselves. Not this week.
 
 ## Baselines (kadro, `~/osm-builds/` — outside the Syncthing-synced tree; keep)
 

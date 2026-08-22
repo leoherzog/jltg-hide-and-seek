@@ -47,6 +47,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: runner envelope (this build depends on undocumented headroom)
+        run: |
+          set -euo pipefail
+          echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
+          df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
+          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
+          # public repos. The merge sizing assumes the larger figure; the shard builds
+          # do not, but africa's density job wants ~40 GB. Printing it every run is how
+          # a silent reversion shows up as a number in a log instead of as ENOSPC
+          # halfway through a 600-job rebuild.
+          free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
+          [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
+
+
       # ── toolchain ────────────────────────────────────────────────────────────
       # build.py's own preflight() hard-fails on GDAL < 3.5 (needs the FlatGeobuf
       # writer's default spatial index) rather than silently shipping an unindexed

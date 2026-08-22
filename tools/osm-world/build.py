@@ -1825,9 +1825,17 @@ def stage_upload(out_dir: Path, prefix: str) -> None:
     cors_path = HERE / "r2-cors.json"
     cors_path.write_text(json.dumps(R2_CORS, indent=2) + "\n", encoding="utf-8")
 
-    for path in sorted(out_dir.iterdir()):
-        if path.suffix not in (".fgb", ".json"):
-            continue
+    # MANIFEST LAST, ALWAYS. It is the only mutable object and the only thing that
+    # flips a build live, so every layer it names must already be readable when it
+    # lands. `sorted(out_dir.iterdir())` put manifest.json 22nd of 38 — alphabetically
+    # ahead of pitch, platform, rail_station, restaurant, shop, water and ten more —
+    # so for the length of those uploads the published manifest pointed at objects
+    # that did not exist yet, and a client arriving in that window got a 404 on a
+    # layer the manifest promised. Layers first, in any order; manifest strictly after.
+    everything = sorted(p for p in out_dir.iterdir() if p.suffix in (".fgb", ".json"))
+    layers_first = [p for p in everything if p.name != "manifest.json"]
+    manifest = [p for p in everything if p.name == "manifest.json"]
+    for path in layers_first + manifest:
         key = f"{prefix.strip('/')}/{path.name}" if prefix else path.name
         content_type = (
             "application/json" if path.suffix == ".json" else "application/octet-stream"
