@@ -944,11 +944,41 @@ that needs a workstation.
   `--allow-uncovered-land` waiver removes it, at ~13 km² of countryside where the
   density curses would silently lift.
 
-  Not applied to the 2026-08-22 run, which was already in flight; the artifact members
-  are ~3 jobs / ~90 min of runner time. Apply before the next rebuild. Expected to be
-  cheap: all three sort *after* the members that would otherwise absorb their territory,
-  so dropping them should leave every other assigned geometry byte-identical — verify
-  that before assuming it.
+  Not applied to the 2026-08-22 run, which was already in flight. **Measured cost, in
+  /tmp against today's index: a five-shard delta, not a free change and not a full
+  rebuild.** Subtracting `ne_50m_lakes` (412 polygons; 126.99 deg² of lake surface
+  removed, touching 14 of 1,420 land polygons, with San Marino / Kerguelen /
+  Saint-Pierre / Crozet / South Georgia all still land) gives **512 members: two
+  dropped, none promoted** — their residual was pure lake surface, so nothing needs to
+  absorb it as *land*.
+
+  But the assigned polygons are a difference chain, so dropping a member changes what
+  every later member differences against. **509 of 512 come out byte-identical; three
+  gain territory** — `canada` 0.0689 deg², `ontario` 0.0055, `quebec` 4e-8 — because
+  all three sort after the dropped pair and now absorb the former overlap band along
+  the US–Canada border on Erie/Ontario/Huron/Superior and the St. Lawrence. Mostly
+  water, but that band holds real ways (Niagara, the Ambassador Bridge), so those three
+  density shards are stale under the new cover.
+
+  **It must land atomically with respect to the merge**, and this is the same hazard as
+  B3: a pre-change `ontario`/`canada`/`quebec` merged *after* the drop zero-counts the
+  band; merged *before* the two dropped shards' R2 output is deleted, it double-counts
+  it. Nothing in the pipeline detects either. Sequence: regenerate cover + geometries
+  with the new mask in one commit, rebuild those three shards (8.55 GB, ~2.2 h across
+  three jobs at the measured ~15 min/GB), delete the two dropped shards' R2 prefixes,
+  then merge. One-time 8.55 GB of builds to save 4.28 GB every month — break-even
+  inside two cycles.
+
+  `china`'s 1.58 GB is untouched by this; the Amur sliver has nothing to do with lakes
+  and still needs its own rule or acceptance. The uncovered-land assertion is unchanged
+  under either mask: 0.0110 deg², one piece, Diego Garcia.
+
+- **The committed cover is exactly reproducible.** A control run of the real
+  `compute_fine` against today's index with the committed mask returns exactly 514
+  members and **all 514 assigned geometries byte-identical** to the committed
+  `cover-geometries/` files. That is worth more than it looks: it means the partition
+  does not drift with Geofabrik's nightly index, so a shard rebuilt next week is
+  clipped identically to one built today.
 
 - **Geofabrik etiquette.** The plan pulls ~196 GB/month across 601 files, and 41.45 GB
   of that is **72 extracts downloaded twice** because they are in both covers. Their
