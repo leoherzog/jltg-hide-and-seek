@@ -832,7 +832,7 @@ Wired this wave, all in `osm/`:
 | --- | --- | --- | --- |
 | S1 | peak RSS of GDAL FlatGeobuf write on a merged multi-GB layer | Option B vs fallback A | **RESOLVED** — 166 MB + 100 B/feature; Option B confirmed |
 | S2 | Overture `locality` admin_level coverage + `division_area` size; fr/de/it/gb deep-level mapping | Phase 2 shape | **RESOLVED** — Overture adopted; synthetic subtype→level map |
-| S3 | one ~1 GB shard on an actual Actions runner (time, disk headroom) | CI cost model | **RESOLVED** — dispatched 2026-08-20, run 32324799596. czech-republic, 944 MB, full pipeline: **19.8 min, 2.19 GB peak RSS, 110% CPU, GDAL 3.8.4 from apt**, 36 layers / 960,750,728 B. Note this ran on a PRIVATE-repo runner (2 vCPU / 8 GB); public is 4 vCPU / 16 GB, so treat it as a pessimistic bound |
+| S3 | one ~1 GB shard on an actual Actions runner (time, disk headroom) | CI cost model | **RESOLVED** — dispatched 2026-08-20, run 32324799596. czech-republic, 944 MB, full pipeline: **19.8 min, 2.19 GB peak RSS, 110% CPU, GDAL 3.8.4 from apt**, 36 layers / 960,750,728 B. Note this ran on a PRIVATE-repo runner (2 vCPU / 8 GB); public is 4 vCPU / 16 GB, so treat it as a pessimistic bound. **Re-run on a PUBLIC runner** (32566905248, 2026-08-22): same shard, **13.8 min** (-30%), 115% CPU, 2.29 GB RSS, identical 36 layers / 0.96 GB. Cores doubled; wall clock fell 30%, not 50%, because the density pass is single-threaded |
 | H2b | cross-tile duplication rate per layer — prior measurement was polluted by the double-emit bug | merge dedup sizing | **OPEN** — merge-test's 0% and the retest's nested-shard 0% are both lower bounds (non-adjacent Geofabrik extracts); still needs a real adjacent-boundary measurement, tiles-only with post-Phase-0 code |
 | — | rebuild michigan/germany with the `advertising` fix before any count is published | published numbers | **CLOSED** — michigan-v3 (232,847,376 B, advertising 772) and germany-v3 (3,343,969,105 B, advertising 35,816) built and fully verified; see §Phase 0 Result |
 | — | `green` at ~27 GB global pre-reduction serves a weight-0.5 legal-spot category (`osm/geodata.js:301`) | product call on R6 | open — now 1.57 GB for germany post-Phase-1, so less pressing |
@@ -847,10 +847,16 @@ that needs a workstation.
 **Answer: yes, if (a) the repo is public and (b) the density merge is banded.**
 
 - **Public is not about minutes.** A private-repo standard runner is 2 vCPU / 8 GB RAM;
-  public is 4 vCPU / 16 GB, and a live sample measured **~108 GB actually free**
-  (`/dev/root 145G 37G 108G 26% /`) against the **14 GB GitHub documents**. The merge
-  needs 60–90 GB, so the whole plan rests on headroom that is real today and not
-  promised. The repo was made public 2026-08-22. Every workflow now prints `nproc`,
+  public is 4 vCPU / 16 GB. **Measured on our own runner** (canary run 32566905248,
+  2026-08-22, first thing after checkout): `cores: 4   ram: 15 GB` and
+  **`disk: 86.2 GB free of 144.3 GB`**, against the **14 GB GitHub documents**. Note
+  this is *not* the ~108 GB the investigation's sample reported — same 144 GB volume,
+  22 GB less free — so treat 86 GB as the working figure and re-read it every run.
+  The merge needs 60–90 GB, so the whole plan rests on headroom that is real today,
+  not promised, and the margin is thinner than the design assumed: **green's merge at
+  ~63 GB central leaves ~23 GB, and at the high end of its own band it does not fit
+  without help.** `jlumbroso/free-disk-space` (+31 GB, ~3 min) is therefore
+  **mandatory on the merge jobs, not conditional**. The repo was made public 2026-08-22. Every workflow now prints `nproc`,
   `free -g` and `df -Pk` as its first step so a reversion shows up as a logged number
   rather than as ENOSPC 400 jobs into a rebuild.
 - **Larger runners are not an option here.** They require a Team/Enterprise

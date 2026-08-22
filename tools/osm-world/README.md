@@ -177,7 +177,10 @@ wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
 
 The **repo is public**, and that is a build requirement rather than a preference: a
 private-repo Actions runner is 2 vCPU / 8 GB RAM, a public one is 4 vCPU / 16 GB, and
-the merge depends on public runners' disk (see `PLAN.md` §Phase 6).
+the merge depends on public runners' disk. Measured on ours, 2026-08-22:
+`cores: 4   ram: 15 GB`, **`disk: 86.2 GB free of 144.3 GB`** — against the 14 GB
+GitHub documents. Every workflow prints that line as its first step, because the figure
+is undocumented, has moved twice, and the merge sizing depends on it (`PLAN.md` §Phase 6).
 
 **Credentials, verified against the live bucket** — the S3 key pair needs **Object Read
 & Write**, nothing more and nothing less. Write covers `upload_file`, which becomes
