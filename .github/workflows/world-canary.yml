@@ -71,6 +71,15 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin time
+          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
+          # exist and still lack a driver a step needs — fail here, by name, in
+          # seconds. build.py's export path writes GeoJSONSeq and FlatGeobuf.
+          # Plain grep, not -q: under pipefail, -q's early exit kills ogrinfo
+          # with SIGPIPE and fails the pipeline on success.
+          for drv in FlatGeobuf GeoJSONSeq; do
+            ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
+              || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
+          done
           python3 -m pip install --user --upgrade uv
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 

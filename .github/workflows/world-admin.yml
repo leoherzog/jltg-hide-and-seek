@@ -26,11 +26,14 @@
 #   - DuckDB peak RSS 6.3 GB at SIMPLIFY=0.0001. MEMORY_LIMIT is set to 10GB
 #     below the 15 GB runner; the script spills to $OUT/duckdb-tmp (budget
 #     ~10 GB of scratch), so a tighter limit slows rather than kills.
-#   - Disk: 4.47 GB source parquet (read from Overture's S3 over httpfs) +
-#     2.29 GB fgb + spill — ~20 GB, far under the 86 GB measured free; no
-#     free-disk-space step needed (that mandate is for the MERGE jobs).
-#   - Wall: 56 s + 11 s on kadro's 16 cores with fast S3; a runner's 4 cores
-#     and network make this minutes-to-tens-of-minutes. Timeout is generous.
+#   - Disk: the 4.47 GB source parquet is STREAMED over httpfs (never stored;
+#     the old admin.parquet intermediate is gone with the direct FGB write) —
+#     2.29 GB fgb + its writer temp + spill ≈ ~15 GB, far under the 86 GB
+#     measured free; no free-disk-space step needed (that mandate is for the
+#     MERGE jobs).
+#   - Wall: 56 s + 11 s on kadro's 16 cores with fast S3 (parquet-era figures);
+#     a runner's 4 cores and network make this minutes-to-tens-of-minutes.
+#     Timeout is generous.
 #   - Cadence: rarely, by hand. Boundaries move on a timescale of years
 #     (PLAN.md §Phase 2); this build is deliberately outside the shard cadence,
 #     which is why world-rebuild.yml runs it but nothing schedules it.
@@ -155,13 +158,14 @@ jobs:
         run: |
           set -euo pipefail
           # MEMORY_LIMIT 10GB on a 15 GB runner: S2 verified 8GB completes by
-          # spilling to $OUT/duckdb-tmp. KEEP_PARQUET=0 — the 4.47 GB
-          # intermediate has no consumer here and disk is shared with the spill.
+          # spilling to $OUT/duckdb-tmp. DuckDB writes admin.fgb DIRECTLY
+          # (build-admin.sh header; the parquet+ogr2ogr handoff died in run
+          # 32591161893 — apt GDAL ships no Parquet driver), and the script
+          # preflights both FlatGeobuf drivers it needs before any data moves.
           OUT="$RUNNER_TEMP/admin-build" \
           REL="$REL" \
           SIMPLIFY="$SIMPLIFY" \
           MEMORY_LIMIT=10GB \
-          KEEP_PARQUET=0 \
             bash tools/osm-world/build-admin.sh
 
       - name: validate through the real client reader (probe-admin.mjs)

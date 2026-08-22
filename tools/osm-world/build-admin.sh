@@ -34,14 +34,32 @@
 #   MEMORY_LIMIT  DuckDB memory_limit                              [16GB]
 #   THREADS       DuckDB threads                        [unset = all cores]
 #   SRC           local parquet glob instead of S3 (skips release check)
-#   KEEP_PARQUET  keep the intermediate admin.parquet   [1]
+#
+# WHY DUCKDB WRITES THE FGB ITSELF (2026-08-22, world-admin run 32591161893):
+# this script used to hand DuckDB's output to ogr2ogr through an admin.parquet
+# intermediate — and ubuntu-latest's apt GDAL is built WITHOUT the Arrow/Parquet
+# drivers, so on a CI runner ogr2ogr could not open it (an 82-driver dump, no
+# `Parquet` in it; kadro's GDAL has the driver, which is why this never bit
+# locally). duckdb-spatial bundles its own GDAL with FlatGeobuf create support,
+# so the COPY now writes `admin.fgb` directly: no 4.47 GB intermediate, no
+# ogr2ogr step, no dependence on the host GDAL's driver list for the BUILD
+# (ogrinfo still reads the output for the probes, and FlatGeobuf read IS in the
+# runner's driver list — both preflighted below). Verified equivalent on a
+# Vatican-bbox A/B against the old path: identical feature content (same md5
+# over sorted WKT dumps), identical probe answers through the real client
+# reader, spatial index present (the reader's `search` throws without one).
+# One cosmetic difference: the layer header declares Geometry "Unknown (any)"
+# instead of "Multi Polygon" — per-feature types are still written, and
+# osm/flatgeobuf.js reads the per-feature type (header type is only a default).
 #
 # Sizing, measured on the full 2026-07-22.0 global build (spike S2, kadro,
-# 16 cores / 31 GB): 984,219 features; SIMPLIFY=0.0001 -> 2.29 GB fgb, DuckDB
-# peak RSS 6.3 GB, 56 s + 11 s ogr2ogr. Full precision -> 6.04 GB fgb, peak RSS
-# 13.1 GB. MEMORY_LIMIT=8GB also completes: DuckDB spills the sort/aggregate to
-# `$OUT/duckdb-tmp`, which is what a CI runner should use — budget ~10 GB of
-# scratch disk there on top of the outputs.
+# 16 cores / 31 GB, the superseded parquet+ogr2ogr path): 984,219 features;
+# SIMPLIFY=0.0001 -> 2.29 GB fgb, DuckDB peak RSS 6.3 GB, 56 s + 11 s ogr2ogr.
+# Full precision -> 6.04 GB fgb, peak RSS 13.1 GB. MEMORY_LIMIT=8GB also
+# completes: DuckDB spills the sort/aggregate to `$OUT/duckdb-tmp`, which is
+# what a CI runner should use — budget ~10 GB of scratch disk there on top of
+# the outputs. The direct-write path trades the parquet write for the FGB
+# write inside the same process; re-measure on its first full run.
 #
 # Rebuild cadence: rarely. Boundaries move on a timescale of years, and this
 # build is deliberately outside the sharded OSM pipeline.
@@ -51,7 +69,6 @@ set -euo pipefail
 REL="${REL:-2026-07-22.0}"
 SIMPLIFY="${SIMPLIFY-0.0001}"          # `-` not `:-`: an explicit empty means full precision
 MEMORY_LIMIT="${MEMORY_LIMIT:-16GB}"
-KEEP_PARQUET="${KEEP_PARQUET:-1}"
 BBOX="${BBOX:-}"
 THREADS="${THREADS:-}"
 SRC="${SRC:-}"
@@ -60,21 +77,43 @@ die() { printf '\n build-admin: %s\n' "$*" >&2; exit 1; }
 say() { printf '\n── %s\n' "$*"; }
 
 [ -n "${OUT:-}" ] || die "OUT is required (output directory). See the header for usage."
-for tool in duckdb ogr2ogr ogrinfo sha256sum curl; do
+for tool in duckdb ogrinfo sha256sum curl; do
   command -v "$tool" >/dev/null 2>&1 || die "\`$tool\` not on PATH"
 done
+
+# ── driver preflights: fail in seconds, not after the full S3 scan ────────────
+# The 2026-08-22 CI failure (header) surfaced a missing GDAL driver only AFTER
+# the 3.5-minute DuckDB pass, as a confusing 82-driver dump. `command -v` can
+# never catch that class of gap — a binary can exist and still lack the driver
+# a step needs — so check the two drivers this script actually depends on, by
+# name, before any data moves: ogrinfo must READ FlatGeobuf (the probes), and
+# duckdb-spatial's bundled GDAL must CREATE it (the build). The INSTALL here is
+# idempotent and needed by the build anyway.
+# grep WITHOUT -q on purpose: under `set -o pipefail`, `grep -q` exits at the
+# first match, ogrinfo dies of SIGPIPE, and the pipeline "fails" on success.
+ogrinfo --formats 2>/dev/null | grep "FlatGeobuf" >/dev/null \
+  || die "this ogrinfo lacks the FlatGeobuf driver — the verification probes cannot run"
+fgb_create="$(duckdb -noheader -list \
+  -c "INSTALL spatial; LOAD spatial; SELECT count(*) FROM ST_Drivers() WHERE short_name = 'FlatGeobuf' AND can_create;" \
+  2>/dev/null || true)"
+[ "$fgb_create" = "1" ] \
+  || die "duckdb-spatial's bundled GDAL cannot create FlatGeobuf (probe said '${fgb_create:-nothing}') — the direct admin.fgb write needs it"
+
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 
 # ── SIMPLIFY: validate before it reaches SQL ──────────────────────────────────
+# ST_Multi replaces the retired ogr2ogr step's `-nlt PROMOTE_TO_MULTI`: a
+# uniform MultiPolygon output, verified feature-identical against the old path
+# on the Vatican-bbox A/B (header note).
 if [ -z "$SIMPLIFY" ] || [ "$SIMPLIFY" = "0" ]; then
-  GEOM_EXPR="geometry"
+  GEOM_EXPR="ST_Multi(geometry)"
   SIMPLIFY_NOTE="full precision (no simplification)"
 else
   case "$SIMPLIFY" in
     ''|*[!0-9.eE+-]*) die "SIMPLIFY must be a number in degrees, got '$SIMPLIFY'" ;;
   esac
-  GEOM_EXPR="ST_SimplifyPreserveTopology(geometry, $SIMPLIFY)"
+  GEOM_EXPR="ST_Multi(ST_SimplifyPreserveTopology(geometry, $SIMPLIFY))"
   SIMPLIFY_NOTE="ST_SimplifyPreserveTopology($SIMPLIFY deg ≈ $(awk "BEGIN{printf \"%.0f\", $SIMPLIFY*111320}") m)"
 fi
 
@@ -132,8 +171,15 @@ say "building $BBOX_NOTE admin layer
    memory    $MEMORY_LIMIT (spill dir $OUT/duckdb-tmp)
    out       $OUT/admin.fgb"
 
-# ── 1. one DuckDB pass: Overture GeoParquet -> mapped GeoParquet ──────────────
+# ── 1. one DuckDB pass: Overture GeoParquet -> admin.fgb, directly ────────────
+# SPATIAL_INDEX=YES is the whole point: the packed Hilbert R-tree is what lets
+# the browser answer a map bbox with a handful of Range requests instead of
+# downloading gigabytes. The write goes through duckdb-spatial's bundled GDAL
+# (header note) — the output file's basename becomes the layer name, so
+# `admin.fgb` keeps the layer named `admin` exactly as ogr2ogr's `-nln admin`
+# did.
 mkdir -p "$OUT/duckdb-tmp"
+rm -f "$OUT/admin.fgb"
 cat > "$OUT/admin.sql" <<EOF
 -- Generated by tools/osm-world/build-admin.sh — Overture release $REL.
 -- Source data © OpenStreetMap contributors, ODbL 1.0, via Overture Maps Foundation.
@@ -178,22 +224,14 @@ COPY (
   WHERE class = 'land'
     AND ov_level(subtype) IS NOT NULL
 $BBOX_SQL
-) TO '$OUT/admin.parquet' (FORMAT PARQUET, COMPRESSION ZSTD);
+) TO '$OUT/admin.fgb'
+  (FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326',
+   LAYER_CREATION_OPTIONS 'SPATIAL_INDEX=YES');
 EOF
 
 duckdb -f "$OUT/admin.sql"
 
-# ── 2. GeoParquet -> FlatGeobuf with the packed Hilbert R-tree ────────────────
-# SPATIAL_INDEX=YES is the whole point: it is what lets the browser answer a map
-# bbox with a handful of Range requests instead of downloading gigabytes.
-say "writing FlatGeobuf with spatial index"
-rm -f "$OUT/admin.fgb"
-ogr2ogr -f FlatGeobuf "$OUT/admin.fgb" "$OUT/admin.parquet" \
-        -nln admin -nlt PROMOTE_TO_MULTI -lco SPATIAL_INDEX=YES
-
-[ "$KEEP_PARQUET" = "1" ] || rm -f "$OUT/admin.parquet"
-
-# ── 3. Checksum sidecar ───────────────────────────────────────────────────────
+# ── 2. Checksum sidecar ───────────────────────────────────────────────────────
 # Written in `sha256sum -c` format so `cd "$OUT" && sha256sum -c admin.fgb.sha256`
 # verifies a transferred copy, and so the merge step can copy the digest straight
 # into the manifest's `sha256` field without recomputing it.
@@ -201,7 +239,7 @@ ogr2ogr -f FlatGeobuf "$OUT/admin.fgb" "$OUT/admin.parquet" \
 say "sha256"
 cat "$OUT/admin.fgb.sha256"
 
-# ── 4. Verification probes ────────────────────────────────────────────────────
+# ── 3. Verification probes ────────────────────────────────────────────────────
 # A build that produced a plausible-looking file with the wrong column mapping is
 # the failure this exists to catch — it is invisible until a player sees the wrong
 # country. `-spat` uses the R-tree AND then tests real geometry, so these are
