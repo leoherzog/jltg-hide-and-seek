@@ -1795,6 +1795,56 @@ def check_upload_env() -> None:
         raise SystemExit(f"--upload needs {', '.join(missing)} in the environment")
 
 
+def r2_client():
+    """
+    The boto3 S3 client for R2, from the four `R2_*` environment variables.
+
+    Split out of `stage_upload` so `merge.py` can reuse THE SAME uploader (PLAN.md
+    §Phase 6, gap B4) instead of growing a second aws-cli code path with its own
+    ContentType/CacheControl conventions to drift.
+    """
+    import boto3  # noqa: PLC0415 — uv installs it; keep the import next to its use
+
+    # Already checked at preflight when main() parsed --upload; repeated so the
+    # client is correct on its own terms rather than by caller convention.
+    check_upload_env()
+
+    account = os.environ["R2_ACCOUNT_ID"]
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
+
+
+def r2_upload(client, path: Path, key: str) -> None:
+    """
+    Upload ONE file with the pinned ContentType/CacheControl rules.
+
+    `.json` is mutable (the manifest, sidecars) and gets `max-age=300`; everything
+    else is immutable per build — shard layer files are replaced wholesale on a
+    rebuild and the merged world's layers are content-addressed — and gets a year.
+    Uploads are multipart by default in boto3, which matters because the density
+    grid is comfortably over the 5 GB single-PUT ceiling.
+    """
+    content_type = (
+        "application/json" if path.suffix == ".json" else "application/octet-stream"
+    )
+    client.upload_file(
+        str(path), os.environ["R2_BUCKET"], key,
+        ExtraArgs={
+            "ContentType": content_type,
+            # The files are immutable per build; the manifest is what changes.
+            "CacheControl": (
+                "public, max-age=300" if path.suffix == ".json"
+                else "public, max-age=31536000, immutable"
+            ),
+        },
+    )
+
+
 def stage_upload(out_dir: Path, prefix: str) -> None:
     """
     Publish to R2 over the S3-compatible API.
@@ -1802,25 +1852,9 @@ def stage_upload(out_dir: Path, prefix: str) -> None:
     Credentials come from the environment, never from a file in the repo:
 
         R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
-
-    Uploads are multipart by default in boto3, which matters because the density grid
-    is comfortably over the 5 GB single-PUT ceiling.
     """
-    import boto3  # noqa: PLC0415 — uv installs it; keep the import next to its use
-
-    # Already checked at preflight when main() parsed --upload; repeated so the stage
-    # is correct on its own terms rather than by caller convention.
-    check_upload_env()
-
-    account = os.environ["R2_ACCOUNT_ID"]
+    client = r2_client()
     bucket = os.environ["R2_BUCKET"]
-    client = boto3.client(
-        "s3",
-        endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
-        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-        region_name="auto",
-    )
 
     cors_path = HERE / "r2-cors.json"
     cors_path.write_text(json.dumps(R2_CORS, indent=2) + "\n", encoding="utf-8")
@@ -1837,21 +1871,8 @@ def stage_upload(out_dir: Path, prefix: str) -> None:
     manifest = [p for p in everything if p.name == "manifest.json"]
     for path in layers_first + manifest:
         key = f"{prefix.strip('/')}/{path.name}" if prefix else path.name
-        content_type = (
-            "application/json" if path.suffix == ".json" else "application/octet-stream"
-        )
         log(f"stage 6: uploading {path.name} ({path.stat().st_size / 1e6:.1f} MB) → {key}")
-        client.upload_file(
-            str(path), bucket, key,
-            ExtraArgs={
-                "ContentType": content_type,
-                # The files are immutable per build; the manifest is what changes.
-                "CacheControl": (
-                    "public, max-age=300" if path.suffix == ".json"
-                    else "public, max-age=31536000, immutable"
-                ),
-            },
-        )
+        r2_upload(client, path, key)
     log(f"stage 6: done — remember to apply CORS: "
         f"wrangler r2 bucket cors set {bucket} --file {cors_path}")
 

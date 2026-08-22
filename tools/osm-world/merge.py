@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = [
+#     "boto3>=1.43",
+# ]
 # ///
 """
 tools/osm-world/merge.py — merge per-shard build.py outputs into one global world.
@@ -105,6 +107,58 @@ THE MANIFEST is build.py's shape plus:
     manifest.json in --out instead of clobbering the layers it did not touch —
     dropping (loudly) any existing keys the current layer table no longer
     contains — and clears `partial` once the table is complete.
+
+CI MODES AND UPLOAD (PLAN.md §Phase 6 — world-merge.yml drives these; nothing below
+changes the serial `--shards … --admin … --out …` behaviour above):
+
+  * `--upload --prefix P [--manifest-dest KEY]` publishes what THIS run produced,
+    through build.py's boto3 uploader (`r2_client`/`r2_upload` — one uploader, one
+    set of ContentType/CacheControl rules; gap B4 closed). Layer files go up FIRST,
+    the manifest STRICTLY LAST (build.py's documented ordering: a manifest naming a
+    not-yet-uploaded layer is a live-site break). `--manifest-dest` exists so CI's
+    per-layer matrix jobs can drop their partial manifest at a STAGING key while
+    their layer file goes straight to the world prefix — the LIVE
+    `<prefix>/manifest.json` is only ever written by the finalize job. `/vsis3` is
+    deliberately not used anywhere: `publish_layer` renames, a rename over /vsis3
+    is a server-side CopyObject, and R2 caps single-part copy at 5 GiB — which
+    `water` (5.44 GB measured 2026-08-22) exceeds. Write locally, then upload.
+
+  * `--only <layer>` + `--upload` is the per-layer matrix job. `--admin` is only
+    required when the run actually places admin (default runs, or `--only` sets
+    containing `admin`).
+
+  * `--density-band K/N` (with `--only density`) merges ONE row-band of the density
+    grid: the cells whose grid row satisfies `row % N == K-1`. Interleaved rows
+    rather than contiguous latitude ranges because band populations must be
+    near-equal WITHOUT a global row histogram — population concentrates in the
+    mid-northern latitudes, so contiguous ranges would be wildly lopsided, and the
+    whole point of banding is that GDAL's FGB writer holds ~100 B/feature in RAM at
+    close() and a single global write does not reliably fit a 16 GB runner. Every
+    row belongs to exactly one band, so the N bands partition the cells exactly.
+    Output is `density.band-K-of-N.fgb` plus a `.json` sidecar carrying
+    {cells, cell_deg, planet_timestamp}; NO manifest is written. The sidecar is
+    uploaded AFTER the band file, so its presence marks the band complete.
+
+  * `--assemble-density-bands DIR` concatenates the N band files back into the one
+    global `density.<sha>.fgb` the client reads (the manifest contract is a single
+    `density` layer — osm/worldfile.js `worldDensity` opens exactly one reader).
+    Bands are row-disjoint by construction, so this is a pure VRT append with no
+    dedup and no re-aggregation. It hard-errors on a missing/mixed band set and on
+    a feature-count mismatch against the sidecars' cell sum — a dropped band must
+    never publish silently short. NOTE the RAM math: this one job rebuilds the
+    Hilbert index over the full grid, ~166 MB + 100 B/feature measured (S1) →
+    ~12.1 GB at the measured 119,473,135 cells against a 15 GB public runner. That
+    fits under the MEASURED law; at the investigation's pessimistic 162 B/feature
+    it would not, and the durable fix would be client-side multi-band density.
+
+  * `--assemble-manifests DIR --admin admin.fgb` is the finalize job: it reads the
+    per-layer partial manifests staged by the matrix jobs, places the Overture
+    admin layer (`place_admin`), refuses loudly if any layer of the full table is
+    missing (a failed or unstaged matrix job must never publish a partial world;
+    `--allow-missing-density` is the one documented exception), and with
+    `--upload` verifies EVERY referenced layer object already exists in R2 at the
+    right byte size (HeadObject) before uploading admin and then — strictly last —
+    the manifest.
 """
 
 from __future__ import annotations
@@ -122,6 +176,13 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+sys.path.insert(0, str(HERE))
+import build  # noqa: E402 — build.py, same directory; stdlib-only at import time.
+# The R2 uploader (r2_client / r2_upload / check_upload_env) lives there and is
+# REUSED, never duplicated (PLAN.md §Phase 6 gap B4): one uploader, one set of
+# ContentType/CacheControl rules, one multipart configuration.
+
 TABLE_PATH = HERE / "categories.json"
 
 SHA_PREFIX = 12
@@ -270,6 +331,28 @@ def find_shards(shards_dir: Path, allow_incomplete: bool = False) -> list[Path]:
 
 def shard_manifest(shard: Path) -> dict:
     return json.loads((shard / "manifest.json").read_text(encoding="utf-8"))
+
+
+def listed_path(manifest: dict, key: str) -> str | None:
+    """The layer's file name in a shard manifest, or None when the shard has no
+    FILE for it.
+
+    Two shapes both mean "nothing to contribute" and merge as empty: the key
+    absent entirely (build.py omits empty layers from shard manifests — and an
+    all-water residual like british-columbia, whose populated land is claimed by
+    the smaller sub-extracts sorting ahead of it in the cover, legitimately
+    publishes `layers: {}`), and a path-less `{"features": 0}` entry — merge.py's
+    OWN empty shape, which build.py never writes but which is real whenever a
+    merged world or a make-test-world.py world is itself used as a shard input.
+    Indexing `["path"]` unconditionally crashed on the second shape. Neither is
+    an error; a LISTED path whose file is missing on disk stays the hard error it
+    is (`write_union_vrt` — that shape means a failed upload or an unfinished
+    sync, which must never merge as empty).
+    """
+    entry = manifest.get("layers", {}).get(key)
+    if not isinstance(entry, dict):
+        return None
+    return entry.get("path")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -472,7 +555,8 @@ def merge_feature_layer(layer: str, inputs: list[Path], out_dir: Path, work: Pat
 
 
 def merge_density(inputs: list[Path], out_dir: Path, work: Path,
-                  density_keys: list[str], cell_deg: float) -> Path | None:
+                  density_keys: list[str], cell_deg: float,
+                  band: tuple[int, int] | None = None) -> Path | None:
     """Sum shard density grids by (row, col) and rewrite the global grid.
 
     Each shard grid holds points at cell centres `(col*cell+half, row*cell+half)`
@@ -482,6 +566,13 @@ def merge_density(inputs: list[Path], out_dir: Path, work: Path,
     a planet grid is far too large for a dict), and re-emitted with build.py's exact
     conventions: sorted by (row, col), centres rounded to 7 decimals, zero-valued
     properties omitted per cell (R4).
+
+    `band=(K, N)` (K in 1..N) keeps ONLY the cells whose grid row satisfies
+    `row % N == K - 1` — one interleaved row-band of the global grid, for CI's
+    banded density merge (module docstring). The filter sits before the raw write
+    so the sort and emit stages shrink by N too. Summing is per-cell, and every
+    row lands in exactly one band, so the N band outputs partition the full merge
+    exactly — the assemble step checks that identity by cell count.
     """
     half = cell_deg / 2.0
     raw = work / "density.cells.txt"
@@ -505,6 +596,8 @@ def merge_density(inputs: list[Path], out_dir: Path, work: Path,
                     parts = line.rstrip("\n").split(",")
                     col = round((float(parts[xi]) - half) / cell_deg)
                     row = round((float(parts[yi]) - half) / cell_deg)
+                    if band is not None and row % band[1] != band[0] - 1:
+                        continue  # another band's row (Python % is non-negative)
                     counts = [
                         int(parts[p]) if p is not None and p < len(parts)
                         and parts[p] not in ("", "0") else 0
@@ -624,6 +717,226 @@ def place_admin(admin_src: Path, out_dir: Path) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CI modes: density bands, band assembly, manifest assembly, upload (B4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+_BAND_FILE_RE = re.compile(r"^density\.band-(\d+)-of-(\d+)\.fgb$")
+
+
+def parse_band(spec: str) -> tuple[int, int]:
+    """`K/N` → (K, N), 1-based, validated. The workflow passes e.g. `2/4`."""
+    match = re.fullmatch(r"(\d+)/(\d+)", spec)
+    if not match:
+        raise SystemExit(f"--density-band wants K/N (e.g. 2/4), got '{spec}'")
+    k, n = int(match.group(1)), int(match.group(2))
+    if n < 1 or not 1 <= k <= n:
+        raise SystemExit(f"--density-band {spec}: K must be in 1..N and N >= 1")
+    return k, n
+
+
+def band_paths(out_dir: Path, k: int, n: int) -> tuple[Path, Path]:
+    return (out_dir / f"density.band-{k}-of-{n}.fgb",
+            out_dir / f"density.band-{k}-of-{n}.json")
+
+
+def assemble_density_bands(band_dir: Path, out_dir: Path,
+                           work: Path) -> tuple[Path, dict]:
+    """N row-band grids → the ONE global density FGB the client reads.
+
+    Bands are row-disjoint by construction (`row % N` partitions the rows), so
+    this is a pure append — no dedup, no re-aggregation — through the same VRT
+    union mechanics as the feature layers. What it must NOT do is publish short:
+    a band file lost between the band jobs and this one would merge cleanly and
+    undercount a quarter of the planet, so the band SET is validated (exactly
+    K = 1..N for one consistent N, each with its sidecar) and the output's
+    feature count must equal the sidecars' cell sum. Returns the merged temp
+    path plus {cells, cell_deg, planet_timestamp} from the sidecars.
+    """
+    found: dict[int, tuple[int, Path]] = {}
+    for entry in sorted(band_dir.iterdir()):
+        match = _BAND_FILE_RE.match(entry.name)
+        if match:
+            found[int(match.group(1))] = (int(match.group(2)), entry)
+    if not found:
+        raise SystemExit(f"no density.band-K-of-N.fgb files under {band_dir}")
+    n_values = {n for n, _ in found.values()}
+    if len(n_values) != 1:
+        raise SystemExit(
+            f"mixed band denominators under {band_dir}: {sorted(n_values)} — "
+            "band files from different runs are mixed together; clear the "
+            "directory and re-stage one run's bands.")
+    n = n_values.pop()
+    missing = sorted(set(range(1, n + 1)) - set(found))
+    if missing:
+        raise SystemExit(
+            f"band set under {band_dir} is incomplete: N={n} but band(s) "
+            f"{missing} are absent. A missing band would publish a density grid "
+            "silently short by its rows — re-run the missing band job(s).")
+
+    cells = 0
+    timestamps: list[str] = []
+    cell_degs: set[float] = set()
+    for k in range(1, n + 1):
+        sidecar = found[k][1].with_suffix(".json")
+        if not sidecar.exists():
+            raise SystemExit(
+                f"{found[k][1].name} has no {sidecar.name} sidecar — the sidecar "
+                "is uploaded last and marks the band complete; its absence means "
+                "the band job died mid-upload. Re-run that band job.")
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        if int(meta.get("cells", 0)) < 1:
+            raise SystemExit(f"{sidecar.name} claims {meta.get('cells')} cells — "
+                             "a zero-cell band is always an operational failure")
+        cells += int(meta["cells"])
+        cell_degs.add(float(meta["cell_deg"]))
+        if meta.get("planet_timestamp"):
+            timestamps.append(meta["planet_timestamp"])
+    if len(cell_degs) != 1:
+        raise SystemExit(f"band sidecars disagree on cell_deg: {sorted(cell_degs)}")
+
+    inputs = [found[k][1] for k in range(1, n + 1)]  # K order: deterministic
+    merged = out_dir / "density.merged.fgb"
+    merged.unlink(missing_ok=True)
+    vrt = write_union_vrt("density", inputs, work)
+    run([
+        "ogr2ogr", "-f", "FlatGeobuf", str(merged), str(vrt),
+        "-nln", "density",
+        "-lco", "SPATIAL_INDEX=YES",
+        "-nlt", "POINT",
+    ])
+    vrt.unlink(missing_ok=True)
+
+    got = feature_count(merged)
+    if got != cells:
+        raise SystemExit(
+            f"assembled density grid has {got} cells but the {n} band sidecars "
+            f"sum to {cells} — a band contributed partially (truncated file?). "
+            "Refusing to publish a silently short grid.")
+    log(f"density: assembled {got} cells from {n} row band(s)")
+    return merged, {
+        "cells": cells,
+        "cell_deg": cell_degs.pop(),
+        "planet_timestamp": min(timestamps) if timestamps else None,
+    }
+
+
+def assemble_manifests(manifest_dir: Path) -> tuple[dict, float | None, str | None]:
+    """Union the per-layer partial manifests staged by CI's matrix jobs.
+
+    Returns (layers, cell_deg, planet_timestamp). Every `*.json` in the
+    directory must BE a partial manifest (shape-checked loudly — a stray file in
+    the staging prefix must not be half-read as layers), duplicate layer keys
+    across partials are a hard error (two jobs claimed the same layer — stale
+    staging), cell_deg must agree everywhere, and planet_timestamp is the OLDEST
+    across partials, exactly the rule the serial merge applies across shards.
+    """
+    layers: dict[str, dict] = {}
+    owners: dict[str, Path] = {}
+    cell_degs: set[float] = set()
+    timestamps: list[str] = []
+    partials = sorted(p for p in manifest_dir.iterdir() if p.suffix == ".json")
+    if not partials:
+        raise SystemExit(f"no staged partial manifests (*.json) under {manifest_dir}")
+    for path in partials:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data.get("layers"), dict):
+            raise SystemExit(
+                f"{path} does not look like a manifest (no 'layers' object) — "
+                "the staging directory must hold ONLY the matrix jobs' partial "
+                "manifests.")
+        if data.get("cell_deg") is not None:
+            cell_degs.add(float(data["cell_deg"]))
+        if data.get("planet_timestamp"):
+            timestamps.append(data["planet_timestamp"])
+        for key, entry in data["layers"].items():
+            if key in layers:
+                raise SystemExit(
+                    f"layer '{key}' appears in both {owners[key].name} and "
+                    f"{path.name} — two matrix jobs claimed the same layer, "
+                    "which means the staging prefix holds files from more than "
+                    "one run. Clear it and re-stage.")
+            layers[key] = entry
+            owners[key] = path
+    if len(cell_degs) > 1:
+        raise SystemExit(f"staged manifests disagree on cell_deg: {sorted(cell_degs)}")
+    return (layers,
+            cell_degs.pop() if cell_degs else None,
+            min(timestamps) if timestamps else None)
+
+
+def object_key(prefix: str, name: str) -> str:
+    return f"{prefix.strip('/')}/{name}" if prefix else name
+
+
+def verify_layers_in_r2(client, layers: dict[str, dict], prefix: str,
+                        skip: set[str]) -> None:
+    """HeadObject every layer file the manifest is about to reference.
+
+    The manifest is the only mutable object and the last thing uploaded; a layer
+    entry whose object is missing (a matrix job that claimed success but whose
+    upload was lost) or the wrong size would be a live-site break the moment the
+    manifest lands. ~40 HEADs cost nothing next to that.
+    """
+    from botocore.exceptions import ClientError  # noqa: PLC0415
+
+    bucket = os.environ["R2_BUCKET"]
+    problems: list[str] = []
+    for key in sorted(layers):
+        entry = layers[key]
+        if key in skip or "path" not in entry:
+            continue
+        obj = object_key(prefix, entry["path"])
+        try:
+            head = client.head_object(Bucket=bucket, Key=obj)
+        except ClientError as exc:
+            problems.append(f"{key}: {obj} — {exc.response.get('Error', {}).get('Code', exc)}")
+            continue
+        if head["ContentLength"] != entry["bytes"]:
+            problems.append(f"{key}: {obj} is {head['ContentLength']} bytes in R2 "
+                            f"but the staged manifest says {entry['bytes']}")
+    if problems:
+        raise SystemExit(
+            "refusing to publish the manifest — layer object(s) it references "
+            "are not (correctly) in R2:\n  " + "\n  ".join(problems)
+            + "\nRe-run the matrix job(s) that own them, then finalize again.")
+
+
+def upload_published(out_dir: Path, layers: dict[str, dict], prefix: str,
+                     manifest_dest: str | None) -> None:
+    """Upload THIS run's published layer files, then its manifest, strictly last.
+
+    Only the files this run actually produced — an `--only` merge-into must not
+    re-upload (or worse, require on local disk) the layers it did not touch;
+    those are already in R2 under their content-addressed names.
+    """
+    client = build.r2_client()
+    dest = manifest_dest or object_key(prefix, "manifest.json")
+    manifest = out_dir / "manifest.json"
+    if (manifest_dest is None
+            and json.loads(manifest.read_text(encoding="utf-8")).get("partial")):
+        # A partial manifest at the live key is a legal client state (the pinned
+        # `partial: true` rule) but it hides every layer the table lacks — so it
+        # must be an explicit decision, never the default of a CI matrix job
+        # that forgot --manifest-dest and would otherwise clobber the world.
+        raise SystemExit(
+            f"refusing to upload a PARTIAL manifest to the default {dest} — "
+            f"pass --manifest-dest {dest} explicitly if replacing the live "
+            "manifest with a partial one is really the intent, or point "
+            "--manifest-dest at a staging key.")
+    for key in sorted(layers):
+        entry = layers[key]
+        if "path" not in entry:
+            continue
+        path = out_dir / entry["path"]
+        obj = object_key(prefix, entry["path"])
+        log(f"upload: {path.name} ({path.stat().st_size / 1e6:.1f} MB) → {obj}")
+        build.r2_upload(client, path, obj)
+    log(f"upload: manifest.json → {dest} (last, always)")
+    build.r2_upload(client, manifest, dest)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -631,10 +944,14 @@ def place_admin(admin_src: Path, out_dir: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Merge per-shard build.py outputs into one global world.")
-    parser.add_argument("--shards", required=True, type=Path,
-                        help="directory containing one subdirectory per shard build")
-    parser.add_argument("--admin", required=True, type=Path,
-                        help="the Overture admin.fgb (build-admin.sh output)")
+    parser.add_argument("--shards", type=Path, default=None,
+                        help="directory containing one subdirectory per shard build "
+                             "(required except in the two --assemble-* modes)")
+    parser.add_argument("--admin", type=Path, default=None,
+                        help="the Overture admin.fgb (build-admin.sh output). "
+                             "Required whenever this run places admin — the "
+                             "default full merge, an --only set containing admin, "
+                             "or --assemble-manifests")
     parser.add_argument("--out", required=True, type=Path,
                         help="output directory for the merged world")
     parser.add_argument("--work", default=None, type=Path,
@@ -663,16 +980,143 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strategy", choices=("gpkg", "groupby"), default="gpkg",
                         help="dedup mechanics; groupby is the benchmarked-but-"
                              "nondeterministic single pass (default: gpkg)")
+    parser.add_argument("--density-band", default=None, metavar="K/N",
+                        help="merge ONE interleaved row-band of the density grid "
+                             "(cells with row %% N == K-1; K is 1-based) into "
+                             "density.band-K-of-N.fgb + .json sidecar, no "
+                             "manifest. Requires --only density. CI's banded "
+                             "density merge — see the module docstring")
+    parser.add_argument("--assemble-density-bands", default=None, type=Path,
+                        metavar="DIR",
+                        help="concatenate a complete density.band-*-of-N.fgb set "
+                             "(with sidecars) into the one global density layer, "
+                             "published content-addressed with a partial manifest")
+    parser.add_argument("--assemble-manifests", default=None, type=Path,
+                        metavar="DIR",
+                        help="finalize: union the staged per-layer partial "
+                             "manifests in DIR, place --admin, refuse on an "
+                             "incomplete layer table, and write the world "
+                             "manifest (with --upload: HeadObject-verify every "
+                             "referenced layer first; manifest uploaded last)")
+    parser.add_argument("--upload", action="store_true",
+                        help="publish what this run produced to R2 when done, "
+                             "through build.py's uploader — layer files first, "
+                             "manifest strictly last")
+    parser.add_argument("--prefix", default="world",
+                        help="R2 key prefix for published layer files "
+                             "(default: world)")
+    parser.add_argument("--manifest-dest", default=None, metavar="KEY",
+                        help="R2 key for the manifest when uploading (default: "
+                             "<prefix>/manifest.json). CI's matrix jobs point "
+                             "this at a staging key so only the finalize job "
+                             "ever writes the live world manifest")
     args = parser.parse_args(argv)
 
     table = load_table()
-    if not args.admin.exists():
+
+    # Mode sanity first, and the upload-env preflight right after argparse for the
+    # same reason build.py checks before downloading: an unset R2_* variable must
+    # surface now, not after hours of merging (check_upload_env's own rationale).
+    modes = [name for name, on in (("--density-band", args.density_band),
+                                   ("--assemble-density-bands",
+                                    args.assemble_density_bands),
+                                   ("--assemble-manifests", args.assemble_manifests))
+             if on]
+    if len(modes) > 1:
+        raise SystemExit(f"{' and '.join(modes)} are mutually exclusive")
+    if args.upload:
+        build.check_upload_env()
+    if args.admin is not None and not args.admin.exists():
         raise SystemExit(f"--admin file not found: {args.admin}")
 
     out_dir: Path = args.out
     work: Path = args.work or (out_dir / "work")
     out_dir.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
+
+    # ── --assemble-density-bands: band files → the one global density layer ──
+    if args.assemble_density_bands is not None:
+        for flag, value in (("--shards", args.shards), ("--admin", args.admin),
+                            ("--only", args.only)):
+            if value is not None:
+                raise SystemExit(f"{flag} has no role in --assemble-density-bands")
+        merged, meta = assemble_density_bands(args.assemble_density_bands,
+                                              out_dir, work)
+        layers = {"density": publish_layer(merged, "density", out_dir)}
+        manifest = {
+            "version": 1,
+            "admin_source": "overture",
+            "cell_deg": meta["cell_deg"],
+            "planet_timestamp": meta["planet_timestamp"],
+            "layers": layers,
+            "partial": True,  # density alone is never the full table
+        }
+        (out_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if args.upload:
+            upload_published(out_dir, layers, args.prefix, args.manifest_dest)
+        return 0
+
+    # ── --assemble-manifests: staged partials + admin → the world manifest ──
+    if args.assemble_manifests is not None:
+        for flag, value in (("--shards", args.shards), ("--only", args.only),):
+            if value is not None:
+                raise SystemExit(f"{flag} has no role in --assemble-manifests")
+        if args.admin is None:
+            raise SystemExit("--assemble-manifests places the admin layer and "
+                             "needs --admin (build-admin.sh's admin.fgb)")
+        staged, cell_deg, planet_timestamp = assemble_manifests(
+            args.assemble_manifests)
+        all_layers = dict(staged)
+        log("── admin (from --admin, not merged) ─────")
+        all_layers["admin"] = place_admin(args.admin, out_dir)
+
+        full_table = set(table["identity"]) | set(table["count_only"]) | \
+            {"density", "admin"}
+        unknown = sorted(set(all_layers) - full_table)
+        if unknown:
+            raise SystemExit(
+                f"staged manifests carry layer key(s) the table does not know: "
+                f"{', '.join(unknown)} — stale staging from an older layer table; "
+                "clear the staging prefix and re-run the matrix.")
+        missing = sorted(full_table - set(all_layers))
+        density_omitted = False
+        if missing == ["density"] and args.allow_missing_density:
+            density_omitted = True
+            log("--allow-missing-density: publishing WITHOUT a density layer "
+                "(absent, never features: 0)")
+        elif missing:
+            raise SystemExit(
+                f"the staged layer table is missing: {', '.join(missing)} — a "
+                "matrix job failed or its staging upload was lost. A partial "
+                "world must never publish as full; re-run the missing job(s).")
+
+        manifest = {
+            "version": 1,
+            "admin_source": "overture",
+            "cell_deg": cell_deg if cell_deg is not None else table["cell_deg"],
+            "planet_timestamp": planet_timestamp,
+            "layers": {key: all_layers[key] for key in sorted(all_layers)},
+        }
+        if density_omitted:
+            manifest["partial"] = True
+        (out_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        published = sum(1 for v in all_layers.values() if "path" in v)
+        log(f"world manifest: {len(all_layers)} layers ({published} with files)"
+            + (" — PARTIAL (density omitted)" if density_omitted else ""))
+        if args.upload:
+            client = build.r2_client()
+            # Everything except admin was uploaded by its matrix job — verify it
+            # is actually there at the right size before the manifest can point
+            # at it. Admin is THIS job's to upload, before the manifest.
+            verify_layers_in_r2(client, all_layers, args.prefix, skip={"admin"})
+            upload_published(out_dir, {"admin": all_layers["admin"]},
+                             args.prefix, args.manifest_dest)
+        return 0
+
+    if args.shards is None:
+        raise SystemExit("--shards is required (except in the --assemble-* modes)")
 
     shards = find_shards(args.shards, allow_incomplete=args.allow_incomplete)
     manifests = {shard: shard_manifest(shard) for shard in shards}
@@ -690,7 +1134,61 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"shards disagree on cell_deg: {sorted(cell_degs)}")
     cell_deg = cell_degs.pop() if cell_degs else table["cell_deg"]
 
+    # ── --density-band: one row-band, no manifest, sidecar last ──
+    if args.density_band is not None:
+        if args.only != "density":
+            raise SystemExit("--density-band requires --only density — a banded "
+                             "merge of anything else is meaningless (bands "
+                             "partition GRID ROWS, and only density is a grid)")
+        if args.admin is not None:
+            raise SystemExit("--admin has no role in a --density-band run")
+        k, n = parse_band(args.density_band)
+        density_inputs = [shard / p for shard, m in manifests.items()
+                          if (p := listed_path(m, "density"))]
+        if not density_inputs:
+            raise SystemExit(
+                "density: no shard under --shards lists a density layer — most "
+                "likely the density shards were never synced, or --shards points "
+                "at a feature-only tree.")
+        merged = merge_density(density_inputs, out_dir, work,
+                               table["density_keys"], cell_deg, band=(k, n))
+        if merged is None:
+            raise SystemExit(
+                f"density band {k}/{n}: zero cells contributed by any shard — "
+                "for a real region that is an operational failure, never true "
+                "emptiness. Fix the shard tree.")
+        band_fgb, band_sidecar = band_paths(out_dir, k, n)
+        band_fgb.unlink(missing_ok=True)
+        merged.rename(band_fgb)
+        cells = feature_count(band_fgb)
+        band_sidecar.write_text(json.dumps({
+            "band": k,
+            "bands": n,
+            "cells": cells,
+            "cell_deg": cell_deg,
+            "planet_timestamp": planet_timestamp,
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        log(f"density band {k}/{n}: {cells} cells from {len(density_inputs)} "
+            f"shard grid(s)")
+        if args.upload:
+            client = build.r2_client()
+            # Band file FIRST, sidecar LAST: the assemble step treats the
+            # sidecar's presence as the band's completeness marker.
+            for path in (band_fgb, band_sidecar):
+                obj = object_key(args.prefix, path.name)
+                log(f"upload: {path.name} ({path.stat().st_size / 1e6:.1f} MB) "
+                    f"→ {obj}")
+                build.r2_upload(client, path, obj)
+        return 0
+
     wanted = set(args.only.split(",")) if args.only else None
+
+    # --admin is only needed when this run actually places admin. CI's per-layer
+    # matrix jobs (--only <one feature layer>) neither have nor want the 2.29 GB
+    # Overture file; the finalize job is where admin enters the world.
+    if (wanted is None or "admin" in wanted) and args.admin is None:
+        raise SystemExit("--admin is required (this run places the admin layer; "
+                         "only an --only set that excludes admin may omit it)")
 
     # The full layer table — used both for the `partial` stamp and to drop stale
     # manifest keys on an --only merge-into run.
@@ -727,7 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
     # so the late check stays as the backstop.
     if ((wanted is None or "density" in wanted)
             and not args.allow_missing_density
-            and not any("density" in m["layers"] for m in manifests.values())):
+            and not any(listed_path(m, "density") for m in manifests.values())):
         raise SystemExit(
             "density: no shard under --shards lists a density layer — most "
             "likely the density shards were never synced, or --shards points at "
@@ -743,8 +1241,8 @@ def main(argv: list[str] | None = None) -> int:
     for key, count_only in universe:
         if wanted is not None and key not in wanted:
             continue
-        inputs = [shard / m["layers"][key]["path"]
-                  for shard, m in manifests.items() if key in m["layers"]]
+        inputs = [shard / p for shard, m in manifests.items()
+                  if (p := listed_path(m, key))]
         if not inputs:
             # Legitimately empty everywhere — explicit, so a failed job cannot
             # masquerade as an empty layer.
@@ -767,9 +1265,8 @@ def main(argv: list[str] | None = None) -> int:
     # amusement_park, so THEIR features:0 entries stay.
     density_omitted = False
     if wanted is None or "density" in wanted:
-        density_inputs = [shard / m["layers"]["density"]["path"]
-                          for shard, m in manifests.items()
-                          if "density" in m["layers"]]
+        density_inputs = [shard / p for shard, m in manifests.items()
+                          if (p := listed_path(m, "density"))]
         merged = None
         if density_inputs:
             merged = merge_density(density_inputs, out_dir, work,
@@ -842,6 +1339,11 @@ def main(argv: list[str] | None = None) -> int:
         manifest["partial"] = True
     target.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
+
+    if args.upload:
+        # Only THIS run's published files — an --only merge-into's untouched
+        # layers are already in R2 under their content-addressed names.
+        upload_published(out_dir, layers, args.prefix, args.manifest_dest)
 
     published = sum(1 for v in layers.values() if "path" in v)
     total = sum(v.get("bytes", 0) for v in layers.values())

@@ -599,21 +599,23 @@ otherwise, with byte-identical outputs to a control run. See `tools/osm-world/PL
 
 ## CI
 
-Three workflows, and **`world-canary.yml` is meant to be dispatched by hand first** — it
-needs no secrets, builds one ~1 GB coarse shard through the full pipeline, and reports
-wall, RSS, CPU and disk high-water into the step summary. Nothing about the other two
-files' timeouts should be trusted until it has run.
+Six workflows. The two shard workflows are **proven at full scale** (2026-08-22:
+88/88 and 114/114 jobs, zero failures — `PLAN.md` §Phase 4 Result); the merge, admin
+and orchestrator workflows are **authored and validated but not yet dispatched**.
+`world-canary.yml` remains the cheap way to re-measure a runner.
 
-| workflow | shards | matrix | timeout | R2 prefix |
+| workflow | what | matrix | timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
-| `world-density-shards.yml` | fine (514) | batch ≤5 / ≤2 GB → 113 jobs | 350 min | `shards/density/<id>/` |
-| `world-feature-shards.yml` | coarse (87) | batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
+| `world-density-shards.yml` | fine shards (514) | batch ≤5 / ≤2 GB → 113 matrix jobs | 350 min | `shards/density/<id>/` |
+| `world-feature-shards.yml` | coarse shards (87) | batch 1 → 87 matrix jobs | 240 min | `shards/feature/<id>/` |
+| `world-admin.yml` | Overture admin build + probes | 1 job | 120 min | `admin/` (handoff) |
+| `world-merge.yml` | shards + admin → the world | 35 layers + N bands + 3 | 330 min max | `world/` |
+| `world-rebuild.yml` | shards → admin → merge | calls the other four | — | — |
 
-Both are monthly plus `workflow_dispatch`, `max-parallel` 20, `fail-fast: false`, and
-both fail loudly rather than quietly skipping when `shards.json` is missing or the
-`R2_*` secrets are unset. **Those secrets do not exist yet**, so the `schedule:` trigger
-will fail every month until a token with R2 write is minted — disable `schedule:` and
-keep `workflow_dispatch` until then.
+All are `workflow_dispatch` (the shard schedules stay commented out), `max-parallel`
+20, `fail-fast: false`, and fail loudly rather than quietly skipping when
+`shards.json` is missing or the `R2_*` secrets are unset. The secrets exist as of
+2026-08-22 and both shard workflows have run against them.
 
 `tools/osm-world/ci/chunk-shards.py` batches `shards.json` into the matrix. A batch
 closes on whichever cap is hit first — shard count (`--batch-size`) or accumulated
@@ -641,16 +643,25 @@ build.py's stderr on the job log live and in order; an `EXIT` trap prints the re
 non-zero exit, because peak RSS and wall clock are how an OOM kill is told apart from a
 bug, and an OOM-killed process writes no stderr at all.
 
-**The merge is not in CI *yet*, and the reason has changed.** GDAL's FlatGeobuf writer
-keeps a hidden unlinked temp file *in the output directory* and ignores `CPL_TMPDIR`, so
-transient disk is double the final layer size. RAM is not the problem — the writer
-measures at ≈ 166 MB + 100 B/feature, verified to 87M features / 46 GB — disk is. On a
-workstation that is inconvenient; on a runner it decides the design. A 14-agent
-investigation (`PLAN.md` §Phase 6) concluded the merge **does** fit on a public runner as
-a **per-layer matrix** rather than one serial job, provided the density grid is merged in
-row bands — that single job fails on RAM, ~13.3–21.6 GB against 16 GB, and on the 6-hour
-cap at a measured 11,588 cells/s. `green`, long assumed to be the blocker, merges in
-~1.7 h at ~22.4 GB (not the 34–50 GB a one-country extrapolation suggested).
+**The merge is in CI as of 2026-08-22** — authored, not yet dispatched — as
+`world-merge.yml`, the shape the 14-agent investigation (`PLAN.md` §Phase 6)
+concluded fits a public runner: a **per-layer matrix** rather than one serial job
+(the serial version measured ~5.4 h against the 6-hour cap with no checkpointing),
+with the density grid merged in **N = ceil(cells / 30M) interleaved row bands
+computed at run time** (`ci/merge-plan.py`; 119,473,135 measured cells → 4 bands
+today) and reassembled by one band-append job. GDAL's FlatGeobuf writer keeps a
+hidden unlinked temp file *in the output directory* and ignores `CPL_TMPDIR`, so
+transient disk is double the final layer size — hence `jlumbroso/free-disk-space` is
+mandatory on every merge job; RAM is the writer's ≈ 166 MB + 100 B/feature, which is
+why only the assemble job is tight (~12.1 GB against 15 GB at the measured cell
+count). `merge.py` gained the upload side (`--upload`, reusing `build.py`'s boto3
+uploader — layers first, manifest strictly last, with a HeadObject check on every
+referenced object before the manifest lands), and `world-merge.yml`'s plan job
+refuses to merge unless the R2 manifest set equals `shards.json` in both directions,
+so a shard job that never ran — or a stale shard whose density would double-count —
+stops the merge by name instead of shipping wrong counts. `green`, long assumed to
+be the blocker, measured 14.22 GB pooled (not the 34–50 GB a one-country
+extrapolation suggested).
 
 **Two guards exist because a merge failure is otherwise silent.** `write_union_vrt`
 checks every shard input actually exists before writing the VRT — `inputs` is built from

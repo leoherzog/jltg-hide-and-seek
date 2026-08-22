@@ -744,11 +744,18 @@ workflow header documents the manual kadro-side step, including the
 
 Validation done: PyYAML parse, `bash -n` over all 17 embedded `run:` scripts,
 `chunk-shards.py` verified against a synthetic 499-fine/7-coarse index (batch 5 → 100
-batches with 4 in the last, total preserved; over-cap fails cleanly). **No `actionlint`
-was available and none was run, and no runtime behaviour is verified** — matrix
-expansion, secret propagation, and whether `ubuntu-latest`'s apt GDAL clears
-`preflight`'s version floor are all unknown. That is precisely what `world-canary.yml`
-is for, and it should be dispatched before anyone trusts the other two files' timeouts.
+batches with 4 in the last, total preserved; over-cap fails cleanly). ~~No `actionlint`
+was available and none was run, and no runtime behaviour is verified~~ — **superseded
+2026-08-22, both halves.** `actionlint` 1.7.10 (+shellcheck 0.11.0) now runs clean over
+all six workflow files. And the runtime behaviour is verified at full scale, not by a
+canary: **run 32568376978 (`world-feature-shards`) finished 88/88 jobs with zero
+failures** — longest `canada` at 220.9 min against the 240-min timeout, 6.34 GB peak
+RSS, 128% CPU, disk never below 87 GB free (`africa`, a larger 7.90 GB extract, took
+only 50.2 min; `russia` 106 min — canada is slow because of lake geometry, not size) —
+and **run 32568378245 (`world-density-shards`) finished 114/114 with zero failures**,
+longest job 47 min. Matrix expansion, secret propagation and apt GDAL all behaved.
+All 601 shard manifests landed under `shards/{feature,density}/<id>/manifest.json`,
+50.00 GB total in R2.
 
 ---
 
@@ -853,23 +860,36 @@ that needs a workstation.
   this is *not* the ~108 GB the investigation's sample reported — same 144 GB volume,
   22 GB less free — so treat 86 GB as the working figure and re-read it every run.
   The merge needs 60–90 GB, so the whole plan rests on headroom that is real today,
-  not promised, and the margin is thinner than the design assumed: **green's merge at
+  not promised. The margin worry this paragraph originally carried — "green's merge at
   ~63 GB central leaves ~23 GB, and at the high end of its own band it does not fit
-  without help.** `jlumbroso/free-disk-space` (+31 GB, ~3 min) is therefore
-  **mandatory on the merge jobs, not conditional**. The repo was made public 2026-08-22. Every workflow now prints `nproc`,
+  without help" — is **retired by the 2026-08-22 full-scale measurement**: green came
+  in at **14.22 GB pooled, below the low end of its own 14.9–27.7 GB estimated band**
+  (next bullet), so its merge footprint sits comfortably inside the envelope.
+  `jlumbroso/free-disk-space` (+31 GB, ~3 min) stays **mandatory on the merge jobs,
+  not conditional**, because the 86 GB envelope is undocumented headroom that could
+  shrink without notice. The repo was made public 2026-08-22. Every workflow now prints `nproc`,
   `free -g` and `df -Pk` as its first step so a reversion shows up as a logged number
   rather than as ENOSPC 400 jobs into a rebuild.
 - **Larger runners are not an option here.** They require a Team/Enterprise
   *organisation*; this account is a User. Do not design around them.
 - **The density merge is the only job that does not fit, and it fails on RAM.** The
-  merged grid is ~133 M cells (79–243 M band); GDAL's writer at 100–162 B/feature puts
-  that at **13.3–21.6 GB against 16 GB**, and at a measured 11,588 cells/s it is
-  **3.2 h central, 5.8 h at the high band, against the 6 h cap**. Split by row into
-  N = ceil(cells / 30 M) bands and each becomes a ~35 min job at ~3 GB RSS.
+  merged grid was estimated at ~133 M cells (79–243 M band); **measured 2026-08-22:
+  119,473,135 cells** summed across the 514 fine manifests, just under the central
+  estimate. GDAL's writer at 100–162 B/feature puts a single global write at
+  **~12.1–19.5 GB against 16 GB** (the estimate said 13.3–21.6 — corrected for the
+  measured count; still over the line at the pessimistic ratio), and at a measured
+  11,588 cells/s it is ~2.9 h serial against the 6 h cap. Split by row into
+  N = ceil(cells / 30 M) bands and each becomes a ~35 min job at ~3 GB RSS. At the
+  measured count **N = 4**, not the 5 the central estimate implied — and N is
+  **computed at run time** by `ci/merge-plan.py` from the manifests' summed
+  `layers.density.features`, never hard-coded, so the next planet snapshot
+  re-derives it.
 - **`green` was never the blocker.** Extrapolating from czech-republic (63% of that
   shard's output) gave 34–50 GB; measured across several extracts with different
   mapping cultures it is **~22.4 GB (band 14.9–27.7)**, and its merge runs ~1.7 h on a
-  real runner. One-country extrapolation was wrong by roughly 2×.
+  real runner. One-country extrapolation was wrong by roughly 2×. **Measured at full
+  scale 2026-08-22: 14.22 GB pooled / 19,477,819 features — below even the band's low
+  end**; multi-extract extrapolation over-called it too, by ~1.6× at the centre.
 - Shape: five workflows (the three existing plus `world-admin.yml` and
   `world-merge.yml`, under a `world-rebuild.yml` orchestrator), **~218 jobs, ~4.5–5 h
   wall** at the 40-concurrent ceiling. The merge is a **per-layer matrix**, not one
@@ -880,8 +900,88 @@ that needs a workstation.
 - **The `/vsis3` escape hatch does not work.** Writing merge output straight to R2
   would drop local footprint to 0.87×F, but `publish_layer` does `sha256_file(temp)`
   then `temp.rename(final)`, and over `/vsis3` a rename is a server-side `CopyObject`
-  — **R2 caps single-part copy at 5 GiB**, which both `water` (7.14 GB) and `green`
-  exceed. Rescuable with multipart `UploadPartCopy`, but that is new untested code.
+  — **R2 caps single-part copy at 5 GiB**, which both `water` (**5.44 GB measured
+  2026-08-22** — this bullet originally cited an estimated 7.14 GB; smaller, but
+  still over the 5 GiB cap, so the conclusion stands) and `green` exceed. Rescuable
+  with multipart `UploadPartCopy`, but that is new untested code. The hatch is now
+  closed in the implementation: merge output is written locally and uploaded through
+  build.py's boto3 uploader (`merge.py --upload`, B4 below).
+
+### Result — the measured planet, and the five workflows (authored 2026-08-22)
+
+**The full-scale shard runs landed first, and every Phase 6 sizing question is now a
+measurement.** Runs 32568376978 (feature, 88/88) and 32568378245 (density, 114/114)
+against commit `9ef3459` put 601 shard manifests and **50.00 GB** in R2. Pooled shard
+totals, summed from the manifests:
+
+| quantity | measured |
+| --- | ---: |
+| feature shards, all layers | **34.94 GB**, 103,646,150 features, 35 layers |
+| `green` | **14.22 GB**, 19,477,819 features |
+| `water` | **5.44 GB**, 2,292,996 features |
+| `curse_water` | 3.24 GB, 26,446,788 features |
+| `pitch` | 2.31 GB |
+| `curse_cairn_terrain` | 1.82 GB |
+| `coastline` | 1.52 GB |
+| `shop` | 1.51 GB |
+| density grid | **119,473,135 cells**, 15.06 GB |
+
+**One shard published a manifest with zero layers, and that is correct, not a
+failure.** `british-columbia` logged `stage 4: no populated cells, omitting density
+from the manifest` and published `layers: {}` — its populated land is claimed by the
+four smaller sub-extracts (`southcoast-admreg`, `island-admreg`, `okanagan-admreg`,
+`north-admreg`) that sort ahead of it in the area-ascending cover, leaving an
+offshore-only residual (the §"5.1% of the fine cover" table already knew BC's residual
+was outer coast). The merge tolerates it: an absent layer key and a path-less
+`{"features": 0}` entry both merge as empty (`merge.py listed_path` — the path-less
+shape used to crash with a KeyError; build.py never writes it, but merged worlds and
+test worlds used as shard inputs do), and both are kept distinct from a LISTED file
+that is missing on disk, which stays the hard error it must be.
+
+**The merge and admin builds are now workflows** — `world-admin.yml`,
+`world-merge.yml`, and the `world-rebuild.yml` orchestrator chaining
+shards → admin → merge (the two shard workflows grew a `workflow_call` trigger for
+that; behaviour under `workflow_dispatch` is unchanged). world-merge implements the
+§Phase 6 design exactly: a `plan` job (`ci/merge-plan.py`) that syncs the ~600
+manifests, **refuses to merge unless the R2 manifest set equals shards.json's id set
+in both directions** (a missing manifest is a job that never ran; an extra one is a
+stale shard whose density would double-count — the same hazard as B3, the lakes-mask
+delta), computes **N = ceil(cells / 30 M) at run time**, and emits the per-layer
+matrix pooled-bytes-descending so green starts first; 35 per-layer merge jobs; N
+density band jobs (`merge.py --density-band K/N`, interleaved rows `row % N == K-1`
+so band populations are near-equal without a global row histogram); one
+`assemble-density` job (`--assemble-density-bands`, a pure VRT append of the
+row-disjoint bands — validated band set, cell-count identity enforced; the one
+full-grid FGB write, ~12.1 GB RSS at the measured law against 15 GB, with swap kept
+as the buffer and client-side multi-band density as the documented fallback if it
+ever OOMs); and a `finalize` job (`--assemble-manifests`) that places admin, refuses
+an incomplete layer table, **HeadObject-verifies every referenced layer object in R2
+(name and bytes) before uploading the manifest last**. Intermediates (partial
+manifests, band files) stage under `merge/staging/<run_id>/` in R2 — never Actions
+artifacts — and are cleaned up by finalize.
+
+**Gap B4 — merge.py content-addressed its outputs but had no uploader — is closed.**
+`merge.py --upload --prefix [--manifest-dest]` reuses build.py's boto3 uploader
+(`r2_client`/`r2_upload`, extracted from `stage_upload` behaviour-identically):
+layer files first, manifest strictly last, same ContentType/CacheControl rules, no
+second aws-cli path for published objects. aws-cli is used only for the
+intermediate handoffs (manifest syncs, staging, the admin.fgb handoff), always via
+the S3 API — never the public CDN domain, whose immutable-cached copies of the
+non-content-addressed shard files can be stale. Two extra guards, because a wrong
+manifest is a live-site break: `--upload` refuses to write a `partial: true`
+manifest to the DEFAULT `<prefix>/manifest.json` (a CI matrix job that forgot
+`--manifest-dest` must not clobber the world), and the band sidecar uploads after
+its band file so its presence marks the band complete.
+
+Verified locally (2026-08-22): the banded path equals the serial merge **cell for
+cell** on the make-test-world.py world (bands 1/2 + 2/2 → assemble → identical cells
+and per-key counts; all 36 other layer entries byte-identical in the final
+manifest), every loud-failure path fires (missing band, missing sidecar, incomplete
+layer table, stale/missing cover members, partial-to-live-manifest guard), and all
+four suites still pass (test-update 45, test-reader 45, test-pipeline 83, smoke
+19/19). `actionlint` + shellcheck clean over all six workflow files. **Not yet
+dispatched** — upload code paths and real runner wall clocks are unverified until
+the first world-merge run.
 
 ### What this found that is not about Actions
 

@@ -1,0 +1,212 @@
+# .github/workflows/world-admin.yml — Phase 2 in CI (see tools/osm-world/PLAN.md
+# §Phase 2 and §Phase 6). Builds the global `admin` layer from Overture
+# `division_area` — NOT from OSM: admin boundaries are relations, and a relation
+# only assembles into a polygon when it fits entirely inside an extract, so a
+# per-shard OSM build can never produce a country polygon (confirmed on 17 builds,
+# §Why Option B). Overture ships the polygons already assembled.
+#
+# This drives tools/osm-world/build-admin.sh unchanged — the same script that
+# built the shipped 2.29 GB / 984,219-feature admin layer on kadro (spike S2) —
+# then runs BOTH validation gates before anything uploads:
+#   1. build-admin.sh's own ogrinfo probes (Grand Rapids → US, Basel → CH+DE+FR),
+#   2. probe-admin.mjs: 39 assertions through the REAL client reader, including
+#      the Vatican enclave (interior rings are load-bearing) and Baarle.
+# A file that fails either gate never reaches R2.
+#
+# Output goes to a STABLE prefix (default `admin/`): admin.fgb, its sha256
+# sidecar (uploaded after the fgb — a torn upload then fails the finalize job's
+# `sha256sum -c` instead of merging a corrupt file), and admin.meta.json
+# recording the pinned Overture release. world-merge.yml's finalize job is the
+# consumer: it verifies the sidecar, then merge.py's place_admin content-addresses
+# the file into the world. These uploads use aws-cli deliberately — they are
+# PIPELINE INTERMEDIATES fetched over the S3 API, like the shard→merge handoff;
+# the published world objects go through build.py's boto3 uploader (in merge.py).
+#
+# Sizing (S2, measured on kadro 16-core/31 GB; runner is 4-core/15 GB):
+#   - DuckDB peak RSS 6.3 GB at SIMPLIFY=0.0001. MEMORY_LIMIT is set to 10GB
+#     below the 15 GB runner; the script spills to $OUT/duckdb-tmp (budget
+#     ~10 GB of scratch), so a tighter limit slows rather than kills.
+#   - Disk: 4.47 GB source parquet (read from Overture's S3 over httpfs) +
+#     2.29 GB fgb + spill — ~20 GB, far under the 86 GB measured free; no
+#     free-disk-space step needed (that mandate is for the MERGE jobs).
+#   - Wall: 56 s + 11 s on kadro's 16 cores with fast S3; a runner's 4 cores
+#     and network make this minutes-to-tens-of-minutes. Timeout is generous.
+#   - Cadence: rarely, by hand. Boundaries move on a timescale of years
+#     (PLAN.md §Phase 2); this build is deliberately outside the shard cadence,
+#     which is why world-rebuild.yml runs it but nothing schedules it.
+#
+# Overture PRUNES old releases (only ~2 live on S3 at a time). build-admin.sh
+# checks the listing first and fails loudly naming what still exists — re-pin
+# the `release` input when that fires, and expect the probe expectations in
+# probe-admin.mjs to need review on a release bump (they are ground truth for
+# 2026-07-22.0).
+#
+# R2 secrets required (repo or environment secrets):
+#   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
+#
+# NOT verified by running this file: I cannot execute GitHub Actions from here.
+# YAML syntax was checked with PyYAML; behavior is unverified until dispatched.
+
+name: world-admin
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Overture release id (pinned; build fails loudly listing live releases if pruned)"
+        required: false
+        default: "2026-07-22.0"
+      simplify:
+        description: "ST_SimplifyPreserveTopology tolerance in degrees (S2 shipped 0.0001; empty = full precision, ~2.6x larger)"
+        required: false
+        default: "0.0001"
+      admin_prefix:
+        description: "Stable R2 prefix for the handoff to world-merge.yml (default: admin)"
+        required: false
+        default: "admin"
+  # Callable from world-rebuild.yml with the same inputs.
+  workflow_call:
+    inputs:
+      release:
+        required: false
+        type: string
+        default: "2026-07-22.0"
+      simplify:
+        required: false
+        type: string
+        default: "0.0001"
+      admin_prefix:
+        required: false
+        type: string
+        default: "admin"
+
+concurrency:
+  group: world-admin
+  cancel-in-progress: false
+
+env:
+  REL: ${{ inputs.release || '2026-07-22.0' }}
+  SIMPLIFY: ${{ inputs.simplify || '0.0001' }}
+  ADMIN_PREFIX: ${{ inputs.admin_prefix || 'admin' }}
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+  AWS_DEFAULT_REGION: auto
+  # Pinned: bump deliberately, with a look at the release notes — this binary
+  # reads a 4.47 GB remote parquet scan whose behavior we want reproducible.
+  DUCKDB_VERSION: "1.4.1"
+
+jobs:
+  build-admin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: runner envelope (this build depends on undocumented headroom)
+        run: |
+          set -euo pipefail
+          echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
+          df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
+          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
+          # public repos. The merge sizing assumes the larger figure; the shard builds
+          # do not, but africa's density job wants ~40 GB. Printing it every run is how
+          # a silent reversion shows up as a number in a log instead of as ENOSPC
+          # halfway through a 600-job rebuild.
+          free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
+          [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
+
+      - name: preflight R2 secrets (before a 20-minute build, not after)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            [ -n "${!v:-}" ] || missing+=("$v")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::missing secrets: ${missing[*]} — the upload step would fail after the whole build"
+            exit 1
+          fi
+
+      - name: install gdal, duckdb
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends gdal-bin unzip
+          curl -fL --retry 5 --retry-connrefused --retry-delay 3 \
+            -o /tmp/duckdb.zip \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip"
+          unzip -o /tmp/duckdb.zip -d /tmp/duckdb-cli
+          sudo install /tmp/duckdb-cli/duckdb /usr/local/bin/duckdb
+          duckdb --version
+
+      - name: build admin.fgb from Overture (build-admin.sh, probes included)
+        run: |
+          set -euo pipefail
+          # MEMORY_LIMIT 10GB on a 15 GB runner: S2 verified 8GB completes by
+          # spilling to $OUT/duckdb-tmp. KEEP_PARQUET=0 — the 4.47 GB
+          # intermediate has no consumer here and disk is shared with the spill.
+          OUT="$RUNNER_TEMP/admin-build" \
+          REL="$REL" \
+          SIMPLIFY="$SIMPLIFY" \
+          MEMORY_LIMIT=10GB \
+          KEEP_PARQUET=0 \
+            bash tools/osm-world/build-admin.sh
+
+      - name: validate through the real client reader (probe-admin.mjs)
+        run: |
+          set -euo pipefail
+          # 39 assertions incl. the Vatican enclave and Baarle — the failures
+          # ogrinfo cannot see (module header of probe-admin.mjs). Exit 1 here
+          # means DO NOT PUBLISH, and nothing has been uploaded yet.
+          node tools/osm-world/probe-admin.mjs "$RUNNER_TEMP/admin-build/admin.fgb"
+
+      - name: upload to the stable handoff prefix (fgb, then sidecar, then meta)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          OUT="$RUNNER_TEMP/admin-build"
+
+          # Meta first, locally: the release id is what lets the served page
+          # render the ODbL attribution without guessing (PLAN.md §Phase 2 —
+          # "© OpenStreetMap contributors, ODbL 1.0 — via Overture Maps
+          # Foundation").
+          python3 - "$OUT" "$REL" "$SIMPLIFY" <<'PY'
+          import json, sys, time
+          from pathlib import Path
+          out, rel, simplify = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          sha = out.joinpath("admin.fgb.sha256").read_text().split()[0]
+          out.joinpath("admin.meta.json").write_text(json.dumps({
+              "release": rel,
+              "simplify": simplify,
+              "sha256": sha,
+              "bytes": out.joinpath("admin.fgb").stat().st_size,
+              "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+
+          # Order matters: fgb, THEN the sha sidecar. An upload torn between the
+          # two leaves a new fgb with the old sidecar, and world-merge.yml's
+          # finalize runs `sha256sum -c` — the tear fails loudly there instead
+          # of merging a half-replaced file.
+          for name in admin.fgb admin.fgb.sha256 admin.meta.json; do
+            aws s3 cp "$OUT/$name" "s3://$R2_BUCKET/$ADMIN_PREFIX/$name" \
+              --endpoint-url "$EP" --no-progress
+          done
+
+          {
+            echo "### world-admin"
+            echo "- Overture \`$REL\`, SIMPLIFY=\`$SIMPLIFY\` → \`$ADMIN_PREFIX/admin.fgb\`"
+            echo '```'
+            cat "$OUT/admin.meta.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
