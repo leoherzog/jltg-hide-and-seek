@@ -608,6 +608,21 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    the real map appears. */
 #netmap-frame { inline-size: 100%; }
 
+/* ---- the map frame's own toolbar (R5, 2026-08-23: the border card was dissolved
+   onto the frame — two copy buttons up here, the coordinates in a disclosure below).
+   `wa-split` justifies two groups apart and wraps them at a narrow viewport; the
+   `min-inline-size: 0` is the same floor-removal `#picker-toolbar` needs above, and
+   for the same reason: a flex item's `auto` minimum is its content width, and one
+   long button label would otherwise scroll the whole PAGE sideways at 360px. */
+#netcontrols { flex-wrap: wrap; }
+#netcontrols > * { min-inline-size: 0; }
+
+/* The generated "what to notice" line under the map. It is written by the runtime
+   from the day payload, so it ships empty and must not claim a row of the stack
+   until it has something to say. */
+#netcaption { max-inline-size: 72ch; }
+#netcaption:empty { display: none; }
+
 /* ---- the map's stat rail (folded in from §04 on 2026-08-23) ----
    The tiles that name a place carry `data-hl` — six of the twelve, five highlights,
    because the map area and the network diameter both light the extent — and the

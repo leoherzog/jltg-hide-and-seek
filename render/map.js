@@ -779,10 +779,10 @@ export function renderTransitReality(payload) {
  *
  * Served stops as small circles, zone-cover centres as larger marked circles with their
  * radius drawn (behind a `wa-switch`), the hub as the ★ marker, and the border as a
- * dashed gold ring. Below it, a legend built as a `wa-cluster` of `.sw` swatches with
- * `role="list"`, and the border as decimal degrees *and* GeoJSON behind a
- * `wa-copy-button` — the rulebook's hard requirement is that every player uses the
- * exact same border.
+ * dashed gold ring. A toolbar above the map, a legend below it, and the border as two
+ * `wa-copy-button`s in that toolbar plus a collapsed table of decimal degrees — the
+ * rulebook's hard requirement is that every player uses the exact same border, and the
+ * way to make that true is to copy it rather than retype it.
  *
  * This function only emits the `#netmap` host and the copy around it; MapLibre itself is
  * attached afterwards by `buildMap` inside app.js's `PAGE_RUNTIME_JS`, which guards on
@@ -840,12 +840,9 @@ export function renderNetworkMap(payload) {
   ];
   const caption = captionParts.join(' ');
 
-  let controls = '';
-  if (ringsShown) {
-    controls = el('div', waSwitch(`Draw the ${radius} zone circles`, {
-      checked: false, id: 'zonesw',
-    }), { className: 'wa-cluster wa-gap-s' });
-  }
+  const layerControls = ringsShown
+    ? waSwitch(`Draw the ${radius} zone circles`, { checked: false, id: 'zonesw' })
+    : '';
 
   const legendItems = [];
   if (stopsShown) {
@@ -880,44 +877,50 @@ export function renderNetworkMap(payload) {
   ), { className: 'wa-stack wa-gap-3xs' })).join(''), { className: 'wa-cluster wa-gap-xl' });
 
   const geojsonText = jdump(border.geojson);
-  // The card leads with the action, not with four bare decimal degrees: the rulebook
-  // is emphatic that every player must be using the identical border, and the way to
-  // make that true is to copy it rather than retype it.
-  const borderCard = waCard(
+  // The plain-text twin of the table below, from the same `degRows` and therefore the
+  // same digits — the copied artefact and the printed one can never disagree.
+  const degText = degRows.map(([label, value]) => `${label} ${value}`).join('\n');
+
+  // The border used to be a card of its own under the map, which printed the four
+  // degrees a second time (§03's house rule was the third) and put the action a
+  // scroll away from the thing it describes. It is on the map frame now: the two
+  // copies are buttons in the toolbar, the coordinates are a collapsed disclosure in
+  // the same card, and the pad/area sentence moved into "How to read this map" with
+  // its provenance chip. `#geocopy` keeps its id. (R5, 2026-08-23.)
+  const toolbar = el('div', join(
+    el('div', layerControls, { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
     el('div', join(
-      el('p', esc('The rectangle you are playing in. Nothing outside it exists for this '
-        + 'game.'), { className: 'wa-body-s' }),
-      el('div', join(
-        waCopyButton(geojsonText, { label: 'Copy the border', id: 'geocopy' }),
-        el('span', esc('GeoJSON · paste into geojson.io, Google My Maps or a GPX app'),
-          { className: 'wa-caption-xs wa-color-text-quiet' }),
-      ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
-      waDetails('Exact coordinates', degrees, { appearance: 'plain' }),
-      el('p', esc(
-        'The border is the bounding box of the in-map stops padded by one hiding-zone '
-        + `radius (${s4Dist(report, Number(border.padM || 0), 2)}), so every legal zone lies `
-        + `wholly inside it. It covers ${s4Area(report, Number(border.areaSqM || 0))}.`,
-      ) + provChip('border'), { className: 'wa-body-s wa-color-text-quiet' }),
-    ), { className: 'wa-stack wa-gap-m' }),
-    {
-      headerHtml: s4CardHeader('The border, exactly',
-        'Copy it. Every player must be using the same rectangle.'),
-    },
+      waCopyButton(geojsonText, { label: 'Copy GeoJSON', id: 'geocopy' }),
+      waCopyButton(degText, { label: 'Copy coordinates', id: 'bboxcopy' }),
+    ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
+  ), { id: 'netcontrols', className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s' });
+
+  const howToRead = join(
+    el('p', esc(caption), { className: 'wa-body-s wa-color-text-quiet' }),
+    el('p', esc(
+      'The border is the bounding box of the in-map stops padded by one hiding-zone '
+      + `radius (${s4Dist(report, Number(border.padM || 0), 2)}), so every legal zone lies `
+      + `wholly inside it. It covers ${s4Area(report, Number(border.areaSqM || 0))}. `
+      + 'Copy GeoJSON pastes into geojson.io, Google My Maps or a GPX app; Copy '
+      + 'coordinates gives the four labelled degrees as text.',
+    ) + provChip('border'), { className: 'wa-body-s wa-color-text-quiet' }),
   );
 
   const mapCard = waCard(
     el('div', join(
+      toolbar,
       el('div', '', { id: 'netmap', className: 'wa-border-radius-m' }),
-      el('div', join(controls, s4Legend(legendItems)),
-        { className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s' }),
-      waDetails('How to read this map',
-        el('p', esc(caption), { className: 'wa-body-s wa-color-text-quiet' }),
-        { appearance: 'plain' }),
+      el('div', s4Legend(legendItems), { id: 'netlegend' }),
+      // Filled by the runtime from the day payload; `:empty` hides it until then.
+      el('div', '', { id: 'netcaption', className: 'wa-body-s wa-color-text-quiet' }),
+      waDetails('How to read this map', howToRead, { appearance: 'plain' }),
+      waDetails('Exact coordinates', degrees, { appearance: 'plain', id: 'mapborder' }),
     ), { className: 'wa-stack wa-gap-s' }),
     {
       headerHtml: s4CardHeader(
-        `${num(served)} served stops and ${num(zones.length)} hiding zones`,
-        'Every stop that runs on the selected day.',
+        `${num(served)} served stops, ${num(zones.length)} hiding zones and the border`,
+        'Everything that runs on the selected day. Copy the border — every player must '
+        + 'use the same rectangle.',
       ),
     },
   );
@@ -932,9 +935,9 @@ export function renderNetworkMap(payload) {
       : ', with no single dominant interchange')
     + '.';
   const answer = el('p', esc(
-    `${num(served)} stops run on the selected day, and they group into `
-    + `${num(zones.length)} places you are allowed to hide. Copy the border before anyone `
-    + 'draws a card.',
+    `${num(zones.length)} places to hide, out of the ${num(served)} stops that run on the `
+    + "selected day. The numbers under the map are the same day's measurements; copy "
+    + 'the border before anyone draws a card.',
   ), { className: 'wa-body-s' });
   // The stat rail's host, empty. app.js mounts `renderGlanceRail` into it in the same
   // hydration pass that mounts this section, and re-mounts it on its own clock
@@ -950,8 +953,7 @@ export function renderNetworkMap(payload) {
   });
 
   return section('network', S4_ORDINAL, 'The map you’re playing on',
-    join(el('div', join(mapCard, borderCard), { className: 'wa-stack wa-gap-s' }),
-      glanceHost),
+    join(el('div', mapCard, { className: 'wa-stack wa-gap-s' }), glanceHost),
     { kicker: 'The network', lede, answerHtml: answer });
 }
 

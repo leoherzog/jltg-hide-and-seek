@@ -530,22 +530,25 @@
         <h2 class="wa-heading-2xl" data-n="01">The map you’re playing on</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
+      <!-- ONE card, since 2026-08-23: the border card that used to sit under this one
+           was dissolved onto the map frame — its two copies are buttons in the toolbar
+           above the map, its coordinates a collapsed disclosure inside this card. The
+           skeleton keeps the same three rows the real card has (toolbar, map, legend)
+           so nothing jumps when it lands. -->
       <div class="wa-stack wa-gap-s sk-body">
         <wa-card>
           <div class="wa-stack wa-gap-s">
+            <div class="wa-cluster wa-gap-2xs">
+              <wa-skeleton class="sk-chip" style="inline-size:11rem"></wa-skeleton>
+              <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
+              <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
+            </div>
             <div id="netmap-frame"><wa-skeleton style="inline-size:100%;aspect-ratio:16/9;min-block-size:18rem"></wa-skeleton></div>
             <div class="wa-cluster wa-gap-2xs">
               <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:7rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
             </div>
-          </div>
-        </wa-card>
-        <wa-card>
-          <div class="sk-text wa-stack wa-gap-xs">
-            <wa-skeleton style="inline-size:38%"></wa-skeleton>
-            <wa-skeleton></wa-skeleton>
-            <wa-skeleton style="inline-size:72%"></wa-skeleton>
           </div>
         </wa-card>
       </div>
