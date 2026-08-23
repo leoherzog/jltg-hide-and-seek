@@ -3099,8 +3099,6 @@ async function buildMap() {
      must reach the map through W, never through a captured local. */
   W.map = map;
   W.mapReady = 1;
-  /* The tiles only become controls once there is a map to light. */
-  bindRail();
 
   const zoneRings = STOPS.rings ? {
     type: 'FeatureCollection',
@@ -3353,6 +3351,12 @@ async function buildMap() {
   const paintAll = () => { paintMap(); applyHl(); };
   W.paintMap = paintAll;
   W.refreshMapData = paintAll;
+
+  /* Only NOW do the tiles become controls. bootPage() called bindRail() long before
+     this — buildMap is async and suspends on the MapLibre import — and renderDay()
+     will call it again on every day switch; both are no-ops until W.highlight is the
+     function above. This is the call that actually stamps them the first time. */
+  bindRail();
 
   map.on('style.load', () => {
     const p = PAL[isDark() ? 'dark' : 'light'];
