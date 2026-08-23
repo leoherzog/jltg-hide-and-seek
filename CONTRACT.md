@@ -1088,7 +1088,11 @@ Notes on the stage payloads:
   §05's string does still change at `geo`, because `s4Imperial` flips km→mi and rewrites
   the zone radius, the border pad and the border area; that rebuild is pre-existing and
   is the only one. Anything arriving after `network` reaches the map through `#stops`,
-  never through §05's string.
+  never through §05's string: `writeDataBlocks()` rewrites that block on **every**
+  `applyStage` and then calls `window.__jltg.refreshMapData()`, which re-reads it and
+  pushes it through MapLibre's `setData`/`setPaintProperty`. That is why `network`'s
+  `redo` is `['geo']` and no longer `['geo', 'score']` — the scored zone dots are data,
+  not markup — and it is the only sanctioned channel for late-arriving map data.
 * **Stages 4–7 must still emit when the OSM layer is unavailable**, carrying the
   degradation. See §(f).
 * **S5 changed no payload here, and that is deliberate.** The hider's guide (§(g)) is built

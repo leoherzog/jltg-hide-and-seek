@@ -257,6 +257,9 @@ export function s4Tiles(report, dayKey) {
   const hull = Number(g('hullSqM', 0.0));
   const diameter = Number(g('diameterM', 0.0));
   const mec = g('mec', [0, 0, 0]) || [0, 0, 0];
+  const nZones = Math.trunc(Number(g('nZones', (report.zones || []).length)));
+  const reach = s4ReachDay(report, dayKey);
+  const startName = startStopName(report);
   const asOf = (report.provenance || {}).asOf || '';
   const repDate = String(g('date', asOf) || '') || '20000101';
   const departure = String((report.opts || {}).departure || '').slice(0, 5);
@@ -274,7 +277,7 @@ export function s4Tiles(report, dayKey) {
       day: '1',
       prov: 'A1',
       hl: 'zones',
-      v: num(g('nZones', (report.zones || []).length)),
+      v: num(nZones),
       l: 'Distinct hiding zones',
       n: `One zone per ${radius} circle — a cover of the ${num(served)} stops with `
         + `service on a ${label}.`,
@@ -366,10 +369,22 @@ export function s4Tiles(report, dayKey) {
       prov: 'A2',
       hl: 'reach',
       v: pct(reachShare),
+      // The value is a share of ZONES and the note used to count STOPS — two
+      // different quantities in one tile. It counts zones now, from `ZoneReach`'s
+      // worker-computed `reachableZones` (a renderer may look a count up; it may not
+      // subtract one measured quantity from another), and keeps the stop figure as
+      // the parenthetical looser test it always was. (Fixed 2026-08-23 with the
+      // map's reach layer.)
       l: 'Zones reachable in the hiding period',
-      n: `${num(reachN)} of ${num(served)} served stops are within `
-        + `${num(size.hidingPeriodMin || 0)} minutes of the start location at `
-        + `${departure}.`,
+      n: (reach === null
+        ? `${num(reachN)} of ${num(served)} served stops are within `
+          + `${num(size.hidingPeriodMin || 0)} minutes of the start location at `
+          + `${departure}.`
+        : `${num(reach.reachableZones)} of ${num(nZones)} zones are within `
+          + `${num(size.hidingPeriodMin || 0)} minutes of ${startName} at ${departure} `
+          + `on a ${label} — the ${num(reach.unreachableZoneIds.length)} that are not are `
+          + "the red and hollow dots on the map's reach layer. "
+          + `(${num(reachN)} of ${num(served)} served stops are, which is the looser test.)`),
     },
     {
       g: 'deck',
@@ -775,6 +790,95 @@ export function renderTransitReality(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * `ZoneReach.perDay[dayKey]`, or `null`.
+ *
+ * A lookup, not a computation: every count the page prints (`reachableZones`,
+ * `unreachableZoneIds.length`, `furthestMinutes`) was computed worker-side precisely
+ * so a renderer never subtracts one measured quantity from another.
+ *
+ * @param {Object} report @param {string} dayKey @returns {Object|null}
+ */
+export function s4ReachDay(report, dayKey) {
+  const perDay = ((report && report.zoneReach) || {}).perDay || {};
+  const cell = perDay[dayKey];
+  return cell === undefined || cell === null ? null : cell;
+}
+
+/**
+ * The map's legend, one block per colour mode plus the always-on items.
+ *
+ * Every block is emitted; `#netlegend[data-mode]` decides which one is visible, and
+ * the runtime writes that attribute when the reader moves the `#colourby` radio.
+ * Rendering all of them means the legend never lags the map by a frame and needs no
+ * data of its own.
+ *
+ * The reach block's four labels are **quoted from §06's ride-chart legend, verbatim**,
+ * and its four colours are the same four tokens. The map and the chart are two
+ * pictures of one measurement — same origin, same departure, same hiding period — so
+ * they may not describe it in two different vocabularies.
+ *
+ * @param {Object} report @param {{stopsShown: boolean, ringsShown: boolean}} flags
+ * @returns {string}
+ */
+export function s4MapLegends(report, flags) {
+  const { stopsShown, ringsShown } = flags;
+  const hub = report.hub || {};
+  const size = report.size || {};
+  const hp = num(size.hidingPeriodMin || 0);
+  const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
+  const startName = startStopName(report);
+  const departure = String((report.opts || {}).departure || '').slice(0, 5);
+
+  // A legend block: the swatch list in its own `wa-cluster` parent (s4Legend's <ul>
+  // relies on that for its margins), with an optional caption under it.
+  const block = (mode, items, note) => el('div', join(
+    el('div', s4Legend(items), { className: 'wa-cluster wa-gap-m' }),
+    note ? el('p', esc(note), { className: 'wa-caption-xs wa-color-text-quiet' }) : '',
+  ), { dataLegendFor: mode, className: 'wa-stack wa-gap-3xs' });
+
+  const always = [];
+  if (ringsShown) {
+    always.push([s4Swatch(
+      'background:color-mix(in srgb, var(--accent) 18%, transparent);'
+      + 'border:1px solid var(--accent)',
+    ), 'Zone circle (toggle)']);
+  }
+  always.push(
+    [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
+    [s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
+  );
+
+  const baseItems = [];
+  if (stopsShown) {
+    baseItems.push([s4Swatch('background:var(--ink-2);border-radius:var(--wa-border-radius-circle)'), 'Served stop']);
+  }
+  baseItems.push([s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'), 'Designated hiding zone']);
+
+  const blocks = [block('base', baseItems, '')];
+
+  if (s4ReachDay(report, s4BestDay(report)) !== null) {
+    blocks.push(block('reach', [
+      [s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'),
+        `Fits the ${hp}-minute window`],
+      [s4Swatch('background:var(--gold-mark);border-radius:var(--wa-border-radius-circle)'),
+        'Fits, but tight or two changes'],
+      [s4Swatch('background:var(--crit);border-radius:var(--wa-border-radius-circle)'),
+        'Busts the hiding period'],
+      [s4Swatch('background:transparent;border:1.5px dashed var(--baseline);'
+        + 'border-radius:var(--wa-border-radius-circle)'),
+        'No service on the selected day'],
+    ], `Zone dots, coloured by scheduled travel time from ${startName} at ${departure} on `
+      + 'the selected day — the same measurement the ride chart under Getting around '
+      + 'draws as bars. '
+      + `Gold starts at three quarters of the ${hp} minutes; red is the cliff. Stops fade `
+      + `back so the zones read. Zones are ${radius} circles.`));
+  }
+
+  blocks.push(block('always', always, ''));
+  return blocks.join('');
+}
+
+/**
  * §05 — the MapLibre network map plus the copy-pasteable border.
  *
  * Served stops as small circles, zone-cover centres as larger marked circles with their
@@ -821,11 +925,20 @@ export function renderNetworkMap(payload) {
   const ringsShown = zones.length <= S4_MAX_MAP_ZONE_RINGS;
   const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
 
+  const bestKey = s4BestDay(report);
+  const bestLabel = s4DayLabel(report, bestKey);
+  const reachDay = s4ReachDay(report, bestKey);
+  const startName = startStopName(report);
+  const hpMin = num(size.hidingPeriodMin || 0);
+
   const captionParts = [
     'Live basemap.',
+    // The row set is the BUSIEST day's served stops on every day (CONTRACT §(d)
+    // `StopRow`), so "the selected day" was a small lie here. The reach layer is what
+    // reads the selected day. (Corrected 2026-08-23 with the reach layer.)
     stopsShown
-      ? `Grey dots = each of the ${num(served)} stops with service on the `
-        + 'selected day (hover for the name and route count).'
+      ? `Grey dots = each of the ${num(served)} stops with service on a ${bestLabel}, the `
+        + 'representative day (hover for the name and route count).'
       : `This feed has ${num(served)} served stops, more than the `
         + `${num(S4_MAX_MAP_STOPS)} this map draws individually, so only the `
         + `${num(zones.length)} zone centres are plotted.`,
@@ -834,32 +947,37 @@ export function renderNetworkMap(payload) {
         + `one's true ${radius} rulebook circle.`
       : `Blue dots = the ${num(zones.length)} designated hiding zones. There are too many to `
         + 'draw every circle, so the radius toggle is unavailable.',
+    reachDay === null
+      ? ''
+      : `Colour by Reach recolours those zone dots by scheduled travel time from `
+        + `${startName}, with the ${hpMin}-minute hiding period as the cliff, and follows `
+        + 'the day selector. Colour by Plain is the flat blue.',
     `★ = ${hub.name}, the inferred round-start station.`,
     'Dashed gold frame = the game border. Nothing outside it exists for this game.',
     'If your browser blocks the map library the map is omitted and everything below still works.',
   ];
-  const caption = captionParts.join(' ');
+  const caption = captionParts.filter((x) => x).join(' ');
 
-  const layerControls = ringsShown
-    ? waSwitch(`Draw the ${radius} zone circles`, { checked: false, id: 'zonesw' })
-    : '';
+  // Colour modes are exclusive — two ramps at once is mush and needs two legends —
+  // so this is a radio group, not switches, and it says so instead of leaving the
+  // reader to discover it. It exists only when there is reach data to draw.
+  // (2026-08-23.)
+  const colourBy = reachDay === null ? '' : el('wa-radio-group', join(
+    el('wa-radio', esc('Plain'), { value: 'base', appearance: 'button', size: 's' }),
+    el('wa-radio', esc('Reach'), { value: 'reach', appearance: 'button', size: 's' }),
+  ), {
+    id: 'colourby',
+    name: 'colourby',
+    size: 's',
+    orientation: 'horizontal',
+    label: 'Colour by',
+    value: 'reach',
+  });
 
-  const legendItems = [];
-  if (stopsShown) {
-    legendItems.push([s4Swatch('background:var(--ink-2);border-radius:var(--wa-border-radius-circle)'), 'Served stop']);
-  }
-  legendItems.push(
-    [s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'), 'Designated hiding zone'],
-    [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
-    [s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
+  const layerControls = join(
+    colourBy,
+    ringsShown ? waSwitch(`Draw the ${radius} zone circles`, { checked: false, id: 'zonesw' }) : '',
   );
-  if (ringsShown) {
-    // Python `legend_items.insert(-2, …)` — before the ★, after the zone dot.
-    legendItems.splice(legendItems.length - 2, 0, [s4Swatch(
-      'background:color-mix(in srgb, var(--accent) 18%, transparent);'
-      + 'border:1px solid var(--accent)',
-    ), 'Zone circle (toggle)']);
-  }
 
   const [s, w, n, e] = border.bbox;
   const degRows = [
@@ -910,7 +1028,11 @@ export function renderNetworkMap(payload) {
     el('div', join(
       toolbar,
       el('div', '', { id: 'netmap', className: 'wa-border-radius-m' }),
-      el('div', s4Legend(legendItems), { id: 'netlegend' }),
+      el('div', s4MapLegends(report, { stopsShown, ringsShown }), {
+        id: 'netlegend',
+        dataMode: reachDay === null ? 'base' : 'reach',
+        className: 'wa-stack wa-gap-3xs',
+      }),
       // Filled by the runtime from the day payload; `:empty` hides it until then.
       el('div', '', { id: 'netcaption', className: 'wa-body-s wa-color-text-quiet' }),
       waDetails('How to read this map', howToRead, { appearance: 'plain' }),
@@ -919,14 +1041,15 @@ export function renderNetworkMap(payload) {
     {
       headerHtml: s4CardHeader(
         `${num(served)} served stops, ${num(zones.length)} hiding zones and the border`,
-        'Everything that runs on the selected day. Copy the border — every player must '
-        + 'use the same rectangle.',
+        `Everything that runs on a ${bestLabel}, the representative day. The reach layer `
+        + 'follows the day selector. Copy the border — every player must use the same '
+        + 'rectangle.',
       ),
     },
   );
 
   const shape = String(v.networkShape).split('-').join(' ');
-  const lede = 'The raw playing field: every stop with service on the selected day, and the '
+  const lede = `The raw playing field: every stop with service on a ${bestLabel}, and the `
     + `${num(zones.length)} hiding zones one zone per `
     + `${radius} circle produces. `
     + `The network reads as ${shape}`
@@ -934,10 +1057,19 @@ export function renderNetworkMap(payload) {
       ? `, with one station — ${hub.name} — touching ${pct(Number(hub.routeShare || 0))} of all routes`
       : ', with no single dominant interchange')
     + '.';
+  // `unreachableZoneIds.length` is a lookup on a worker-computed list, not a
+  // subtraction: the count and the ids are carried precisely so this line and the
+  // reach layer cannot disagree. It is a `network`-stage fact, so quoting it here does
+  // not move this string at `rules` or `score`.
+  const missed = reachDay === null ? null : reachDay.unreachableZoneIds.length;
   const answer = el('p', esc(
-    `${num(zones.length)} places to hide, out of the ${num(served)} stops that run on the `
-    + "selected day. The numbers under the map are the same day's measurements; copy "
-    + 'the border before anyone draws a card.',
+    `${num(zones.length)} places to hide`
+    + (missed === null
+      ? `, out of the ${num(served)} stops that run on a ${bestLabel}.`
+      : `, and ${num(missed)} of them the ${hpMin}-minute hiding period cannot reach from `
+        + `${startName} on a ${bestLabel}.`)
+    + " The numbers under the map are the same day's measurements; copy the border "
+    + 'before anyone draws a card.',
   ), { className: 'wa-body-s' });
   // The stat rail's host, empty. app.js mounts `renderGlanceRail` into it in the same
   // hydration pass that mounts this section, and re-mounts it on its own clock

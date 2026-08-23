@@ -617,6 +617,19 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 #netcontrols { flex-wrap: wrap; }
 #netcontrols > * { min-inline-size: 0; }
 
+/* ---- the map legend, one block per colour mode (2026-08-23, the reach layer)
+   Every block is rendered; `#netlegend[data-mode]` — written by the runtime when the
+   reader moves `#colourby` — decides which one is shown, so the key never lags the
+   map by a frame and needs no data of its own. The `always` block is the ★, the
+   border and the zone-circle toggle: true in every mode, so it is never hidden.
+   No colours here: the swatches carry their own tokens inline, and the MapLibre
+   paint reads those same tokens through cssVar(), which is what keeps the legend
+   and the canvas from drifting apart in either theme. */
+#netlegend > [data-legend-for] { display: none; }
+#netlegend > [data-legend-for='always'] { display: block; }
+#netlegend[data-mode='base'] > [data-legend-for='base'],
+#netlegend[data-mode='reach'] > [data-legend-for='reach'] { display: block; }
+
 /* The generated "what to notice" line under the map. It is written by the runtime
    from the day payload, so it ships empty and must not claim a row of the stack
    until it has something to say. */

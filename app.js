@@ -109,7 +109,12 @@ const SECTIONS = [
   // several minutes of a confidently wrong sentence. `days` is here for the same
   // reason at smaller stakes: it adds the "Best day" chip.
   { id: 'hero', needs: 'feed', redo: ['days', 'network', 'rules', 'score'], render: (r) => renderHero(r) },
-  { id: 'network', needs: 'network', redo: ['geo', 'score'], render: (r) => renderNetworkMap(r) },
+  // `geo` and only `geo`: `s4Imperial` flips km→mi there and rewrites the zone
+  // radius, the border pad and the border area, so §05's string genuinely moves and
+  // the section must re-mount. `score` used to be here so the map could show its
+  // scored zone dots; those now arrive through `#stops` and `refreshMapData()`, which
+  // is a `setData` and keeps the reader's pan and zoom. (2026-08-23, D4.)
+  { id: 'network', needs: 'network', redo: ['geo'], render: (r) => renderNetworkMap(r) },
   // Not a numbered section and not in `NUMBERED`: the stat rail lives INSIDE §05, in
   // a nested `data-section="glance"` host that §05's own markup ships empty. It needs
   // exactly what §05 needs (`size`, `metrics`, `days`, all at the `network` stage) and
@@ -1483,7 +1488,16 @@ function mountSection(id, html) {
   const hadMap = host.querySelector && host.querySelector('#netmap');
   if (hadMap && root.querySelector && root.querySelector('#netmap')) {
     const runtime = window.__jltg;
-    if (runtime) runtime.mapBuilt = 0;
+    if (runtime) {
+      runtime.mapBuilt = 0;
+      // The instance about to be orphaned is not the one to push data into: clearing
+      // these makes `refreshMapData()` a no-op until the rebuilt map republishes
+      // them. (2026-08-23, with the reach layer.)
+      runtime.map = null;
+      runtime.mapReady = 0;
+      runtime.paintMap = null;
+      runtime.refreshMapData = null;
+    }
   }
 
   // Nested section hosts (§05's `#glance`) go out with their parent's markup. Their
@@ -2333,6 +2347,18 @@ function writeDataBlocks() {
     document.body.appendChild(host);
   }
   host.innerHTML = blocks.map(([id, payload]) => jsonBlock(id, payload)).join('\n');
+  // The sanctioned channel for map data that arrives after the map was built: the
+  // scored zone dots at `score`, and every per-day column. `#stops` has just been
+  // rewritten, and `refreshMapData` re-reads it and pushes it through `setData` —
+  // no re-render, no `setStyle`, and the reader's pan and zoom survive. It is a
+  // no-op until the map exists. (2026-08-23, with the reach layer.)
+  try {
+    const runtime = window.__jltg;
+    if (runtime && typeof runtime.refreshMapData === 'function') runtime.refreshMapData();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[app] map refresh failed', err);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2668,6 +2694,31 @@ function loadDay(fallback) {
 }
 function saveDay(k) { try { localStorage.setItem(DAY_KEY, k); } catch (e) {} }
 
+/* The map's layer state, per viewer, the same way and for the same reason. It has to
+   outlive a re-mount: s4Imperial flips km to miles at the geo stage, which changes
+   §05's string, which tears the MapLibre instance down and builds it again — and a
+   reader who has just switched to the reach layer must not find it reset. It also
+   survives a trip into #strategy and back. MODES is the whitelist: a stale value in
+   storage from another build must not put the map in a mode it no longer has. */
+const LAYER_KEY = 'jltg-netlayers';
+const MODES = ['base', 'reach'];
+function loadLayers() {
+  const out = { mode: 'reach', zones: false };
+  try {
+    const raw = localStorage.getItem(LAYER_KEY);
+    const got = raw ? JSON.parse(raw) : null;
+    if (got && typeof got === 'object') {
+      if (MODES.indexOf(got.mode) >= 0) out.mode = got.mode;
+      out.zones = Boolean(got.zones);
+    }
+  } catch (e) { /* no storage, or nonsense in it — the defaults are the answer */ }
+  return out;
+}
+function saveLayers() {
+  try { localStorage.setItem(LAYER_KEY, JSON.stringify(W.layers)); } catch (e) {}
+}
+W.layers = W.layers || loadLayers();
+
 /* Open whatever the fragment is buried inside, then scroll to it. Without this, every
    #prov-*, #trace-*, #sel-*, #pred-*, #q-*, #c-* and #axis-* link would land on a row
    inside a closed disclosure and appear to do nothing. */
@@ -2764,6 +2815,8 @@ function renderDay() {
   hwHighlight();
   flagFindings();
   renderTT();
+  /* The map's data layers read the selected day; the viewport does not move. */
+  if (W.paintMap) W.paintMap();
 }
 
 function setDay(k) {
@@ -2998,6 +3051,12 @@ async function buildMap() {
   }
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(new maplibregl.ScaleControl({ unit: G.scale_unit }), 'bottom-left');
+  /* Published so the data layers can be repainted from outside this closure: a later
+     stage's injectRuntime() builds a NEW closure with a fresh STOPS, calls buildMap(),
+     and returns early on the mapBuilt guard — so the function that pushes new data
+     must reach the map through W, never through a captured local. */
+  W.map = map;
+  W.mapReady = 1;
 
   const zoneRings = STOPS.rings ? {
     type: 'FeatureCollection',
@@ -3009,8 +3068,110 @@ async function buildMap() {
 
   /* sources and layers are rebuilt on every style.load, which fires again after
      setStyle when the colour scheme flips */
+  /* PAL above hard-codes four hexes because it predates this and works. The layers
+     below read their ramps with cssVar() instead, for one reason: they are the SAME
+     tokens the ride chart and the headway grid paint from, and a second hard copy
+     would be the one that drifts. cssVar resolves the whole var() chain at computed
+     -value time and style.load re-fires after every setStyle, so both themes are free.
+     Two mechanisms in one function is a smell; this comment is the reason. */
+  let RAMP = null;
+  const readRamp = () => ({
+    reachOk: cssVar('--accent'),        /* fits the window with slack */
+    reachTight: cssVar('--gold-mark'),  /* fits, but past three quarters of it */
+    reachBust: cssVar('--crit'),        /* busts the hiding period */
+    reachNone: cssVar('--baseline'),    /* no journey on this day */
+    off: cssVar('--off'),
+  });
+
+  /* Rebuild the two data-bearing sources from whatever #stops now holds, then repaint
+     for the current colour mode. Never setStyle, never fitBounds: a day switch, a
+     score landing and a tile click must not move the viewport. */
+  const paintMap = () => {
+    if (!W.map || !W.map.getSource) return;
+    const S = D('stops') || STOPS || {};
+    const day = W.day || CURRENT;
+    const hp = Number(G.hiding_period_min || 0);
+    const reach = (S.reach || {})[day] || null;
+    const zs = W.map.getSource('zonedots');
+    if (zs) {
+      zs.setData({
+        type: 'FeatureCollection',
+        features: (S.zones || []).map((z, i) => {
+          /* -1 is "no journey", never null: a MapLibre expression compares numbers,
+             and ['has', …] cannot tell an absent property from a null one. */
+          const t = reach && reach[i] !== null && reach[i] !== undefined ? reach[i] : null;
+          return {
+            type: 'Feature',
+            properties: {
+              name: z[2], score: z[3],
+              t: t === null ? -1 : t,
+              frac: (t === null || hp <= 0) ? -1 : t / hp,
+            },
+            geometry: { type: 'Point', coordinates: [z[0], z[1]] },
+          };
+        }),
+      });
+    }
+    const ss = W.map.getSource('stops');
+    if (ss) {
+      ss.setData({
+        type: 'FeatureCollection',
+        features: (S.stops || []).map(s => ({
+          type: 'Feature',
+          properties: { name: s[2], routes: s[3], freq: s[4] || 0 },
+          geometry: { type: 'Point', coordinates: [s[0], s[1]] },
+        })),
+      });
+    }
+    applyMode();
+  };
+
+  /* Colour only — setPaintProperty on two layers, no source churn and no re-layout. */
+  const applyMode = () => {
+    if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
+    const p = PAL[isDark() ? 'dark' : 'light'];
+    const mode = (W.layers && W.layers.mode) || 'base';
+    const set = (layer, prop, value) => {
+      if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
+    };
+    if (mode === 'reach') {
+      /* Four bins that differ in LIGHTNESS and in SHAPE, not only in hue: blue → gold
+         → red is roughly monotone in lightness, and the fourth bin is a hollow ring,
+         which survives a colour-blind reading and a greyscale print. (MapLibre has no
+         dash on a circle stroke, so "hollow" is the shape channel, not a dash.) */
+      set('zone-dots', 'circle-color', ['case',
+        ['<', ['get', 'frac'], 0], 'rgba(0,0,0,0)',
+        ['<=', ['get', 'frac'], 0.75], RAMP.reachOk,
+        ['<=', ['get', 'frac'], 1.0], RAMP.reachTight,
+        RAMP.reachBust]);
+      set('zone-dots', 'circle-stroke-color', ['case',
+        ['<', ['get', 'frac'], 0], RAMP.reachNone,
+        ['>', ['get', 'frac'], 1.0], RAMP.reachBust,
+        p.edge]);
+      set('zone-dots', 'circle-stroke-width', ['case',
+        ['<', ['get', 'frac'], 0], 1.5,
+        ['>', ['get', 'frac'], 1.0], 1.6,
+        1]);
+      set('zone-dots', 'circle-opacity', 0.9);
+      set('stop-dots', 'circle-color', RAMP.off);
+      set('stop-dots', 'circle-opacity', 0.4);
+    } else {
+      set('zone-dots', 'circle-color', p.zone);
+      set('zone-dots', 'circle-stroke-color', p.edge);
+      set('zone-dots', 'circle-stroke-width', 1);
+      set('zone-dots', 'circle-opacity', 0.9);
+      set('stop-dots', 'circle-color', p.stop);
+      set('stop-dots', 'circle-opacity', 0.8);
+    }
+    const legend = $('netlegend');
+    if (legend) legend.setAttribute('data-mode', mode);
+  };
+  W.paintMap = paintMap;
+  W.refreshMapData = paintMap;
+
   map.on('style.load', () => {
     const p = PAL[isDark() ? 'dark' : 'light'];
+    RAMP = readRamp();
     map.addSource('border', { type: 'geojson', data: {
       type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: borderRing } } });
     map.addLayer({ id: 'border-line', type: 'line', source: 'border',
@@ -3018,10 +3179,10 @@ async function buildMap() {
 
     map.addSource('zonerings', { type: 'geojson', data: zoneRings });
     map.addLayer({ id: 'zone-fill', type: 'fill', source: 'zonerings',
-      layout: { visibility: ($('zonesw') && $('zonesw').checked) ? 'visible' : 'none' },
+      layout: { visibility: W.layers.zones ? 'visible' : 'none' },
       paint: { 'fill-color': p.zone, 'fill-opacity': .10 } });
     map.addLayer({ id: 'zone-ring', type: 'line', source: 'zonerings',
-      layout: { visibility: ($('zonesw') && $('zonesw').checked) ? 'visible' : 'none' },
+      layout: { visibility: W.layers.zones ? 'visible' : 'none' },
       paint: { 'line-color': p.zone, 'line-width': .8, 'line-opacity': .55 } });
 
     map.addSource('stops', { type: 'geojson', data: {
@@ -3046,6 +3207,11 @@ async function buildMap() {
       paint: { 'circle-color': p.zone, 'circle-opacity': .9,
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.6, 14, 5, 16, 7],
         'circle-stroke-color': p.edge, 'circle-stroke-width': 1, 'circle-stroke-opacity': .85 } });
+
+    /* The sources above carry the shape; this fills in everything that arrives later
+       or changes with the day, and applies the reader's saved colour mode. It runs on
+       every style.load, so a theme flip re-reads the ramp from the stylesheet. */
+    paintMap();
   });
 
   const star = document.createElement('div');
@@ -3068,18 +3234,43 @@ async function buildMap() {
   map.on('mouseleave', 'stop-dots', () => { tt.style.display = 'none'; });
   map.on('mousemove', 'zone-dots', e => {
     const f = e.features[0].properties;
+    const t = Number(f.t);
     showTip(e, '<b>' + esc(f.name || 'Zone') + '</b>Hiding zone'
-              + (f.score == null ? '' : ' · rated ' + f.score + ' / 100'));
+              + (f.score == null ? '' : ' · rated ' + f.score + ' / 100')
+              + (!isFinite(t) || t < 0
+                ? ' · no journey from the start on this day'
+                : ' · ' + t + ' min from the start'));
   });
   map.on('mouseleave', 'zone-dots', () => { tt.style.display = 'none'; });
 
   const sw = $('zonesw');
-  if (sw) sw.addEventListener('change', () => {
-    const v = sw.checked ? 'visible' : 'none';
-    ['zone-fill', 'zone-ring'].forEach(id => {
-      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
+  if (sw) {
+    if (W.layers.zones) sw.checked = true;
+    sw.addEventListener('change', () => {
+      W.layers.zones = Boolean(sw.checked);
+      saveLayers();
+      const v = sw.checked ? 'visible' : 'none';
+      ['zone-fill', 'zone-ring'].forEach(id => {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
+      });
     });
-  });
+  }
+
+  const cb = $('colourby');
+  if (cb) {
+    /* Attribute first, then property: a wa-radio-group that has not upgraded yet
+       reads the attribute, and one that has reads the property. The same order
+       render/deck.js's filters use. */
+    if (MODES.indexOf(W.layers.mode) < 0) W.layers.mode = 'base';
+    cb.setAttribute('value', W.layers.mode);
+    cb.value = W.layers.mode;
+    cb.addEventListener('change', () => {
+      const want = cb.value || 'base';
+      W.layers.mode = MODES.indexOf(want) >= 0 ? want : 'base';
+      saveLayers();
+      applyMode();
+    });
+  }
 
   const retheme = () => {
     const d = isDark();
