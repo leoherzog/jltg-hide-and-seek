@@ -170,8 +170,8 @@ wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
 | | |
 | --- | --- |
 | bucket | `jltg-hide-and-seek` (R2) |
-| public origin | `https://jltg.herzog.tech` — custom domain bound to the bucket |
-| client constant | `DEFAULT_WORLD_BASE_URL` in `osm/worldfile.js`, `https://jltg.herzog.tech/world` |
+| public origin | `https://map.jltg.herzog.tech` — custom domain bound to the bucket |
+| client constant | `DEFAULT_WORLD_BASE_URL` in `osm/worldfile.js`, `https://map.jltg.herzog.tech/world` |
 | prefix | `world/` for the published world; `shards/{density,feature}/<id>/` for shard output |
 | site | GitHub Pages, `https://leoherzog.github.io/jltg-hide-and-seek/` — so the browser origin CORS must admit is `https://leoherzog.github.io` |
 

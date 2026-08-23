@@ -52,7 +52,7 @@ import { FlatGeobufReader } from './flatgeobuf.js';
  *
  * Overridable so a build can be tested from a local static server before publishing.
  */
-export const DEFAULT_WORLD_BASE_URL = 'https://jltg.herzog.tech/world';
+export const DEFAULT_WORLD_BASE_URL = 'https://map.jltg.herzog.tech/world';
 
 /** Seconds before the manifest fetch is abandoned. See `RANGE_TIMEOUT_S`. */
 export const MANIFEST_TIMEOUT_S = 20;
