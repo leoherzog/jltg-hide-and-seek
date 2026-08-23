@@ -3241,6 +3241,12 @@ async function buildMap() {
     applyMode();
   };
 
+  /* The stop dots' own edge ramp, as added at style.load, and the slightly heavier
+     one the frequency layer needs so a 1.3 px dot at z9 still has an edge. Named
+     here because every branch below has to be able to put the other one back. */
+  const STOP_EDGE_W = ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1];
+  const STOP_EDGE_HB = ['interpolate', ['linear'], ['zoom'], 9, .6, 13, 1.2];
+
   /* Colour only — setPaintProperty on two layers, no source churn and no re-layout.
 
      The force argument lets a tile highlight put the map into the mode that makes its
@@ -3248,12 +3254,6 @@ async function buildMap() {
      choice of layer is theirs, and dropping the highlight must give it straight back.
      Everything the highlight does is a setPaintProperty or a setFilter, so there is
      nothing else to restore. (2026-08-23, the tile-to-map highlight.) */
-  /* The stop dots' own edge ramp, as added at style.load, and the slightly heavier
-     one the frequency layer needs so a 1.3 px dot at z9 still has an edge. Named
-     here because every branch below has to be able to put the other one back. */
-  const STOP_EDGE_W = ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1];
-  const STOP_EDGE_HB = ['interpolate', ['linear'], ['zoom'], 9, .6, 13, 1.2];
-
   const applyMode = (force) => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
