@@ -454,11 +454,11 @@ export function inferGameSize(metrics, options) {
     const disagree = axes.map((a) => `${a.id}=${S1_SIZE_ORDER[a.score]}`).join(', ');
     note = `Axes disagree (${disagree}); the median rounds down to the smaller game.`;
   }
-  if (clamped) note += ' The vote was clamped to stay within one step of the area axis.';
+  if (clamped) note += ' The vote was kept within one step of the area axis.';
 
   const forced = opts.sizeOverride !== null && opts.sizeOverride !== undefined;
   const name = forced ? opts.sizeOverride : verdict;
-  if (forced) note += ` Overridden with --size ${name}.`;
+  if (forced) note += ` Overridden to ${name}.`;
 
   const params = Object.assign({}, S1_SIZE_PARAMS[name]);
   if (opts.hidingPeriodMin !== null && opts.hidingPeriodMin !== undefined) {

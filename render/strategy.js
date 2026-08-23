@@ -866,7 +866,7 @@ function mapCard(report) {
         // SMALL games", asserted at `rules/catalogue.js:711`.
         reason = category === 'tentacle'
           ? 'The rulebook says the tentacle question cannot be used in SMALL games, so a '
-            + 'SMALL deck contains none. Nothing about this map is at fault.'
+            + 'SMALL deck contains none.'
           : `A ${String(size.name || '').toUpperCase()} game's deck contains no `
             + `${label.toLowerCase()} question.`;
       } else if (!live.length) {
@@ -919,7 +919,7 @@ function mapCard(report) {
     : '';
 
   const caption = [
-    'Live OpenFreeMap basemap.',
+    'Live basemap.',
     `Each dot is one of the ${num(zones.length)} candidate hiding zones, coloured by score `
     + 'until you pick a question mode — then by the answer that zone would have to give.',
     `The selected zone's true ${radiusLabel} rulebook circle is drawn around its designated `
@@ -927,8 +927,7 @@ function mapCard(report) {
     'Amber “edge” means the circle straddles the answer boundary, so the honest answer '
     + 'depends on where inside your zone you are actually standing.',
     '★ marks the round-start station. Dashed gold = the game border.',
-    'If your browser blocks the map library, the map is omitted and everything below still '
-    + 'works.',
+    'If your browser blocks the map, it is omitted and everything below still works.',
   ].join(' ');
 
   // Three keys, not one, because the dots carry two different encodings: the view
@@ -975,11 +974,9 @@ function mapCard(report) {
 
   const how = waDetails('How the simulator works', el('div', join(
     el('p', esc(
-      'This simulator is the client-side twin of the survival model that produced the '
-      + 'scores: the same arithmetic, run against one seeker you place yourself instead of '
-      + 'the sample the scorer averages over. Dead question categories are shown disabled '
-      + 'with the reason rather than hidden — knowing which questions cannot hurt you here '
-      + 'is worth as much as knowing which can.',
+      'This simulator runs the same model that produced the scores against one seeker '
+      + 'you place yourself, instead of the sample the score averages over. Dead question '
+      + 'categories are shown disabled, with the reason.',
     ), { className: 'wa-body-s' }),
     cappedNote ? el('p', esc(cappedNote), { className: 'wa-body-s wa-color-text-quiet' }) : '',
   ), { className: 'wa-stack wa-gap-s' }), { appearance: 'plain' });
@@ -1174,8 +1171,7 @@ function sectionWholeField(report, views) {
       el('p', esc(
         'These are still scored and still in the table above — they are held out of the '
         + 'ranking because you cannot reach them inside the hiding period, or because the '
-        + 'designated station has no service on the selected day. Nothing is dropped '
-        + 'silently.',
+        + 'designated station has no service on the selected day.',
       ), { className: 'wa-body-s' }),
       dataTable(['Zone', 'Why', 'Travel time'], rows),
     ));
@@ -1278,7 +1274,7 @@ function sectionTactics(report) {
         `The live tentacle categories here are ${named}. ${reachClause}`
         + 'seekers, not from you, so a target well outside your zone can still be the name '
         + 'you have to give. You must be inside that reach yourself as well: if you are not, '
-        + 'the honest answer is simply that you are not within reach, and it names nothing. '
+        + 'the honest answer is that you are not within reach, and it names nothing. '
         + 'A zone where the category is absent or ambiguous blunts the whole family — and a '
         + 'null answer still pays you a card draw.',
         `Tentacle Questions — “(You must also be within ___ miles.)”; ${words} of reach in a `
@@ -1359,8 +1355,7 @@ function sectionTactics(report) {
       kicker: 'The playbook for this map',
       answerHtml: answer,
       lede: 'Everything below follows from the official rules applied to this particular '
-        + 'network — each tip names the clause it comes from, and tips whose precondition '
-        + 'does not hold here have been left out.',
+        + 'network — each tip names the clause it comes from.',
     });
 }
 
@@ -1517,8 +1512,8 @@ function sectionMethod(report) {
   const body = el('div', join(
     dataTable(['Parameter', 'Value'], rows.map(([k, v]) => [esc(k), v])),
     el('p', esc(
-      'Zone scores come from the feed and from the prebuilt map files; the full method, '
-      + 'the exact selectors and the complete score trace are on the feasibility report. '
+      'Zone scores come from the feed and from OpenStreetMap; the full method and the '
+      + 'complete score trace are on the feasibility report. '
       + 'Scheduled times are planning estimates — verify against live tracking on game day.',
     ), { className: 'wa-body-s' }),
   ), { className: 'wa-stack wa-gap-m' });

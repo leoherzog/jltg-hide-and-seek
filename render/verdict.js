@@ -643,8 +643,7 @@ function s4Scorecard(report) {
         className: 'wa-heading-s',
       }),
       el('p', esc(`Only ${num(f.availablePoints, 1)} of 100 points could be measured on `
-        + 'this map, so no headline number is printed. The sub-scores that were '
-        + 'measurable are below.'), { className: 'wa-body-s' }),
+        + 'this map.'), { className: 'wa-body-s' }),
     ), { className: 'wa-stack wa-gap-2xs' }), {
       variant: 'neutral', appearance: 'outlined', icon: 'circle-question',
     });
@@ -754,11 +753,12 @@ export function renderHero(payload) {
     (place && place !== agency) ? `${agency}, ${place}` : agency,
   ].filter((x) => x).join(' · ');
 
-  // The headline sentence needs the zone cover and the question audit; until those
-  // stages land it is simply not printed, rather than printed with holes in it.
+  // The headline sentence needs the zone cover; until that lands it is not printed.
+  // The questions clause needs the audit as well — `report.questions` is pre-seeded
+  // as `[]` before the `rules` stage, so it is gated on length, not presence, or the
+  // hero reads "0 of the 0 questions" for the whole network→rules wait.
   let headlineHtml = '';
-  if (size && report.zones && report.questions) {
-    const live = s4LiveQuestions(report);
+  if (size && report.zones && report.zones.length) {
     const c2 = metrics.C2;
     const t90 = fnum(v.t90Min);
     let crossing = '';
@@ -767,10 +767,14 @@ export function renderHero(payload) {
       const c2raw = c2 ? fnum(c2.raw) : null;
       if (c2raw) crossing += ` — ${num(c2raw, 2, { comma: false })} hiding periods`;
     }
+    const nQuestions = (report.questions || []).length;
+    const questionsClause = nQuestions
+      ? `${num(s4LiveQuestions(report))} of the ${num(nQuestions)} questions in the `
+        + `${String(size.name).toUpperCase()} deck function here`
+      : '';
     const headline = `${num(report.zones.length)} distinct hiding zones across `
-      + `${s4Area(report, fnum(v.hullSqM) || 0.0)} of ${agency} network, `
-      + `${num(live)} of the ${num(report.questions.length)} questions in the `
-      + `${String(size.name).toUpperCase()} deck function here${crossing}.`;
+      + `${s4Area(report, fnum(v.hullSqM) || 0.0)} of ${agency} network`
+      + (questionsClause ? `, ${questionsClause}${crossing}.` : `${crossing}.`);
     headlineHtml = el('p', esc(headline) + provChip('A1', 'B1'), {
       className: 'wa-body-l', style: 'max-inline-size:46ch',
     });
@@ -931,15 +935,15 @@ export function renderVerdict(payload) {
     lead += ` ${si.note}`;
     if (!si.unanimous) {
       lead += ' Where the axes disagree the vote resolves down, to the smaller and quieter '
-        + 'game, and the disagreement is worth reading as a warning: a map that looks '
-        + 'large by area and small by zone count will feel empty in play.';
+        + 'game — a map that looks large by area and small by zone count will feel empty '
+        + 'in play.';
     }
     if (si.clamped) {
-      lead += ' The vote was clamped to within one band of the area axis, which is the '
-        + 'axis the rulebook itself describes maps by.';
+      lead += ' The vote was kept within one band of the area axis, which is the axis '
+        + 'the rulebook itself describes maps by.';
     }
   } else {
-    lead = `The game size was set to ${String(size.name).toUpperCase()} on the command line, so the four `
+    lead = `The game size was fixed at ${String(size.name).toUpperCase()} rather than inferred, so the four `
       + 'inference axes in the table above are reported but not used.';
   }
   lead += ` A ${cap(size.name)} map means a ${num(size.hidingPeriodMin)}-minute hiding `
@@ -1015,8 +1019,7 @@ export function renderVerdict(payload) {
       'Not everything could be measured: the score is computed from '
       + `${num(f.availablePoints, 1)} of 100 available points`
       + `${missing ? `, with ${missing} incomplete` : ''}. `
-      + "If we can't measure it, it comes out of the total rather than being guessed at, so "
-      + 'the number is honest about its own coverage.',
+      + 'What could not be measured comes out of the total rather than being guessed at.',
     ));
   } else {
     const borderline = (report.questions || []).filter((q) => q.borderline);
@@ -1146,8 +1149,8 @@ export function renderScoreTrace(payload) {
   if (f.availablePoints < 100) {
     callouts.push(waCallout(el('p', esc(
       `Only ${num(f.availablePoints, 1)} of the 100 points could be measured on this map. `
-      + "If we can't measure it, it comes out of the total rather than being guessed at, and "
-      + "the row below says 'not evaluated' rather than showing a number.",
+      + 'What could not be measured comes out of the total rather than being guessed at; '
+      + "its row below says 'not evaluated'.",
     ), { className: 'wa-body-s' }), { variant: 'warning', icon: 'triangle-exclamation' }));
   }
 
@@ -1207,10 +1210,8 @@ export function renderScoreTrace(payload) {
 
   const lede = 'Every point on the dial comes from one of these rows. A row names the metric, the '
     + 'value measured on this feed, the shaping function that turned it into points, and '
-    + "whether the threshold is the rulebook's, the feed's own, or this generator's "
-    + 'interpretation. Our-call rows carry a gold rule and are never presented as rules. '
-    + 'Arithmetic is in integer tenths of a point throughout, so the sub-scores and the '
-    + 'total are exact sums rather than accumulated floats.';
+    + "whether the threshold is the rulebook's, the feed's own, or our interpretation. "
+    + 'Our-call rows carry a gold rule and are never presented as rules.';
   let answer = '';
   const subs = f.subscores.filter((s) => s.maxTenths > 0);
   if (f.score !== null && f.score !== undefined && subs.length) {
@@ -1307,7 +1308,7 @@ function s4FindingsHalf(report) {
     ), { className: 'wa-stack wa-gap-s' }));
   }
 
-  const lede = 'Nothing here is written by hand: a card appears when a scored metric crosses a '
+  const lede = 'A card appears when a scored metric crosses a '
     + 'threshold — under 35% of its possible points becomes a minus (or a concern when there '
     + 'is a known mitigation), over 85% becomes a plus. A card that only bites on one '
     + 'service day says which day, and says “applies to your day” when that is the day '
@@ -1348,8 +1349,8 @@ function s4HouseRulesHalf(report) {
     items.push(el('li', card));
   }
   const lede = `${num(recs.length)} house rules fired for this map, in the order they `
-    + 'matter. Each one has a predicate over the numbers above; rules whose precondition is '
-    + 'false are not printed at all. The last one always fires, because the rulebook demands '
+    + 'matter. Each one appears only when its condition is met. The last one always '
+    + 'fires, because the rulebook demands '
     + 'that conversation and explicitly refuses to automate it.';
   const checklist = recs.map(
     (rec, i) => `${num(i + 1)}. ${rec.text || ''}${rec.required ? ' (everyone must agree)' : ''}`,

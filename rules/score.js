@@ -1068,7 +1068,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
     else if (getNum(inv, 'toilets_wide') > 0) toilet = 0.5;
     if (getNum(inv, 'library') > 0 || get(hits, 'park') || getNum(inv, 'park') > 0) toilet += 1.0;
     metricsRows.push(s3Metric(
-      'A1', 'A bathroom you can actually use', Math.min(1.0, toilet), '0–1',
+      'A1', 'A bathroom you can use', Math.min(1.0, toilet), '0–1',
       osmReady ? Math.min(1.0, toilet) : null, 6, 'ramp', [0, 1], 'rulebook',
       'The rulebook\'s strongest packing advice is to make sure there is a bathroom you can '
       + 'access. Mapped toilets score 1.0, one just outside the circle 0.5, and a library or '
@@ -1091,8 +1091,8 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       'A3', 'Shelter from the weather', shelter, 'score',
       osmReady ? ramp(shelter, 0, 5) : null, 4, 'ramp', [0, 5], 'interp',
       'Shelters count 1.5, benches 0.25 up to 2, a park polygon reaching the circle 1.0. '
-      + 'Weather is a stated rulebook concern that this pipeline cannot forecast; shelter is '
-      + 'the computable proxy.',
+      + 'Weather is a stated rulebook concern nothing here can forecast; shelter is the '
+      + 'proxy.',
       osmReady,
     ));
 
@@ -1108,7 +1108,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       'X2', `Other zones within ${neighbourLabel}`, neighbours[index], 'zones',
       ramp(neighbours[index], 0, 8), 3, 'ramp', [0, 8], 'interp',
       'The geometric, map-free version of information resistance: it still answers when no '
-      + 'map data can be read at all, and it is what a radar actually measures.',
+      + 'map data can be read at all, and it is what a radar measures.',
       true,
     ));
     const seekerFrac = (travelMin === null || t90 <= 0) ? null : travelMin / t90;
@@ -1291,7 +1291,7 @@ const S3_MITIGATION = Object.freeze({
   C1: 'Agree that the seekers may check the live timetable at any time; on this map the wait '
     + 'is the game.',
   C2: 'Shrink the border, or step the game size up one so the hiding period matches how long '
-    + 'crossing this map actually takes.',
+    + 'crossing this map takes.',
   D1: 'Set an explicit end-of-game timer rather than playing until the buses stop.',
   D2: 'End the round earlier than the size\'s nominal length, or move the start time earlier.',
   D3: 'Check the date you are playing against the feed\'s own calendar: this feed has days that '
@@ -1680,9 +1680,9 @@ export function deriveRecommendations(reportParts) {
   // 15 · the one rule that always fires
   add('safety_exclusions', 90,
     'Before anything else, agree which areas are off the map because someone does not feel '
-    + 'safe going there. The rulebook requires this conversation and explicitly refuses to '
-    + 'automate it; this generator will not draw that polygon for you. Apply the outcome with '
-    + '--exclude-stop so every number on these pages matches the map you are actually playing.',
+    + 'safe going there. The rulebook requires this conversation and refuses to automate '
+    + 'it. Exclude those stops and routes so every number on these pages matches the map '
+    + 'you are playing.',
     'The rulebook requires this conversation and explicitly refuses to automate it.',
     true);
 
@@ -1698,7 +1698,7 @@ export function deriveRecommendations(reportParts) {
  * key order, so two identical form submissions produce identical provenance.
  */
 function synthArgv(opts) {
-  const argv = ['generate.py'];
+  const argv = [];
   const src = get(opts, 'source');
   if (typeof src === 'string' && src) argv.push(src);
   else if (src && typeof src === 'object' && src.name) argv.push(String(src.name));

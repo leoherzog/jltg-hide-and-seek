@@ -2145,8 +2145,8 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   if (partialKeys.length) {
     notes.push(
       'These counts were not confirmed by reading the features and are marked partial — '
-      + 'either the category was too large to fetch, leaving an upper bound taken from the '
-      + "file's spatial index, or the layer could not be read: "
+      + 'either the category was too large to fetch, leaving an upper bound, or the layer '
+      + 'could not be read: '
       + `${partialKeys.join(', ')}.`,
     );
   }

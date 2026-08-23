@@ -407,9 +407,8 @@ export const CURSES = Object.freeze([
     'Not map-contingent. Its note is the only place the rulebook independently restates ' +
     'the base draw/keep numbers, and they agree with SEEKING.md exactly.'),
   C('spotty_memory', 'Curse of the Spotty Memory', 4, null,
-    'Not map-contingent, but note that a SMALL game has only five categories, so a six is ' +
-    'a reroll — and that the curse hurts most on a map where only two categories are any ' +
-    'good.'),
+    'Not map-contingent. A SMALL game has only five categories, so a six is a reroll, and ' +
+    'the curse hurts most on a map where only two categories are any good.'),
 ]);
 
 // ── shape assertions, run at import ───────────────────────────────────────────

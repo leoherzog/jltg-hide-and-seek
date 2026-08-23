@@ -530,12 +530,12 @@ export async function runPipeline(options, source, emit) {
   const score = await loadScore();
   progress.begin(10, 'Scoring the city');
   if (!score) {
-    degrade('The scoring layer could not be loaded (rules/score.js: '
-      + `${SCORE_ERROR}), so the verdict, the score trace and the house rules are missing.`);
+    degrade(`The scoring layer could not be loaded (${SCORE_ERROR}), so the verdict, `
+      + 'the score trace and the house rules are missing.');
     post({
       type: 'error',
       stage: 'score',
-      message: `rules/score.js could not be loaded: ${SCORE_ERROR}`,
+      message: `The scoring layer could not be loaded: ${SCORE_ERROR}`,
       fatal: false,
     });
   } else {

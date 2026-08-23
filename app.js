@@ -125,14 +125,38 @@ const NUMBERED = ['verdict', 'trace', 'yourgame', 'numbers', 'network', 'transit
  */
 const STAGE_NOTE = {
   feed: 'Downloading and unzipping the GTFS feed.',
-  days: 'Working out which service days this feed actually distinguishes.',
-  network: 'Running RAPTOR over every stop and covering the map in hiding zones.',
-  geo: 'Reading the prebuilt OpenStreetMap files. Only the bytes covering this map are '
-    + 'fetched, using HTTP range requests against a spatial index, so this is now one of '
-    + 'the quicker stages rather than the slowest.',
+  days: 'Working out which service days this feed distinguishes.',
+  network: 'Computing travel times from every stop and covering the map in hiding zones.',
+  geo: 'Reading the OpenStreetMap data for this area.',
   rules: 'Auditing all 80 questions and 24 curses against this map.',
   score: 'Scoring the city out of 100 and ranking the hiding zones.',
   provenance: 'Collecting the receipts.',
+};
+
+/** What each stage was doing, for the fatal-error heading. */
+const STAGE_DOING = {
+  feed: 'reading the feed',
+  days: 'reading the calendar',
+  network: 'building the network',
+  geo: 'reading the map',
+  rules: 'auditing the rules',
+  score: 'scoring',
+  provenance: 'collecting sources',
+};
+
+/** Reader-facing section names, for the “could not be rendered” notice. */
+const SECTION_NAME = {
+  hero: 'the headline',
+  verdict: 'Verdict',
+  trace: 'Where the Points Came From',
+  yourgame: 'House Rules',
+  numbers: 'At a Glance',
+  network: 'The Map You’re Playing On',
+  transit: 'Getting Around',
+  questions: 'The Questions',
+  curses: 'The Curse Deck',
+  sources: 'Where These Numbers Come From',
+  footer: 'the footer',
 };
 
 /**
@@ -649,8 +673,8 @@ function startRun(form) {
   try {
     worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   } catch (err) {
-    showFormError(`This browser could not start the analysis worker (${err && err.name}). `
-      + 'A module Web Worker is required, and the page has to be served over http, not opened from disk.');
+    showFormError(`This browser could not start the analysis (${err && err.name}). `
+      + 'The page has to be served over http, not opened from disk.');
     return;
   }
   state.worker = worker;
@@ -668,10 +692,10 @@ function startRun(form) {
     }
   });
   worker.addEventListener('error', (event) => {
-    fatalError('worker', event.message || 'The analysis worker stopped unexpectedly.');
+    fatalError('worker', event.message || 'The analysis stopped unexpectedly.');
   });
   worker.addEventListener('messageerror', () => {
-    fatalError('worker', 'The analysis worker sent a message this browser could not read.');
+    fatalError('worker', 'The analysis sent a message this browser could not read.');
   });
 
   enterRunningState(src);
@@ -770,8 +794,7 @@ function startHeartbeat() {
     const m = Math.floor(state.waitedS / 60);
     const s = state.waitedS % 60;
     const elapsed = m ? `${m} min ${s}s` : `${s}s`;
-    out.textContent = `Still working — ${elapsed} on this step. Nothing has stalled; `
-      + 'the page is waiting for an answer rather than guessing at one.';
+    out.textContent = `Still working — ${elapsed} on this step.`;
   }, 5000);
 }
 
@@ -1035,7 +1058,7 @@ function hydrate(stage) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`[app] ${def.id} renderer failed`, err);
-      recordDegradation(`Section “${def.id}” could not be rendered (${err && err.message}).`);
+      recordDegradation(`The ${SECTION_NAME[def.id] || def.id} section could not be rendered (${err && err.message}).`);
       continue;
     }
     if (state.rendered.get(def.id) === html) continue;
@@ -1291,8 +1314,8 @@ function renderDegradations() {
 
   const body = join(
     el('p', esc(lines.length === 1
-      ? 'Part of this report is missing rather than guessed at:'
-      : 'Parts of this report are missing rather than guessed at:'), { className: 'wa-body-s' }),
+      ? 'Part of this report is missing:'
+      : 'Parts of this report are missing:'), { className: 'wa-body-s' }),
     el('ul', lines.map((x) => el('li', esc(x))).join(''), { className: 'wa-stack wa-gap-2xs' }),
   );
 
@@ -1357,12 +1380,12 @@ function fatalError(stage, message) {
   // header instead of spacing these two paragraphs.
   const card = waCard(el('div', join(
     el('p', esc(String(message || 'The run stopped and did not say why.')), { className: 'wa-body-m' }),
-    el('p', esc('Nothing on this page was written from a partial answer — the run stopped here '
-      + 'rather than filling the gap. Reload and try another feed, or the same one again: the '
-      + 'commonest causes are a link that is not a GTFS zip and a feed that is missing '
-      + 'stop_times.txt.'), { className: 'wa-body-s wa-color-text-quiet' }),
+    el('p', esc('Reload and try another feed, or the same one again. The commonest causes '
+      + 'are a link that is not a GTFS zip and a feed that is missing stop_times.txt.'),
+    { className: 'wa-body-s wa-color-text-quiet' }),
   ), { className: 'wa-stack wa-gap-m' }), {
-    headerHtml: el('h2', join(waIcon('triangle-exclamation'), esc(`Stopped during “${stage}”`)),
+    headerHtml: el('h2', join(waIcon('triangle-exclamation'),
+      esc(STAGE_DOING[stage] ? `Stopped while ${STAGE_DOING[stage]}` : 'The analysis stopped')),
       { className: 'wa-heading-l wa-cluster wa-gap-xs wa-align-items-center' }),
   });
   const slot = pick('#run-error', '[data-role="runerror"]');

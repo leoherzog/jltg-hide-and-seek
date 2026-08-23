@@ -260,7 +260,7 @@
                not inside its width. -->
           <!-- Honest, because the failure is not the reader's fault and not fixable
                from this page. -->
-          <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens the browser refuses the request before this page ever sees it, and there is nothing either of us can do about it from here — download the zip yourself and drop it in above. Same answer, one extra step.</p>
+          <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens, download the zip yourself and drop it in above.</p>
           <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Looking for a feed? Try the <a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database</a> or <a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland</a>.</p>
 
           <wa-details summary="Advanced" id="advanced">
@@ -271,7 +271,7 @@
                    ship hardcoded constants (generate.py 207, 214-216) that no
                    inference produces. Saying "inferred from the feed" of all eleven
                    tells a reader that 09:00 came from their agency's service span. -->
-              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most of them are inferred from the feed if you leave them alone; departure time, board slack and border shape are fixed defaults instead — the same ones the command-line tool uses. Change one and you are telling the generator you know better than the feed, which is sometimes true.</p>
+              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most of them are inferred from the feed if you leave them alone; departure time, board slack and border shape are fixed defaults instead. Change one and you are saying you know better than the feed, which is sometimes true.</p>
 
               <div id="landing-fields" class="wa-grid wa-gap-m" style="--min-column-size:220px">
 
@@ -334,7 +334,7 @@
                      2567; README 265). Nothing anywhere ranks dates by busyness —
                      `s1Representative` (service.js 309) deliberately breaks a tie
                      toward the QUIETER day; the hint says so. -->
-                <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Clamped into the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
+                <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Kept within the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
 
                 <!-- Slotted hints again, for the <code> the attribute cannot carry. -->
                 <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops">
@@ -362,7 +362,7 @@
                      not repeat it: two copies of a URL is one copy too many, and the
                      one that would go stale is this one. -->
                 <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="field-wide" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
-                  <span slot="hint">Where the prebuilt map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one. Point it at a local static server to try a build before it ships; it has to answer HTTP range requests and expose <code>content-range</code> to CORS, or the files read as corrupt.</span>
+                  <span slot="hint">Where the map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one.</span>
                 </wa-input>
 
               </div>
@@ -375,11 +375,11 @@
                    matches the ten hints above it; the reading width now comes from
                    `#advanced wa-switch::part(hint)` in styles.css. -->
               <wa-switch id="opt-no-osm" data-opt="noOsm" name="no-osm" size="s">Skip OpenStreetMap (much faster)
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Reading the map files is the slow part of a run, by a wide margin. Skipping them keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at, so the score says so out loud.</span>
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Skipping the map files keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at.</span>
               </wa-switch>
 
               <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore the cached transit feed
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused, which is what makes a second run of the same feed quick to start. Turn this on to download it again — worth doing when the operator has published a new one. It does not affect the map files: those are immutable, addressed by content, and always read from the network.</span>
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused. Turn this on to download it again — worth doing when the operator has published a new one. It does not affect the map files, which are always read from the network.</span>
               </wa-switch>
 
               <!-- `offline` is live end to end — app.js 526, worker.js 244,
@@ -388,7 +388,7 @@
                    `readControl` returns undefined and app.js 560-561 is a dead branch
                    the reader can never reach. -->
               <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The mirror image of the switch above: a cache miss becomes an error instead of a download, so the feed either reproduces exactly what an earlier run saw or stops and says so. This does not make the run offline — the map files are still read over the network unless OpenStreetMap is skipped as well.</span>
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
               </wa-switch>
             </div>
           </wa-details>

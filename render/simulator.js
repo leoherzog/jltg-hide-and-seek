@@ -1024,7 +1024,7 @@ function buildInstance(root, report) {
     /* the tentacle mode's third answer is a real answer, not a gap in the map, so it is
        counted out loud rather than left to be inferred from the other two */
     const notInReach = mode === 'tentacle' && no
-      ? `. ${el('b', num(no))} are not within reach of the seekers and simply say so`
+      ? `. ${el('b', num(no))} are not within reach of the seekers and say so`
       : '';
     host.innerHTML = join(
       esc(readoutLead())
@@ -1137,7 +1137,7 @@ function buildInstance(root, report) {
     if (!view.threats.length) {
       return el(
         'p',
-        esc('No question on this map singles this zone out — which is the best thing a dossier can say.'),
+        esc('No question on this map singles this zone out.'),
         { className: 'wa-body-s' },
       );
     }
@@ -1176,8 +1176,8 @@ function buildInstance(root, report) {
     if (!view.spots.length) {
       return el(
         'p',
-        esc('No candidate legal endgame spot was found inside this circle. That is a real'
-          + ' risk: the rulebook needs somewhere publicly accessible during every game hour.'),
+        esc('No candidate legal endgame spot was found inside this circle. '
+          + 'The rulebook needs somewhere publicly accessible during every game hour.'),
         { className: 'wa-body-s' },
       );
     }

@@ -234,7 +234,7 @@ async function* storedStream(slice) {
 
 async function* inflateStream(slice) {
   if (typeof DecompressionStream === 'undefined') {
-    throw new Error('this browser has no DecompressionStream; cannot inflate the GTFS zip');
+    throw new Error('This browser cannot decompress zip files, so the GTFS feed could not be read.');
   }
   const ds = new DecompressionStream('deflate-raw');
   const writer = ds.writable.getWriter();
@@ -282,8 +282,8 @@ export async function unzip(bytes, opts = {}) {
     if (u32(dv, i) === SIG_EOCD) { eocd = i; break; }
   }
   if (eocd < 0) {
-    throw new Error('not a zip file (no End Of Central Directory record found). '
-      + 'A GTFS feed must be a .zip; a bare .txt or an HTML error page will land here.');
+    throw new Error('Not a zip file. A GTFS feed must be a .zip; a bare .txt or an HTML '
+      + 'error page will land here.');
   }
 
   let entries = u16(dv, eocd + 10);
@@ -729,7 +729,7 @@ async function _s1ReadSource(source, cache) {
   if (typeof source === 'string') {
     if (!s1IsUrl(source)) {
       throw new Error(`GTFS source ${JSON.stringify(source)} is not an http(s) URL. `
-        + 'The browser port cannot read local paths — pick the .zip from disk instead.');
+        + 'Local paths cannot be read — pick the .zip from disk instead.');
     }
     const body = toU8(await httpFetch(cache, {
       kind: 'gtfs', cacheKey: source, ext: 'zip', endpoints: [source],
@@ -1284,7 +1284,7 @@ export function feedWindow(feed, asOf) {
   const end = feed.feedEnd;
   let chosen = String(asOf || '').trim() || start;
   if (!DATE8.test(chosen)) {
-    throw new Error(`--as-of must be YYYYMMDD, got ${JSON.stringify(asOf)}`);
+    throw new Error(`The analysis date must be YYYYMMDD, got ${JSON.stringify(asOf)}`);
   }
   if (chosen < start) {
     LOG.warn(`as-of ${chosen} is before the feed window; clamped to ${start}`);

@@ -524,7 +524,7 @@ function s4Funnel(report) {
   // the CLI's, word for word.
   const caption = 'Greedy order: at each step, the question that leaves the smallest average '
     + `group of identical answers across all ${num(start)} zones. It is the seekers' best line `
-    + 'of play if they knew nothing about you, which is exactly the situation they are in. '
+    + 'of play if they knew nothing about you. '
     + `After ${num(order.length)} questions the map narrows from ${num(start)} zones to `
     + `${num(funnel[funnel.length - 1])} — that is what a hider has to survive.`;
 
@@ -675,7 +675,7 @@ export function renderQuestions(payload) {
   const words = waDetails('What these words mean', s4DefinitionList([
     ...S4_STATUS_DEF.map(([key, meaning]) => [S4_STATUS_TAG[key][0], key, meaning]),
     ['How much it narrows the search', 'quality',
-      'The information a question actually carries, normalised inside its own category, '
+      'The information a question carries, normalised inside its own category, '
       + 'so a clean 50/50 split scores 100%.'],
     ['Blends in', 'anonymity',
       'The share of zones that answer this question exactly the way yours does — the '
@@ -765,8 +765,7 @@ export function renderQuestions(payload) {
       + el('th', esc('What was searched for'), { scope: 'col' })));
     tests = waDetails("Every question's exact test", join(
       el('p', esc('One row per question, printed verbatim, so you can re-run any of them '
-        + 'yourself. This is the same text that used to sit inside each row of the table '
-        + 'above.'), { className: 'wa-body-s wa-color-text-quiet' }),
+        + 'yourself.'), { className: 'wa-body-s wa-color-text-quiet' }),
       waScroller(el('table', head + el('tbody', selectorRows.join('')), {
         className: 'wa-zebra-rows',
       })),
@@ -778,12 +777,12 @@ export function renderQuestions(payload) {
   const title = `${num(live)} of the ${num(questions.length)} questions work here`;
   let lede = 'Every question in the deck, checked against this map. “Found on the map” is how '
     + 'many qualifying things the question has to work with inside the border; “how much it '
-    + "narrows the search” is the information the answer actually carries. Each status "
-    + "also has a one-word name of this report's own — they are not the rulebook's — and "
-    + 'they are defined under “what these words mean”, with the chips.';
+    + "narrows the search” is the information the answer carries. Each status has a "
+    + "one-word name of this report's own, not the rulebook's, defined under “what these "
+    + 'words mean”.';
   if (!geoAvailable) {
-    lede += ' OpenStreetMap was not available for this run, so only the questions this '
-      + 'generator can answer from the feed alone are evaluated.';
+    lede += ' OpenStreetMap was not available for this run, so only the questions '
+      + 'answerable from the feed alone are evaluated.';
   }
   const answer = el('p', esc(
     `${num(count(counts, 'functional'))} split the map cleanly, ${num(count(counts, 'weak'))} `
@@ -1024,8 +1023,7 @@ export function renderCurses(payload) {
     { id: `pred-${c.id}` },
   )).join('');
   const tests = waDetails("Every curse's deciding test", join(
-    el('p', esc('One row per curse, printed verbatim. This is the same text that used to sit '
-      + 'inside each row of the tables above.'), { className: 'wa-body-s wa-color-text-quiet' }),
+    el('p', esc('One row per curse, printed verbatim.'), { className: 'wa-body-s wa-color-text-quiet' }),
     waScroller(el('table', predHead + el('tbody', predRows), { className: 'wa-zebra-rows' })),
   ), { appearance: 'plain' });
 
@@ -1162,7 +1160,7 @@ export function renderProvenance(payload) {
     ['', 'Cache backend', String(p.cacheBackend || '')],
     // verbatim, every argument and all: this string *is* the determinism claim, and
     // truncating it would be removing content.
-    ['argv', 'Arguments', (p.argv || []).map((a) => String(a)).join(' ') || '(none)'],
+    ['argv', 'Options', (p.argv || []).map((a) => String(a)).join(' ') || '(none)'],
   ];
 
   const questions = report.questions || [];
@@ -1187,7 +1185,7 @@ export function renderProvenance(payload) {
     ['', 'Agencies', [agencyNames, tz].filter((x) => x).join(' · ')],
     ['rulebook', 'Game size', size.name
       ? `${String(size.name).toUpperCase()}`
-        + `${size.inferred ? ' (inferred)' : ' (set on the command line)'} · `
+        + `${size.inferred ? ' (inferred)' : ' (set by hand)'} · `
         + `${num(size.hidingPeriodMin)}-minute hiding period · `
         + `${s4Dist(report, size.zoneRadiusM, 2)} zones · `
         + `${num(size.catalogueSize)} questions · ${num(curses.length)} curses`
@@ -1226,9 +1224,7 @@ export function renderProvenance(payload) {
   ), {
     headerHtml: s4CardHeader(
       'What this report was built from',
-      'Everything here is derived from the feed, the OpenStreetMap snapshot and the rulebook. '
-      + "There is no timestamp on this page that does not come from the feed's own calendar "
-      + 'or from the analysis date, which is what lets two runs produce byte-identical files.',
+      'Everything here is derived from the feed, the OpenStreetMap snapshot and the rulebook.',
     ),
   })];
 
@@ -1255,18 +1251,16 @@ export function renderProvenance(payload) {
     // The last column is the file each count was read from, which is the useful half.
     const note = 'Every count is the number of matching OpenStreetMap elements inside the '
       + 'border. A count marked with a + was not confirmed by reading the features: either '
-      + 'the category is too large to fetch and the number is an upper bound taken from the '
-      + "file's spatial index, or that layer could not be read at all. Selectors are printed "
-      + 'verbatim so you can re-run any of them at overpass-turbo.eu and check this page '
-      + 'against a live database.';
+      + 'the category is too large to fetch and the number is an upper bound, or that layer '
+      + 'could not be read at all. Selectors are printed verbatim so you can re-run any of '
+      + 'them at overpass-turbo.eu and check this page against a live database.';
     blocks.push(waCard(join(
       el('p', esc(note), { className: 'wa-body-s wa-color-text-quiet' }),
       s4Table(['Category', 'Count', 'What was searched for', 'Read from'], rows),
     ), {
       headerHtml: s4CardHeader(
         `${num(overpass.length)} OpenStreetMap categories`,
-        'One selector per category. The predicate was applied when the map files were '
-        + 'built; this run read the matching features inside the border.',
+        'One selector per category; this run read the matching features inside the border.',
       ),
     }));
   }
@@ -1338,7 +1332,7 @@ export function renderProvenance(payload) {
     }
     blocks.push(waCard(el('dl', entries.join(''), { className: 'wa-stack wa-gap-3xs' }), {
       headerHtml: s4CardHeader(
-        `${num(interps.length)} places where the rulebook is silent and this generator decided`,
+        `${num(interps.length)} places where the rulebook is silent and this report decided`,
         'Each of these changed a number on this page. They are interpretations, not rules, and '
         + 'a group that disagrees with one should feel free to overrule it.',
       ),
@@ -1417,8 +1411,7 @@ export function renderFooter(payload) {
     className: 'wa-grid wa-gap-m', style: '--min-column-size:230px', id: 'footer-figures',
   });
 
-  const credit = `Generated by ${p.generator || GENERATOR} ${p.version || VERSION} from `
-    + `${feed.agencyName || ''}'s GTFS feed`
+  const credit = `Built from ${feed.agencyName || ''}'s GTFS feed`
     + ((p.feedStart && p.feedEnd)
       ? ` (valid ${prettyDate(String(p.feedStart))} – ${prettyDate(String(p.feedEnd))})` : '')
     + '. Map features from OpenStreetMap contributors, ODbL. '

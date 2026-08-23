@@ -250,9 +250,8 @@ export function s4Tiles(report, dayKey) {
       prov: 'A1',
       v: num(g('nZones', (report.zones || []).length)),
       l: 'Distinct hiding zones',
-      n: `One zone per ${radius} circle — a greedy ${radius} cover of the ${num(served)} `
-        + `stops with service on a ${label}. This is the denominator for every share on `
-        + 'both pages.',
+      n: `One zone per ${radius} circle — a cover of the ${num(served)} stops with `
+        + `service on a ${label}.`,
     },
     {
       g: 'map',
@@ -280,7 +279,7 @@ export function s4Tiles(report, dayKey) {
       n: 'The area the buses actually cover — the convex hull of the served stops. '
         + 'The printed border box is '
         + `${s4Area(report, Number(border.areaSqM || 0))}, because a rectangle is what `
-        + 'players can actually agree on.',
+        + 'players can agree on.',
     },
     {
       g: 'map',
@@ -319,7 +318,7 @@ export function s4Tiles(report, dayKey) {
       v: pct(freqShare),
       l: 'Stops on a 15-minute route',
       n: `${num(freqStops)} stops where one single route-direction runs every `
-        + '15 minutes or better. The frequent network is what the seekers actually use.',
+        + '15 minutes or better.',
     },
     {
       g: 'clock',
@@ -374,7 +373,7 @@ export function s4Tiles(report, dayKey) {
 export function s4TilesHtml(report, dayKey) {
   const tiles = s4Tiles(report, dayKey);
   const dayChip = chip('changes by day', 'calendar-day', {
-    title: 'This figure is measured on the selected service day',
+    title: 'Measured on the selected service day',
   });
   const groups = [];
   for (const [key, title] of S4_TILE_GROUPS) {
@@ -622,9 +621,8 @@ export function renderTransitReality(payload) {
       + 'a hollow dashed outline = no service to that stop on the selected day. '
       + `Dashed line = the ${hp}-minute hiding period. Times are scheduled, not observed: `
       + 'treat each bar as a centre point, not a ceiling. '
-      + 'Every time here is routed by RAPTOR over the actual timetable, so a stated ride '
-      + 'means a genuine sequence of buses exists that gets you there in that time, '
-      + 'including waiting for the transfer — it is not a straight-line distance guess.';
+      + 'Each ride is a real sequence of buses over the timetable, including the '
+      + 'transfer wait — not a straight-line guess.';
     const chart = el('wa-chart', '', {
       id: 'ttchart',
       type: 'bar',
@@ -670,13 +668,10 @@ export function renderTransitReality(payload) {
       + "the route's own stops between 10:00 and 14:00, one column per service day this "
       + 'feed distinguishes. The technical name is headway. '
       + 'These are medians, not averages: a route that runs every 10 minutes at rush hour '
-      + 'and once an hour at noon averages out to a figure that describes neither. The '
-      + 'window is the middle of the day because the middle of the day is when you will '
-      + 'be playing. '
+      + 'and once an hour at noon averages out to a figure that describes neither. That '
+      + 'window is when you will be playing. '
       + 'Darker = less frequent. A hatched cell means the route does not run that day at '
-      + 'all — which is a different statement from a slow headway, and the two are never '
-      + 'drawn the same way. The selected day is highlighted; hover any cell for its trip '
-      + 'count.';
+      + 'all. The selected day is highlighted; hover any cell for its trip count.';
     let subtitle = 'How often a bus comes, per route, per service day.';
     if (nRoutes > S4_MAX_HEATMAP_ROUTES) {
       const extra = nRoutes - S4_MAX_HEATMAP_ROUTES;
@@ -702,7 +697,7 @@ export function renderTransitReality(payload) {
       + 'identify a zone rather than narrow the field.',
     ), { className: 'wa-body-s' }), {
       headerHtml: s4CardHeader('How often the buses come',
-        'Replaced by a sentence: fewer than three routes.'),
+        'Too few routes for a grid.'),
     }));
   }
 
@@ -714,7 +709,7 @@ export function renderTransitReality(payload) {
     + 're-read these times from that stop rather than from the hub.';
   const answer = el('p', esc(
     `From ${startName} you have ${hp} minutes to get anywhere and hide. The chart below is `
-    + 'how far that actually gets you; the grid under it is how long you wait for the ride '
+    + 'how far that gets you; the grid under it is how long you wait for the ride '
     + 'back.',
   ), { className: 'wa-body-s' });
   return section('transit', S4_ORDINAL, 'Getting around',
@@ -764,7 +759,7 @@ export function renderNetworkMap(payload) {
   const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
 
   const captionParts = [
-    'Live OpenFreeMap basemap.',
+    'Live basemap.',
     stopsShown
       ? `Grey dots = each of the ${num(served)} stops with service on the `
         + 'selected day (hover for the name and route count).'
@@ -838,10 +833,7 @@ export function renderNetworkMap(payload) {
       el('p', esc(
         'The border is the bounding box of the in-map stops padded by one hiding-zone '
         + `radius (${s4Dist(report, Number(border.padM || 0), 2)}), so every legal zone lies `
-        + `wholly inside it. It covers ${s4Area(report, Number(border.areaSqM || 0))}. `
-        + 'The rulebook leaves '
-        + 'borders entirely to the players, but is emphatic that everyone must use the '
-        + 'same one — so copy this rather than redrawing it.',
+        + `wholly inside it. It covers ${s4Area(report, Number(border.areaSqM || 0))}.`,
       ) + provChip('border'), { className: 'wa-body-s wa-color-text-quiet' }),
     ), { className: 'wa-stack wa-gap-m' }),
     {
