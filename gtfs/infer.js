@@ -14,6 +14,12 @@
  *   travelTimeSamples(feed, days, zones, …)       → TravelSampleRow[]  (runs LAST;
  *                                                    see worker.js's reordering note)
  *
+ * Plus two helpers the map's reach layer added on 2026-08-23, which share the RAPTOR
+ * passes `travelTimeSamples` was already making:
+ *
+ *   dayRaptorRuns(days, originStopId, departureS) → Map<dayKey, run|null>
+ *   zoneReachMinutes(days, zones, runs, …)        → ZoneReach
+ *
  * ── determinism ────────────────────────────────────────────────────────────────
  * Every `Map`/`Set`/plain object is sorted before it is iterated anywhere the
  * result can reach output. String order is code-point order (`cmpStr`), never
@@ -553,6 +559,78 @@ function s1ZoneRadius(zones) {
 }
 
 /**
+ * One RAPTOR run per service day, from the round-start station.
+ *
+ * Lifted out of `travelTimeSamples`, which built exactly this Map and then threw
+ * everything away but fourteen picks. `zoneReachMinutes` wants the same runs for
+ * every zone, so the loop moved here and both callers are handed the one result:
+ * the map's reach layer costs zero extra RAPTOR passes. A day whose `stopDays` has
+ * no row for the origin gets `null` — there is no journey to model from a stop that
+ * sees no departure. (Extracted 2026-08-23 for the map's reach layer.)
+ *
+ * @param {object[]} days @param {string} originStopId @param {number} departureS
+ * @returns {Map<string, object|null>} `dayType.key` → run
+ */
+export function dayRaptorRuns(days, originStopId, departureS) {
+  /** @type {Map<string, object|null>} */ const runs = new Map();
+  for (const day of days || []) {
+    const origin = has(day.stopDays, originStopId) ? originStopId : null;
+    runs.set(day.dayType.key, origin ? raptor(day, [origin], departureS) : null);
+  }
+  return runs;
+}
+
+/**
+ * Travel minutes from the round-start station to **every** hiding zone, per day.
+ *
+ * The same runs `travelTimeSamples` uses — same origin, same departure — so
+ * `perDay[bestDay].minutes[z]` is `rhu(ZoneScore.metrics.R1.raw × hidingPeriodMin, 1)`
+ * by construction and the map can never disagree with the hider's dossier.
+ *
+ * The counts are computed here rather than left to the page because a renderer may
+ * count and filter but may not do arithmetic on a measured quantity: `reachableZones`
+ * is a subtraction and `unreachableZoneIds` is a comparison against the hiding period.
+ *
+ * @param {object[]} days @param {object[]} zones
+ * @param {Map<string, object|null>} runs from `dayRaptorRuns`
+ * @param {string} originStopId @param {number} departureS @param {number} hidingPeriodMin
+ * @returns {object} `ZoneReach` (CONTRACT.md §(b))
+ */
+export function zoneReachMinutes(days, zones, runs, originStopId, departureS, hidingPeriodMin) {
+  const zoneIds = Array.from(zones || [], (z) => z.zoneId).sort(cmpStr);
+  /** @type {Object<string, object>} */ const perDay = Object.create(null);
+  const keys = Array.from(days || [], (d) => d.dayType.key).sort(cmpStr);
+  for (const key of keys) {
+    const run = runs && runs.get(key) ? runs.get(key) : null;
+    /** @type {Object<string, number|null>} */ const minutes = Object.create(null);
+    /** @type {string[]} */ const unreachable = [];
+    let furthestZoneId = null;
+    let furthestMinutes = null;
+    // `zoneIds` is sorted, so `unreachable` comes out sorted and a tie for furthest
+    // is broken by the smaller zone id. No second sort, and no set iteration.
+    for (const zid of zoneIds) {
+      const value = (run !== null && has(run.arrivalS, zid))
+        ? rhu((run.arrivalS[zid] - departureS) / 60.0, 1)
+        : null;
+      minutes[zid] = value;
+      if (value === null || value > hidingPeriodMin) unreachable.push(zid);
+      if (value !== null && (furthestMinutes === null || value > furthestMinutes)) {
+        furthestMinutes = value;
+        furthestZoneId = zid;
+      }
+    }
+    perDay[key] = {
+      minutes,
+      unreachableZoneIds: unreachable,
+      reachableZones: zoneIds.length - unreachable.length,
+      furthestZoneId,
+      furthestMinutes,
+    };
+  }
+  return { originStopId, departureS, hidingPeriodMin, perDay };
+}
+
+/**
  * A deterministic destination sample for the ride-time chart.
  *
  * Re-runs the zone cover at `3 × zoneRadius` to get well-spread destinations, takes
@@ -566,9 +644,12 @@ function s1ZoneRadius(zones) {
  * @param {string} originStopId @param {number} departureS
  * @param {Projection|{lat0:number,lon0:number}} proj  (unused; kept for call-site parity)
  * @param {number} [count=14]
+ * @param {Map<string, object|null>} [precomputedRuns] `dayRaptorRuns` output, shared
+ *   with `zoneReachMinutes` so the RAPTOR passes happen once per run
  * @returns {object[]} `TravelSampleRow[]`
  */
-export function travelTimeSamples(feed, days, zones, originStopId, departureS, proj, count = 14) {
+export function travelTimeSamples(feed, days, zones, originStopId, departureS, proj, count = 14,
+  precomputedRuns = null) {
   if (!zones || !zones.length || !days || !days.length) return [];
   const radius = s1ZoneRadius(zones);
   /** @type {Map<string, object>} */ const byId = new Map();
@@ -604,11 +685,9 @@ export function travelTimeSamples(feed, days, zones, originStopId, departureS, p
   }
 
   const bestKey = maxBy(days, (d) => [d.trips, d.dayType.key]).dayType.key;
-  /** @type {Map<string, object|null>} */ const runs = new Map();
-  for (const day of days) {
-    const origin = has(day.stopDays, originStopId) ? originStopId : null;
-    runs.set(day.dayType.key, origin ? raptor(day, [origin], departureS) : null);
-  }
+  // The runs are the caller's when it has them (the worker shares one set with
+  // `zoneReachMinutes`), and built here when it does not — a bare call is unchanged.
+  const runs = precomputedRuns || dayRaptorRuns(days, originStopId, departureS);
 
   const rows = [];
   for (const zid of picks.slice().sort(cmpStr)) {

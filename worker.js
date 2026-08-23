@@ -25,7 +25,8 @@
 // `{lat0, lon0}`) are built at this boundary and nowhere else.
 
 import {
-  QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN, hmsToS, coord,
+  QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
+  MAX_MAP_SPOKES, MAP_SPOKE_RDP_M, hmsToS, coord, rhu,
 } from './lib/core.js';
 import { Projection } from './lib/geo.js';
 import { openCache } from './lib/cache.js';
@@ -39,10 +40,11 @@ import {
 } from './gtfs/service.js';
 import { raptor, raptorReverse } from './gtfs/raptor.js';
 import {
-  zoneCover, buildZones, networkMetrics, routeHeadways, s1Percentiles,
+  zoneCover, buildZones, networkMetrics, routeHeadways, routeSpokes, s1Percentiles,
 } from './gtfs/network.js';
 import {
   inferHub, inferBorder, inferGameSize, travelTimeSamples, gtfsQuestionFacts,
+  dayRaptorRuns, zoneReachMinutes,
   setInferLogger,
 } from './gtfs/infer.js';
 import { collectGeodata, emptyGeoData } from './osm/geodata.js';
@@ -442,6 +444,8 @@ export async function runPipeline(options, source, emit) {
   let headways;
   let gtfsFacts;
   let travelSamples = [];
+  let zoneReach = null;
+  let spokes = { spokes: [], cap: { shown: 0, total: 0, source: 'shapes' } };
   let origin;
   let depS;
   try {
@@ -483,7 +487,14 @@ export async function runPipeline(options, source, emit) {
     progress.begin(6, 'Sampling ride times');
     // The CLI computes this last; CONTRACT.md §(d) needs it in the `'network'`
     // payload and every input already exists. Pure function, same value.
-    travelSamples = travelTimeSamples(feed, days, zones, origin, depS, proj);
+    //
+    // One RAPTOR pass per day, shared: the fourteen chart destinations and the
+    // per-zone reach the map colours by are two readings of the same runs, so the
+    // reach layer costs no extra pass. (2026-08-23.)
+    const runs = dayRaptorRuns(days, origin, depS);
+    travelSamples = travelTimeSamples(feed, days, zones, origin, depS, proj, 14, runs);
+    zoneReach = zoneReachMinutes(days, zones, runs, origin, depS, size.hidingPeriodMin);
+    spokes = routeSpokes(feed, days, hub, MAX_MAP_SPOKES, MAP_SPOKE_RDP_M);
     progress.finish();
   } catch (err) {
     fatal('network', err);
@@ -502,7 +513,10 @@ export async function runPipeline(options, source, emit) {
       metrics,
       routeHeadways: headways,
       travelSamples,
-      stops: stopRows(feed, best, zones),
+      zoneReach,
+      routeSpokes: spokes.spokes,
+      spokeCap: spokes.cap,
+      stops: stopRows(feed, days, best, zones),
       proj: proj.toJSON(),
     },
   });
@@ -712,6 +726,9 @@ export async function runPipeline(options, source, emit) {
     metrics,
     routeHeadways: headways,
     travelSamples,
+    zoneReach,
+    routeSpokes: spokes.spokes,
+    spokeCap: spokes.cap,
     geo,
     questions,
     questionOrder: order,
@@ -729,7 +746,7 @@ export async function runPipeline(options, source, emit) {
     // Not in the CLI's `Report`; CONTRACT.md §(d) sends both on their stages and
     // the renderers read them off the report object.
     caps,
-    stops: stopRows(feed, best, zones),
+    stops: stopRows(feed, days, best, zones),
   };
 
   post({ type: 'done', report });
@@ -803,17 +820,41 @@ function daySummary(day) {
  * the cover guarantees centres are more than one radius apart, not that the discs
  * are disjoint — so a stop can sit in two. First zone wins in sorted `zoneId`
  * order, which is deterministic and is what the map legend implies.
+ *
+ * THE ROW SET IS THE BUSIEST DAY'S SERVED STOPS, on every day. `headwayByDay`
+ * (added 2026-08-23 for the map's frequency layer) expresses the other days through
+ * `null` — "no service here that day" — and never through extra rows, because
+ * `render/strategy.js` counts these rows per zone and `servedStopCount` falls back to
+ * their length: widening the set would move published numbers. The cost is real and
+ * small: a stop served only on a Sunday never appears (3 of 1,493 on the reference
+ * feed), and `null` is what says so.
  */
-function stopRows(feed, day, zones) {
+function stopRows(feed, days, day, zones) {
   const owner = Object.create(null);
   for (const z of Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId))) {
     for (const sid of z.stopIds) if (owner[sid] === undefined) owner[sid] = z.zoneId;
   }
+  // Sorted so the per-day object's key order is the day key order, not insertion
+  // order — CONTRACT §(b): nothing that reaches output iterates an object unsorted.
+  const dayKeys = Array.from(days || [], (d) => d.dayType.key)
+    .sort((a, b) => cmpStr(a, b));
+  const stopDaysByKey = new Map();
+  for (const d of days || []) stopDaysByKey.set(d.dayType.key, d.stopDays);
+
   const rows = [];
   for (const sid of day.servedStopIds) {
     const stop = feed.stops[sid];
     if (!stop) continue;
     const sd = day.stopDays[sid];
+    /** @type {Object<string, number|null>} */ const headwayByDay = Object.create(null);
+    for (const key of dayKeys) {
+      const rowsForDay = stopDaysByKey.get(key) || {};
+      const cell = rowsForDay[sid];
+      const value = (cell && cell.medianHeadwayS !== null && cell.medianHeadwayS !== undefined)
+        ? cell.medianHeadwayS / 60.0
+        : null;
+      headwayByDay[key] = value === null ? null : rhu(value, 1);
+    }
     rows.push({
       stopId: sid,
       name: stop.name,
@@ -821,6 +862,7 @@ function stopRows(feed, day, zones) {
       lon: coord(stop.lon),
       routeIds: sd ? sd.routes.slice() : [],
       frequent: Boolean(sd && sd.frequent),
+      headwayByDay,                                      // headway_by_day
       zoneId: owner[sid] === undefined ? null : owner[sid],
     });
   }

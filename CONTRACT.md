@@ -986,7 +986,7 @@ internally but must flatten before emitting. `Projection` crosses as `{lat0, lon
 |---|---|---|---|
 | 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, feeds: FeedSourceRow[], stops: number, routes: number, trips: number, place }` — every scalar describes the MERGED feed; `feeds` names what it was merged from | hero |
 | 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 |
-| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], stops: StopRow[], proj: {lat0,lon0} }` | §05 and its stat rail |
+| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], zoneReach: ZoneReach, routeSpokes: RouteSpoke[], spokeCap: {shown,total,source}, stops: StopRow[], proj: {lat0,lon0} }` | §05 and its stat rail |
 | 4 | `'geo'` | `{ geo: GeoData }` | stage 5 |
 | 5 | `'rules'` | `{ questions: QuestionAudit[], curses: CurseAudit[], questionOrder: string[], questionFunnel: number[] }` | §07, §08 |
 | 6 | `'score'` | `{ fitness: Fitness, caps: FitnessCap[], zoneScores: Object<string,ZoneScore>, rankedZoneIds: string[], dossierZoneIds: string[], findings: Finding[], recommendations: Recommendation[], questions: QuestionAudit[] }` | §01, §02, §03 |
@@ -1022,7 +1022,61 @@ Notes on the stage payloads:
    * @property {number} lat @property {number} lon   // both through core.coord()
    * @property {string[]} routeIds
    * @property {boolean} frequent
+   * @property {Object<string, number|null>} headwayByDay  // dayKey → median minutes, 06:00–22:00
    * @property {string|null} zoneId                  // the zone whose circle designates it, or null
+   */
+  ```
+  **The row set is the busiest day's served stops, on every day.** Other days are
+  expressed through `headwayByDay[k] === null` — "no service here that day" — and never
+  through extra rows: `render/strategy.js` counts these rows per zone and
+  `servedStopCount` falls back to their length, so widening the set would move published
+  numbers. A stop served only at the weekend therefore never appears (3 of 1,493 on the
+  reference feed), and the `null` is what says so on the page. `headwayByDay` is the
+  **per-stop, all-routes, 06:00–22:00** median; §06's grid is the **per-route-direction,
+  10:00–14:00** one. They legitimately differ and the map's frequency legend must name
+  its window, or the map contradicts the grid two cards down.
+* **`ZoneReach`** — per-zone travel minutes from the round-start station, per day. Computed
+  from the SAME RAPTOR runs `travelTimeSamples` makes (`dayRaptorRuns`), so
+  `perDay[bestDay].minutes[z]` and `ZoneScore.metrics.R1.raw × hidingPeriodMin` are two
+  roundings of one number — same day, same origin, same departure — and the map can never
+  disagree with the hider's dossier. The counts are computed worker-side because a renderer
+  may count, filter and sort but may not do arithmetic on a measured quantity:
+  `reachableZones` is a subtraction and `unreachableZoneIds` a comparison.
+  ```js
+  /**
+   * @typedef {Object} ZoneReachDay
+   * @property {Object<string, number|null>} minutes   // zoneId → minutes, null = no journey
+   * @property {string[]} unreachableZoneIds           // sorted; minutes === null OR > hidingPeriodMin
+   * @property {number} reachableZones                 // zones.length - unreachableZoneIds.length
+   * @property {string|null} furthestZoneId            // largest finite minutes; null if none
+   * @property {number|null} furthestMinutes
+   *
+   * @typedef {Object} ZoneReach
+   * @property {string} originStopId
+   * @property {number} departureS
+   * @property {number} hidingPeriodMin
+   * @property {Object<string, ZoneReachDay>} perDay   // keyed by DayType.key
+   */
+  ```
+* **`RouteSpoke`** — one drawn route-direction for the map's spoke layer. `coords` come from
+  the longest shape per `(routeId, directionId)` — the SAME selection `s1RouteKm` makes for
+  `routeKmOneDir`, so the drawn network and the published kilometres cannot disagree —
+  decimated by iterative Ramer-Douglas-Peucker at `MAP_SPOKE_RDP_M` (20 m). `source` is
+  `'stops'` when the feed ships no `shapes.txt` and the geometry is the longest ordered stop
+  sequence per route-direction instead, which is a chord diagram rather than a road
+  alignment. The list is ranked by `(-maxTrips, shortName, routeId, directionId)` and capped
+  at `MAX_MAP_SPOKES` (60) **worker-side**, where the polylines are built, so the bytes never
+  cross `postMessage`; `spokeCap.shown < spokeCap.total` must be said on the page, never
+  silently.
+  ```js
+  /**
+   * @typedef {Object} RouteSpoke
+   * @property {string} routeId @property {string} shortName @property {string} longName
+   * @property {string} directionId
+   * @property {'shapes'|'stops'} source
+   * @property {Object<string, number>} trips          // dayKey → trips on that day
+   * @property {boolean} touchesHub
+   * @property {Array<[number,number]>} coords         // [lon, lat], through core.coord()
    */
   ```
 * **§05's rendered string must not depend on `rules` or `score`.** A string that changes

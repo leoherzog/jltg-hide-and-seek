@@ -6,6 +6,11 @@
  * `_s1_percentiles`, `_s1_day_metrics`, `_s1_axis_scores`, `_s1_provisional_size`,
  * `network_metrics` and `route_headways`.
  *
+ * `routeSpokes` is not a port: it is new (2026-08-23) and exists so the map can draw
+ * the network's shape. It reuses `_s1_route_km`'s longest-shape-per-(route, direction)
+ * selection deliberately, so the drawn network and the published kilometres are the
+ * same set of lines.
+ *
  * `cluster_stations` lives in `./service.js` in this port — it is a
  * property of the feed, not of the metric table — and is re-exported here so the
  * grouping of the Python section survives.
@@ -434,6 +439,233 @@ export function s1RouteKm(feed) {
     for (const k of Array.from(longestRoute.keys()).sort(cmpStr)) one += longestRoute.get(k);
     return [both / M_PER_KM, one / M_PER_KM];
   });
+}
+
+/**
+ * Perpendicular distance in metres from `p` to the segment `a`–`b`.
+ *
+ * Local equirectangular metres about `a` — the same approximation `ringOf` in the
+ * page runtime draws with, and good to a few centimetres over a bus route. Only the
+ * RDP decimation reads it, and its tolerance is 20 m.
+ */
+function segDistM(p, a, b) {
+  const k = Math.cos((a[0] * Math.PI) / 180.0);
+  const py = (p[0] - a[0]) * 111132.0;
+  const px = (p[1] - a[1]) * 111320.0 * k;
+  const by = (b[0] - a[0]) * 111132.0;
+  const bx = (b[1] - a[1]) * 111320.0 * k;
+  const len2 = (bx * bx) + (by * by);
+  if (len2 <= 0.0) return Math.sqrt((px * px) + (py * py));
+  let t = ((px * bx) + (py * by)) / len2;
+  if (t < 0.0) t = 0.0;
+  if (t > 1.0) t = 1.0;
+  const dx = px - (t * bx);
+  const dy = py - (t * by);
+  return Math.sqrt((dx * dx) + (dy * dy));
+}
+
+/**
+ * Ramer-Douglas-Peucker, **iterative**, over `[lat, lon]` points.
+ *
+ * An explicit stack and integer indices, never recursion: a national feed ships
+ * polylines deep enough to blow the call stack, and — worse for this repo — a
+ * recursive implementation's result can depend on the engine's stack limit. The
+ * keep-mask is built in index order, so the output is the input's own order.
+ *
+ * @param {Array<[number, number]>} points @param {number} toleranceM
+ * @returns {Array<[number, number]>}
+ */
+function rdp(points, toleranceM) {
+  const n = points.length;
+  if (n <= 2) return points.slice();
+  const keep = new Uint8Array(n);
+  keep[0] = 1;
+  keep[n - 1] = 1;
+  /** @type {number[]} pairs of indices, pushed and popped as flat integers */
+  const stack = [0, n - 1];
+  while (stack.length) {
+    const last = stack.pop();
+    const first = stack.pop();
+    let worst = -1.0;
+    let at = -1;
+    for (let i = first + 1; i < last; i++) {
+      const d = segDistM(points[i], points[first], points[last]);
+      if (d > worst) { worst = d; at = i; }
+    }
+    if (at >= 0 && worst > toleranceM) {
+      keep[at] = 1;
+      stack.push(first, at, at, last);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(points[i]);
+  return out;
+}
+
+/**
+ * Drawable geometry for the map's route-spoke layer, one entry per route-direction.
+ *
+ * The geometry is the **longest shape per (routeId, directionId)** — the same
+ * selection `s1RouteKm` makes for `routeKmOneDir`, so the drawn network and the
+ * published kilometres cannot disagree — decimated by RDP at `toleranceM`. A feed
+ * with no `shapes.txt` falls back to the longest ordered stop sequence per
+ * route-direction (`source: 'stops'`), which is a chord diagram rather than a road
+ * alignment and is labelled as one on the page.
+ *
+ * Route-directions are ranked by `(-maxTrips, shortName, routeId, directionId)` —
+ * `s4HeatmapRows`' own tie-break tuple — and sliced to `cap`. `cap.shown < cap.total`
+ * is the page's cue to say so; a silent cap is the one thing this must not be.
+ *
+ * @param {object} feed @param {object[]} days @param {object|null} hub
+ * @param {number} [cap=60] @param {number} [toleranceM=20]
+ * @returns {{spokes: object[], cap: {shown: number, total: number, source: string}}}
+ */
+export function routeSpokes(feed, days, hub, cap = 60, toleranceM = 20.0) {
+  const tripsPerDay = new Map();          // routeId\0directionId → dayKey → trips
+  const dayKeys = Array.from(days || [], (d) => d.dayType.key).sort(cmpStr);
+  for (const day of days || []) {
+    const extras = s1Extras(day);
+    for (const t of Object.keys(extras.tripRoute).sort(cmpStr)) {
+      const [routeId, direction] = extras.tripRoute[t];
+      const k = routeId + SEP + direction;
+      let bucket = tripsPerDay.get(k);
+      if (bucket === undefined) { bucket = new Map(); tripsPerDay.set(k, bucket); }
+      bucket.set(day.dayType.key, (bucket.get(day.dayType.key) || 0) + 1);
+    }
+  }
+
+  /** @type {Map<string, Array<[number, number]>>} route-direction → [lat, lon] points */
+  const geometry = new Map();
+  let source = 'shapes';
+
+  const shapes = (feed.tables && feed.tables.shapes) || [];
+  if (shapes.length) {
+    /** @type {Map<string, Array<[number, number, number]>>} shape_id → (seq, lat, lon) */
+    const pts = new Map();
+    for (const row of shapes) {
+      const lat = s1Float(row.shape_pt_lat);
+      const lon = s1Float(row.shape_pt_lon);
+      if (lat === null || lon === null) continue;
+      const key = (row.shape_id || '').trim();
+      let bucket = pts.get(key);
+      if (bucket === undefined) { bucket = []; pts.set(key, bucket); }
+      bucket.push([s1Int(row.shape_pt_sequence), lat, lon]);
+    }
+    /** @type {Map<string, {len: number, seq: Array<[number, number]>}>} */
+    const shape = new Map();
+    for (const shapeId of Array.from(pts.keys()).sort(cmpStr)) {
+      const ordered = pts.get(shapeId).slice()
+        .sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]));
+      let total = 0.0;
+      for (let i = 1; i < ordered.length; i++) {
+        total += haversineM(ordered[i - 1][1], ordered[i - 1][2], ordered[i][1], ordered[i][2]);
+      }
+      shape.set(shapeId, { len: total, seq: ordered.map((r) => [r[1], r[2]]) });
+    }
+    /** @type {Map<string, {len: number, id: string}>} */
+    const longest = new Map();
+    const trips = (feed.tables.trips || []).slice()
+      .sort((a, b) => cmpStr((a.trip_id || ''), (b.trip_id || '')));
+    for (const trip of trips) {
+      const shapeId = (trip.shape_id || '').trim();
+      if (!shape.has(shapeId)) continue;
+      const k = (trip.route_id || '').trim() + SEP + (trip.direction_id || '').trim();
+      const value = shape.get(shapeId).len;
+      const best = longest.get(k);
+      if (best === undefined || value > best.len) longest.set(k, { len: value, id: shapeId });
+    }
+    for (const k of Array.from(longest.keys()).sort(cmpStr)) {
+      geometry.set(k, shape.get(longest.get(k).id).seq);
+    }
+  }
+
+  if (!geometry.size) {
+    // No shapes.txt (or none any trip references). The honest fallback is the
+    // longest ordered stop sequence per route-direction: right topology, straight
+    // chords instead of streets, and `source` says so.
+    source = 'stops';
+    /** @type {Map<string, string[]>} route-direction → stop ids */
+    const longest = new Map();
+    for (const day of days || []) {
+      const ids = day.stopIndex.ids;
+      for (const pattern of day.patterns || []) {
+        const k = String(pattern.routeId || '') + SEP + String(pattern.directionId || '');
+        const best = longest.get(k);
+        if (best !== undefined && best.length >= pattern.stops.length) continue;
+        const seq = [];
+        for (let i = 0; i < pattern.stops.length; i++) seq.push(ids[pattern.stops[i]]);
+        longest.set(k, seq);
+      }
+    }
+    for (const k of Array.from(longest.keys()).sort(cmpStr)) {
+      const seq = [];
+      for (const sid of longest.get(k)) {
+        const stop = feed.stops[sid];
+        if (stop) seq.push([stop.lat, stop.lon]);
+      }
+      if (seq.length >= 2) geometry.set(k, seq);
+    }
+  }
+
+  // Which route-directions touch the round-start station, from the day's own stop
+  // rows rather than from the geometry — a shape can pass a stop it does not serve.
+  const atHub = new Set();
+  const hubId = (hub && hub.stopId) || '';
+  if (hubId) {
+    for (const day of days || []) {
+      const sd = day.stopDays[hubId];
+      for (const routeId of (sd && sd.routes) || []) atHub.add(routeId);
+    }
+  }
+
+  const rows = [];
+  for (const k of Array.from(geometry.keys()).sort(cmpStr)) {
+    const cut = k.indexOf(SEP);
+    const routeId = k.slice(0, cut);
+    const directionId = k.slice(cut + 1);
+    const route = feed.routes[routeId];
+    const counts = tripsPerDay.get(k);
+    /** @type {Object<string, number>} */ const trips = Object.create(null);
+    let maxTrips = 0;
+    for (const dk of dayKeys) {
+      const n = counts ? (counts.get(dk) || 0) : 0;
+      trips[dk] = n;
+      if (n > maxTrips) maxTrips = n;
+    }
+    if (!maxTrips) continue;                // never runs on any day this feed models
+    const coords = rdp(geometry.get(k), toleranceM)
+      .map(([lat, lon]) => [coord(lon), coord(lat)]);
+    if (coords.length < 2) continue;
+    rows.push({
+      routeId,                                              // route_id
+      shortName: route ? route.shortName : '',              // short_name
+      longName: route ? route.longName : '',                // long_name
+      directionId,                                          // direction_id
+      source,
+      trips,
+      touchesHub: atHub.has(routeId),                       // touches_hub
+      coords,
+      maxTrips,
+    });
+  }
+
+  rows.sort((a, b) => (b.maxTrips - a.maxTrips)
+    || cmpStr(String(a.shortName || ''), String(b.shortName || ''))
+    || cmpStr(a.routeId, b.routeId)
+    || cmpStr(a.directionId, b.directionId));
+  const total = rows.length;
+  const shown = Math.max(0, Math.min(Math.trunc(cap), total));
+  const spokes = rows.slice(0, shown).map((r) => ({
+    routeId: r.routeId,
+    shortName: r.shortName,
+    longName: r.longName,
+    directionId: r.directionId,
+    source: r.source,
+    trips: r.trips,
+    touchesHub: r.touchesHub,
+    coords: r.coords,
+  }));
+  return { spokes, cap: { shown, total, source } };
 }
 
 /**

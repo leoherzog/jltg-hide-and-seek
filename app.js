@@ -246,6 +246,9 @@ function emptyReport() {
     metrics: {},
     routeHeadways: [],
     travelSamples: [],
+    zoneReach: null,
+    routeSpokes: [],
+    spokeCap: null,
     stops: [],
     geo: emptyGeoLocal(),
     questions: [],
@@ -1213,6 +1216,12 @@ function applyStage(stage, payload) {
       r.metrics = payload.metrics || {};
       r.routeHeadways = payload.routeHeadways || [];
       r.travelSamples = payload.travelSamples || [];
+      // The map's three data layers. `zoneReach` is per-zone minutes from the
+      // round-start station per day; `routeSpokes` is already capped worker-side and
+      // `spokeCap` says by how much. (2026-08-23.)
+      r.zoneReach = payload.zoneReach || null;
+      r.routeSpokes = payload.routeSpokes || [];
+      r.spokeCap = payload.spokeCap || null;
       r.stops = payload.stops || [];
       r.proj = payload.proj || r.proj;
       break;
@@ -2055,6 +2064,9 @@ function tilesHtmlFor(report, dayKey) {
 const MAX_MAP_STOPS = 5000;
 /** Above this the zone circles become dots only. (`_S4_MAX_MAP_ZONE_RINGS`.) */
 const MAX_MAP_ZONE_RINGS = 1200;
+// The third map cap, the route spokes', is NOT here: `MAX_MAP_SPOKES` lives in
+// lib/core.js because it is applied worker-side, where the polylines are built, so
+// the bytes never cross `postMessage` at all. `#stops.spoke_cap` reports what it did.
 
 /**
  * The scalar metrics the page prints, flattened for `#data`. Deliberately not the
@@ -2231,28 +2243,70 @@ function cursesPayload(report) {
 }
 
 /**
- * `#stops` — `[lon, lat, name, route_count]` tuples plus the zone centres.
+ * `#stops` — `[lon, lat, name, route_count, frequent]` tuples plus the zone centres,
+ * the per-day reach and headway columns, and the route spokes.
  *
  * Tuples rather than objects: on a 1,500-stop feed that is a third of the bytes, and
  * on a 20,000-stop feed it is the difference between a page that opens and one that
  * does not. The zone centres ride along because the network map draws them and they
  * are the same geometry the strategy page ranks.
+ *
+ * `reach` and `hw` are **parallel arrays**, index-aligned with `zones` and `stops`
+ * for exactly the reason the tuples are tuples: a key per row per day would be most
+ * of the block. `reach[dayKey][i]` is minutes from the round-start station to
+ * `zones[i]` (`null` = no journey); `hw[dayKey][i]` is `stops[i]`'s median headway in
+ * minutes over 06:00–22:00 (`null` = no service that day). Over `MAX_MAP_STOPS` the
+ * stop tuples are dropped, and `hw` goes with them — there is nothing to colour.
+ * (Added 2026-08-23 with the map's reach and frequency layers.)
  */
 function stopsPayload(report) {
   const rows = report.stops || [];
   const withinCap = rows.length <= MAX_MAP_STOPS;
   const stops = withinCap
-    ? rows.map((s) => [coord(s.lon), coord(s.lat), s.name, (s.routeIds || []).length])
+    ? rows.map((s) => [coord(s.lon), coord(s.lat), s.name, (s.routeIds || []).length,
+      s.frequent ? 1 : 0])
     : [];
   const scores = report.zoneScores || {};
-  const zones = [...(report.zones || [])]
-    .sort((a, b) => (a.zoneId < b.zoneId ? -1 : a.zoneId > b.zoneId ? 1 : 0))
-    .map((z) => [coord(z.lon), coord(z.lat), z.name,
-      z.zoneId in scores ? rhu(scores[z.zoneId].overallTenths / 10.0, 1) : null]);
+  const zoneRows = [...(report.zones || [])]
+    .sort((a, b) => (a.zoneId < b.zoneId ? -1 : a.zoneId > b.zoneId ? 1 : 0));
+  const zones = zoneRows.map((z) => [coord(z.lon), coord(z.lat), z.name,
+    z.zoneId in scores ? rhu(scores[z.zoneId].overallTenths / 10.0, 1) : null]);
+
+  const keys = dayOrder(report);
+  const reach = {};
+  const perDay = ((report.zoneReach || {}).perDay) || {};
+  for (const key of keys) {
+    const cell = perDay[key];
+    if (!cell) continue;
+    const minutes = cell.minutes || {};
+    reach[key] = zoneRows.map((z) => {
+      const value = minutes[z.zoneId];
+      return (value === null || value === undefined) ? null : value;
+    });
+  }
+  const hw = {};
+  if (withinCap) {
+    for (const key of keys) {
+      hw[key] = rows.map((s) => {
+        const value = (s.headwayByDay || {})[key];
+        return (value === null || value === undefined) ? null : value;
+      });
+    }
+  }
+  const spokes = (report.routeSpokes || []).map((r) => ({
+    r: r.shortName || r.routeId,
+    hub: r.touchesHub ? 1 : 0,
+    trips: r.trips || {},
+    coords: r.coords || [],
+  }));
   return {
     stops,
     zones,
     rings: zones.length <= MAX_MAP_ZONE_RINGS,
+    reach,
+    hw,
+    spokes,
+    spoke_cap: report.spokeCap || { shown: 0, total: 0, source: 'shapes' },
   };
 }
 
