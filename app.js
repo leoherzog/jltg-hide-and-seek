@@ -126,6 +126,13 @@ const SECTIONS = [
  * opens the report, and the point-by-point trace is reference material that now
  * sits with the receipts. `SECTIONS` above is in the same order for the same
  * reason — reading the array should read the page.
+ *
+ * ONE CONSEQUENCE FOR EVERY COMMENT IN THIS REPO: the `§NN` written throughout
+ * these files is the numbering the port was written under (§01 verdict … §09
+ * sources) and is a NICKNAME, not the printed ordinal, which is handed out below
+ * from this array. CONTRACT.md §(e) is the id → printed-ordinal map and the only
+ * place to trust for it. (`render/strategy.js` and `render/simulator.js` number
+ * the strategy view's own five sections and never meant these at all.)
  */
 const NUMBERED = ['numbers', 'network', 'yourgame', 'transit', 'verdict',
   'questions', 'curses', 'trace', 'sources'];

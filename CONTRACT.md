@@ -1158,7 +1158,7 @@ whose section is above the fold, walking the links in document order, so a rail 
 not in page order silently highlights the wrong entry. Every nav group is therefore a
 **contiguous run** of this table.
 
-The `§NN` labels in `render/*.js`'s own comments are module-local nicknames inherited
+The `§NN` labels in `app.js`'s and `render/*.js`'s own comments are nicknames inherited
 from the CLI's numbering (§01 verdict … §09 sources) and, since the reorder, are **not**
 the printed ordinal — this table and `NUMBERED` are. `render/strategy.js` and
 `render/simulator.js` number the strategy view's own five sections and are unrelated to
