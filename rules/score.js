@@ -1513,12 +1513,15 @@ export function deriveRecommendations(reportParts) {
 
   // 3 · the border
   if (border !== null) {
-    const [s, w, nn, e] = border.bbox;
+    // The four decimal degrees used to be spelled out here, which made this the third
+    // place the page printed them (the map's own coordinate table and the GeoJSON block
+    // being the other two). The map is now their single home; this rule points at it and
+    // the renderer appends them to the COPIED checklist, so the copy-paste artefact
+    // still stands alone. (2026-08-23.)
     add('use_borders', 30,
-      `Use exactly these borders: south ${num(s, 6)}, west ${num(w, 6)}, north ${num(nn, 6)}, `
-      + `east ${num(e, 6)}. The rulebook is emphatic that every player must be using the same `
-      + 'set of borders, and on this map the border decides which questions work at all. '
-      + 'Copy the GeoJSON rather than redrawing it.',
+      'Use exactly the border printed under the map, and copy the GeoJSON rather than '
+      + 'redrawing it. The rulebook is emphatic that every player must be using the same '
+      + 'set of borders, and on this map the border decides which questions work at all.',
       `border padded by ${num(border.padM)} m — one hiding-zone radius, so every legal zone `
       + 'lies wholly inside', true);
   }

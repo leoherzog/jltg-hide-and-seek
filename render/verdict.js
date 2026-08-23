@@ -689,7 +689,10 @@ function s4Scorecard(report) {
       el('p', esc('Where the 100 points went'), {
         className: 'wa-heading-s wa-color-text-quiet wa-text-uppercase',
       }),
-      s4PointsBudget(report),
+      // `id` rides through budgetBar's `...rest` into waChart and out of el(). It is
+      // the page's ONE 100-point bar as of 2026-08-23: §08's trace used to draw a
+      // second copy of the identical chart and now links up here instead.
+      s4PointsBudget(report, { id: 'points-budget' }),
       el('p', esc('Each block is one sub-score; the grey tail is what the map did not '
         + 'earn. Hover a block for its name and its points.'), {
         className: 'wa-caption-xs wa-color-text-quiet',
@@ -952,10 +955,10 @@ export function renderVerdict(payload) {
     lead = `The game size was fixed at ${String(size.name).toUpperCase()} rather than inferred, so the four `
       + 'inference axes in the table above are reported but not used.';
   }
-  lead += ` A ${cap(size.name)} map means a ${num(size.hidingPeriodMin)}-minute hiding `
-    + `period, ${s4Dist(report, size.zoneRadiusM, 2)} hiding zones, `
-    + `${num(size.catalogueSize)} questions in the deck and `
-    + `${num(size.photoLimitMin)} minutes to answer a photo question.`;
+  // What a Medium map *means* — hiding period, zone radius, catalogue size, photo
+  // limit — used to close this paragraph. The hero chip prints the first three above
+  // the fold and the At a Glance tiles print the rest, so it was the third telling.
+  // Cut 2026-08-23; this section keeps only what is new here.
   paras.push(esc(lead));
 
   // 2 · the strongest sub-score
@@ -973,13 +976,12 @@ export function renderVerdict(payload) {
     paras.push(join(
       esc("The map's strongest suit is "),
       el('a', esc(String(best.name).toLowerCase()), { href: `#trace-${best.id}`, className: 'wa-link' }),
+      // The sentence stops at the metric detail. It used to restate the score and the
+      // band — which the hero's dial, its band ladder and its chip all print — with an
+      // else branch repeating the "not enough could be measured" callout `s4Scorecard`
+      // already renders. Both cut 2026-08-23.
       esc(`, which earns ${s4Points(best.earnedTenths, best.maxTenths)} points`
-        + `${detail ? `: ${detail}.` : '.'} `
-        + ((f.score !== null && f.score !== undefined)
-          ? `Overall the map scores ${num(f.score, 1)} of 100, which the rating bands call `
-            + `“${String(f.band).toLowerCase()}”.`
-          : 'No overall score is printed, because too little of the map could be '
-            + 'measured.')),
+        + `${detail ? `: ${detail}.` : '.'}`),
     ));
   }
 
@@ -1048,12 +1050,15 @@ export function renderVerdict(payload) {
   const worstDay = s4WorstDay(report);
   const per = f.perDay || {};
   if (worstDay && bestDay in per && worstDay in per) {
+    // "Play on a Weekday" is house rule 1 and the hero's day tiles say it a second
+    // time; the SWING is the fact only this paragraph carries, so that is all it says
+    // now (imperative cut 2026-08-23).
     paras.push(esc(
-      `Play on a ${s4DayLabel(report, bestDay)}. The same map rates `
-      + `${num(per[bestDay], 1)} on a ${s4DayLabel(report, bestDay)} and `
-      + `${num(per[worstDay], 1)} on a ${s4DayLabel(report, worstDay)}, a swing of `
-      + `${s4Signed(per[worstDay] - per[bestDay])} points, and every number on this page `
-      + 'can be re-read for another day with the selector at the top.',
+      `The same map rates ${num(per[bestDay], 1)} on a ${s4DayLabel(report, bestDay)} and `
+      + `${num(per[worstDay], 1)} on a ${s4DayLabel(report, worstDay)} — a swing of `
+      + `${s4Signed(per[worstDay] - per[bestDay])} points, and the largest single thing `
+      + 'your group controls. The selector at the top re-reads every number on this page '
+      + 'for another day.',
     ));
   } else {
     paras.push(esc(
@@ -1202,16 +1207,23 @@ export function renderScoreTrace(payload) {
     variant: 'neutral', appearance: 'plain', icon: 'circle-info',
   });
 
+  // A pointer, not a second chart. This block used to render `s4PointsBudget` again —
+  // the identical stacked bar the hero already prints, two screens apart, saying the
+  // same thing twice. Replaced 2026-08-23 with a link to the one on the scorecard;
+  // `openTargeted` resolves the fragment and scrolls, and the hero's six sub-score
+  // meters already link the other way, down into `#trace-{id}`.
   let budget = '';
   if (f.score !== null && f.score !== undefined) {
-    budget = el('div', join(
-      // `height`, not `style`: style would replace the helper's whole style string and
-      // drop `aspect-ratio:auto`. 1rem, not .85rem — the 1px seam per edge costs 2px of
-      // fill, so 1rem lands on the same painted height .85rem used to give.
-      s4PointsBudget(report, { height: '1rem' }),
-      el('p', esc('The same 100 points as the scorecard: one block per sub-score, the grey '
-        + 'tail is what was not earned.'), { className: 'wa-caption-xs wa-color-text-quiet' }),
-    ), { className: 'wa-stack wa-gap-3xs' });
+    budget = waCallout(el('p', join(
+      esc('The 100-point bar for this map is in '),
+      el('a', esc('the scorecard at the top of the page'), {
+        className: 'wa-link-plain', href: '#points-budget',
+      }),
+      esc(' — one block per sub-score, the grey tail what was not earned. The rows below '
+        + 'are where each block came from.'),
+    ), { className: 'wa-body-s' }), {
+      variant: 'neutral', appearance: 'plain', icon: 'chart-simple',
+    });
   }
 
   const lede = 'Every point on the dial comes from one of these rows. A row names the metric, the '
@@ -1329,6 +1341,22 @@ function s4FindingsHalf(report) {
 }
 
 /**
+ * The four border degrees, spelled exactly as the coordinates table under the map
+ * spells them — same 6 dp, same `comma: false`, so the two are byte-identical.
+ *
+ * The page prints the border in ONE place now (the map). This exists only for the
+ * COPIED checklist, which is a stand-alone artefact: a group pastes it into a chat,
+ * where a sentence pointing at "the map above" points at nothing. (2026-08-23.)
+ */
+function s4BorderDegrees(report) {
+  const bbox = (report.border && report.border.bbox) || null;
+  if (!bbox || bbox.length < 4) return '';
+  const [s, w, n, e] = bbox;
+  return ` The border is south ${num(s, 6, { comma: false })}, west ${num(w, 6, { comma: false })}, `
+    + `north ${num(n, 6, { comma: false })}, east ${num(e, 6, { comma: false })}.`;
+}
+
+/**
  * §03's first half — the fired house rules as an `ol.recs`, in priority order.
  *
  * The whole checklist is also one `wa-copy-button` away as plain text, because the
@@ -1348,6 +1376,14 @@ function s4HouseRulesHalf(report) {
     if (rec.evidence) {
       tags.push(chip('why?', 'circle-question', { title: String(rec.evidence) }));
     }
+    // The border rule no longer spells the four degrees out — the map is their one
+    // home — so it carries the way there instead. An anchor around the chip, not an
+    // `href` on it: `rec.text` is escaped plain text and `wa-tag` is not a link.
+    if (rec.id === 'use_borders') {
+      tags.push(el('a', chip('go to the map', 'map-location-dot'), {
+        className: 'wa-link-plain', href: '#network',
+      }));
+    }
     const card = waCard(el('div', join(
       el('span', esc(String(rec.text || '')), { className: 'wa-body-m' }),
       tags.length ? el('div', tags.join(''), { className: 'wa-cluster wa-gap-2xs' }) : '',
@@ -1359,7 +1395,9 @@ function s4HouseRulesHalf(report) {
     + 'fires, because the rulebook demands '
     + 'that conversation and explicitly refuses to automate it.';
   const checklist = recs.map(
-    (rec, i) => `${num(i + 1)}. ${rec.text || ''}${rec.required ? ' (everyone must agree)' : ''}`,
+    (rec, i) => `${num(i + 1)}. ${rec.text || ''}`
+      + (rec.id === 'use_borders' ? s4BorderDegrees(report) : '')
+      + (rec.required ? ' (everyone must agree)' : ''),
   ).join('\n');
   return el('div', join(
     el('div', join(
