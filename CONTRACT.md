@@ -1093,6 +1093,11 @@ Notes on the stage payloads:
   pushes it through MapLibre's `setData`/`setPaintProperty`. That is why `network`'s
   `redo` is `['geo']` and no longer `['geo', 'score']` — the scored zone dots are data,
   not markup — and it is the only sanctioned channel for late-arriving map data.
+  The map's generated *what to notice* caption (`s4MapCaption`, rendered into
+  `#netcaption`) is held to the same list of readable fields for the same reason: it is
+  part of §05's string. Its per-day variants ride in `#data` as
+  `days[k].map_caption_html`, beside `banner_html` and `tiles_html`, so switching the
+  day is an `innerHTML` swap and never a re-render.
 * **Stages 4–7 must still emit when the OSM layer is unavailable**, carrying the
   degradation. See §(f).
 * **S5 changed no payload here, and that is deliberate.** The hider's guide (§(g)) is built

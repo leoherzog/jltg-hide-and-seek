@@ -788,14 +788,18 @@ export function renderTransitReality(payload) {
 
   if (!cards.length) return '';
 
-  const lede = 'Round one starts wherever your group begins — this report assumes '
-    + `${startName} — and a hiding run must end inside the `
-    + `${hp}-minute hiding period. Later rounds start from the previous hider's zone, so `
-    + 're-read these times from that stop rather than from the hub.';
+  // The map's reach layer now colours every zone by travel time from the start, with
+  // the hiding period as the cliff — so this section stopped repeating that and says
+  // what only it has instead: specific rides, and specific waits. (R7, 2026-08-23.)
+  const lede = `These are measured from ${startName}${departure ? ` at ${departure}` : ''} `
+    + '— the same origin as the map’s reach layer, in specific rides rather than in '
+    + 'colour. Later rounds '
+    + 'start from the previous hider’s zone, so re-read them from that stop rather than '
+    + 'from the hub.';
   const answer = el('p', esc(
-    `From ${startName} you have ${hp} minutes to get anywhere and hide. The chart below is `
-    + 'how far that gets you; the grid under it is how long you wait for the ride '
-    + 'back.',
+    `The map says how far ${hp} minutes gets you. This chart says how long `
+    + `${num(samples.length)} specific rides take, and the grid under it says how long `
+    + 'you wait for one.',
   ), { className: 'wa-body-s' });
   return section('transit', S4_ORDINAL, 'Getting around',
     el('div', cards.join(''), { className: 'wa-stack wa-gap-s' }),
