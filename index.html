@@ -504,8 +504,13 @@
          moving a section here without moving it there prints ordinals out of
          sequence. The rail above must be moved with them too (`bindSpy` takes
          the LAST link whose section is above the fold, in LINK order).
-         The `§NN` markers and the shipped `data-n` are provisional: app.js
-         assigns the real ordinals AFTER the empty sections are dropped.
+         These banners name each section by its `data-section` id, which is the
+         only name that survives a reorder — and the only one that cannot be
+         confused with the `§NN` nicknames app.js and render/*.js still use for
+         the CLI's original numbering (§01 verdict … §09 sources; CONTRACT.md
+         §(e) is the id → printed-ordinal map). The shipped `data-n` is
+         provisional: app.js assigns the real ordinals AFTER the empty sections
+         are dropped.
          Reordered 2026-08-23 so the page opens with the map instead of the
          verdict, and §04 folded into §05 the same day: network, yourgame,
          transit, verdict, questions, curses, trace, sources. Eight, not nine —
@@ -522,7 +527,7 @@
          a stopped run must not leave eight shimmering cards behind. -->
     <div id="run-error" data-role="runerror" data-when="report" hidden></div>
 
-    <!-- §01 · never wrap the map frame in a wa-scroller or a disclosure:
+    <!-- `network` · never wrap the map frame in a wa-scroller or a disclosure:
          MapLibre reads its container size once, at construction ─────────── -->
     <section id="network" data-when="report" data-section="network" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
@@ -570,7 +575,7 @@
            `geo`, `rules`, `score` and on every day click, and §05's markup must not
            move at any of them or MapLibre is torn down and rebuilt each time.
            `#tiles` is the id `renderDay()` rewrites the innerHTML of. -->
-      <div id="glance" data-section="glance" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-s">
+      <div id="glance" data-section="glance" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-s">
         <h3 class="wa-heading-s wa-color-text-quiet wa-text-uppercase">At a glance</h3>
         <p class="wa-body-s wa-color-text-quiet" style="max-inline-size:72ch">Measured on the service day selected above, on the map you are looking at. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come straight from the rulebook.</p>
         <div id="tiles" class="wa-stack wa-gap-l sk-body">
@@ -592,8 +597,8 @@
       </div>
     </section>
 
-    <!-- §02 · a container; the rail addresses its two halves directly, so both
-         #recs and #findings must resolve before any data arrives ─────────── -->
+    <!-- `yourgame` · a container; the rail addresses its two halves directly, so
+         both #recs and #findings must resolve before any data arrives ────── -->
     <section id="yourgame" data-when="report" data-section="yourgame" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Before you play</p>
@@ -620,7 +625,7 @@
       </div>
     </section>
 
-    <!-- §03 ─────────────────────────────────────────────────────────────── -->
+    <!-- `transit` ───────────────────────────────────────────────────────── -->
     <section id="transit" data-when="report" data-section="transit" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">How long things take</p>
@@ -651,7 +656,7 @@
       </div>
     </section>
 
-    <!-- §04 ─────────────────────────────────────────────────────────────── -->
+    <!-- `verdict` ───────────────────────────────────────────────────────── -->
     <section id="verdict" data-when="report" data-section="verdict" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The verdict</p>
@@ -679,7 +684,7 @@
       </div>
     </section>
 
-    <!-- §05 · hydrated on stage `rules`, then RE-hydrated on stage `score`:
+    <!-- `questions` · hydrated on stage `rules`, then RE-hydrated on `score`:
          scoreZones fills QuestionAudit.survMean in place and is the only thing
          that sees both the audit rows and the survival table (CONTRACT §(d)). -->
     <section id="questions" data-when="report" data-section="questions" data-stage="rules" data-rehydrate="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
@@ -720,7 +725,7 @@
       </div>
     </section>
 
-    <!-- §06 ─────────────────────────────────────────────────────────────── -->
+    <!-- `curses` ────────────────────────────────────────────────────────── -->
     <section id="curses" data-when="report" data-section="curses" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The curse deck</p>
@@ -750,7 +755,7 @@
       </div>
     </section>
 
-    <!-- §07 ─────────────────────────────────────────────────────────────── -->
+    <!-- `trace` ─────────────────────────────────────────────────────────── -->
     <section id="trace" data-when="report" data-section="trace" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Every point, traced</p>
@@ -774,7 +779,7 @@
       </div>
     </section>
 
-    <!-- §08 ─────────────────────────────────────────────────────────────── -->
+    <!-- `sources` ──────────────────────────────────────────────────────── -->
     <section id="sources" data-when="report" data-section="sources" data-stage="provenance" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Provenance</p>

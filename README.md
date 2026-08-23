@@ -94,20 +94,23 @@ One page, two views.
 
 The public-facing view. It opens with a rating out of 100 and the band that rating falls in — from
 "not recommended as a transit game" up through "excellent map" — and then shows its working across
-nine sections. It fills in progressively as the pipeline runs, section by section, rather than
-appearing all at once at the end.
+eight sections, opening with the map. It fills in progressively as the pipeline runs, section by
+section, rather than appearing all at once at the end.
 
 | § | Section | What's in it |
 |---|---|---|
-| 01 | The verdict | The rating, the band, and the axes that voted on the game size |
-| 02 | Where the points came from | The full score trace — every point tied to a named metric, its value and its threshold |
-| 03 | What this means for your game | What the map does well, what fights you, and the house rules — including the ones your group has to agree in advance |
-| 04 | The map at a glance | Zone count, area, stops, routes, service span |
-| 05 | The map you're playing on | Live map of every stop with service, every zone, and the game border |
-| 06 | Getting around | How long it takes to cross the map, and how often buses actually come |
-| 07 | How many questions work here | **Every question in the deck**, one by one, with a verdict each |
-| 08 | How many curses work as printed | Which curses to physically remove from the deck |
-| 09 | Where these numbers come from | Every query, every source, every interpretation |
+| 01 | The map you're playing on | Live map of every stop with service, every zone, and the game border — coloured by reach or by frequency, with the stat rail (zone count, area, stops, routes, service span) beside it |
+| 02 | What this means for your game | What the map does well, what fights you, and the house rules — including the ones your group has to agree in advance |
+| 03 | Getting around | How long it takes to cross the map, and how often buses actually come |
+| 04 | The verdict | The rating, the band, and the axes that voted on the game size |
+| 05 | How many questions work here | **Every question in the deck**, one by one, with a verdict each |
+| 06 | How many curses work as printed | Which curses to physically remove from the deck |
+| 07 | Where the points came from | The full score trace — every point tied to a named metric, its value and its threshold |
+| 08 | Where these numbers come from | Every query, every source, every interpretation |
+
+Eight, not nine, since 2026-08-23: the At a Glance tiles were folded into the map section
+and hydrate there through a nested `data-section="glance"` host with its own clock, so the
+map is built once and the tiles are still corrected on every stage and every day click.
 
 The rating breaks into six sub-scores:
 
@@ -276,8 +279,8 @@ rare, and they're what you're shopping for.
 ### 5. Render
 
 One document, hydrated progressively. The pipeline runs in a Web Worker and streams staged results;
-each of the nine sections is swapped from skeleton to real markup the moment its data lands, so you
-read the verdict while the map layer is still loading. [Web Awesome](https://webawesome.com/)
+each of the eight sections is swapped from skeleton to real markup the moment its data lands, so you
+read the map while the score is still being worked out. [Web Awesome](https://webawesome.com/)
 components for the interface, MapLibre + OpenFreeMap for the maps, no build step, no framework, no
 bundler. Light and dark themes, and the selected game day follows you between the two views.
 
@@ -301,7 +304,7 @@ they must get the same report, or it isn't evidence of anything.
 ## Repo layout
 
 ```
-index.html           the page shell: landing card, Advanced panel, nine skeleton sections
+index.html           the page shell: landing card, Advanced panel, eight skeleton sections
 app.js               main-thread controller: owns every element, listener, and the worker protocol
 worker.js            the pipeline orchestrator, off the main thread
 lib/ gtfs/ osm/ rules/   worker-side pipeline (no DOM)
