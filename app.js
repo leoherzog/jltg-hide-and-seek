@@ -3146,11 +3146,20 @@ async function buildMap() {
   /* Rebuild the two data-bearing sources from whatever #stops now holds, then repaint
      for the current colour mode. Never setStyle, never fitBounds: a day switch, a
      score landing and a tile click must not move the viewport. */
+  /* Which per-day columns #stops actually carried, last time paintMap read it. The
+     reach column is absent on a feed the RAPTOR could not sample; the headway column
+     goes with the stop tuples over MAX_MAP_STOPS. Cached rather than re-derived,
+     because applyMode runs on every tile hover and D('stops') is a 140 KB parse. */
+  let HAS_REACH = Boolean(STOPS.reach && Object.keys(STOPS.reach).length);
+  let HAS_HW = Boolean(STOPS.hw && Object.keys(STOPS.hw).length);
+
   const paintMap = () => {
     if (!W.map || !W.map.getSource) return;
     const S = D('stops') || STOPS || {};
     const day = W.day || CURRENT;
     const hp = Number(G.hiding_period_min || 0);
+    HAS_REACH = Boolean(S.reach && Object.keys(S.reach).length);
+    HAS_HW = Boolean(S.hw && Object.keys(S.hw).length);
     const reach = (S.reach || {})[day] || null;
     const zs = W.map.getSource('zonedots');
     if (zs) {
@@ -3215,8 +3224,13 @@ async function buildMap() {
   const applyMode = (force) => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
-    const offeredMode = (W.layers && W.layers.mode) || 'base';
-    const mode = force || offeredMode;
+    let mode = force || (W.layers && W.layers.mode) || 'base';
+    /* A mode with no column behind it paints every dot the absent-value colour, which
+       looks exactly like a broken map. #colourby drops the button in that case, but
+       W.layers can still be carrying the mode from another feed, so the paint refuses
+       it too. HAS_* are set by paintMap, which is the thing that reads #stops. */
+    if (mode === 'reach' && !HAS_REACH) mode = 'base';
+    if (mode === 'frequency' && !HAS_HW) mode = 'base';
     const set = (layer, prop, value) => {
       if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
     };
@@ -3289,7 +3303,10 @@ async function buildMap() {
 
   const applyHl = () => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
-    const kind = hlPreview || hlPinned || null;
+    let kind = hlPreview || hlPinned || null;
+    /* A highlight with no data behind it is not a dimmer subject — it is nothing to
+       show, and dimming the whole map to say so would be worse than doing nothing. */
+    if (kind === 'reach' && !HAS_REACH) kind = null;
     const set = (layer, prop, value) => {
       if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
     };
@@ -3302,7 +3319,11 @@ async function buildMap() {
       }
     };
     /* Back to the reader's own layer state first, then add the emphasis on top. */
-    applyMode(kind === 'frequency' ? 'frequency' : kind === 'reach' ? 'reach' : null);
+    /* The frequency highlight's own job is the dimming — freq is the 15-minute flag,
+       which rides with the stop tuples — so it still works on a feed whose headway
+       column was dropped; it just does not force the ramp it cannot paint. */
+    applyMode((kind === 'frequency' && HAS_HW) ? 'frequency'
+      : kind === 'reach' ? 'reach' : null);
     filt('n-hl-zones', HL_NONE);
     filt('n-hl-stops', HL_NONE);
     show('n-mec-line', false);
