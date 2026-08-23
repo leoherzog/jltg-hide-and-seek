@@ -97,14 +97,14 @@ const SECTIONS = [
   // several minutes of a confidently wrong sentence. `days` is here for the same
   // reason at smaller stakes: it adds the "Best day" chip.
   { id: 'hero', needs: 'feed', redo: ['days', 'network', 'rules', 'score'], render: (r) => renderHero(r) },
-  { id: 'verdict', needs: 'score', redo: [], render: (r) => renderVerdict(r) },
-  { id: 'trace', needs: 'score', redo: [], render: (r) => renderScoreTrace(r) },
-  { id: 'yourgame', needs: 'score', redo: [], render: (r) => renderYourGame(r) },
   { id: 'numbers', needs: 'rules', redo: ['score'], render: (r) => renderKeyNumbers(r) },
   { id: 'network', needs: 'network', redo: ['geo', 'score'], render: (r) => renderNetworkMap(r) },
+  { id: 'yourgame', needs: 'score', redo: [], render: (r) => renderYourGame(r) },
   { id: 'transit', needs: 'network', redo: ['score'], render: (r) => renderTransitReality(r) },
+  { id: 'verdict', needs: 'score', redo: [], render: (r) => renderVerdict(r) },
   { id: 'questions', needs: 'rules', redo: ['score'], render: (r) => renderQuestions(r) },
   { id: 'curses', needs: 'rules', redo: ['score'], render: (r) => renderCurses(r) },
+  { id: 'trace', needs: 'score', redo: [], render: (r) => renderScoreTrace(r) },
   { id: 'sources', needs: 'provenance', redo: [], render: (r) => renderProvenance(r) },
   // Chrome, like the hero: no ordinal, no nav entry. Its five figures count zones,
   // live questions, removed curses, Overpass queries and interpretations, so it is
@@ -112,9 +112,23 @@ const SECTIONS = [
   { id: 'footer', needs: 'feed', redo: ['network', 'rules', 'score', 'provenance'], render: (r) => renderFooter(r) },
 ];
 
-/** The nine numbered sections, in page order. `hero` is chrome, not a numbered card. */
-const NUMBERED = ['verdict', 'trace', 'yourgame', 'numbers', 'network', 'transit',
-  'questions', 'curses', 'sources'];
+/**
+ * The nine numbered sections, in page order. `hero` is chrome, not a numbered card.
+ *
+ * This array — not the DOM — is what `renumberSections` walks to hand out `data-n`,
+ * so it and the <section> order in index.html must be kept in lockstep: move a
+ * section there without moving it here and the printed ordinals run out of
+ * sequence. The nav rail is the third copy of this order, because `bindSpy` takes
+ * the last link whose section is above the fold, in LINK order.
+ *
+ * Reordered 2026-08-23 (was verdict, trace, yourgame, numbers, network, transit,
+ * questions, curses, sources): the map is the artifact readers recognise, so it
+ * opens the report, and the point-by-point trace is reference material that now
+ * sits with the receipts. `SECTIONS` above is in the same order for the same
+ * reason — reading the array should read the page.
+ */
+const NUMBERED = ['numbers', 'network', 'yourgame', 'transit', 'verdict',
+  'questions', 'curses', 'trace', 'sources'];
 
 /**
  * What each stage is actually doing, in words a waiting human can act on.
@@ -149,14 +163,14 @@ const STAGE_DOING = {
 /** Reader-facing section names, for the “could not be rendered” notice. */
 const SECTION_NAME = {
   hero: 'the headline',
-  verdict: 'Verdict',
-  trace: 'Where the Points Came From',
-  yourgame: 'House Rules',
   numbers: 'At a Glance',
   network: 'The Map You’re Playing On',
+  yourgame: 'House Rules',
   transit: 'Getting Around',
+  verdict: 'Verdict',
   questions: 'The Questions',
   curses: 'The Curse Deck',
+  trace: 'Where the Points Came From',
   sources: 'Where These Numbers Come From',
   footer: 'the footer',
 };

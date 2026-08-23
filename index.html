@@ -470,11 +470,23 @@
          [data-section] is app.js's SECTION ID — the key it looks a host up by
          (`sectionHost`), and the value it stamps back onto the markup it swaps
          in. It is NOT the stage name: two sections share a stage, and a
-         `[data-section="<stage>"]` lookup would hand §05's map to §04.
+         `[data-section="<stage>"]` lookup would hand §02's map to §04.
          [data-stage] records which worker stage first fills the section
          (CONTRACT §(d)); it is documentation, nothing reads it.
          [data-state="skeleton"] holds until app.js swaps in real markup, and
          the real id, kicker, heading and ordinal are there from the first paint.
+
+         SECTION ORDER IS PAGE ORDER, and it is stated in two places that must
+         be kept in lockstep: the order of these <section> elements, and app.js's
+         `NUMBERED` array — which is what `renumberSections` actually walks, so
+         moving a section here without moving it there prints ordinals out of
+         sequence. The rail above must be moved with them too (`bindSpy` takes
+         the LAST link whose section is above the fold, in LINK order).
+         The `§NN` markers and the shipped `data-n` are provisional: app.js
+         assigns the real ordinals AFTER the empty sections are dropped.
+         Reordered 2026-08-23 so the page opens with the map instead of the
+         verdict: numbers, network, yourgame, transit, verdict, questions,
+         curses, trace, sources.
          ══════════════════════════════════════════════════════════════════ -->
 
     <!-- the day strip is card-weight and sits in the content, not full-bleed in
@@ -488,52 +500,54 @@
     <div id="run-error" data-role="runerror" data-when="report" hidden></div>
 
     <!-- §01 ─────────────────────────────────────────────────────────────── -->
-    <section id="verdict" data-when="report" data-section="verdict" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
+    <section id="numbers" data-when="report" data-section="numbers" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
-        <p class="kicker wa-caption-s wa-text-uppercase">The verdict</p>
-        <h2 class="wa-heading-2xl" data-n="01"><wa-skeleton style="block-size:1.4em;inline-size:min(100%,28ch)"></wa-skeleton></h2>
+        <p class="kicker wa-caption-s wa-text-uppercase">Key numbers</p>
+        <h2 class="wa-heading-2xl" data-n="01">The map at a glance</h2>
+        <p class="wa-body-l">Every figure is measured on this feed, on the representative day for the service type selected above. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come straight from the rulebook.</p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
-        <!-- "Why this is a Medium map" — the four size axes as a table -->
-        <wa-card>
-          <div class="wa-stack wa-gap-xs">
-            <div class="sk-row" data-head><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-          </div>
-        </wa-card>
-        <!-- the five prose paragraphs, drop cap and all -->
-        <div class="sk-text wa-stack wa-gap-xs" style="max-inline-size:72ch">
-          <wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:92%"></wa-skeleton>
-          <wa-skeleton style="inline-size:40%"></wa-skeleton>
-          <wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton>
-          <wa-skeleton style="inline-size:35%"></wa-skeleton>
-          <wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:76%"></wa-skeleton>
+        <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton><wa-skeleton style="inline-size:95%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton><wa-skeleton style="inline-size:90%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:85%"></wa-skeleton><wa-skeleton style="inline-size:75%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:65%"></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton><wa-skeleton style="inline-size:92%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:82%"></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:68%"></wa-skeleton><wa-skeleton style="inline-size:86%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:76%"></wa-skeleton><wa-skeleton style="inline-size:94%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:60%"></wa-skeleton><wa-skeleton style="inline-size:84%"></wa-skeleton></div>
+          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:74%"></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton></div>
         </div>
       </div>
     </section>
 
-    <!-- §02 ─────────────────────────────────────────────────────────────── -->
-    <section id="trace" data-when="report" data-section="trace" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
+    <!-- §02 · never wrap the map frame in a wa-scroller or a disclosure:
+         MapLibre reads its container size once, at construction ─────────── -->
+    <section id="network" data-when="report" data-section="network" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
-        <p class="kicker wa-caption-s wa-text-uppercase">Every point, traced</p>
-        <h2 class="wa-heading-2xl" data-n="02">Where the points came from</h2>
+        <p class="kicker wa-caption-s wa-text-uppercase">The network</p>
+        <h2 class="wa-heading-2xl" data-n="02">The map you’re playing on</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
-      <div class="wa-stack wa-gap-m sk-body">
-        <!-- the Points Budget: never inside a disclosure, it is rubric not evidence -->
-        <wa-skeleton class="sk-bar"></wa-skeleton>
+      <div class="wa-stack wa-gap-s sk-body">
         <wa-card>
-          <div class="wa-stack wa-gap-xs">
-            <div class="sk-row" data-head><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
-            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+          <div class="wa-stack wa-gap-s">
+            <div id="netmap-frame"><wa-skeleton style="inline-size:100%;aspect-ratio:16/9;min-block-size:18rem"></wa-skeleton></div>
+            <div class="wa-cluster wa-gap-2xs">
+              <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
+              <wa-skeleton class="sk-chip" style="inline-size:7rem"></wa-skeleton>
+              <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
+            </div>
+          </div>
+        </wa-card>
+        <wa-card>
+          <div class="sk-text wa-stack wa-gap-xs">
+            <wa-skeleton style="inline-size:38%"></wa-skeleton>
+            <wa-skeleton></wa-skeleton>
+            <wa-skeleton style="inline-size:72%"></wa-skeleton>
           </div>
         </wa-card>
       </div>
@@ -568,64 +582,10 @@
     </section>
 
     <!-- §04 ─────────────────────────────────────────────────────────────── -->
-    <section id="numbers" data-when="report" data-section="numbers" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
-      <header class="wa-stack wa-gap-3xs">
-        <p class="kicker wa-caption-s wa-text-uppercase">Key numbers</p>
-        <h2 class="wa-heading-2xl" data-n="04">The map at a glance</h2>
-        <p class="wa-body-l">Every figure is measured on this feed, on the representative day for the service type selected above. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come straight from the rulebook.</p>
-      </header>
-      <div class="wa-stack wa-gap-l sk-body">
-        <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton><wa-skeleton style="inline-size:95%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton><wa-skeleton style="inline-size:90%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:85%"></wa-skeleton><wa-skeleton style="inline-size:75%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:65%"></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton><wa-skeleton style="inline-size:92%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:82%"></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:68%"></wa-skeleton><wa-skeleton style="inline-size:86%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:76%"></wa-skeleton><wa-skeleton style="inline-size:94%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:60%"></wa-skeleton><wa-skeleton style="inline-size:84%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:74%"></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- §05 · never wrap the map frame in a wa-scroller or a disclosure:
-         MapLibre reads its container size once, at construction ─────────── -->
-    <section id="network" data-when="report" data-section="network" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
-      <header class="wa-stack wa-gap-3xs">
-        <p class="kicker wa-caption-s wa-text-uppercase">The network</p>
-        <h2 class="wa-heading-2xl" data-n="05">The map you’re playing on</h2>
-        <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
-      </header>
-      <div class="wa-stack wa-gap-s sk-body">
-        <wa-card>
-          <div class="wa-stack wa-gap-s">
-            <div id="netmap-frame"><wa-skeleton style="inline-size:100%;aspect-ratio:16/9;min-block-size:18rem"></wa-skeleton></div>
-            <div class="wa-cluster wa-gap-2xs">
-              <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
-              <wa-skeleton class="sk-chip" style="inline-size:7rem"></wa-skeleton>
-              <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
-            </div>
-          </div>
-        </wa-card>
-        <wa-card>
-          <div class="sk-text wa-stack wa-gap-xs">
-            <wa-skeleton style="inline-size:38%"></wa-skeleton>
-            <wa-skeleton></wa-skeleton>
-            <wa-skeleton style="inline-size:72%"></wa-skeleton>
-          </div>
-        </wa-card>
-      </div>
-    </section>
-
-    <!-- §06 ─────────────────────────────────────────────────────────────── -->
     <section id="transit" data-when="report" data-section="transit" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">How long things take</p>
-        <h2 class="wa-heading-2xl" data-n="06">Getting around</h2>
+        <h2 class="wa-heading-2xl" data-n="04">Getting around</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-s sk-body">
@@ -652,13 +612,41 @@
       </div>
     </section>
 
-    <!-- §07 · hydrated on stage `rules`, then RE-hydrated on stage `score`:
+    <!-- §05 ─────────────────────────────────────────────────────────────── -->
+    <section id="verdict" data-when="report" data-section="verdict" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
+      <header class="wa-stack wa-gap-3xs">
+        <p class="kicker wa-caption-s wa-text-uppercase">The verdict</p>
+        <h2 class="wa-heading-2xl" data-n="05"><wa-skeleton style="block-size:1.4em;inline-size:min(100%,28ch)"></wa-skeleton></h2>
+      </header>
+      <div class="wa-stack wa-gap-l sk-body">
+        <!-- "Why this is a Medium map" — the four size axes as a table -->
+        <wa-card>
+          <div class="wa-stack wa-gap-xs">
+            <div class="sk-row" data-head><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+          </div>
+        </wa-card>
+        <!-- the five prose paragraphs, drop cap and all -->
+        <div class="sk-text wa-stack wa-gap-xs" style="max-inline-size:72ch">
+          <wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:92%"></wa-skeleton>
+          <wa-skeleton style="inline-size:40%"></wa-skeleton>
+          <wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton>
+          <wa-skeleton style="inline-size:35%"></wa-skeleton>
+          <wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:76%"></wa-skeleton>
+        </div>
+      </div>
+    </section>
+
+    <!-- §06 · hydrated on stage `rules`, then RE-hydrated on stage `score`:
          scoreZones fills QuestionAudit.survMean in place and is the only thing
          that sees both the audit rows and the survival table (CONTRACT §(d)). -->
     <section id="questions" data-when="report" data-section="questions" data-stage="rules" data-rehydrate="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The deck</p>
-        <h2 class="wa-heading-2xl" data-n="07">The questions</h2>
+        <h2 class="wa-heading-2xl" data-n="06">The questions</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
@@ -693,11 +681,11 @@
       </div>
     </section>
 
-    <!-- §08 ─────────────────────────────────────────────────────────────── -->
+    <!-- §07 ─────────────────────────────────────────────────────────────── -->
     <section id="curses" data-when="report" data-section="curses" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The curse deck</p>
-        <h2 class="wa-heading-2xl" data-n="08">The curse deck</h2>
+        <h2 class="wa-heading-2xl" data-n="07">The curse deck</h2>
         <p class="wa-body-l">Every curse in the hider's deck, checked against this map's geography and this feed's network. A count is the number of qualifying features inside the border — outside does not count, because outside does not exist for this game.</p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
@@ -712,6 +700,30 @@
           <div class="wa-stack wa-gap-xs">
             <div class="sk-row" data-head><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
             <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+            <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
+          </div>
+        </wa-card>
+      </div>
+    </section>
+
+    <!-- §08 ─────────────────────────────────────────────────────────────── -->
+    <section id="trace" data-when="report" data-section="trace" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
+      <header class="wa-stack wa-gap-3xs">
+        <p class="kicker wa-caption-s wa-text-uppercase">Every point, traced</p>
+        <h2 class="wa-heading-2xl" data-n="08">Where the points came from</h2>
+        <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
+      </header>
+      <div class="wa-stack wa-gap-m sk-body">
+        <!-- the Points Budget: never inside a disclosure, it is rubric not evidence -->
+        <wa-skeleton class="sk-bar"></wa-skeleton>
+        <wa-card>
+          <div class="wa-stack wa-gap-xs">
+            <div class="sk-row" data-head><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
             <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
             <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
             <div class="sk-row"><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton><wa-skeleton></wa-skeleton></div>
