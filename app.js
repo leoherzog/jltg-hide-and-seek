@@ -1,9 +1,9 @@
 /**
  * app.js — the main-thread controller.
  *
- * Ported from generate.py's S4 page assembly (`render_index`, line 13815), its
- * day-switched payload (`_s4_banner` … `_s4_stops_payload`, lines 11074–11412) and
- * its client runtime (`SHARED_PAGE_JS` line 1755 + `_S4_INDEX_JS` line 13220).
+ * Ported from generate.py's S4 page assembly (`render_index`), its
+ * day-switched payload (`_s4_banner` … `_s4_stops_payload`) and
+ * its client runtime (`SHARED_PAGE_JS` + `_S4_INDEX_JS`).
  *
  * The CLI computes a whole `Report` and then prints one finished document. The
  * browser cannot: an eight-minute Overpass pass would be eight minutes of blank
@@ -37,7 +37,7 @@ import { renderKeyNumbers, renderNetworkMap, renderTransitReality } from './rend
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
 } from './render/deck.js';
-// S5 (`render_strategy`, line 15823) — the hider's guide. Not a section, not a nav
+// S5 (`render_strategy`) — the hider's guide. Not a section, not a nav
 // entry, not in `SECTIONS`: the fragment `#strategy` is the only door. See
 // `applyRoute` below for why it is a view and not a tenth card.
 import { renderStrategy } from './render/strategy.js';
@@ -48,13 +48,13 @@ import { initStrategy } from './render/simulator.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The placeholder every section passes as its ordinal (`_S4_ORDINAL`, line 10652).
+ * The placeholder every section passes as its ordinal (`_S4_ORDINAL`).
  * Replaced with the section's real number **after** the empty ones are dropped, so a
  * feed with no curses yields §01…§08 with no gap in the sequence.
  */
 const ORDINAL_PLACEHOLDER = '--';
 
-/** `class Options` (line 159), minus everything meaningless in a browser. */
+/** `class Options`, minus everything meaningless in a browser. */
 const DEFAULT_OPTIONS = Object.freeze({
   useOsm: true,
   // An override, and null is the whole of its default. The published bucket is named
@@ -138,7 +138,7 @@ const STAGE_NOTE = {
 /**
  * The only door to S5.
  *
- * The CLI ships two files and states the invariant plainly (line 13539): the
+ * The CLI ships two files and states the invariant plainly: the
  * feasibility report and the hider's guide never link to each other, because the
  * seekers read the first one. The port has one document, so the invariant becomes:
  * nothing in the report view mentions, links to or hints at this fragment. The guide
@@ -1255,7 +1255,7 @@ function recordDegradation(message, opts = {}) {
 }
 
 /**
- * `_s4_degradation_callout` (line 13765), rendered live as a toast.
+ * `_s4_degradation_callout`, rendered live as a toast.
  *
  * Says what is missing — and only when something actually is: an empty warning is
  * worse than none.
@@ -1397,7 +1397,7 @@ function fatalError(stage, message) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · unit and value formatting  (lines 10611–10723)
+// S4 · unit and value formatting
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Does this map's country read distances in miles? Metric when unknown. */
@@ -1422,7 +1422,7 @@ function joinWords(items, conjunction = 'and') {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · per-day views  (lines 10724–11093)
+// S4 · per-day views
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Day-type keys in the feed's own order (weekday, Saturday, Sunday, …). */
@@ -1669,7 +1669,7 @@ function tilesHtmlFor(report, dayKey) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · the embedded JSON blocks  (lines 11093–11274)
+// S4 · the embedded JSON blocks
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // One block per concern, so a page that only wants the verdict never parses the stop
@@ -1911,7 +1911,7 @@ function writeDataBlocks() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * `_s4_day_selector` (line 13668) and the `#daybanner` callout.
+ * `_s4_day_selector` and the `#daybanner` callout.
  *
  * The day-type radio group is built from the day types the feed actually
  * distinguishes. A single-day-type feed hides the control entirely — there is
@@ -1921,7 +1921,7 @@ function writeDataBlocks() {
  * data that does not exist until the score lands.
  */
 /**
- * The two pieces of `page_chrome` (line 13711) that need a `Report`: the wordmark's
+ * The two pieces of `page_chrome` that need a `Report`: the wordmark's
  * place name, and the status chip.
  *
  * `status_html` is "the page's one persistent grade readout" and the only part of the
@@ -2003,7 +2003,7 @@ function mountDayChrome() {
 // The secret route
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// S5 (`render_strategy`, line 15823) is a whole second page in the CLI, written to
+// S5 (`render_strategy`) is a whole second page in the CLI, written to
 // `strategy.html`, linked from nothing. Here it is a second *view* of the same
 // document, reached only by `location.hash === '#strategy'`.
 //
@@ -2146,7 +2146,7 @@ function leaveStrategy() {
 // The page runtime
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// A verbatim port of `SHARED_PAGE_JS` (line 1755) and `_S4_INDEX_JS` (line 13220),
+// A verbatim port of `SHARED_PAGE_JS` and `_S4_INDEX_JS`,
 // kept as one source string so it stays diffable against the CLI's own text. Rewriting
 // it as module code would let the browser port drift from `generate.py`'s output
 // silently, which is the one thing a port must not do.

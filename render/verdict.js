@@ -1,20 +1,17 @@
 // render/verdict.js — the hero and §01–§03 (generate.py S4).
 //
 // Ported from:
-//   index_hero            11590   + _s4_band_bounds 11413, _s4_band_ladder 11430,
-//                                   _s4_points_budget 11447, _s4_subscore_meters 11471,
-//                                   _s4_day_tiles 11486, _s4_scorecard 11516,
-//                                   _s4_axis_word 11663, _s4_axis_card 11698,
-//                                   band_variant 13688
-//   index_verdict         11743   + _s4_verdict_title 11871          → §01 `#verdict`
-//   index_score_trace     12751   + _s4_source_tag 12717,
-//                                   _s4_trace_table 12726            → §02 `#trace`
-//   index_your_game       12957   + _s4_findings_half 12847,
-//                                   _s4_house_rules_half 12918       → §03 `#yourgame`
+//   index_hero         + _s4_band_bounds, _s4_band_ladder, _s4_points_budget,
+//                        _s4_subscore_meters, _s4_day_tiles, _s4_scorecard,
+//                        _s4_axis_word, _s4_axis_card, band_variant
+//   index_verdict      + _s4_verdict_title                  → §01 `#verdict`
+//   index_score_trace  + _s4_source_tag, _s4_trace_table    → §02 `#trace`
+//   index_your_game    + _s4_findings_half,
+//                        _s4_house_rules_half               → §03 `#yourgame`
 //
-// This file also owns the shared S4 formatting helpers (generate.py 10611–10724) and
-// the per-day view helpers (10726–10800). `render/map.js` and `render/deck.js` import
-// them from here rather than duplicating them.
+// This file also owns the shared S4 formatting helpers and the per-day view helpers.
+// `render/map.js` and `render/deck.js` import them from here rather than duplicating
+// them.
 //
 // PROGRESSIVE HYDRATION. The CLI has one `Report`; the browser has a partial one that
 // grows as the worker's stages land. Every function here takes that partial report and
@@ -38,7 +35,7 @@ import {
 
 // ── rulebook presentation constants (read, never recomputed) ─────────────────
 
-// Verdict bands, high to low (scoring.md §1.9). `generate.py` line 7423 — S4 reads it
+// Verdict bands, high to low (scoring.md §1.9). `generate.py` — S4 reads it
 // for the ladder and the advice sentence, exactly as `band_variant` does.
 const S3_BANDS = Object.freeze([
   Object.freeze([80.0, 'Excellent map', 'Play it as written; no house rules required.']),
@@ -199,7 +196,7 @@ function fnum(x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : null;
 }
 
-// ── unit and value formatting (generate.py 10611–10724) ──────────────────────
+// ── unit and value formatting (generate.py) ──────────────────────
 
 /**
  * Does this map's country read distances in miles? Metric when unknown.
@@ -343,7 +340,7 @@ export function s4JoinWords(items, conjunction = 'and') {
   return `${kept.slice(0, -1).join(', ')} ${conjunction} ${kept[kept.length - 1]}`;
 }
 
-// ── per-day views (generate.py 10726–10800) ──────────────────────────────────
+// ── per-day views (generate.py) ──────────────────────────────────
 
 /**
  * The metric table as it reads on one service day.
@@ -428,7 +425,7 @@ export function s4MetricLookup(report) {
 // ── shared small markup helpers ──────────────────────────────────────────────
 
 /**
- * A `.sw` colour swatch. (generate.py `_s4_swatch`, line 11943.)
+ * A `.sw` colour swatch. (generate.py `_s4_swatch`.)
  *
  * Shape overrides go in `style`, not a utility class: `.sw` is unlayered, so it beats
  * anything in `@layer wa-utilities` — `class="wa-border-radius-circle"` would lose to

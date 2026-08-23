@@ -75,7 +75,7 @@ import {
 
 /**
  * The instruction each seeker mode prints until it has what it needs
- * (generate.py:15106–15109). `explore` needs nothing and never reaches here.
+ * (generate.py). `explore` needs nothing and never reaches here.
  */
 const MODE_NEED = Object.freeze({
   radar: 'Click the map to place the seekers, or use the button above.',
@@ -146,7 +146,7 @@ const TENTACLE_TEXT = Object.freeze({
 const DOT_COLOUR = Object.freeze([
   Object.freeze(['b:top', '--gold-mark']),
   Object.freeze(['b:good', '--accent']),
-  /* `fair` is its own step, as `generate.py:15526` gives it — collapsing it onto
+  /* `fair` is its own step, as `generate.py` gives it — collapsing it onto
      `good`'s colour rendered a five-band scale in three colours */
   Object.freeze(['b:fair', '--warn']),
   Object.freeze(['b:weak', '--off']),
@@ -157,7 +157,7 @@ const DOT_COLOUR = Object.freeze([
   Object.freeze(['a:un', '--q-un']),
 ]);
 
-/** The eleven table columns, in the order `data-sort` numbers them (generate.py:14690). */
+/** The eleven table columns, in the order `data-sort` numbers them (generate.py). */
 const SORT_RANK = 0;
 const SORT_NAME = 1;
 const SORT_SCORE = 2;
@@ -177,7 +177,7 @@ function cssVar(name) {
 
 /**
  * A closed ring of `[lon, lat]` pairs approximating a circle, for the border outline
- * and the selected zone's true-radius disc. Ports `ring`, generate.py:15021.
+ * and the selected zone's true-radius disc. Ports `ring`, generate.py.
  *
  * The metres-per-degree constants are S5's own (111320 on both axes). `buildMap` in
  * app.js uses 111132 for latitude, which is the better figure, but the two differ by
@@ -241,7 +241,7 @@ function cmp(a, b) {
   return a > b ? 1 : 0;
 }
 
-/** `rank` sorts nulls last, in the table and in every tie-break (generate.py:15288). */
+/** `rank` sorts nulls last, in the table and in every tie-break (generate.py). */
 function rankKey(view) {
   return view.rank === null || view.rank === undefined ? Infinity : view.rank;
 }
@@ -332,7 +332,7 @@ function buildInstance(root, report) {
   const mapLabels = views.length <= MAX_MAP_ZONES;
   const paged = views.length > TABLE_PAGE_ABOVE;
 
-  // ── reader state (generate.py:14908–14916) ─────────────────────────────────
+  // ── reader state (generate.py) ─────────────────────────────────
   let mode = 'explore';
   /* the first dossier zone, but only if it is one we can actually show; a zoneId in
      `dossierZoneIds` with no `ZoneScore` would otherwise leave `selected` naming a zone
@@ -394,7 +394,7 @@ function buildInstance(root, report) {
    * NOT a boolean, and the tolerance is exactly one zone radius: `edge` means the
    * boundary passes through the zone's own rulebook circle, so the honest answer
    * depends on where inside it the hider is standing. This is the single most
-   * important line in the port (generate.py:14929).
+   * important line in the port (generate.py).
    *
    * @param {number} delta @returns {'yes'|'no'|'edge'}
    */
@@ -409,7 +409,7 @@ function buildInstance(root, report) {
    * `margin` is second-nearest minus nearest: when it is inside two zone radii, a
    * different feature could win from elsewhere in the same circle, which is what
    * turns a matching or tentacle answer into an `edge`. Ports `nearestIn`,
-   * generate.py:14931. Features are `[lon, lat, name]` — lon first.
+   * generate.py. Features are `[lon, lat, name]` — lon first.
    *
    * @param {string} cat @param {number} lat @param {number} lon
    * @returns {{feature: Array, d: number, margin: number}|null}
@@ -429,7 +429,7 @@ function buildInstance(root, report) {
 
   /**
    * What this zone's hider would have to answer, for the question the reader has
-   * loaded and the seeker they have placed. Ports `answerFor`, generate.py:14942.
+   * loaded and the seeker they have placed. Ports `answerFor`, generate.py.
    *
    * `explore` is the odd one out and returns a *score* band, not an answer; every
    * other mode returns `yes` / `no` / `edge` / `un`, and `un` means "the question
@@ -701,7 +701,7 @@ function buildInstance(root, report) {
 
     /* Above MAX_MAP_ZONES the label pills stop being readable and start being a
        performance problem, so the partition is drawn as plain dots instead. The CLI
-       drew nothing at all at that size (generate.py:15079); a coloured dot is still
+       drew nothing at all at that size (generate.py); a coloured dot is still
        the answer, and it is the same answer. */
     if (!mapLabels) {
       map.addSource('s-zonedots', { type: 'geojson', data: zonePointData() });
@@ -747,7 +747,7 @@ function buildInstance(root, report) {
   /**
    * Build one marker per zone, once.
    *
-   * The CLI removes and recreates all of them on every paint (generate.py:15076);
+   * The CLI removes and recreates all of them on every paint (generate.py);
    * at MAX_MAP_ZONES that is 1,200 elements and 1,200 `Marker`s per click. They are
    * built here once and repainted in place instead, which is the same picture.
    */
@@ -863,7 +863,7 @@ function buildInstance(root, report) {
     return node;
   }
 
-  /** Where a click on the map goes, per mode (generate.py:15013–15020). */
+  /** Where a click on the map goes, per mode (generate.py). */
   function onMapClick(e) {
     if (mode === 'radar' || mode === 'match' || mode === 'measure' || mode === 'tentacle') {
       seeker = { lat: e.lngLat.lat, lon: e.lngLat.lng };
@@ -965,7 +965,7 @@ function buildInstance(root, report) {
   // The readout
   // ═════════════════════════════════════════════════════════════════════════
 
-  /** The lead phrase for the current question (generate.py:15113–15117). */
+  /** The lead phrase for the current question (generate.py). */
   function readoutLead() {
     const label = (poi.categories && poi.categories[opt.cat] && poi.categories[opt.cat].label)
       || opt.cat || 'feature';
@@ -1122,7 +1122,7 @@ function buildInstance(root, report) {
 
   /**
    * The travel sentence. DERIVED from metric R1, never re-measured: the guide must
-   * never print a travel time the score did not use (generate.py:13989).
+   * never print a travel time the score did not use (generate.py).
    */
   function travelText(view) {
     if (view.travelMin === null || view.travelMin === undefined) {
@@ -1271,7 +1271,7 @@ function buildInstance(root, report) {
   /**
    * The eight blocks, in the order the scouting report needs them: what this zone is,
    * what betrays it, what it scored, and only then the metric rows behind every
-   * number (generate.py:15262–15270).
+   * number (generate.py).
    */
   function renderDossier() {
     const body = $('s-body');
@@ -1313,7 +1313,7 @@ function buildInstance(root, report) {
   // The full table
   // ═════════════════════════════════════════════════════════════════════════
 
-  /** The sort key for one row under the current column (generate.py:15279–15286). */
+  /** The sort key for one row under the current column (generate.py). */
   function sortKey(view) {
     if (sortCol === SORT_RANK) return rankKey(view);
     if (sortCol === SORT_NAME) return view.name.toLowerCase();
@@ -1328,7 +1328,7 @@ function buildInstance(root, report) {
   /**
    * Filter, then sort. Ties always break on rank ascending, so the order is total.
    *
-   * DIVERGENCE, deliberate, recorded in CONTRACT.md §(g). `generate.py:15288` reads
+   * DIVERGENCE, deliberate, recorded in CONTRACT.md §(g). `generate.py` reads
    * `if (ka < kb) return sortDir; if (ka > kb) return -sortDir;` with `sortDir = -1`,
    * which sorts ASCENDING — against its own comment ("everything else descends"), its
    * own `sortDir = (c === 1 ? 1 : -1)` intent, and the `aria-sort="descending"` it
@@ -1649,7 +1649,7 @@ function buildInstance(root, report) {
     if (zones) zones.scrollIntoView();
   }));
 
-  // ── boot, in the CLI's order (generate.py:15397–15405) ─────────────────────
+  // ── boot, in the CLI's order (generate.py) ─────────────────────
   optionChips();
   renderList();
   renderDossier();

@@ -8,7 +8,7 @@ do not silently diverge.
 Line references are to `generated/generate.py`. Grep the snake_case name in the trailing
 comment of any field to find its Python original.
 
-**Scope.** `index.html`, plus `strategy.html` (S5, lines 13741–15653) as a **fragment-only
+**Scope.** `index.html`, plus `strategy.html` (S5) as a **fragment-only
 second view of the same document** — §(g). S5 adds no worker stage, no `Report` field and no
 embedded JSON block; it is built from `state.report` in memory.
 
@@ -22,7 +22,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | No build | No bundler, no TypeScript, no npm runtime dep. Top-level `await` is fine. |
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
-| External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.11.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
+| External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. Byte-identity with the Python CLI is *not* required. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. Use a plain `a < b ? -1 : a > b ? 1 : 0` comparator, never `localeCompare` (locale-dependent = non-deterministic). |
@@ -36,7 +36,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | File | Owner | Side | Exports |
 |---|---|---|---|
 | `index.html` | Shell agent | main | — (page shell, 9 skeleton sections, WebAwesome head) |
-| `styles.css` | Shell agent | main | — (`SHARED_CSS` line 1454 + `INDEX_CSS` line 10662, ported) |
+| `styles.css` | Shell agent | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
 | `app.js` | App agent | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | HTML agent | main | see §(e) |
 | `render/verdict.js` | Verdict agent | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
@@ -99,7 +99,7 @@ Conventions:
 
 ### Constants NOT in `core.js` — owned by `lib/http.js`
 
-Transcribed here so nobody guesses (generate.py lines 127–139):
+Transcribed here so nobody guesses (generate.py):
 
 ```js
 export const HTTP_TIMEOUT_S = 300.0;
@@ -131,7 +131,7 @@ by string; **iteration order is never significant** — sort the keys.
 
 ```js
 /**
- * @typedef {Object} Stop            // class Stop, line 1862. One GTFS stop (a pole, not a station).
+ * @typedef {Object} Stop            // class Stop. One GTFS stop (a pole, not a station).
  * @property {string} stopId         // stop_id
  * @property {string} name           // name
  * @property {string} baseName       // base_name — directional suffix like ' (NB)' stripped
@@ -142,7 +142,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Route           // class Route, line 1876.
+ * @typedef {Object} Route           // class Route.
  * @property {string} routeId        // route_id
  * @property {string} shortName      // short_name
  * @property {string} longName       // long_name
@@ -153,7 +153,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Feed            // class Feed, line 1897. Parsed, normalised GTFS feed.
+ * @typedef {Object} Feed            // class Feed. Parsed, normalised GTFS feed.
  * `tables` holds every *.txt as an array of plain objects exactly as read (optional
  * columns accessed with `?? ''`). The typed fields are the normalised views.
  * @property {string} source                       // source — the URL, or the File name
@@ -171,7 +171,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Station         // class Station, line 1920.
+ * @typedef {Object} Station         // class Station.
  * A synthesised station: a cluster of stops that a player would call one place.
  * @property {string} stationId      // station_id — the lowest member stopId, for stability
  * @property {string} name           // name
@@ -185,7 +185,7 @@ by string; **iteration order is never significant** — sort the keys.
 
 ```js
 /**
- * @typedef {Object} DayType         // class DayType, line 1931.
+ * @typedef {Object} DayType         // class DayType.
  * One distinguishable kind of service day in the feed.
  * @property {string} key            // key — 'weekday' | 'saturday' | 'sunday' | 'dow{N}'
  * @property {string} label          // label — 'Weekday', 'Saturday', …
@@ -197,7 +197,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} StopDay         // class StopDay, line 1949. Per-stop facts on one service day.
+ * @typedef {Object} StopDay         // class StopDay. Per-stop facts on one service day.
  * @property {string} stopId              // stop_id
  * @property {number[]} departures        // departures — seconds since service-day start, sorted ascending
  * @property {string[]} routes            // routes — route_ids, sorted
@@ -209,7 +209,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} ServiceDay      // class ServiceDay, line 1963.
+ * @typedef {Object} ServiceDay      // class ServiceDay.
  * One materialised service day: everything RAPTOR and the metrics need.
  * @property {DayType} dayType                 // day_type
  * @property {Object<string, StopDay>} stopDays// stop_days — stop_id → StopDay. Sort keys before iterating.
@@ -223,7 +223,7 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {*} patternAtStop                 // pattern_at_stop — OPAQUE
  * @property {*} footpaths                     // footpaths — OPAQUE
  * @property {*} stopIndex                     // stop_index — OPAQUE
- * @property {*} extras                        // day._s1x (_S1DayExtras, line 2756) — OPAQUE per-day vectors
+ * @property {*} extras                        // day._s1x (_S1DayExtras) — OPAQUE per-day vectors
  */
 ```
 
@@ -232,7 +232,7 @@ by string; **iteration order is never significant** — sort the keys.
 > before any `ServiceDay` crosses `postMessage`. See §(d) — the `'days'` stage sends
 > summaries, not `ServiceDay` objects.
 >
-> Internal shapes, for the GTFS agent only (lines 2728–2765):
+> Internal shapes, for the GTFS agent only:
 > `_S1StopIndex {byId: Map<string,number>, ids: string[]}`;
 > `_S1Pattern {stops:number[], dep:number[][], arr:number[][], tripIds:string[], tripRoutes:string[], routeId:string, directionId:string, sortedCols:boolean}` — column-major so the board lookup is a bisect; `sortedCols === false` ⇒ this pattern overtakes itself, scan linearly;
 > `_S1DayExtras {tripRoute, dedup, routeDirStop, stopRoutes, stopName, routeLabel}`.
@@ -255,14 +255,14 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Journey         // class Journey, line 1982. A concrete itinerary.
+ * @typedef {Object} Journey         // class Journey. A concrete itinerary.
  * @property {number} minutes        // minutes
  * @property {number} transfers      // transfers — count of transit legs minus 1, floored at 0
  * @property {JourneyLeg[]} legs     // legs — ordered
  */
 
 /**
- * @typedef {Object} TravelTimes     // class TravelTimes, line 1991. One one-to-all RAPTOR run.
+ * @typedef {Object} TravelTimes     // class TravelTimes. One one-to-all RAPTOR run.
  * @property {string[]} originStopIds          // origin_stop_ids
  * @property {number} departureS               // departure_s
  * @property {Object<string, number>} arrivalS // arrival_s — stop_id → earliest arrival seconds; ABSENT KEY = unreachable (never Infinity, never null)
@@ -274,7 +274,7 @@ by string; **iteration order is never significant** — sort the keys.
 
 ```js
 /**
- * @typedef {Object} GameSize        // class GameSize, line 2001. Rulebook size parameters.
+ * @typedef {Object} GameSize        // class GameSize. Rulebook size parameters.
  * @property {'small'|'medium'|'large'} name  // name
  * @property {number} hidingPeriodMin         // hiding_period_min — 30 / 60 / 180
  * @property {number} zoneRadiusM             // zone_radius_m — QUARTER_MILE_M / QUARTER_MILE_M / HALF_MILE_M
@@ -297,7 +297,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} SizeInference   // class SizeInference, line 2019.
+ * @typedef {Object} SizeInference   // class SizeInference.
  * The four-axis size vote, kept in full because the page shows the disagreement.
  * @property {SizeAxis[]} axes       // axes
  * @property {number[]} votes        // votes
@@ -308,7 +308,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Hub             // class Hub, line 2031. Round-start station + network shape.
+ * @typedef {Object} Hub             // class Hub. Round-start station + network shape.
  * @property {string} stopId         // stop_id
  * @property {string} name           // name
  * @property {number} lat @property {number} lon
@@ -320,7 +320,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Border          // class Border, line 2046. Both a box and a circle; the rulebook sanctions both.
+ * @typedef {Object} Border          // class Border. Both a box and a circle; the rulebook sanctions both.
  * @property {'bbox'|'circle'} kind                 // kind
  * @property {[number,number,number,number]} bbox   // bbox — (S, W, N, E), padded
  * @property {[number,number,number,number]} rawBbox// raw_bbox — unpadded
@@ -332,7 +332,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Zone            // class Zone, line 2060.
+ * @typedef {Object} Zone            // class Zone.
  * One candidate hiding zone: a rulebook circle centred on a designated station.
  * @property {string} zoneId         // zone_id — IS the designated stop_id
  * @property {string} name           // name
@@ -349,7 +349,7 @@ by string; **iteration order is never significant** — sort the keys.
 
 ```js
 /**
- * @typedef {Object} GeoCategory     // class GeoCategory, line 4467.
+ * @typedef {Object} GeoCategory     // class GeoCategory.
  * One rulebook feature category and the exact Overpass selector that realises it.
  * @property {string} key            // key
  * @property {string} label          // label
@@ -358,7 +358,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} Poi             // class Poi, line 4579. One OSM feature reduced to what the questions need.
+ * @typedef {Object} Poi             // class Poi. One OSM feature reduced to what the questions need.
  * `lat`/`lon` is the REPRESENTATIVE POINT (the rulebook's "map icon"): a node's own
  * coordinates, a closed way's area centroid with an interior fallback, an open way's
  * length-weighted midpoint, or a multipolygon's area-weighted centroid. NEVER Overpass's
@@ -376,7 +376,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} OverpassQueryRecord  // class OverpassQueryRecord, line 4604.
+ * @typedef {Object} OverpassQueryRecord  // class OverpassQueryRecord.
  * @property {string} key                             // key
  * @property {string} selector                        // the Overpass QL that DEFINES the category. Retained
  *                                                    //   deliberately: it is what the world-file build table was
@@ -395,7 +395,7 @@ by string; **iteration order is never significant** — sort the keys.
  */
 
 /**
- * @typedef {Object} AdminInfo       // class AdminInfo, line 4617.
+ * @typedef {Object} AdminInfo       // class AdminInfo.
  * The administrative-division ladder for this map. `ordinals` maps 1..4 → OSM
  * `admin_level`, DERIVED not guessed: the first-division level is the LOWEST
  * `admin_level` in the map's `admin` layer carrying an `ISO3166-2` code — ISO 3166-2 is
@@ -440,7 +440,7 @@ like OSM `admin_level`s but do not mean the same thing.
  */
 
 /**
- * @typedef {Object} GeoData         // class GeoData, line 4637. Everything the OSM layer produces.
+ * @typedef {Object} GeoData         // class GeoData. Everything the OSM layer produces.
  * ABSENT CATEGORIES ARE ABSENT KEYS, and that is load-bearing: a category that was never
  * queried and a category with zero features are different states all the way to the page.
  * Never conflate them.
@@ -460,7 +460,7 @@ like OSM `admin_level`s but do not mean the same thing.
 ```
 
 The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note)`
-(mirrors `build_report` lines 15976–15984):
+(mirrors `build_report`):
 
 ```js
 { available: false, bbox, pois: {}, counts: {}, zoneInventory: {}, zonePolygonHits: {},
@@ -473,7 +473,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
 
 ```js
 /**
- * @typedef {Object} QuestionDef     // class QuestionDef, line 6372. One of the rulebook's 80 questions.
+ * @typedef {Object} QuestionDef     // class QuestionDef. One of the rulebook's 80 questions.
  * @property {string} id             // id — e.g. 'matching.park'
  * @property {'matching'|'measuring'|'radar'|'thermometer'|'photo'|'tentacle'} category // category
  * @property {string} group          // group — the rulebook's own grouping, e.g. 'Transit'
@@ -488,7 +488,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} CurseDef        // class CurseDef, line 6389. One of the 24 curses.
+ * @typedef {Object} CurseDef        // class CurseDef. One of the 24 curses.
  * @property {string} id             // id
  * @property {string} name           // name
  * @property {1|2|3|4} tier          // tier — 1 rulebook-explicit … 4 not map-contingent
@@ -501,7 +501,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} QuestionAudit   // class QuestionAudit, line 6450. One question's verdict — the core of §07.
+ * @typedef {Object} QuestionAudit   // class QuestionAudit. One question's verdict — the core of §07.
  * @property {string} id @property {string} category @property {string} label @property {string} text
  * @property {'functional'|'weak'|'degenerate'|'dead'} status // status
  *   // `unaskable`/`unknown` are gone: no map can earn either, so nothing downstream branches on them.
@@ -517,7 +517,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} CurseAudit      // class CurseAudit, line 6468. One curse's verdict.
+ * @typedef {Object} CurseAudit      // class CurseAudit. One curse's verdict.
  * @property {string} id @property {string} name @property {number} tier
  * @property {'keep'|'warn'|'remove'|'player-choice'} action // action
  * @property {string} predicate      // predicate
@@ -530,7 +530,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
 
 ```js
 /**
- * @typedef {Object} Metric          // class Metric, line 6481. One named, traceable scoring metric.
+ * @typedef {Object} Metric          // class Metric. One named, traceable scoring metric.
  * THIS TUPLE *IS* THE EXPLANATION. Arithmetic is in INTEGER TENTHS OF A POINT throughout,
  * so sub-scores and totals are integer sums and no float drift can move a headline number.
  * @property {string} id             // id — 'A1', 'IR2', …
@@ -546,7 +546,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} SubScore        // class SubScore, line 6501. A named block of metrics.
+ * @typedef {Object} SubScore        // class SubScore. A named block of metrics.
  * Degradation is drop-and-renormalise, never impute.
  * @property {string} id @property {string} name
  * @property {Metric[]} metrics      // metrics
@@ -557,7 +557,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} Fitness         // class Fitness, line 6514.
+ * @typedef {Object} Fitness         // class Fitness.
  * The city rating: 100 points across six sub-scores, plus the per-day deltas.
  * @property {number|null} score     // score — NULL when >40% of points are unavailable. The UI must handle null.
  * @property {number} rawScore       // raw_score
@@ -577,7 +577,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} Threat          // class Threat, line 6527.
+ * @typedef {Object} Threat          // class Threat.
  * One question that narrows the search onto a zone.
  * @property {string} questionId     // question_id
  * @property {string} label          // label
@@ -587,7 +587,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  */
 
 /**
- * @typedef {Object} ZoneScore       // class ZoneScore, line 6538. One zone's rating: six axes, 100 points.
+ * @typedef {Object} ZoneScore       // class ZoneScore. One zone's rating: six axes, 100 points.
  * @property {string} zoneId         // zone_id
  * @property {number} overallTenths  // overall_tenths
  * @property {string|null} cappedBy  // capped_by
@@ -740,7 +740,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
 
 ```js
 /**
- * @typedef {Object} Report          // class Report, line 6558. Everything the renderers consume.
+ * @typedef {Object} Report          // class Report. Everything the renderers consume.
  * @property {Options} opts                       // opts
  * @property {Feed} feed                          // feed — `tables` MAY be dropped before postMessage; nothing after `provenance` reads it
  * @property {{lat0:number,lon0:number}} proj     // proj — WIRE FORM; rebuild with Projection.from()
@@ -775,7 +775,7 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
 
 ## (c) The Options object
 
-Ported from `class Options`, line 159. Dropped as meaningless in a browser: `out_dir`,
+Ported from `class Options`. Dropped as meaningless in a browser: `out_dir`,
 `cache_dir`, `llm`, `llm_url`, `llm_model`, `selftest`, `-v/--verbose`, `argv`.
 
 ```js
@@ -926,7 +926,7 @@ All functions return **HTML strings**. Python keyword arguments become a single 
 options object. Python's `class_` becomes `className`. Python's `void()` is renamed
 `voidEl()` (`void` is a JS operator).
 
-### The escaping contract (generate.py lines 987–1000) — both renderers follow it exactly
+### The escaping contract (generate.py) — both renderers follow it exactly
 
 * A parameter whose name ends in `Html` receives markup that is **already safe**. The
   helper inserts it verbatim. You build it with other helpers, or you call `esc()` yourself.
@@ -1014,7 +1014,7 @@ Behavioural notes that must survive the port (they are load-bearing, not style):
 * A section with no data emits **nothing at all** — not an empty card — and its nav entry
   disappears with it.
 
-### Section ids (from `render_index`, line 13815) — the shell must use exactly these
+### Section ids (from `render_index`) — the shell must use exactly these
 
 | # | `id` | Nav group | Nav label | Icon | Renderer |
 |---|---|---|---|---|---|
@@ -1037,7 +1037,7 @@ CLI's ids, with the `-data` suffixes that avoid colliding with the section ancho
 
 ## (f) Error and degradation policy
 
-The rule from `build_report` (line 15935):
+The rule from `build_report`:
 
 ```
 if useOsm:
@@ -1101,8 +1101,8 @@ Rules that follow from it, and that every module must obey:
 ## (g) The second view — `#strategy`
 
 `generate.py` emits two files per city: `index.html` and `strategy.html` (S5,
-`render_strategy`, line 15823), the hider's guide, which nothing links to. The invariant the
-CLI states at line 13539 is that the two pages never link to each other, because the seekers
+`render_strategy`), the hider's guide, which nothing links to. The invariant the
+CLI states is that the two pages never link to each other, because the seekers
 read the first one. The port has **one document**, so the invariant becomes: nothing in the
 report view mentions, links to or hints at the guide. The guide may link back — that link is
 only ever visible to someone already inside it.
@@ -1117,13 +1117,13 @@ only ever visible to someone already inside it.
 | Landmark and focus | The guide root carries `role="main"` — the report's `<main>` is `display: none` while the guide is up, and `wa-page` supplies no landmark of its own, so without it the whole view sits outside every landmark region. There is no collision: a hidden element is not in the accessibility tree. `applyRoute` also moves focus to the root (`tabindex="-1"`, `preventScroll`) and `leaveStrategy` mirrors it onto `#top`, because a view swap with a new `document.title` otherwise drops focus to `<body>` silently. Both scrolls are queued **two** frames out, so they land after `PAGE_RUNTIME_JS`'s still-live `openTargeted`, which is bound to the same `hashchange` and would otherwise re-scroll the root to `block: 'center'`. |
 | Not a section | The root is not an entry in `SECTIONS`, so `hydrate`, `mountSection`, `dropSection`, `renumberSections` and `pruneNav` never see it. Its five sections pass the **literal** ordinals `'01'`…`'05'`, never `'--'` — `renumberSections` strips the attribute from every remaining `[data-n='--']` in the document. It carries no `data-state`, so `fatalError`'s `[data-state='skeleton']` sweep cannot take it either. |
 | Mount point | Inside `<wa-page>`, as a sibling of `<main>`, so it inherits the page gutter and the `--content-width` cap. |
-| Kept out of the ported runtime | Nothing about this view is added to `PAGE_RUNTIME_JS`, whose source string is a verbatim port of the CLI's page JS and must stay diffable against it. The view ships no JSON block at all, so nothing is added to the blocks written by `writeDataBlocks` either. Its wiring lives in module code (`render/simulator.js`, `initStrategy`), which is where anything the CLI does not have belongs. |
-| Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the CLI's simulator never consumed it either — it recomputes answers client-side by haversine (`answerFor`, line 14942). `report.geo.pois` crosses `postMessage` whole and is richer than the CLI's `[lon, lat, name]` triples. |
+| Kept out of the ported runtime | Nothing about this view is added to `PAGE_RUNTIME_JS`, whose source string was a verbatim port of the CLI's page JS. The CLI is gone, so there is nothing left to diff it against — treat the string as owned here now. The view ships no JSON block at all, so nothing is added to the blocks written by `writeDataBlocks` either. Its wiring lives in module code (`render/simulator.js`, `initStrategy`), which is where anything the CLI does not have belongs. |
+| Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the CLI's simulator never consumed it either — it recomputes answers client-side by haversine (`answerFor`). `report.geo.pois` crosses `postMessage` whole and is richer than the CLI's `[lon, lat, name]` triples. |
 | Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. The CLI's bare ids collide in a single document: `#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion, `#zmap`/`#ztable` with nothing yet but by luck. The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
 | Controls | The three mutually-exclusive rows — `#s-modes` (question mode), `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same native pair `s4ChipGroup` (`render/map.js` 169) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` itself cannot be reused because it has no way to disable an option. A dead option is a `disabled` radio **and** a printed reason — a disabled control is not focusable, so a `title` on one is reachable by hovering with a pointer and by nothing else. Never express the selection by rewriting `appearance`. |
 | Seeker placement | Pointer **and** keyboard. The map click and the marker drag are the CLI's; the port adds a "Place the seekers at …" `wa-button` in `#s-opts` (a leg from the hub to the selected zone, in thermometer mode) and makes the marker element itself a focusable control that the arrow keys nudge. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user, i.e. the flagship feature does not run at all. |
 | Module boundary | `app.js` → `renderStrategy(report) → string` (one root element, or `''`) and `initStrategy(root, report) → void`. `initStrategy` is called **only after** `body[data-view]` is set, because MapLibre reads its container size once, at construction. It is idempotent: a second call resizes the map and returns, so mode, selection, sort, filter and page survive leaving and re-entering. The dependency between the two new modules is one-way — `simulator.js` imports `strategy.js`, never the reverse. The one shape that crosses it is `modeChips`' `CatChip` (typedef in `render/strategy.js`), whose `reachMi` — that tentacle question's own reach in miles, `null` on matching and measuring chips — is what `answerFor` measures against. Never `size.tentacleReachMi`: that is the deck's headline figure and a LARGE deck holds two reaches at once. |
-| What `answerFor` answers | `generate.py` line 14942 is the port's source, but it is **not** the specification — `rules/audit.js` is, and three of its answers used to disagree with the CLI's simulator. All three were fixed on both sides and the two implementations now agree. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
+| What `answerFor` answers | `generate.py` is the port's source, but it is **not** the specification — `rules/audit.js` is, and three of its answers used to disagree with the CLI's simulator. All three were fixed on both sides and the two implementations now agree. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
 
 ### Deliberate divergences from `generate.py` in this view
 
@@ -1137,13 +1137,13 @@ only ever visible to someone already inside it.
    no `waTooltip` and is not gaining one for this.
 4. **All ids are namespaced `s-`**, as above.
 5. **The guide's map follows the theme button.** The CLI's reads dark once at
-   construction (line 15010) and never restyles; one document has one theme control, so
+   construction and never restyles; one document has one theme control, so
    this map follows `buildMap`'s `matchMedia` + `MutationObserver` pattern instead.
 6. **Playbook tip 9 reads `metrics.hubDominance`.** The CLI reads
-   `metrics["hub_route_share"]` (line 14824), a key `network_metrics` never emits — it
-   emits `hub_dominance` (line 3871) — so the tip has never fired in the CLI. `generate.py`
+   `metrics["hub_route_share"]`, a key `network_metrics` never emits — it
+   emits `hub_dominance` — so the tip has never fired in the CLI. `generate.py`
    wins on shapes, but a key that does not exist is a bug, not a shape. **File it.**
-7. **§02's table sorts the direction it claims to.** `generate.py:15288` is
+7. **§02's table sorts the direction it claims to.** `generate.py` is
    `if (ka < kb) return sortDir; if (ka > kb) return -sortDir;` and `sortDir` starts at
    `-1`, so every column sorts *ascending* — contradicting the CLI's own comment
    ("everything else descends"), its `sortDir = (c === 1 ? 1 : -1)` on a column change,
@@ -1162,11 +1162,11 @@ only ever visible to someone already inside it.
 
 Three other divergences this work surfaced, all repaired in `styles.css` rather than left:
 §6's `.dark-map` selector is now keyed on the class alone rather than on the one map id
-`generate.py:1666` names (the class is set by the map builders and by nothing else, and
+`generate.py` names (the class is set by the map builders and by nothing else, and
 the shared sheet must not name a map the report does not have — see below); the sticky
-control-bar rule of `generate.py:1625` had lost `#zcontrols` (now `#s-controls`); and
+control-bar rule of `generate.py` had lost `#zcontrols` (now `#s-controls`); and
 `[data-band='fair']` had been collapsed onto `good`'s colour, rendering a five-band scale
-in three colours — it gets `--warn` back, as `generate.py:15526` gives it.
+in three colours — it gets `--warn` back, as `generate.py` gives it.
 
 ### The stylesheet is partitioned
 

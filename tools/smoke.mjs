@@ -5,7 +5,7 @@
 //
 // Runs `runPipeline` from worker.js against the cached reference feed with the
 // OSM layer disabled, and asserts generated/generate.py's own golden numbers from
-// `selftest()` (line 15757). Those numbers are measured, not guessed: a change to
+// `selftest()`. Those numbers are measured, not guessed: a change to
 // any of them means an algorithm changed, which may be correct but must be
 // deliberate. Never adjust an assertion to make it pass.
 //
@@ -168,7 +168,7 @@ async function main() {
     return 1;
   }
 
-  // ── the golden numbers (generate.py selftest, line 15757) ─────────────────
+  // ── the golden numbers (generate.py selftest) ─────────────────
   const m = report.metrics || {};
   const exact = [
     ['served_stops', m.servedStops, 1490],
@@ -220,7 +220,7 @@ async function main() {
     });
   }
 
-  line('Golden numbers (generate.py selftest line 15757, plus a measured scoring set)');
+  line('Golden numbers (the CLI selftest baseline, plus a measured scoring set)');
   for (const r of results) {
     const tag = r.pass ? colour(GREEN, 'PASS') : colour(RED, 'FAIL');
     line(`  ${tag}  ${r.name.padEnd(17)} expected ${r.expected.padEnd(14)} actual ${r.actual}`);

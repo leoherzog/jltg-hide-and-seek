@@ -2,7 +2,7 @@
 // worker.js — the pipeline orchestrator
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Ported from `build_report` (generate.py line 15935). The order below is the
+// Ported from `build_report` (generate.py). The order below is the
 // Python's dependency order and it is the contract between sections: nothing later
 // may be needed by anything earlier. The one reordering is `travelTimeSamples`,
 // which the CLI computes last but CONTRACT.md §(d) puts in the `'network'` stage
@@ -62,7 +62,7 @@ let SCORE_ERROR = null;
 /** Code-point comparator. Never `localeCompare` — that is locale-dependent. */
 function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
-/** The greedy-question depth `k`, generate.py line 15721. */
+/** The greedy-question depth `k`, generate.py. */
 const GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
@@ -383,7 +383,7 @@ export async function runPipeline(options, source, emit) {
     gtfsFacts = gtfsQuestionFacts(feed, days, zones, stations);
     progress.finish();
 
-    // generate.py line 15726: `--start` is resolved here, not inside infer.js,
+    // generate.py: `--start` is resolved here, not inside infer.js,
     // and the departure `or` chain lets a literal '00:00:00' fall through to 09:00.
     origin = opts.startStopId || hub.stopId;
     depS = hmsToS(opts.departure || DEFAULT_DEPARTURE) || hmsToS(DEFAULT_DEPARTURE);
@@ -550,7 +550,7 @@ export async function runPipeline(options, source, emit) {
       progress.report(0.7, 'Scoring the city');
       fitness = score.scoreFitness(metrics, questions, zones, zoneScores, size, days);
       // `fitnessCaps(metrics, questions, zones, size, days)` — the Python signature
-      // (generate.py line 9356). It does not take `zoneScores`.
+      // (generate.py). It does not take `zoneScores`.
       caps = score.fitnessCaps(metrics, questions, zones, size, days);
       const zoneById = Object.create(null);
       for (const z of zones) zoneById[z.zoneId] = z;

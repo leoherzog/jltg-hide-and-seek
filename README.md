@@ -4,18 +4,8 @@ Point it at a city's public transit feed. It tells you whether that city works a
 [Jet Lag: The Game's *Hide and Seek*](https://www.jetlagthegame.com/) home game, how good a map it
 is, and — if you're the one hiding — where to go.
 
-There are two ways to run it, and they do the same analysis.
-
-**In a browser, no install.** Serve this directory and open it. Drop in a feed and the whole
-pipeline runs client-side — the feed is never uploaded anywhere.
-
-**As a CLI**, which writes two self-contained HTML files:
-
-```bash
-uv run generated/generate.py <gtfs-url> --out build/
-```
-
-That's the whole interface.
+It runs entirely in your browser. Serve this directory with any static file server, open it, drop
+in a feed, and the whole pipeline runs client-side. The feed is never uploaded anywhere.
 
 ---
 
@@ -32,17 +22,14 @@ seekers' toolkit. A system where the last bus leaves at six strands the hider. N
 obvious until you've set up a game and started playing it badly.
 
 Answering it by hand is a slog: read the rulebook, read the timetable, cross-reference every
-question against what's actually on the map, then argue about it. This repo does that work from the
-feed, the same way every time.
-
-A few worked examples ship with the repo under `generated/`, one directory per city, each holding
-the two pages the tool produced for that feed. It produces the same thing for anywhere.
+question against what's actually on the map, then argue about it. This tool does that work from the
+feed, the same way every time, for any city that publishes one — it has produced 319 scored zones
+for Grand Rapids, 1,204 for Chicago, 137 for Rochester, Minnesota, from nothing but each city's
+feed and the same map files.
 
 ---
 
 ## Quick start
-
-### In a browser
 
 Nothing to install and no build step. Serve the repo root with any static file server and open it:
 
@@ -51,55 +38,44 @@ python3 -m http.server 8000     # then open http://localhost:8000/
 ```
 
 Paste a feed URL or drop a `.zip` on the page. Everything — the feed parse, the travel-time model,
-the OpenStreetMap lookups, the scoring — runs in your browser.
-
-### As a CLI
-
-You need [`uv`](https://docs.astral.sh/uv/). No virtualenv, no install step — the script declares
-its own dependency inline (just `httpx`).
-
-```bash
-# any GTFS feed URL, or a local .zip
-uv run generated/generate.py <gtfs-url> --out build/
-
-# much faster: skip the OpenStreetMap layer
-uv run generated/generate.py <gtfs-url> --out build/ --no-osm
-```
+the map-feature lookups, the scoring — runs in your browser.
 
 Find a feed for your city on [Mobility Database](https://mobilitydatabase.org/) or
-[transit.land](https://www.transit.land/). Most agencies publish one.
+[transit.land](https://www.transit.land/). Most agencies publish one. One wrinkle the page itself
+will warn you about: fetching a URL only works if the agency's server sends CORS headers, and
+plenty don't. When that happens, download the zip yourself and drop it in — same answer, one extra
+step.
 
-> **Pass `--out`.** It defaults to the current directory. Run from the repo root without it and
-> the two pages land on top of the browser port's own `index.html`; point it at one of the
-> `generated/<city>/` directories and it overwrites that example.
+**How long it takes.** The schedule side runs in seconds. The map-feature layer is the slow part:
+on the Grand Rapids reference border it takes about 33 seconds, and the browser's HTTP cache makes
+a second run much cheaper. There's a "Skip OpenStreetMap" switch under **Advanced** that drops the
+map layer entirely — everything the feed alone can answer still runs, and every question, curse and
+sub-score that needs map features is excluded from the denominator, not guessed at.
 
-**How long it takes.** ~10 seconds with a warm cache. First run on a new city is ~8 minutes, almost
-all of it waiting on the free OpenStreetMap query servers. `--no-osm` runs in seconds but disables
-everything that depends on knowing where the museums are. Big systems scale fine — a 7,700-stop feed
-with 2.15 million scheduled stop times takes under three minutes.
-
-**When OpenStreetMap doesn't answer.** The public Overpass mirrors are shared and frequently busy.
-Each query falls back through three of them, and a run can still lose one: if the whole OSM layer is
-unreachable the report is written with the OSM-backed scores excluded and a banner saying so, and if
-only the optional "within 10 ft of a routable path" join fails, the pages come out complete but every
-candidate hiding spot is marked verify-on-the-ground. Both outcomes are printed on the page rather
-than papered over — see [Caveats](#caveats). Retrying later, when the mirrors are quieter, fills the
-gap from cache in seconds.
+**Overrides.** The Advanced panel also holds an override for every inference — game size, zone
+radius, hiding period, start stop, border shape and box, departure time, analysis date, excluded
+stops and routes. Everything is inferred by default; the overrides exist for when you disagree, or
+when your group has already agreed on a border. Two more switches manage the feed cache: one
+re-downloads a feed the browser has already cached (worth flipping when the agency publishes a new
+one), and one does the opposite — a cache miss becomes an error, so a run either reproduces exactly
+what an earlier run saw or stops and says so.
 
 ---
 
 ## What comes out
 
-### `index.html` — should we play here?
+One page, two views.
 
-The public-facing report. It opens with a rating out of 100 and the band that rating falls in — from
+### The report — should we play here?
+
+The public-facing view. It opens with a rating out of 100 and the band that rating falls in — from
 "not recommended as a transit game" up through "excellent map" — and then shows its working across
-nine sections. Three of the headings are written from the measurements themselves, so their wording
-changes with the feed:
+nine sections. It fills in progressively as the pipeline runs, section by section, rather than
+appearing all at once at the end.
 
 | § | Section | What's in it |
 |---|---|---|
-| 01 | The verdict | The rating, the band, and the four axes that voted on the game size |
+| 01 | The verdict | The rating, the band, and the axes that voted on the game size |
 | 02 | Where the points came from | The full score trace — every point tied to a named metric, its value and its threshold |
 | 03 | What this means for your game | What the map does well, what fights you, and the house rules — including the ones your group has to agree in advance |
 | 04 | The map at a glance | Zone count, area, stops, routes, service span |
@@ -129,9 +105,11 @@ It also rates each day separately, weekday against Saturday against Sunday. That
 actionable thing on the page: a map can be a materially worse game on a Sunday, and you'd want to
 know before scheduling.
 
-### `strategy.html` — where should I hide?
+### `#strategy` — where should I hide?
 
-The hider's companion. Every candidate zone scored and ranked, with:
+The hider's companion. It's a second view of the same page, reached only by adding `#strategy` to
+the URL — it appears in no nav and no link, because the seekers will be looking at the report.
+Every candidate zone scored and ranked, with:
 
 - **A map with a question simulator.** Pick a question category, drop a seeker on the map, and
   watch the map partition into the zones that answer yes, the zones that answer no, and — the good
@@ -139,21 +117,18 @@ The hider's companion. Every candidate zone scored and ranked, with:
   answer depends on where inside your own zone you happen to be standing. All six categories work:
   radar, thermometer, matching, measuring, tentacles, plus plain exploring.
 - **A dossier per zone**: designated station, travel time from the start, the six axis scores,
-  **"what finds you"** (the three questions that most narrow the search onto you, with the answer
-  you'd be forced to give), candidate legal hiding spots with distances, amenities, service facts
-  for the selected day, and a full evidence table of every metric it earned.
-- **The complete table of every scored zone**, sortable by any axis. If you disagree with the weighting,
-  re-sort by the axis you care about and get your own shortlist. Nothing is hidden behind a cutoff —
-  zones that are unreachable inside the hiding period are held out of the ranking but still listed,
-  with the reason and the travel time.
+  **"what finds you"** (the questions that most narrow the search onto you, with the answer you'd
+  be forced to give), candidate hiding spots with distances, amenities, service facts for the
+  selected day, and a full evidence table of every metric it earned.
+- **The complete table of every scored zone**, sortable by any axis. If you disagree with the
+  weighting, re-sort by the axis you care about and get your own shortlist. Nothing is hidden
+  behind a cutoff — zones that are unreachable inside the hiding period are held out of the
+  ranking but still listed, with the reason and the travel time.
 - **Tactics**, derived from the rulebook and parameterised to this map, each citing its rule.
 
 Six categories are named above because that's what the *simulator* offers. The question catalogue's
 own six are slightly different — photo challenges take the place of exploring, since there's nothing
 for a map to partition.
-
-On a map with more than 2,000 zones the full field is too big to put in the page, so a `zones.json`
-is written next to the two HTML files and nothing is silently dropped.
 
 ---
 
@@ -180,7 +155,32 @@ hub station, and the map border.
 ### 2. Look up what's actually there
 
 The rulebook's questions reference things GTFS knows nothing about — museums, zoos, golf courses,
-hospitals, consulates, parks, mountains, coastlines. Those come from OpenStreetMap.
+hospitals, consulates, parks, mountains, coastlines. Those come from OpenStreetMap — but not by
+querying a live OSM service. The app reads prebuilt **FlatGeobuf** files, one per feature category,
+served from a public bucket. Each file carries a spatial index in its header, so the browser reads
+the index with HTTP Range requests, learns which byte ranges hold the features inside the game
+border, and fetches only those — a bbox query against a multi-gigabyte planet-scale layer costs
+tens of kilobytes of index reads plus the features themselves. On the Grand Rapids reference border
+the whole layer is about 290 range requests and 14.6 MB.
+
+This buys three things a live query service can't offer: no rate limit and no shared-server
+etiquette, an immutable snapshot so two people analysing the same city read identical data, and a
+single origin that either answers or visibly doesn't. What it costs is freshness — every count is
+as-of the planet snapshot the files were built from, and the page's provenance section says which.
+
+Each category is *defined* by an Overpass QL selector — the query language of OSM's public query
+service — and those selectors are printed verbatim in the provenance section, so a player who
+doubts a count can re-run the exact query at [overpass-turbo.eu](https://overpass-turbo.eu) against
+live OSM and check. The prebuilt files are a mechanical translation of those selectors; the
+selector is the definition, the file is a cache of its answer.
+
+Two special cases. Six categories that exist only to be counted — bridges, buildings, streets,
+footpaths, trees — ship as a density grid (a per-cell tally at ~220 m resolution) rather than as
+feature geometry, because nobody needs the outline of every building to know a zone is downtown.
+And administrative divisions (which state are you in, which city) come from the **Overture Maps
+Foundation** rather than OSM, whose admin polygons are the one layer where the alternative is
+cleaner. Map features are © OpenStreetMap contributors, ODbL; admin divisions are from Overture —
+the page credits both.
 
 One subtlety worth naming: the rulebook says distances are measured **to the map icon**, not to the
 nearest edge. So for a large park, the relevant point is the label in the middle, which can be a
@@ -190,7 +190,7 @@ that single choice changes the answer to a lot of questions.
 
 ### 3. Audit the rules against the city
 
-Every question in the deck gets one of six verdicts:
+Every question in the deck gets a verdict:
 
 - **functional** — works, and tells the seekers something
 - **weak** — works, but barely narrows things down
@@ -237,97 +237,44 @@ rare, and they're what you're shopping for.
 
 ### 5. Render
 
-Two self-contained HTML files. [WebAwesome](https://webawesome.com/) components for all the
-interface, minimal custom CSS, MapLibre + OpenFreeMap for the maps. No build step, no framework, no
-bundler — the generator writes the markup directly. Light and dark themes, and the selected game day
-follows you between the two pages.
+One document, hydrated progressively. The pipeline runs in a Web Worker and streams staged results;
+each of the nine sections is swapped from skeleton to real markup the moment its data lands, so you
+read the verdict while the map layer is still loading. [Web Awesome](https://webawesome.com/)
+components for the interface, MapLibre + OpenFreeMap for the maps, no build step, no framework, no
+bundler. Light and dark themes, and the selected game day follows you between the two views.
 
 ---
 
 ## Determinism
 
-The same feed and the same cached data produce **byte-identical** HTML. No unsorted iteration
-reaching the output, no clock — every date on the page comes from the feed's own calendar or from
-`--as-of`. There is exactly one call into `random` — a fixed-seed permutation inside the
-minimum-enclosing-circle, which is a fixed shuffle rather than entropy. The CLI caches network
-responses by a hash of the exact request, so once a city is cached the whole thing runs offline and
-reproducibly. In the browser only the GTFS feed is cached that way; the map files are immutable and
-content-addressed, so a run is reproducible without being offline.
+The same feed and the same map files produce the same report. No wall clock reaches the output —
+every date on the page comes from the feed's own calendar or from the analysis-date override. There
+is exactly one call into randomness — a fixed-seed permutation inside the minimum-enclosing-circle
+computation, which is a fixed shuffle rather than entropy — and every dictionary and set is iterated
+through a sort. The feed is cached in the browser (IndexedDB, keyed by a hash of the exact request),
+and the map files are immutable and content-addressed, so a run is reproducible without being
+offline.
 
 This is the point of the project, not a nicety. If two people generate the report for the same city
 they must get the same report, or it isn't evidence of anything.
 
 ---
 
-## The AI part (it's small, deliberately)
-
-There is an optional `--llm` flag that talks to a local model on LM Studio. It does **one thing**:
-break ties between zones that scored *exactly* equal. That's the only job where a language model
-can't be wrong, because every candidate in a tie is already known to be equally good.
-
-Everything else — every number, score, ranking, verdict and sentence — is computed. That's not
-caution for its own sake; it's what the measurements said. Two local models were tested against
-hand-labelled ground truth, and a flavour-text feature was built and then deleted when it turned out
-to invent things. The surviving write-up, including why the better model *still* didn't earn a
-place, is in `AGENTS.md`. (`--llm`'s own `--help` text still advertises those deleted flavour
-sentences; the code no longer has them.)
-
-Without the flag, the pages are complete and never mention a model.
-
----
-
-## Options
-
-```
---out DIR              where to write (default: ., the repo root — always set this)
---cache DIR            HTTP cache directory (default: cache)
---no-osm               skip OpenStreetMap entirely; fast, but disables the OSM-backed questions
---as-of YYYYMMDD       analysis date (default: the feed's own start date)
---size {small,medium,large}      override the inferred game size
---zone-radius M        override the hiding-zone radius
---hiding-period MIN    override the hiding period
---start STOP_ID        override the inferred round-start station
---border {bbox,circle} border shape (default: bbox)
---border-bbox S,W,N,E  set the map border explicitly
---exclude-stop ID      drop a stop from the map (repeatable — for the safety conversation)
---exclude-route ID     drop a route (repeatable)
---departure HH:MM[:SS] round-start departure time (default 09:00:00)
---board-slack SEC      transfer slack in the travel-time model (default 0)
---offline              a cache miss becomes an error instead of a fetch
---refresh              ignore the cache and refetch
---llm                  allow the local model to break exact score ties
---llm-url URL          LM Studio base URL
---llm-model ID         model id
---selftest             assert the reference feed's known-good numbers
--v / -vv               logging
-```
-
-Everything is inferred by default. The overrides exist for when you disagree, or when your group has
-already agreed on a border.
-
----
-
 ## Repo layout
 
 ```
-index.html           the browser port: same analysis, self-serve, no install
-app.js               main-thread controller
-worker.js            the pipeline, off the main thread
+index.html           the page shell: landing form, Advanced panel, nine skeleton sections
+app.js               main-thread controller: owns every element, listener, and the worker protocol
+worker.js            the pipeline orchestrator, off the main thread
 lib/ gtfs/ osm/ rules/   worker-side pipeline (no DOM)
-render/              main-side renderers
+render/              main-side renderers (Report → HTML strings)
 styles.css           the one stylesheet
 CONTRACT.md          authoritative for every shape crossing a module boundary
-tools/smoke.mjs      headless harness: asserts the CLI's golden numbers
-tools/osm-world/     builds the global OpenStreetMap files the web app reads
+tools/smoke.mjs      headless harness: runs the real pipeline, asserts 19 golden numbers
+tools/osm-world/     builds the prebuilt OpenStreetMap files the app reads
   build.py           planet.osm.pbf -> per-category FlatGeobuf -> R2 (uv script)
   categories.json    the build table: one entry per category, plus the density grid
-  README.md          why FlatGeobuf, what it costs, and what the migration lost
-  test-reader.mjs    checks osm/flatgeobuf.js against a file GDAL wrote
-  test-pipeline.mjs  runs collectGeodata end to end over real HTTP Range requests
-
-generated/           the Python generator and its output
-  generate.py        the whole thing (single file, ~16k lines, one dependency)
-  <city>/            generated examples, one directory per city
+  README.md          why FlatGeobuf, what a build costs, how sharding and CI work
 
 README.md            this file
 AGENTS.md            notes for AI coding agents: architecture, conventions, measurements
@@ -335,19 +282,14 @@ GUIDE.md             \
 HIDING.md             >  the Hide+Seek rulebook — the authority on game rules
 SEEKING.md           /
 THERAPID*.md         prose rendering of the reference feed, handy for sanity checks
-package.json         the WebAwesome Pro component dependency
-build/               generated output (gitignored)
-cache/               the CLI's cached HTTP responses (gitignored). The browser port
-                     does not use it — it keeps the same content-addressed scheme in
-                     IndexedDB, and only for the GTFS feed.
+package.json         a LOCAL copy of Web Awesome Pro, for reading component source
+                     offline. NOTHING imports it: the page loads Web Awesome from the
+                     hosted kit pinned in index.html, and that kit — not this — is the
+                     version users get. Kept deliberately; do not delete it as unused.
 ```
 
-The browser port is the repo root and needs no build step — serve the directory and open it.
-It runs the same pipeline as `generated/generate.py` entirely in the browser; the feed is
-never uploaded anywhere.
-
-`generate.py` is assembled from section sources — see `AGENTS.md` if you're editing it. Those
-sources, and the specs the file's docstring cites, are kept outside this tree.
+The design specs the code occasionally cites (`specs/*.md`, `scoring.md`) have never been tracked
+in this repo — they're kept outside the tree, so stop hunting for them.
 
 ---
 
@@ -358,19 +300,16 @@ sources, and the specs the file's docstring cites, are kept outside this tree.
 - **OpenStreetMap isn't Google Maps**, and the rulebook assumes players are using a maps app. The
   rulebook's own legitimacy test (5+ Google reviews) has no OSM equivalent; the report says so where
   it matters, but expect some category disagreements at the margins.
-- **The OSM layer has only been exercised on a handful of cities**, of small and large size; the
-  schedule side on a few more, including heavy-rail systems. Behaviour beyond those is unproven —
-  Overpass's for the CLI, and the prebuilt world files' for the web app.
-- **The path-proximity test no longer runs in the web app.** The rulebook's "within 10 ft of a
-  routable path" check needs a 5 m buffer around every walkable way on the map. The CLI still asks
-  Overpass to do that server-side, where it is the most expensive query in the pipeline: on a large
-  map it isn't attempted at all, because asking a shared mirror to buffer several hundred thousand
-  ways is not a polite request, and on a small one a busy Overpass can still refuse it — three
-  mirrors timing out on three consecutive runs is a real outcome, not a hypothetical. The web app
-  reads prebuilt map files instead of querying Overpass, and there is no local equivalent of that
-  join short of shipping the global footpath network, so it does not attempt the test at all.
-  Either way candidate hiding spots are still listed, just marked verify-on-the-ground — in the web
-  app, always.
+- **The map data is a snapshot, not live.** The prebuilt files reflect OSM as of the planet dump
+  they were built from — the provenance section names the date. A park that opened last week isn't
+  in them; the selectors printed next to each count let you check any number against live OSM.
+- **The "within 10 ft of a routable path" test is not evaluated.** The rulebook qualifies a hiding
+  spot by proximity to a routable path, and checking that needs a buffer around every walkable way
+  on the map — data the prebuilt files don't carry, short of shipping the global footpath network.
+  So the test simply isn't run: candidate hiding spots are still found and listed, but every one of
+  them is marked verify-on-the-ground, always. Stand somewhere legal.
+- **The map layer has only been exercised on a handful of cities**, of small and large size; the
+  schedule side on a few more, including heavy-rail systems. Behaviour beyond those is unproven.
 - **Some of this is interpretation**, and the rulebook is genuinely ambiguous in places. Those spots
   are labelled as interpretations on the page rather than presented as rules — but you and your
   group are still the final authority. It's your game.

@@ -15,7 +15,7 @@
 
 /**
  * One of the rulebook's 80 questions, as the engine needs it.
- * Positional parameters mirror `class QuestionDef` (generate.py line 6373), minus the
+ * Positional parameters mirror `class QuestionDef` (generate.py), minus the
  * rulebook's own `group` label, which nothing in this pipeline reads.
  * @param {string} id                 'matching.park'
  * @param {'matching'|'measuring'|'radar'|'thermometer'|'photo'|'tentacle'} category
@@ -44,7 +44,7 @@ function Q(id, category, label, text, sizes, draw, keep, geodataRef, extra = {})
 
 /**
  * One of the 24 curses, with the predicate that decides whether it stays in.
- * Positional parameters mirror `class CurseDef` (generate.py line 6390), minus the
+ * Positional parameters mirror `class CurseDef` (generate.py), minus the
  * card face itself — its text, its casting cost, what it blocks and the verbatim
  * rulebook trigger — none of which this pipeline reads.
  * @param {string} id

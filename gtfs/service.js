@@ -1,7 +1,7 @@
 /**
  * S1 · the service day and the RAPTOR structures.
  *
- * Port of `generate.py` lines 2371–2712 (the per-feed derived caches, the calendar
+ * Port of `generate.py` (the per-feed derived caches, the calendar
  * and the day-type grouping), 2713–3290 (the service day itself) and 3294–3366
  * (`cluster_stations`). Nothing here reads a clock, a locale or the DOM.
  *
@@ -45,7 +45,7 @@ import {
 } from '../lib/core.js';
 import { GridIndex, Projection } from '../lib/geo.js';
 
-// ── private constants (generate.py lines 2112–2113) ──────────────────────────
+// ── private constants (generate.py) ──────────────────────────
 
 const S1_DOW_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday',
   'saturday', 'sunday'];
@@ -97,7 +97,7 @@ function pushTo(map, key, value) {
   else bucket.push(value);
 }
 
-// ── small private helpers (generate.py lines 2140–2195) ──────────────────────
+// ── small private helpers (generate.py) ──────────────────────
 
 /**
  * Median of a *measured distribution* — headways, gaps, travel times.
@@ -420,14 +420,14 @@ export function noServiceDates(feed, start, end) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {Object} S1StopIndex   // `_S1StopIndex`, generate.py line 2733.
+ * @typedef {Object} S1StopIndex   // `_S1StopIndex`, generate.py.
  * Bidirectional stop_id ↔ dense-index map over the whole feed's stops.
  * @property {Map<string, number>} byId
  * @property {string[]} ids        // sorted
  */
 
 /**
- * @typedef {Object} S1Pattern     // `_S1Pattern`, generate.py line 2741.
+ * @typedef {Object} S1Pattern     // `_S1Pattern`, generate.py.
  * Trips sharing an identical stop sequence, stored column-major.
  *
  * `dep[offset]` and `arr[offset]` are per-trip vectors in trip order (sorted by
@@ -445,7 +445,7 @@ export function noServiceDates(feed, start, end) {
  */
 
 /**
- * @typedef {Object} S1DayExtras   // `_S1DayExtras`, generate.py line 2761.
+ * @typedef {Object} S1DayExtras   // `_S1DayExtras`, generate.py.
  * Per-day vectors shared by the metrics, headway and question layers.
  * @property {Object<string, [string, string]>} tripRoute   // trip_id → [route_id, direction_id]
  * @property {Object<string, number[]>} dedup               // stop_id → one departure per trip
@@ -848,7 +848,7 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
       stopName,
       routeLabel,
     },
-    // `_s1_slack`, generate.py line 3020. Read back by raptor.js.
+    // `_s1_slack`, generate.py. Read back by raptor.js.
     _s1Slack: Math.trunc(boardSlackS),
   };
 }

@@ -1,4 +1,4 @@
-// render/html.js — the HTML string-builder helpers (generate.py lines 959–1370).
+// render/html.js — the HTML string-builder helpers (generate.py).
 //
 // APPROACH: template literals through a small set of helpers, no template files, no
 // template engine. Every function here is pure and returns a string; nothing in this

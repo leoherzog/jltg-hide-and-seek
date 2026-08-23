@@ -2,13 +2,13 @@
  * render/map.js — §04 At a Glance, §05 The Map You're Playing On, §06 Getting Around.
  *
  * Ported from generate.py S4:
- *   index_key_numbers       11881  + _s4_legend 11936, _s4_swatch 11943,
- *                                    _s4_card_header 11947               → §04 `#numbers`
- *   index_network_map       12149                                        → §05 `#network`
- *   index_transit_reality   12040  + _s4_headway_bin 11960, _s4_heatmap_rows 11968,
- *                                    _s4_heatmap_table 11978, _s4_heatmap 12009,
- *                                    _s4_chart_max 11210                 → §06 `#transit`
- *   the per-day views       10724–11032 (_s4_day_view … _s4_tiles_html)
+ *   index_key_numbers      + _s4_legend, _s4_swatch,
+ *                            _s4_card_header             → §04 `#numbers`
+ *   index_network_map                                    → §05 `#network`
+ *   index_transit_reality  + _s4_headway_bin, _s4_heatmap_rows,
+ *                            _s4_heatmap_table, _s4_heatmap,
+ *                            _s4_chart_max               → §06 `#transit`
+ *   the per-day views        (_s4_day_view … _s4_tiles_html)
  *
  * The shared S4 formatting helpers (`_s4_dist`, `_s4_area`, `_s4_val`, `_s4_plural`,
  * `_s4_natural_key`, `_s4_swatch`, `_s4_card_header`) and four of the day-view helpers
@@ -47,7 +47,7 @@ import {
 } from './verdict.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Presentation constants (generate.py 10481–10521)
+// Presentation constants (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -148,7 +148,7 @@ function startStopName(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · SHARED MARKUP HELPERS (generate.py 11773–11795)
+// S4 · SHARED MARKUP HELPERS (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -171,11 +171,11 @@ export function s4Legend(items) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · PER-DAY VIEWS (generate.py 10724–11032)
+// S4 · PER-DAY VIEWS (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The day summary for one key, or `null`. (`_s4_day_by_key`, line 10894.)
+ * The day summary for one key, or `null`. (`_s4_day_by_key`.)
  *
  * The CLI returns a full `ServiceDay`; in the browser `report.days` holds the
  * clone-safe `DaySummary` (CONTRACT §(d)), which carries every field §04–§06 read.
@@ -419,7 +419,7 @@ export function s4ChartMax(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · §04 AT A GLANCE (generate.py 11718)
+// S4 · §04 AT A GLANCE (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -453,7 +453,7 @@ export function renderKeyNumbers(payload) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · §06 GETTING AROUND (generate.py 11797–11985)
+// S4 · §06 GETTING AROUND (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -723,7 +723,7 @@ export function renderTransitReality(payload) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · §05 THE MAP YOU'RE PLAYING ON (generate.py 11986)
+// S4 · §05 THE MAP YOU'RE PLAYING ON (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**

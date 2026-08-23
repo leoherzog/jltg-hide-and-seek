@@ -1,10 +1,10 @@
 /**
  * rules/score.js — the scoring layer.
  *
- * Port of generate.py's S3 scoring section: the ramps (line 6591), the 100-point
- * city fitness model (`score_fitness`, line 9395), the per-zone rating
- * (`score_zones`, line 9631), the findings and house rules (line 9876) and the
- * provenance block (`build_provenance`, line 10377).
+ * Port of generate.py's S3 scoring section: the ramps, the 100-point
+ * city fitness model (`score_fitness`), the per-zone rating
+ * (`score_zones`), the findings and house rules and the
+ * provenance block (`build_provenance`).
  *
  * Worker side — no DOM. Every number here is an INTEGER NUMBER OF TENTHS of a
  * point from `tenths()` onward, so sub-scores and totals are exact integer sums
@@ -50,7 +50,7 @@ function getNum(obj, key, fallback = 0) {
 
 /**
  * Monotone increasing, clamped: `lo`→0, `hi`→1.
- * (generate.py `ramp`, line 6637)
+ * (generate.py `ramp`)
  * @param {number} x @param {number} lo @param {number} hi @returns {number}
  */
 export function ramp(x, lo, hi) {
@@ -60,7 +60,7 @@ export function ramp(x, lo, hi) {
 
 /**
  * Monotone decreasing, clamped: `good`→1, `bad`→0.
- * (generate.py `rramp`, line 6644)
+ * (generate.py `rramp`)
  * @param {number} x @param {number} good @param {number} bad @returns {number}
  */
 export function rramp(x, good, bad) {
@@ -69,7 +69,7 @@ export function rramp(x, good, bad) {
 
 /**
  * 0 below `a`, ramp `a`→`b`, 1 across `[b, c]`, ramp down `c`→`d`, 0 above `d`.
- * (generate.py `plateau`, line 6649)
+ * (generate.py `plateau`)
  * @param {number} x
  * @param {number} a @param {number} b @param {number} c @param {number} d
  * @returns {number}
@@ -85,7 +85,7 @@ export function plateau(x, a, b, c, d) {
  *
  * `floor(frac * max * 10 + 0.5)`. Every point in the program is an integer number
  * of tenths from here on, so sub-scores and totals are exact integer sums.
- * (generate.py `tenths`, line 6658)
+ * (generate.py `tenths`)
  * @param {number} fraction @param {number} maxPoints @returns {number}
  */
 export function tenths(fraction, maxPoints) {
@@ -96,7 +96,7 @@ export function tenths(fraction, maxPoints) {
 // S3 · CITY FITNESS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** `_S3_BANDS`, generate.py line 7497. `[threshold, name, advice]`, descending. */
+/** `_S3_BANDS`, generate.py. `[threshold, name, advice]`, descending. */
 export const S3_BANDS = Object.freeze([
   Object.freeze([80.0, 'Excellent map', 'Play it as written; no house rules required.']),
   Object.freeze([65.0, 'Strong map', 'A few house rules and it plays well.']),
@@ -108,12 +108,12 @@ export const S3_BANDS = Object.freeze([
     "Consider the rulebook's cars or on-foot variant."]),
 ]);
 
-/** `_S3_GREEDY_K`, generate.py line 9535. */
+/** `_S3_GREEDY_K`, generate.py. */
 export const S3_GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
  * One scored row. `frac` is the ramp output; points are integer tenths from here on.
- * (generate.py `_s3_metric`, line 9099)
+ * (generate.py `_s3_metric`)
  *
  * @param {string} mid @param {string} name @param {number|null} raw @param {string} unit
  * @param {number|null} frac @param {number} maxPoints
@@ -142,7 +142,7 @@ function s3Metric(mid, name, raw, unit, frac, maxPoints, kind, args, source, not
 
 /**
  * The four B-metric inputs, from the audit rows. `unknown` never enters a denominator.
- * (generate.py `_s3_question_stats`, line 9120)
+ * (generate.py `_s3_question_stats`)
  *
  * `unaskable` used to be counted into the functional pool at both sites below, because
  * there was exactly one `unaskable` question — Transit Line, forced there by a curse
@@ -209,7 +209,7 @@ function s3QuestionStats(questions, size) {
 
 /**
  * The metric view for one service day: the head table, overlaid with that day's values.
- * (generate.py `_s3_view`, line 9169)
+ * (generate.py `_s3_view`)
  * @param {Object} metrics @param {string|null} dayKey @param {Object} size @returns {Object}
  */
 function s3View(metrics, dayKey, size) {
@@ -238,7 +238,7 @@ function s3View(metrics, dayKey, size) {
  * evaluated on stop reach instead. A route touching nine stops in ten is a
  * one-dimensional map either way; this is the `one_route_cap_is_stop_share`
  * interpretation.
- * (generate.py `_s3_one_route_share`, line 9186)
+ * (generate.py `_s3_one_route_share`)
  * @param {Object[]} days @returns {number}
  */
 function s3OneRouteShare(days) {
@@ -266,7 +266,7 @@ function s3OneRouteShare(days) {
 
 /**
  * Build all six sub-scores from one metric view. Pure arithmetic; no I/O.
- * (generate.py `_s3_subscores`, line 9209)
+ * (generate.py `_s3_subscores`)
  *
  * @param {Object} view @param {Object} qstats @param {Object} size
  * @param {number|null} sharedSignatureShare
@@ -500,7 +500,7 @@ function nullish(v) { return (v === undefined || v === null) ? null : v; }
  * Five named caps can only *lower* the score, and the trace shows both values.
  * Degradation is drop-and-renormalise; above 40% missing points, no headline number
  * is printed at all.
- * (generate.py `score_fitness`, line 9395)
+ * (generate.py `score_fitness`)
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
  * @param {Object<string, Object>} zoneScores @param {Object} size @param {Object[]} days
@@ -614,7 +614,7 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
  * `scoreFitness` consumes the fired rows; the renderer prints the whole list, so
  * "CAP_CATEGORIES — not evaluated" is visible rather than silently absent. A cap
  * can only ever *lower* a score. Sorted by id.
- * (generate.py `fitness_caps`, line 9483)
+ * (generate.py `fitness_caps`)
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
  * @param {Object} size @param {Object[]} days
@@ -694,7 +694,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
 /**
  * Equal-area polar sample of a disc: 8 rings × 16 spokes = 128 points, used for the
  * share of a zone circle that falls outside the map border.
- * (generate.py `_S3_DISC_SAMPLE`, line 9539)
+ * (generate.py `_S3_DISC_SAMPLE`)
  */
 const S3_DISC_SAMPLE = (() => {
   const out = [];
@@ -709,7 +709,7 @@ const S3_DISC_SAMPLE = (() => {
 
 /**
  * Share of the zone circle's area that lies outside the map border.
- * (generate.py `_s3_edge_fraction`, line 9546)
+ * (generate.py `_s3_edge_fraction`)
  */
 function s3EdgeFraction(zone, bbox, radiusM, proj) {
   let outside = 0;
@@ -722,7 +722,7 @@ function s3EdgeFraction(zone, bbox, radiusM, proj) {
 
 /**
  * Median gap between departures from anywhere inside the zone circle, 06:00–22:00.
- * (generate.py `_s3_zone_headway_min`, line 9557)
+ * (generate.py `_s3_zone_headway_min`)
  */
 function s3ZoneHeadwayMin(zone, day, lo, hi) {
   const times = [];
@@ -740,7 +740,7 @@ function s3ZoneHeadwayMin(zone, day, lo, hi) {
 
 /**
  * The latest departure from anywhere inside the zone circle.
- * (generate.py `_s3_zone_last_arrival_s`, line 9574)
+ * (generate.py `_s3_zone_last_arrival_s`)
  */
 function s3ZoneLastArrivalS(zone, day) {
   let best = null;
@@ -754,7 +754,7 @@ function s3ZoneLastArrivalS(zone, day) {
 
 /**
  * Other zones within `radiusM` of each zone, by an x-sweep.
- * (generate.py `_s3_neighbour_count`, line 9585)
+ * (generate.py `_s3_neighbour_count`)
  */
 function s3NeighbourCount(zones, radiusM) {
   const n = zones.length;
@@ -782,7 +782,7 @@ function s3NeighbourCount(zones, radiusM) {
 
 /**
  * Single-link clusters of candidate legal spots, at 100 m.
- * (generate.py `_s3_spot_clusters`, line 9607)
+ * (generate.py `_s3_spot_clusters`)
  */
 function s3SpotClusters(spots, proj, linkM = 100.0) {
   const pts = spots.map((s) => proj.xy(Number(s.lat), Number(s.lon)));
@@ -836,7 +836,7 @@ const S3_AXIS_OF = Object.freeze({
  *
  * Side effect, by design: this is the only function that sees both the audit rows
  * and the survival table, so it fills `QuestionAudit.survMean` in place.
- * (generate.py `score_zones`, line 9631)
+ * (generate.py `score_zones`)
  *
  * @param {Object[]} zones @param {Object[]} questions
  * @param {Object<string, Array<*>>} signatures @param {Object<string, number[]>} surv
@@ -1209,7 +1209,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
  * Excluded zones (unreachable, or no service on the selected day) are left out of
  * the ranking; they are never dropped from `zoneScores`, so the page can list them
  * separately with their times.
- * (generate.py `rank_zones`, line 9943)
+ * (generate.py `rank_zones`)
  *
  * @param {Object<string, Object>} zoneScores @returns {string[]}
  */
@@ -1230,7 +1230,7 @@ export function rankZones(zoneScores) {
  * winners** — the top zone on each of IR, R, S, E, A, X — so the most
  * information-resistant zone on the map appears even if it ranks 60th overall
  * because it has no toilet.
- * (generate.py `select_dossiers`, line 9959)
+ * (generate.py `select_dossiers`)
  *
  * @param {string[]} ranked @param {Object<string, Object>} zoneScores
  * @param {Object<string, Object>} zones zoneId → `Zone`
@@ -1279,7 +1279,7 @@ export function selectDossiers(ranked, zoneScores, zones, radiusM) {
 /**
  * Mitigations keyed by metric id. A minus with a mitigation becomes a `concern`
  * (something you can play around); a minus without one stays a `minus`.
- * (generate.py `_S3_MITIGATION`, line 10017)
+ * (generate.py `_S3_MITIGATION`)
  */
 const S3_MITIGATION = Object.freeze({
   A2: 'Move the start location to a stop nearer the middle of the network, or play the next '
@@ -1305,7 +1305,7 @@ const S3_MITIGATION = Object.freeze({
 
 /**
  * One factual sentence about a metric, in that metric's own units.
- * (generate.py `_s3_finding_detail`, line 10040)
+ * (generate.py `_s3_finding_detail`)
  */
 function s3FindingDetail(metric, metrics, questions) {
   const mid = metric.id;
@@ -1382,7 +1382,7 @@ function s3FindingDetail(metric, metrics, questions) {
 
 /**
  * The service day a finding is really about, or null.
- * (generate.py `_s3_day_sensitive`, line 10104)
+ * (generate.py `_s3_day_sensitive`)
  */
 function s3DaySensitive(metricId, metrics) {
   if (!['E1', 'E2', 'C1', 'C3', 'D1', 'D2'].includes(metricId)) return null;
@@ -1403,7 +1403,7 @@ function s3DaySensitive(metricId, metrics) {
  * The **benefit** quadrant has no computable source beyond `fare_attributes.txt`,
  * which this function is not handed, so it is dropped rather than invented — which
  * is what the contract asks for when the source is absent.
- * (generate.py `derive_findings`, line 10117)
+ * (generate.py `derive_findings`)
  *
  * @param {Object} fitness @param {Object} metrics @param {Object[]} questions
  * @returns {Object[]} `Finding[]`
@@ -1456,7 +1456,7 @@ export function deriveFindings(fitness, metrics, questions) {
  *
  * One rule **always** fires: agree the safety exclusions — the rulebook demands
  * that conversation and explicitly refuses to automate the polygon.
- * (generate.py `derive_recommendations`, line 10162)
+ * (generate.py `derive_recommendations`)
  *
  * @param {Object} reportParts `{metrics, fitness, size, hub, border, curses, questions, feed}`
  * @returns {Object[]} `Recommendation[]`
@@ -1736,7 +1736,7 @@ function synthArgv(opts) {
  * Assemble the provenance block: what was fetched, what was assumed.
  *
  * Contains **no timestamp** that is not derived from `feed_info` or `options.asOf`.
- * (generate.py `build_provenance`, line 10377)
+ * (generate.py `build_provenance`)
  *
  * @param {Object} opts @param {Object} feed @param {Object} geo @param {Object} size
  * @param {string} asOf @param {string[]} degradations

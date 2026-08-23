@@ -1,12 +1,12 @@
 /**
  * S1 · hiding zones and network metrics.
  *
- * Port of `generate.py` lines 3367–4002: `zone_cover`, `_s1_zone_members`,
+ * Port of `generate.py`: `zone_cover`, `_s1_zone_members`,
  * `build_zones`, `_s1_hull_and_shape`, `_s1_route_km`, `radar_liveness`,
  * `_s1_percentiles`, `_s1_day_metrics`, `_s1_axis_scores`, `_s1_provisional_size`,
  * `network_metrics` and `route_headways`.
  *
- * `cluster_stations` (line 3298) lives in `./service.js` in this port — it is a
+ * `cluster_stations` lives in `./service.js` in this port — it is a
  * property of the feed, not of the metric table — and is re-exported here so the
  * grouping of the Python section survives.
  *
@@ -72,7 +72,7 @@ import {
 } from './service.js';
 import { raptor } from './raptor.js';
 
-// ── private constants (generate.py lines 2119–2136) ──────────────────────────
+// ── private constants (generate.py) ──────────────────────────
 
 /**
  * Tuple keys are joined with U+0000, which is below every character a GTFS id can
@@ -104,7 +104,7 @@ function maxOf(values) {
 /**
  * Radar / thermometer probe distances, in miles. Every rulebook radar and
  * thermometer tier appears here so `radarLiveness` answers all of them at once.
- * `_S1_RADAR_MILES`, generate.py line 2121.
+ * `_S1_RADAR_MILES`, generate.py.
  */
 export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.0,
   25.0, 50.0, 100.0]);
@@ -115,7 +115,7 @@ export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.
  * which is inferred and marked as such on each entry — see the note below.
  * `SIZES` in rules/catalogue.js is now only the catalogue-size lookup; it no
  * longer carries this table or this inference.
- * `_S1_SIZE_PARAMS`, generate.py line 2128.
+ * `_S1_SIZE_PARAMS`, generate.py.
  *
  * `requiredHours` is a playing DAY, not the whole game. The rulebook states a
  * size's length only as prose — SMALL "lasts 4–8 hours", MEDIUM "lasts about 1
@@ -147,7 +147,7 @@ export const S1_SIZE_PARAMS = Object.freeze({
   }),
 });
 
-/** `_S1_SIZE_ORDER`, generate.py line 2139. */
+/** `_S1_SIZE_ORDER`, generate.py. */
 export const S1_SIZE_ORDER = Object.freeze(['small', 'medium', 'large']);
 
 /** `sorted(_S1_SIZE_PARAMS)` — alphabetical, which is NOT `S1_SIZE_ORDER`. */
@@ -284,7 +284,7 @@ export function zoneCover(stopIds, radiusM, stopEvents, pos) {
 
 /**
  * `centre → every stop of `stopIds` inside its circle`, sorted.
- * `_s1_zone_members`, generate.py line 3436.
+ * `_s1_zone_members`, generate.py.
  *
  * @param {string[]} centres @param {string[]} stopIds @param {number} radiusM
  * @param {Object<string, [number, number]>} pos
@@ -348,7 +348,7 @@ export function buildZones(feed, day, centres, radiusM, projLike) {
 
 /**
  * `[hull, areaM2, diameterM]` for planar points. Diameter is the max hull pair.
- * `_s1_hull_and_shape`, generate.py line 3485.
+ * `_s1_hull_and_shape`, generate.py.
  *
  * @param {Array<[number, number]>} points
  * @returns {[Array<[number, number]>, number, number]}
@@ -483,7 +483,7 @@ export function radarLiveness(stopIds, pos, radiiM) {
 
 /**
  * `{p05, p25, p50, …}` — the key is the probability × 100, zero-padded to two
- * digits, exactly as `_s1_percentiles` (generate.py line 3582) writes it.
+ * digits, exactly as `_s1_percentiles` (generate.py) writes it.
  * @param {number[]} values @param {number[]} probs
  * @returns {Object<string, number>}
  */
@@ -499,7 +499,7 @@ export function s1Percentiles(values, probs) {
 
 /**
  * Everything that is a property of one service day. Called once per day type.
- * `_s1_day_metrics`, generate.py line 3588.
+ * `_s1_day_metrics`, generate.py.
  *
  * The keys are read **by name** — by `rules/score.js`, by the renderers, and by
  * `networkMetrics` itself. Do not rename one without grepping.
@@ -707,7 +707,7 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
 
 /**
  * The four game-size axes, each scored 0=small / 1=medium / 2=large.
- * `_s1_axis_scores`, generate.py line 3758.
+ * `_s1_axis_scores`, generate.py.
  * @param {number} hullSqMi @param {number} nZones @param {number} t90Min
  * @param {number} diameterMi
  * @returns {[number, number, number, number]}
@@ -723,7 +723,7 @@ export function s1AxisScores(hullSqMi, nZones, t90Min, diameterMi) {
 /**
  * The size the four axes imply, used only to pick which size-keyed default a
  * metric exposes. `inferGameSize` is the authority and re-derives it.
- * `_s1_provisional_size`, generate.py line 3767.
+ * `_s1_provisional_size`, generate.py.
  * @param {object} metrics @returns {'small'|'medium'|'large'}
  */
 export function s1ProvisionalSize(metrics) {

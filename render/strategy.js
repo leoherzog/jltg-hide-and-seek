@@ -19,7 +19,7 @@
 // reachable only by the URL fragment `#strategy`. Nothing in the report view mentions
 // it. The one link
 // out of here — the hero's `href="#top"` — is only visible to somebody already
-// inside, which is exactly the CLI's cross-page invariant (generate.py 13539–13550).
+// inside, which is exactly the CLI's cross-page invariant (generate.py).
 //
 // PURE, LIKE EVERY OTHER RENDERER. `Report → string`. No DOM, no `Date.now()`, no
 // `Math.random()`, no listener, no side effect. `render/simulator.js` imports the
@@ -64,7 +64,7 @@ import { QUESTIONS } from '../rules/catalogue.js';
 
 /**
  * The six zone axes: `(id, name, what it measures, the rulebook clause behind it)`.
- * (generate.py `_S5_AXES`, line 13986.) `simulator.js` reads this for the dossier's
+ * (generate.py `_S5_AXES`.) `simulator.js` reads this for the dossier's
  * score block, so it is exported rather than kept private.
  * @type {ReadonlyArray<readonly [string, string, string, string]>}
  */
@@ -105,7 +105,7 @@ export const AXIS_IDS = Object.freeze(AXES.map((a) => a[0]));
 
 /**
  * Axis id → (the plain name the page leads with, the short word a column header can
- * hold). (generate.py `_S5_AXIS_PLAIN`, line 14023.) The rulebook's own name for the
+ * hold). (generate.py `_S5_AXIS_PLAIN`.) The rulebook's own name for the
  * axis is never dropped — it rides alongside the plain one as a quiet caption in
  * §04's accordion labels, and the letter survives as a `<code>` beside every plain
  * name and in every `data-sort` index.
@@ -137,7 +137,7 @@ export const FLAG_TEXT = Object.freeze({
   osm_thin: Object.freeze(['Thin OSM coverage', 'neutral', 'circle-info']),
 });
 
-/** Simulator mode → its button label, in button order. (generate.py 13892.) */
+/** Simulator mode → its button label, in button order. (generate.py.) */
 export const MODE_LABEL = Object.freeze([
   Object.freeze(['explore', 'Explore']),
   Object.freeze(['radar', 'Radar']),
@@ -317,7 +317,7 @@ function referenceScore(report) {
  * The OSM category keys this run actually knows about.
  *
  * DIVERGENCE, deliberate. The CLI tests `key in {c.key for c in GEO_CATEGORIES}`
- * (generate.py 14205, 14252) to tell an OSM-backed question subject from a GTFS or
+ * (generate.py) to tell an OSM-backed question subject from a GTFS or
  * administrative one. `GEO_CATEGORIES` lives in `osm/geodata.js`, a worker
  * module this file may not import, so the set is derived from the two `GeoData`
  * fields that are keyed by category: `counts` (every queried category, zero-count
@@ -411,7 +411,7 @@ function flagChip(flag) {
  * remaining key of `report.zoneScores` sorted by plain code-point comparison,
  * carrying `rank === null`. Those leftovers are the zones `rankZones` deliberately
  * held out — unreachable, or the designated station has no service — and they still
- * reach the page, because nothing is ever silently dropped (generate.py 14120–14126).
+ * reach the page, because nothing is ever silently dropped (generate.py).
  *
  * `_s5_tie_break` (14243) is `--llm`-only and the port has no LLM, so it is dropped.
  *
@@ -689,7 +689,7 @@ export function poiCategories(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// THE HERO AND ITS PICK CARD (generate.py 14309, 15594)
+// THE HERO AND ITS PICK CARD (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -849,7 +849,7 @@ function mapCard(report) {
   // `s4ChipGroup` itself is NOT reused here because it cannot express `disabled`, and
   // a dead mode shown disabled-with-reason is the point of this row, not an oversight —
   // knowing which questions cannot hurt you here is worth as much as knowing which
-  // can. (generate.py 14483–14496.) Every attribute below is the helper's.
+  // can. (generate.py.) Every attribute below is the helper's.
   const chips = modeChips(report);
   const reasons = [];
   const radios = MODE_LABEL.map(([mode, label]) => {
@@ -1070,7 +1070,7 @@ function sectionShortlist(report) {
  * The eleven column words of §02's table, in `data-sort` index order.
  *
  * **The indices 0–10 are the contract between this file and `simulator.js`
- * (generate.py 14690–14700). Never renumber them.**
+ * (generate.py). Never renumber them.**
  */
 const TABLE_HEADERS = Object.freeze([
   Object.freeze(['Rank', '']),
@@ -1479,7 +1479,7 @@ function sectionAxes(report) {
  * §05 — the scoring parameters actually used.
  *
  * The feasibility report is named in prose and deliberately **not** linked: the hero's
- * back-link is the affordance, and it is the only one. (generate.py 14859–14862.)
+ * back-link is the affordance, and it is the only one. (generate.py.)
  */
 function sectionMethod(report) {
   const p = report.provenance || {};

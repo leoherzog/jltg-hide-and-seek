@@ -2,19 +2,17 @@
 // the page footer, and the interactive behaviour of the two deck tables.
 //
 // Ported from generate.py S4:
-//   index_questions       12386  + _s4_status_tag 12285, _s4_question_categories 12299,
-//                                  _s4_funnel 12325, _s4_definition_list 12369
-//                                                                    → §07 `#questions`
-//   index_curses          12618  + _s4_action_tag 12542, _s4_curse_rows 12555,
-//                                  _s4_deck_strip 12584               → §08 `#curses`
-//   index_provenance      13006  + _s4_fact_rows 12993,
-//                                  _s4_sources_index 13178            → §09 `#sources`
-//   _s4_footer            13782                                       → the page footer
-//   _S4_INDEX_JS          13220  — `bindFilter`, `bindSearch`, `bindSpending`, plus the
-//                                  sort and paging the browser build adds on top
+//   index_questions   + _s4_status_tag, _s4_question_categories,
+//                       _s4_funnel, _s4_definition_list        → §07 `#questions`
+//   index_curses      + _s4_action_tag, _s4_curse_rows,
+//                       _s4_deck_strip                         → §08 `#curses`
+//   index_provenance  + _s4_fact_rows, _s4_sources_index       → §09 `#sources`
+//   _s4_footer                                                 → the page footer
+//   _S4_INDEX_JS      — `bindFilter`, `bindSearch`, `bindSpending`, plus the
+//                       sort and paging the browser build adds on top
 //
-// Also ported here because nothing else owns them yet: `_s4_table` (11923) and
-// `_s4_chip_group` (11902). Everything under "unit and value formatting" comes from
+// Also ported here because nothing else owns them yet: `_s4_table` and
+// `_s4_chip_group`. Everything under "unit and value formatting" comes from
 // `./verdict.js`; none of it is redefined below.
 //
 // THREE THINGS THIS FILE IS OPINIONATED ABOUT, and they are the reason it exists.
@@ -238,7 +236,7 @@ function fnum(x) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Shared markup helpers (generate.py 11739–11790)
+// Shared markup helpers (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -249,7 +247,7 @@ function fnum(x) {
  * `data-action`. Only the labels are plain English. An option may carry a third
  * element, its icon name; the word always stays.
  *
- * (generate.py `_s4_chip_group`, line 11902.)
+ * (generate.py `_s4_chip_group`.)
  *
  * @param {string} groupId @param {string} name
  * @param {ReadonlyArray<[string,string]|[string,string,string]>} options
@@ -287,7 +285,7 @@ function s4ChipGroup(groupId, name, options, opts) {
  * both fire `click` — which is the whole reason it is a button and not a `<span>` with
  * a listener. Plain-string headers render exactly as the CLI's do.
  *
- * (generate.py `_s4_table`, line 11923.)
+ * (generate.py `_s4_table`.)
  *
  * @param {ReadonlyArray<string|[string,string,string]>} headers
  * @param {ReadonlyArray<[Object, ReadonlyArray<string>]>} rows
@@ -329,7 +327,7 @@ function s4Table(headers, rows, opts = {}) {
  * definition list on the page, not a tooltip: tooltips do not exist on a phone, and
  * this reader is on a phone.
  *
- * (generate.py `_s4_definition_list`, line 12369.)
+ * (generate.py `_s4_definition_list`.)
  *
  * @param {ReadonlyArray<[string,string,string]>} rows
  * @returns {string}
@@ -414,7 +412,7 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
  * (see `S4_STATUS_TAG`), and calling them the rulebook's turned judgement calls
  * into rules ~98 times per report.
  *
- * (generate.py `_s4_status_tag`, line 12285.)
+ * (generate.py `_s4_status_tag`.)
  *
  * @param {string} status @returns {string}
  */
@@ -433,7 +431,7 @@ function s4StatusTag(status) {
  * the category that is dead or degenerate — which is exactly the chance that a
  * Randomize redraw, which stays inside the category, hands the hider a free card.
  *
- * (generate.py `_s4_question_categories`, line 12299.)
+ * (generate.py `_s4_question_categories`.)
  *
  * @param {Object} report @returns {Array<Object>}
  */
@@ -477,7 +475,7 @@ function s4QuestionCategories(report) {
 /**
  * "The questions that break this map" — the greedy map-wide narrowing order.
  *
- * (generate.py `_s4_funnel`, line 12325.)
+ * (generate.py `_s4_funnel`.)
  *
  * @param {Object} report @returns {string}
  */
@@ -605,7 +603,7 @@ function s4LiveCounts(report) {
  * reading — are collected below the table, one row each, still one click and one
  * permalink from the row they belong to.
  *
- * (generate.py `index_questions`, line 12386.)
+ * (generate.py `index_questions`.)
  *
  * @param {Object} payload — the partial `Report` app.js has accumulated
  * @returns {string}
@@ -818,7 +816,7 @@ export function renderQuestions(payload) {
  * prescribe is which specific curses to take out, and that is what tier 1 records
  * (`S4_TIER_DEF`).
  *
- * (generate.py `_s4_action_tag`, line 12542.)
+ * (generate.py `_s4_action_tag`.)
  *
  * @param {string} action @returns {string}
  */
@@ -833,7 +831,7 @@ function s4ActionTag(action) {
 /**
  * The `(rowAttrs, cells)` pairs for one block of curses.
  *
- * (generate.py `_s4_curse_rows`, line 12555.)
+ * (generate.py `_s4_curse_rows`.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses
  * @returns {Array<[Object, string[]]>}
@@ -899,7 +897,7 @@ function s4CurseRows(report, curses) {
  * appear in the thing it labels is worse than no legend. (The Points Budget is the
  * opposite case: its six sub-scores are identity, so it stays one hue.)
  *
- * (generate.py `_s4_deck_strip`, line 12584.)
+ * (generate.py `_s4_deck_strip`.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses @returns {string}
  */
@@ -940,7 +938,7 @@ function s4DeckStrip(report, curses) {
  * table's cells, are collected into one appendix at the foot; every row links to its
  * own by permalink.
  *
- * (generate.py `index_curses`, line 12618.)
+ * (generate.py `index_curses`.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1066,7 +1064,7 @@ function s4RemovedCurses(report) {
  * A blank value suppresses the whole row, which is why `_s4_sources_index` is handed
  * the exact same list: an index entry can never point at a row that never rendered.
  *
- * (generate.py `_s4_fact_rows`, line 12993.)
+ * (generate.py `_s4_fact_rows`.)
  *
  * @param {ReadonlyArray<[string,string,string]>} rows @returns {string}
  */
@@ -1093,7 +1091,7 @@ function s4FactRows(rows) {
  * score trace's own order, then the provenance card's own row order, then the Overpass
  * keys in the order that table already sorts them.
  *
- * (generate.py `_s4_sources_index`, line 13178.)
+ * (generate.py `_s4_sources_index`.)
  *
  * @param {Object} report @param {ReadonlyArray<[string,string,string]>} factRows
  * @returns {string}
@@ -1137,7 +1135,7 @@ function s4SourcesIndex(report, factRows) {
  * elided or paginated: an unabridged list of what was asked and what came back is the
  * difference between a report and an opinion.
  *
- * (generate.py `index_provenance`, line 13006.)
+ * (generate.py `index_provenance`.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1392,7 +1390,7 @@ export function renderProvenance(payload) {
  * The ids match the shell's skeleton (`#footer-figures`, `#footer-credit`) so app.js
  * can either replace the whole `<footer>` or swap the two children in place.
  *
- * (generate.py `_s4_footer`, line 13782.)
+ * (generate.py `_s4_footer`.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1449,7 +1447,7 @@ export function renderFooter(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // The CLI ships one static document and binds three things to it: a chip filter, a
-// search box and the no-spending switch (`_S4_INDEX_JS`, lines 13592–13620). The
+// search box and the no-spending switch (`_S4_INDEX_JS`). The
 // browser build adds column sorting and an opt-in page size on top, and then has to
 // solve a problem the CLI does not have: app.js re-renders a whole section when a
 // later stage lands or the reader switches service day, which throws away every
@@ -1687,7 +1685,7 @@ function applyRows(spec) {
  * The no-spending switch: Egg Partner, Impressionable Consumer and Lemon Phylactery
  * become `remove` together, and the action filter follows the switch.
  *
- * (generate.py `bindSpending`, line 13606.)
+ * (generate.py `bindSpending`.)
  */
 function applySpending() {
   const sw = document.getElementById('nospend');

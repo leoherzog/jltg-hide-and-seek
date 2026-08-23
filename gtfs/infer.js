@@ -2,7 +2,7 @@
  * gtfs/infer.js — S1 · inference — hub, border, game size — and the
  * question-layer inputs.
  *
- * Port of `generate.py` lines 4002–4454. Worker side: no DOM, no clock, no
+ * Port of `generate.py`. Worker side: no DOM, no clock, no
  * randomness. Everything here is pure over `(feed, days, zones, options)`.
  *
  * Five public entry points, in the order `build_report` calls them:
@@ -59,7 +59,7 @@ export function setInferLogger(sink) {
 /** Code-point string order — Python's. Never `localeCompare` (locale = non-determinism). */
 const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** `route_type`s the rulebook would call "rail-ish". `_S1_RAIL_TYPES`, line 2112. */
+/** `route_type`s the rulebook would call "rail-ish". `_S1_RAIL_TYPES`. */
 export const S1_RAIL_TYPES = Object.freeze([0, 1, 2, 5, 7, 11, 12]);
 
 // ── small private helpers ─────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); 
 
 /**
  * Distinct trips of the day that call at `stopId` (loops counted once).
- * `_s1_trips_touching`, generate.py line 4010.
+ * `_s1_trips_touching`, generate.py.
  * @param {object} day a `ServiceDay`
  * @param {string} stopId
  * @returns {number}
@@ -241,7 +241,7 @@ export function inferHub(feed, day, proj) {
 }
 
 /**
- * The padded box as a GeoJSON `Feature`. `_s1_bbox_geojson`, line 4081.
+ * The padded box as a GeoJSON `Feature`. `_s1_bbox_geojson`.
  * @param {[number, number, number, number]} bbox `[S, W, N, E]`
  * @returns {object}
  */
@@ -259,7 +259,7 @@ function s1BboxGeojson(bbox) {
 }
 
 /**
- * A 96-gon approximating the border circle. `_s1_circle_geojson`, line 4088.
+ * A 96-gon approximating the border circle. `_s1_circle_geojson`.
  * @param {number} lat @param {number} lon @param {number} radiusM
  * @returns {object}
  */
@@ -496,7 +496,7 @@ export function inferGameSize(metrics, options) {
  * distance is a lower bound on the radius; snap that up to the rulebook radius that
  * contains it. Needed because `travelTimeSamples` is handed zones, not a radius.
  *
- * `_s1_zone_radius`, generate.py line 4254.
+ * `_s1_zone_radius`, generate.py.
  * @param {object[]} zones `Zone` records
  * @returns {number} metres
  */

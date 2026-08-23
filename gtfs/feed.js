@@ -1,7 +1,7 @@
 /**
  * gtfs/feed.js — GTFS feed loading and normalisation.
  *
- * Port of `generate.py` lines 2140–2713 (the small `_s1_*` helpers plus all of
+ * Port of `generate.py` (the small `_s1_*` helpers plus all of
  * "S1 · feed loading and normalisation"). Runs **inside the Web Worker**: no DOM,
  * no `window`, no `document`.
  *
@@ -94,7 +94,7 @@ const MISSING = -2147483648;
 /** Code-point string order — Python's. Never `localeCompare` (locale = non-determinism). */
 const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-// ── small private helpers (generate.py 2140–2204) ─────────────────────────────
+// ── small private helpers (generate.py) ─────────────────────────────
 
 /**
  * Median of a *measured distribution* — headways, gaps, travel times.

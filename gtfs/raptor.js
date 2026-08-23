@@ -1,7 +1,7 @@
 /**
  * S1 · RAPTOR.
  *
- * Port of `generate.py` lines 3016–3286: `_s1_slack`, `_s1_earliest_trip`,
+ * Port of `generate.py`: `_s1_slack`, `_s1_earliest_trip`,
  * `_s1_latest_trip`, `raptor`, `raptor_reverse` and `build_journey`.
  *
  * This is a real transit routing algorithm over the actual timetable. "35 minutes
@@ -29,7 +29,7 @@
 
 import { MAX_TRANSFERS } from '../lib/core.js';
 
-/** `_S1_INF` / `_S1_NEG_INF`, generate.py lines 2116–2117. Both fit an Int32Array. */
+/** `_S1_INF` / `_S1_NEG_INF`, generate.py. Both fit an Int32Array. */
 const S1_INF = 1000000000;
 const S1_NEG_INF = -1000000000;
 
@@ -299,7 +299,7 @@ export function raptor(day, originStopIds, departureS) {
     departureS: dep0,
     arrivalS,
     rounds,
-    // `_s1_parent` / `_s1_round`, generate.py lines 3148–3149. Consumed only by
+    // `_s1_parent` / `_s1_round`, generate.py. Consumed only by
     // buildJourney; never crosses postMessage.
     _s1Parent: { kind: parentKind, a: parentA, b: parentB, c: parentC, d: parentD },
     _s1Round: roundOf,

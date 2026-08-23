@@ -1,7 +1,7 @@
 /**
  * osm/geodata.js — S2 · GEO, the OSM semantic layer.
  *
- * Port of generate.py lines 4454–6356 (everything in S2 except the raw transport,
+ * Port of generate.py (everything in S2 except the raw transport,
  * which lives in ./overpass.js). WORKER SIDE ONLY — no DOM, no window, no document.
  *
  * NO NETWORK SERVICE IS CALLED FROM HERE ANY MORE. This module used to be a client of
@@ -595,7 +595,7 @@ function ovSelector(category) {
   return category.selector;
 }
 
-/** `GEO_CATEGORIES` as a key → category map (`_geo_categories`, line 4880). */
+/** `GEO_CATEGORIES` as a key → category map (`_geo_categories`). */
 export function geoCategories() {
   const out = new Map();
   for (const c of GEO_CATEGORIES) out.set(c.key, c);
@@ -665,7 +665,7 @@ function noopLog() {}
 
 /**
  * Index a POI set for radius queries at the zone radius. See `GridIndex`.
- * (generate.py `build_poi_index`, line 5307)
+ * (generate.py `build_poi_index`)
  * @param {Array<Object>} pois @param {Projection} proj @param {number} radiusM
  * @returns {GridIndex}
  */
@@ -680,7 +680,7 @@ export function buildPoiIndex(pois, proj, radiusM) {
 
 /**
  * Grid of *area* features by bounding box, plus the linear-scan overflow list.
- * (generate.py `_area_index`, line 5316)
+ * (generate.py `_area_index`)
  *
  * A feature is inserted into every cell its bbox touches, so a query only has to
  * read the 3×3 neighbourhood; anything spanning more than `GridIndex.addBbox`'s cap
@@ -714,14 +714,14 @@ function areaIndex(pois, proj, radiusM) {
   return [index, overflow, lookup];
 }
 
-/** (generate.py `_rings_planar`, line 5347) */
+/** (generate.py `_rings_planar`) */
 function ringsPlanar(poi, proj) {
   return (poi.rings || []).map((ring) => planarRing(ring, proj));
 }
 
 /**
  * Count, per zone, how many features of each category fall inside the circle.
- * (generate.py `zone_inventory`, line 5351)
+ * (generate.py `zone_inventory`)
  *
  * Returns `[iconCounts, polygonHits]`. **Two different predicates**: icon counts ask
  * whether the representative point is inside the disc (what matching and measuring
@@ -797,7 +797,7 @@ export function zoneInventory(zones, pois, proj, radiusM) {
 
 
 
-/** (generate.py `_admin_level`, line 5489) */
+/** (generate.py `_admin_level`) */
 function adminLevel(tags) {
   const value = tags.admin_level !== undefined ? tags.admin_level : '';
   // Python's str.isdigit(): non-empty and every character a digit.
@@ -808,7 +808,7 @@ function adminLevel(tags) {
 
 /**
  * Resolve the 1st–4th administrative divisions for this map.
- * (generate.py `resolve_admin`, line 5509 — exported as `adminInfo` per CONTRACT.md)
+ * (generate.py `resolve_admin` — exported as `adminInfo` per CONTRACT.md)
  *
  * Two Overpass forms are needed because they answer two different rulebook questions
  * and they disagree: containment (`is_in`, batched) answers the *matching* questions,
@@ -1240,7 +1240,7 @@ async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
 
 /**
  * Evaluate every OSM-decided curse predicate in one `out count` request.
- * (generate.py `curse_predicates`, line 5687 — exported as `curseCounts`)
+ * (generate.py `curse_predicates` — exported as `curseCounts`)
  *
  * Returns `curseId → count`. Removal is `count === 0` for the hard tier; the warn
  * tier is reported with its count and never auto-removed. Two predicates are *not*
@@ -1309,7 +1309,7 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
   return counts;
 }
 
-/** (generate.py `_cuisine_tokens`, line 5717) */
+/** (generate.py `_cuisine_tokens`) */
 function cuisineTokens(poi) {
   const raw = (poi.tags && poi.tags.cuisine !== undefined) ? poi.tags.cuisine : '';
   return raw.split(';')
@@ -1318,7 +1318,7 @@ function cuisineTokens(poi) {
 }
 
 /**
- * (generate.py `_cuisine_detail`, line 5722)
+ * (generate.py `_cuisine_detail`)
  * `{perCountry, qualifying, tagged, total, rejected}` — the Python 5-tuple.
  */
 function cuisineDetail(restaurants, hostCountry) {
@@ -1360,13 +1360,13 @@ function cuisineDetail(restaurants, hostCountry) {
 // Candidate legal endgame spots
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** (generate.py `_spot_open_all_hours`, line 5770) */
+/** (generate.py `_spot_open_all_hours`) */
 function spotOpenAllHours(tags) {
   const hours = ((tags && tags.opening_hours) || '').trim();
   return hours === '' || SPOT_ALL_HOURS_VALUES.includes(hours);
 }
 
-/** (generate.py `_spot_public`, line 5775) */
+/** (generate.py `_spot_public`) */
 function spotPublic(tags) {
   for (const key of SPOT_ACCESS_TAG_KEYS) {
     const value = ((tags && tags[key]) || '').trim().toLowerCase();
@@ -1377,7 +1377,7 @@ function spotPublic(tags) {
 
 /**
  * Shortlist candidate legal hiding spots inside each zone circle.
- * (generate.py `legal_endgame_spots`, line 5782)
+ * (generate.py `legal_endgame_spots`)
  *
  * The rulebook's two hard tests are (a) publicly accessible during all game hours
  * and (b) within 10 ft of a path the map app would route you along. (b) has an OSM
@@ -1590,7 +1590,7 @@ function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
 
 /**
  * p90 of |representative point − bbox centre| over ring-carrying features.
- * (generate.py `_icon_offset_p90`, line 5952)
+ * (generate.py `_icon_offset_p90`)
  *
  * This is the honesty number specs/osm.md §3.3 demands: how far our computed map
  * icon can sit from where `out center` (and, by proxy, a map app's label) puts it.
@@ -1618,7 +1618,7 @@ function iconOffsetP90(pois, proj) {
 
 /**
  * Single-instance categories whose icons are close enough to be one question.
- * (generate.py `_redundant_pairs`, line 5978)
+ * (generate.py `_redundant_pairs`)
  *
  * GR's zoo and aquarium are 81 m apart, so the two matching questions are the same
  * bit for six cards (specs/osm.md §7.4).
@@ -1642,7 +1642,7 @@ function redundantPairs(pois, proj, diagonalM) {
 
 /**
  * Shore segments for every water body that extends beyond the map border.
- * (generate.py `_synth_coastline`, line 6014)
+ * (generate.py `_synth_coastline`)
  *
  * Returns `[segments, names]`. A water body wholly inside the border is a lake you
  * can walk around, not a coast, and is left to the body-of-water questions.
@@ -1731,7 +1731,7 @@ function synthCoastline(pois, bbox, proj, log) {
 }
 
 /**
- * The `available: false` form of `GeoData` (mirrors `build_report`, line 15697).
+ * The `available: false` form of `GeoData` (mirrors `build_report`).
  *
  * Degradation is a first-class path, not an error path: the run continues, every
  * container is empty, and `note` is the single honesty note that reaches the page.
@@ -1766,7 +1766,7 @@ export function emptyGeoData(bbox, note) {
 
 /**
  * Run the whole S2 pipeline and return `GeoData`.
- * (generate.py `collect_geodata`, line 6096)
+ * (generate.py `collect_geodata`)
  *
  * Order: one bbox query per category → the POI index → per-zone inventory → admin
  * resolution → curse predicates → cuisines → legal spots. Under `--no-osm`, or if not
