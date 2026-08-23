@@ -42,7 +42,7 @@ import {
   renderHero, renderVerdict, renderScoreTrace, renderYourGame, bandVariant,
 } from './render/verdict.js';
 import {
-  renderGlanceRail, renderNetworkMap, renderTransitReality, s4TilesHtml,
+  renderGlanceRail, renderNetworkMap, renderTransitReality, s4TilesHtml, s4MapCaption,
   S4_HEADWAY_BINS,
 } from './render/map.js';
 import {
@@ -2067,6 +2067,25 @@ function tilesHtmlFor(report, dayKey) {
   }
 }
 
+/**
+ * The map's "what to notice" caption for one day.
+ *
+ * Same discipline as `tilesHtmlFor`: the renderer owns the sentences, this side only
+ * ships the string per day so a day switch is an innerHTML swap on `#netcaption` and
+ * never a recompute. `renderNetworkMap` renders the representative day's copy into
+ * that element itself, which is what stands before the score lands and there is no
+ * day selector to switch with. (R6, 2026-08-23.)
+ */
+function mapCaptionFor(report, dayKey) {
+  try {
+    return s4MapCaption(report, dayKey) || '';
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[app] map caption render failed', err);
+    return '';
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // S4 · the embedded JSON blocks
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2130,6 +2149,7 @@ function dataPayload(report) {
       variant: b.variant,
       banner_html: dayBannerHtml(report, key),
       tiles_html: tilesHtmlFor(report, key),
+      map_caption_html: mapCaptionFor(report, key),
       score: b.score,
       travel: travelRows(report, key).map((r) => ({
         label: r.label, minutes: rhu(r.minutes, 1), avail: r.avail,
@@ -2817,6 +2837,11 @@ function renderDay() {
   if (banner && d.banner_html) { banner.setAttribute('variant', d.variant); banner.innerHTML = d.banner_html; }
   const tiles = $('tiles');
   if (tiles && d.tiles_html) tiles.innerHTML = d.tiles_html;
+  /* The map's caption is the selected day's, pre-rendered. An empty string is a real
+     answer here — a feed with nothing to notice — so this assigns unconditionally and
+     lets #netcaption:empty take the row back. */
+  const cap = $('netcaption');
+  if (cap && 'map_caption_html' in d) cap.innerHTML = d.map_caption_html || '';
   document.querySelectorAll('#dayscores [data-day]').forEach(t => {
     if (t.dataset.day === CURRENT) t.setAttribute('aria-current', 'true');
     else t.removeAttribute('aria-current');

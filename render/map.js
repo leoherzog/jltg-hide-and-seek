@@ -108,6 +108,12 @@ const S4_MAX_MAP_STOPS = 5000;
 /** Above this the zone circles become dots only. (`_S4_MAX_MAP_ZONE_RINGS`.) */
 const S4_MAX_MAP_ZONE_RINGS = 1200;
 /** Above this the heatmap grid shows the busiest 25 and drawers the rest. */
+/**
+ * How many unreachable zones the map's caption will name before it stops naming them
+ * and prints the count alone. (2026-08-23, with the generated caption.)
+ */
+const S4_MAX_NAMED_ZONES = 6;
+
 const S4_MAX_HEATMAP_ROUTES = 25;
 /** Below this the heatmap becomes one sentence. */
 const S4_MIN_HEATMAP_ROUTES = 3;
@@ -812,6 +818,113 @@ export function s4ReachDay(report, dayKey) {
 }
 
 /**
+ * "What to notice" — two or three deterministic sentences under the map (R6).
+ *
+ * The map carries the report's findings now, and a picture that says nothing is a
+ * picture nobody reads. This is the caption that names what the layers are showing:
+ * which zones the hiding period cannot reach, whether the network has a hub worth
+ * camping, and whether another service day is worse.
+ *
+ * NETWORK-STAGE FACTS ONLY — `zones`, `zoneReach`, `hub`, `size`, `metrics`,
+ * `routeSpokes` — for the same reason `renderNetworkMap` is held to that list: this
+ * string is rendered inside §05, and a string that moves at `rules` or `score`
+ * re-mounts the section and tears the MapLibre instance down with it.
+ *
+ * IT COUNTS, FILTERS, SORTS AND SLICES; IT DOES NOT DO ARITHMETIC. Every quantity it
+ * prints is either carried (`reachableZones`, `unreachableZoneIds`) or the length of
+ * a list it filtered. Sentence three in particular is "how many of the worse day's
+ * unreachable zones are NOT unreachable today", which is a filter over two carried
+ * id lists — never a subtraction of two measured counts.
+ *
+ * Per-day variants are pre-rendered into `DATA.days[k].map_caption_html` by app.js's
+ * `dataPayload`, so a day switch is an innerHTML swap and never a recompute. Before
+ * the `score` stage `DATA.days` is empty and this renderer's own copy — for the
+ * representative day — is what stands, which is correct: there is no day selector yet.
+ *
+ * @param {Object} report @param {string} dayKey
+ * @returns {string} HTML, or '' when there is nothing worth noticing yet
+ */
+export function s4MapCaption(report, dayKey) {
+  const r = report || {};
+  const size = r.size || {};
+  const hub = r.hub || {};
+  const zones = r.zones || [];
+  if (!zones.length || !size.hidingPeriodMin) return '';
+  const hp = num(size.hidingPeriodMin);
+  const startName = startStopName(r);
+  const label = s4DayLabel(r, dayKey);
+  const spokesShown = (r.routeSpokes || []).length > 0;
+  const sentences = [];
+
+  // ── 1. reach ────────────────────────────────────────────────────────────────
+  const reach = s4ReachDay(r, dayKey);
+  if (reach !== null) {
+    const missed = reach.unreachableZoneIds || [];
+    if (!missed.length) {
+      sentences.push(`Every one of the ${num(zones.length)} zones is reachable from `
+        + `${startName} inside the ${hp}-minute hiding period on a ${label}, which is `
+        + 'unusual and makes distance a weak question on this map.');
+    } else {
+      // A name lookup, the same move render/strategy.js already makes for its
+      // dossiers. The ids arrive sorted, so the naming is sorted too.
+      //
+      // Naming stops at six. "A, B and two others" is a fact a reader can hold; "A, B
+      // and 141 others" is a number wearing two names, and on a Sunday this feed has
+      // 143 of them. Past the threshold the count and the layer say it better.
+      const byId = new Map(zones.map((z) => [z.zoneId, z.name || z.zoneId]));
+      const named = missed.length <= S4_MAX_NAMED_ZONES
+        ? missed.map((id) => String(byId.get(id) || id))
+        : [];
+      const rest = named.slice(2);
+      const phrase = named.length === 0 ? ''
+        : (named.length <= 3
+          ? s4JoinWords(named)
+          : s4JoinWords([...named.slice(0, 2), `${num(rest.length)} others`]));
+      sentences.push(`The ${hp}-minute hiding period cannot reach `
+        + `${num(missed.length)} of the ${num(zones.length)} zones from ${startName} on a `
+        + `${label}${phrase ? ` — ${phrase}` : ''}. The reach layer is where they sit.`);
+    }
+  }
+
+  // ── 2. structure ────────────────────────────────────────────────────────────
+  if (hub.name) {
+    const shape = String(s4DayView(r, dayKey).networkShape || '').split('-').join(' ');
+    const share = pct(Number(hub.routeShare || 0));
+    sentences.push(hub.dominant
+      ? `One station, ${hub.name}, touches ${share} of the routes and the network reads `
+        + `as ${shape}, so `
+        + (spokesShown
+          ? 'the spokes layer draws the seekers’ cheapest move: camp the hub.'
+          : 'the seekers’ cheapest move is to camp the hub.')
+      : `No single station dominates this network — the busiest touches ${share} of the `
+        + 'routes — so there is no hub to camp'
+        + (spokesShown
+          ? '; turn on the spokes layer to see where the seekers will actually wait.'
+          : ' and the seekers have to spread out.'));
+  }
+
+  // ── 3. the day that is worse ────────────────────────────────────────────────
+  const here = new Set((reach && reach.unreachableZoneIds) || []);
+  let worstKey = null;
+  let worstExtra = 0;
+  for (const key of s4DayOrder(r)) {
+    if (key === dayKey) continue;
+    const cell = s4ReachDay(r, key);
+    if (cell === null) continue;
+    const extra = (cell.unreachableZoneIds || []).filter((id) => !here.has(id)).length;
+    if (extra > worstExtra) { worstExtra = extra; worstKey = key; }
+  }
+  if (worstKey !== null) {
+    sentences.push(`On a ${s4DayLabel(r, worstKey)}, another ${num(worstExtra)} `
+      + `${s4Plural(worstExtra, 'zone')} ${s4Plural(worstExtra, 'falls', 'fall')} outside `
+      + 'the window.');
+  }
+
+  if (!sentences.length) return '';
+  return el('p', esc(sentences.join(' ')), { className: 'wa-body-s' });
+}
+
+/**
  * The spoke layer's honesty sentences: what was drawn, and out of how many.
  *
  * `MAX_MAP_SPOKES` is applied worker-side (lib/core.js), so a capped feed never even
@@ -1133,8 +1246,13 @@ export function renderNetworkMap(payload) {
         dataMode: reachDay === null ? 'base' : 'reach',
         className: 'wa-stack wa-gap-3xs',
       }),
-      // Filled by the runtime from the day payload; `:empty` hides it until then.
-      el('div', '', { id: 'netcaption', className: 'wa-body-s wa-color-text-quiet' }),
+      // "What to notice", generated. The renderer's own copy is the representative
+      // day's; once `score` lands, `renderDay()` swaps in the selected day's
+      // pre-rendered variant from `DATA.days[k].map_caption_html`. `:empty` hides the
+      // row on a feed with nothing to say. (R6, 2026-08-23.)
+      el('div', s4MapCaption(report, bestKey), {
+        id: 'netcaption', className: 'wa-body-s wa-color-text-quiet',
+      }),
       waDetails('How to read this map', howToRead, { appearance: 'plain' }),
       waDetails('Exact coordinates', degrees, { appearance: 'plain', id: 'mapborder' }),
     ), { className: 'wa-stack wa-gap-s' }),

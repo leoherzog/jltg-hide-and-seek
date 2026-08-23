@@ -631,9 +631,10 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 #netlegend[data-mode='reach'] > [data-legend-for='reach'],
 #netlegend[data-mode='frequency'] > [data-legend-for='frequency'] { display: block; }
 
-/* The generated "what to notice" line under the map. It is written by the runtime
-   from the day payload, so it ships empty and must not claim a row of the stack
-   until it has something to say. */
+/* The generated "what to notice" sentences under the map (R6, 2026-08-23). The
+   renderer ships the representative day's copy and `renderDay()` swaps in the
+   selected day's once the score lands. It can legitimately be empty — a feed with
+   nothing to notice — and an empty box must not claim a row of the stack. */
 #netcaption { max-inline-size: 72ch; }
 #netcaption:empty { display: none; }
 
