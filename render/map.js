@@ -812,6 +812,32 @@ export function s4ReachDay(report, dayKey) {
 }
 
 /**
+ * The spoke layer's honesty sentences: what was drawn, and out of how many.
+ *
+ * `MAX_MAP_SPOKES` is applied worker-side (lib/core.js), so a capped feed never even
+ * ships the polylines it dropped — which is exactly why the page has to say so. The
+ * same rule the stop cap follows: a layer that quietly draws part of the network is
+ * indistinguishable from a broken one. Counting and comparing two carried numbers,
+ * never subtracting them. (2026-08-23, the spoke layer.)
+ *
+ * @param {Object} report @returns {string[]} zero, one or two sentences
+ */
+export function s4SpokeNotes(report) {
+  const cap = (report && report.spokeCap) || null;
+  if (!cap) return [];
+  const out = [];
+  if (Number(cap.shown || 0) < Number(cap.total || 0)) {
+    out.push(`The busiest ${num(cap.shown)} of the ${num(cap.total)} route-directions in `
+      + 'this feed are drawn; the rest would be a thicket at this scale.');
+  }
+  if (cap.source === 'stops') {
+    out.push('This feed ships no route shapes, so each line is the route\u2019s ordered stop '
+      + 'sequence rather than the road it takes.');
+  }
+  return out;
+}
+
+/**
  * The map's legend, one block per colour mode plus the always-on items.
  *
  * Every block is emitted; `#netlegend[data-mode]` decides which one is visible, and
@@ -824,11 +850,12 @@ export function s4ReachDay(report, dayKey) {
  * pictures of one measurement — same origin, same departure, same hiding period — so
  * they may not describe it in two different vocabularies.
  *
- * @param {Object} report @param {{stopsShown: boolean, ringsShown: boolean}} flags
+ * @param {Object} report
+ * @param {{stopsShown: boolean, ringsShown: boolean, spokesShown: boolean}} flags
  * @returns {string}
  */
 export function s4MapLegends(report, flags) {
-  const { stopsShown, ringsShown } = flags;
+  const { stopsShown, ringsShown, spokesShown } = flags;
   const hub = report.hub || {};
   const size = report.size || {};
   const hp = num(size.hidingPeriodMin || 0);
@@ -849,6 +876,17 @@ export function s4MapLegends(report, flags) {
       'background:color-mix(in srgb, var(--accent) 18%, transparent);'
       + 'border:1px solid var(--accent)',
     ), 'Zone circle (toggle)']);
+  }
+  if (spokesShown) {
+    // Two swatches, because the layer paints two things: a plain route line and the
+    // gold, slightly heavier line of a route that actually calls at the hub. The
+    // hub emphasis is the whole reason the layer is worth drawing, so the key names
+    // it rather than leaving the reader to notice the weight. (2026-08-23.)
+    always.push(
+      [s4Swatch('background:var(--ink-2);block-size:2px;border-radius:1px'), 'Route line (toggle)'],
+      [s4Swatch('background:var(--gold-deep);block-size:3px;border-radius:1px'),
+        `Route calling at ${hub.name}`],
+    );
   }
   always.push(
     [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
@@ -902,9 +940,14 @@ export function s4MapLegends(report, flags) {
   // The always-on block carries the cap sentence when a cap bit, because that block
   // is the one part of the legend no colour mode hides. A dropped layer that says
   // nothing is indistinguishable from a broken one.
-  blocks.push(block('always', always, stopsShown ? ''
-    : `Over ${num(S4_MAX_MAP_STOPS)} served stops the individual dots are not drawn, so `
-      + 'this map has no frequency layer and Colour by offers Plain and Reach only.'));
+  const capNotes = [];
+  if (!stopsShown) {
+    capNotes.push(`Over ${num(S4_MAX_MAP_STOPS)} served stops the individual dots are not `
+      + 'drawn, so this map has no frequency layer and Colour by offers Plain and Reach '
+      + 'only.');
+  }
+  if (spokesShown) capNotes.push(...s4SpokeNotes(report));
+  blocks.push(block('always', always, capNotes.join(' ')));
   return blocks.join('');
 }
 
@@ -928,8 +971,9 @@ export function s4MapLegends(report, flags) {
  * Never wrap the map in a `wa-scroller`.
  *
  * WHAT THIS FUNCTION MAY READ, and nothing else: `border`, `hub`, `size`, `zones`,
- * `days` / `selectedDay`, `metrics` and `stops` — every one of them a `network`-stage
- * field, plus `geo.admin.countryCode` reaching it through `s4Dist`/`s4Area`. Quoting
+ * `days` / `selectedDay`, `metrics`, `stops`, `zoneReach`, `routeSpokes` and
+ * `spokeCap` — every one of them a `network`-stage field, plus `geo.admin.countryCode`
+ * reaching it through `s4Dist`/`s4Area`. Quoting
  * a question count, a curse, a score or a finding here would change this string at
  * `rules` or `score`, and a changed string re-mounts the section, which destroys the
  * MapLibre instance and throws away the reader's pan and zoom. That is why the stat
@@ -953,6 +997,10 @@ export function renderNetworkMap(payload) {
   const served = servedStopCount(report, day);
   const stopsShown = served <= S4_MAX_MAP_STOPS;
   const ringsShown = zones.length <= S4_MAX_MAP_ZONE_RINGS;
+  // The spoke layer exists when the worker carried polylines for it. It is capped
+  // there, not here (lib/core.js `MAX_MAP_SPOKES`), because the geometry must not
+  // cross `postMessage` only to be thrown away on this side.
+  const spokesShown = (report.routeSpokes || []).length > 0;
   const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
 
   const bestKey = s4BestDay(report);
@@ -989,6 +1037,11 @@ export function renderNetworkMap(payload) {
       : `Over ${num(S4_MAX_MAP_STOPS)} stops the individual dots are dropped, so the `
         + 'frequency layer is unavailable on this feed and the colour selector offers '
         + 'Plain and Reach only.',
+    !spokesShown ? ''
+      : 'Route spokes draws each route-direction\u2019s own line under the dots, filtered '
+        + 'to the day you picked — so a route that does not run on a Sunday is not on the '
+        + 'Sunday map. Lines that call at the hub are gold and a shade heavier.',
+    !spokesShown ? '' : s4SpokeNotes(report).join(' '),
     `★ = ${hub.name}, the inferred round-start station.`,
     'Dashed gold frame = the game border. Nothing outside it exists for this game.',
     'If your browser blocks the map library the map is omitted and everything below still works.',
@@ -1019,6 +1072,10 @@ export function renderNetworkMap(payload) {
 
   const layerControls = join(
     colourBy,
+    // Geometry, not a recolouring, so it is orthogonal to `Colour by` and stays a
+    // switch. It ships unchecked: the spokes are context for a question the reader
+    // has not asked yet, and the dots are the content. (2026-08-23.)
+    spokesShown ? waSwitch('Route spokes', { checked: false, id: 'spokesw' }) : '',
     ringsShown ? waSwitch(`Draw the ${radius} zone circles`, { checked: false, id: 'zonesw' }) : '',
   );
 
@@ -1071,7 +1128,7 @@ export function renderNetworkMap(payload) {
     el('div', join(
       toolbar,
       el('div', '', { id: 'netmap', className: 'wa-border-radius-m' }),
-      el('div', s4MapLegends(report, { stopsShown, ringsShown }), {
+      el('div', s4MapLegends(report, { stopsShown, ringsShown, spokesShown }), {
         id: 'netlegend',
         dataMode: reachDay === null ? 'base' : 'reach',
         className: 'wa-stack wa-gap-3xs',

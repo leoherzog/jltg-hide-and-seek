@@ -2711,13 +2711,14 @@ function saveDay(k) { try { localStorage.setItem(DAY_KEY, k); } catch (e) {} }
 const LAYER_KEY = 'jltg-netlayers';
 const MODES = ['base', 'reach', 'frequency'];
 function loadLayers() {
-  const out = { mode: 'reach', zones: false };
+  const out = { mode: 'reach', zones: false, spokes: false };
   try {
     const raw = localStorage.getItem(LAYER_KEY);
     const got = raw ? JSON.parse(raw) : null;
     if (got && typeof got === 'object') {
       if (MODES.indexOf(got.mode) >= 0) out.mode = got.mode;
       out.zones = Boolean(got.zones);
+      out.spokes = Boolean(got.spokes);
     }
   } catch (e) { /* no storage, or nonsense in it — the defaults are the answer */ }
   return out;
@@ -3092,6 +3093,8 @@ async function buildMap() {
     hb: [cssVar('--seq-100'), cssVar('--seq-200'), cssVar('--seq-300'),
          cssVar('--seq-400'), cssVar('--seq-550'), cssVar('--seq-650')],
     off: cssVar('--off'),
+    spoke: cssVar('--ink-2'),          /* a route line */
+    spokeHub: cssVar('--gold-deep'),   /* a route that calls at the hub */
   });
 
   /* The frequency layer bins on the thresholds #data carries, which app.js takes
@@ -3158,6 +3161,14 @@ async function buildMap() {
         }),
       });
     }
+    /* The spokes' geometry never changes; only which of them run today does. So this
+       is a setFilter on a per-day property, not a setData — 'route 33 does not run on
+       a Sunday' becomes a line that is not on the Sunday map. The per-day trip counts
+       are flattened onto each feature as t_<dayKey> at build time, because a MapLibre
+       expression cannot index into a nested object. */
+    if (W.map.getLayer && W.map.getLayer('n-spoke-line')) {
+      W.map.setFilter('n-spoke-line', ['>', ['coalesce', ['get', 't_' + day], 0], 0]);
+    }
     applyMode();
   };
 
@@ -3221,6 +3232,33 @@ async function buildMap() {
   map.on('style.load', () => {
     const p = PAL[isDark() ? 'dark' : 'light'];
     RAMP = readRamp();
+
+    /* Route spokes go in FIRST, so they sit under everything: they are context, the
+       dots are content. The line is a hairline that thickens with zoom, and a route
+       calling at the hub is gold and a shade heavier — which is what makes 'radial
+       hub' something the reader can see rather than a sentence they have to trust.
+       Hidden unless the reader asked for it; the filter comes from paintMap(). */
+    map.addSource('n-spokes', { type: 'geojson', data: {
+      type: 'FeatureCollection',
+      features: (STOPS.spokes || []).map(sp => {
+        const props = { r: sp.r, hub: sp.hub ? 1 : 0 };
+        const trips = sp.trips || {};
+        for (const k of Object.keys(trips).sort()) props['t_' + k] = trips[k];
+        return { type: 'Feature', properties: props,
+          geometry: { type: 'LineString', coordinates: sp.coords || [] } };
+      }),
+    } });
+    map.addLayer({ id: 'n-spoke-line', type: 'line', source: 'n-spokes',
+      layout: { visibility: W.layers.spokes ? 'visible' : 'none',
+        'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': ['case', ['>', ['get', 'hub'], 0], RAMP.spokeHub, RAMP.spoke],
+        'line-opacity': ['case', ['>', ['get', 'hub'], 0], .5, .35],
+        'line-width': ['case', ['>', ['get', 'hub'], 0],
+          ['interpolate', ['linear'], ['zoom'], 9, 1.3, 13, 1.8, 16, 2.6],
+          ['interpolate', ['linear'], ['zoom'], 9, .7, 13, 1.2, 16, 2]],
+      } });
+
     map.addSource('border', { type: 'geojson', data: {
       type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: borderRing } } });
     map.addLayer({ id: 'border-line', type: 'line', source: 'border',
@@ -3296,6 +3334,25 @@ async function buildMap() {
                 : ' · ' + t + ' min from the start'));
   });
   map.on('mouseleave', 'zone-dots', () => { tt.style.display = 'none'; });
+
+  map.on('mousemove', 'n-spoke-line', e => {
+    const f = e.features[0].properties;
+    showTip(e, '<b>' + esc(String(f.r || 'Route')) + '</b>'
+              + (Number(f.hub) ? 'Calls at ' + esc(DATA.hub.name) : 'Does not call at the hub'));
+  });
+  map.on('mouseleave', 'n-spoke-line', () => { tt.style.display = 'none'; });
+
+  const spsw = $('spokesw');
+  if (spsw) {
+    if (W.layers.spokes) spsw.checked = true;
+    spsw.addEventListener('change', () => {
+      W.layers.spokes = Boolean(spsw.checked);
+      saveLayers();
+      if (map.getLayer('n-spoke-line')) {
+        map.setLayoutProperty('n-spoke-line', 'visibility', spsw.checked ? 'visible' : 'none');
+      }
+    });
+  }
 
   const sw = $('zonesw');
   if (sw) {
