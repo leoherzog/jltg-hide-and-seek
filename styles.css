@@ -624,12 +624,17 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    border and the zone-circle toggle: true in every mode, so it is never hidden.
    No colours here: the swatches carry their own tokens inline, and the MapLibre
    paint reads those same tokens through cssVar(), which is what keeps the legend
-   and the canvas from drifting apart in either theme. */
+   and the canvas from drifting apart in either theme.
+
+   `display: flex`, not `block`: every block is classed `wa-stack wa-gap-3xs`, and
+   Web Awesome's `wa-stack` rules live in an @layer, so unlayered author CSS beats
+   them whatever the specificity. `display: block` won and took the column gap with
+   it, jamming the swatch row against the note under it. (Fixed 2026-08-23.) */
 #netlegend > [data-legend-for] { display: none; }
-#netlegend > [data-legend-for='always'] { display: block; }
+#netlegend > [data-legend-for='always'] { display: flex; }
 #netlegend[data-mode='base'] > [data-legend-for='base'],
 #netlegend[data-mode='reach'] > [data-legend-for='reach'],
-#netlegend[data-mode='frequency'] > [data-legend-for='frequency'] { display: block; }
+#netlegend[data-mode='frequency'] > [data-legend-for='frequency'] { display: flex; }
 
 /* The generated "what to notice" sentences under the map (R6, 2026-08-23). The
    renderer ships the representative day's copy and `renderDay()` swaps in the
@@ -641,10 +646,16 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 /* The pinned-highlight announcement. It is a live region first and a line of text
    second: a recolouring of a <canvas> is invisible to a screen reader, and this is
    the only thing that says which tile the map is currently answering. Marked with
-   the same gold the pinned tile carries, so the two read as one state. */
-#netpin:empty { display: none; }
-#netpin { border-inline-start: var(--wa-border-width-m) solid var(--gold);
-          padding-inline-start: var(--wa-space-xs); }
+   the same gold the pinned tile carries, so the two read as one state.
+
+   It must never be `display: none` while it is empty: a live region that is out of
+   the accessibility tree at the moment its text changes is a region most screen
+   readers do not announce, and every FIRST pin after an unpin would land in one.
+   So the element always renders and reserves its line; only the gold rule and the
+   padding wait for text. (Fixed 2026-08-23.) */
+#netpin { min-block-size: 1.25em; }
+#netpin:not(:empty) { border-inline-start: var(--wa-border-width-m) solid var(--gold);
+                      padding-inline-start: var(--wa-space-xs); }
 
 /* ---- the map's stat rail (folded in from §04 on 2026-08-23) ----
    The tiles that name a place carry `data-hl` — six of the twelve, five highlights,
