@@ -25,7 +25,7 @@
 // `{lat0, lon0}`) are built at this boundary and nowhere else.
 
 import {
-  QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, hmsToS, coord,
+  QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN, hmsToS, coord,
 } from './lib/core.js';
 import { Projection } from './lib/geo.js';
 import { openCache } from './lib/cache.js';
@@ -33,6 +33,7 @@ import { openCache } from './lib/cache.js';
 import {
   loadFeed, normaliseTimes, feedWindow, setFeedLogger, s1Median,
 } from './gtfs/feed.js';
+import { mergeFeeds, mergeOrder, feedSourceRows } from './gtfs/merge.js';
 import {
   dayTypes, buildServiceDay, clusterStations, invalidateDerived,
 } from './gtfs/service.js';
@@ -183,6 +184,51 @@ class Progress {
 // ── the pipeline ─────────────────────────────────────────────────────────────
 
 /**
+ * The run's sources as a list of `{ arg, label, mdbId }`.
+ *
+ * CONTRACT.md §(d)'s `run` message carries `sources: SourceRef[]` and nothing else —
+ * the older `file` / `url` pair is gone, because two ways to say the same thing is
+ * how a stale main thread half-works silently. This function is the one place that
+ * knows a `SourceRef` from a bare input, so `runPipeline` stays callable from Node
+ * with a single `File`, which is exactly what `tools/smoke.mjs` does and the path
+ * the golden numbers are measured on.
+ *
+ * @param {SourceRef[]|Array<File|Blob|string>|File|Blob|ArrayBuffer|Uint8Array|string} source
+ * @returns {Array<{arg: (File|Blob|ArrayBuffer|Uint8Array|string), label: string, mdbId: number|null}>}
+ */
+function normaliseSources(source) {
+  const list = Array.isArray(source) ? source : [source];
+  const out = [];
+  for (const item of list) {
+    if (item === null || item === undefined) continue;
+    const isRef = typeof item === 'object' && !Array.isArray(item)
+      && (item.kind === 'file' || item.kind === 'url');
+    const arg = isRef ? (item.file ?? item.url) : item;
+    if (arg === null || arg === undefined) continue;
+    let label = isRef ? String(item.label || '') : '';
+    if (!label) {
+      label = typeof arg === 'string'
+        ? arg
+        : (arg && typeof arg.name === 'string' ? arg.name : 'the feed');
+    }
+    const mdbId = isRef && item.mdbId !== undefined && item.mdbId !== null
+      ? Number(item.mdbId) : null;
+    out.push({ arg, label, mdbId });
+  }
+  if (!out.length) throw new Error('The run message carried no feed to read.');
+  // CONTRACT.md §(d) bounds the list at both ends. The page refuses the seventh feed
+  // twice over before it gets here, so this is the backstop for a message that came
+  // from somewhere else — a stale tab, a hand-built `postMessage` — rather than a
+  // sentence anyone should be able to reach through the UI.
+  if (out.length > MAX_FEEDS_PER_RUN) {
+    throw new Error(`One run merges at most ${MAX_FEEDS_PER_RUN} feeds; `
+      + `this run asked for ${out.length}.`);
+  }
+  return out;
+}
+
+
+/**
  * Run the whole pipeline, emitting `progress` / `stage` / `log` / `degraded` /
  * `error` / `done` messages through `emit`.
  *
@@ -197,7 +243,9 @@ class Progress {
  * allows.
  *
  * @param {object} options an `Options` (CONTRACT.md §(c))
- * @param {File|Blob|ArrayBuffer|Uint8Array|string} source the picked file or the URL
+ * @param {SourceRef[]|Array<File|Blob|string>|File|Blob|ArrayBuffer|Uint8Array|string} source
+ *        the run's sources. A bare `File`/`Blob`/buffer/URL is a list of one, which
+ *        is the shape `tools/smoke.mjs` passes and the path the golden numbers run on.
  * @param {(msg: object) => void} emit
  * @returns {Promise<object|null>} the `Report`, or null after a fatal error
  */
@@ -251,13 +299,56 @@ export async function runPipeline(options, source, emit) {
   let end;
   let asOf;
   let types;
+  let srcs;
   try {
+    srcs = normaliseSources(source);
     progress.begin(0, 'Reading the feed');
-    feed = await loadFeed(source, cache, {
-      onProgress: ({ done, total }) => {
-        if (total) progress.report(done / total, 'Reading the feed');
-      },
-    });
+    // One `loadFeed` per source, then a table-level merge. The per-source download
+    // cache is what makes a repeated pick cheap; there is no merged-artifact cache,
+    // because a `Feed` holds typed arrays and a Proxy and is not serialisable.
+    const loaded = [];
+    // The source metadata travels BESIDE the feed it produced, never re-indexed by
+    // position: when a download fails the loaded list is shorter than `srcs`, and an
+    // index into one is not an index into the other. §09 exists so a merged report
+    // cannot lie about what it read, so this pairing is load-bearing, not tidiness.
+    const loadedSrcs = [];
+    for (let i = 0; i < srcs.length; i++) {
+      const many = srcs.length > 1;
+      const label = many ? `Reading feed ${i + 1} of ${srcs.length}` : 'Reading the feed';
+      // A download is one silent block — `loadFeed`'s own `onProgress` fires per
+      // table, not per byte — so the bar is nudged between sources as well, which is
+      // also what keeps app.js's 120-second silence watchdog fed on a multi-feed run.
+      progress.report(i / srcs.length, label);
+      try {
+        loaded.push(await loadFeed(srcs[i].arg, cache, {
+          onProgress: ({ done, total }) => {
+            if (total) progress.report((i + done / total) / srcs.length, label);
+          },
+        }));
+        loadedSrcs.push(srcs[i]);
+      } catch (err) {
+        // One dead mirror out of four must not kill the run. With a single source,
+        // one failure IS zero loaded, so this falls through to the fatal below and
+        // the single-feed path behaves exactly as it always has.
+        if (srcs.length === 1) throw err;
+        // One failure, one line in the degradation list. A `nonFatal` here as well
+        // would reach the page twice — app.js files a non-fatal `error` as its own
+        // degradation — so the diagnostic copy goes to the log channel instead, and
+        // the sentence that names the feed and the consequence is the record.
+        log('warn', `feed: ${(err && err.message) || err}`);
+        degrade(`${srcs[i].label} could not be read (${(err && err.message) || err}); `
+          + 'the report covers the other feeds only.');
+      }
+    }
+    if (!loaded.length) {
+      throw new Error('None of the chosen feeds could be read.');
+    }
+    const order = mergeOrder(loaded);
+    // `mergeFeeds([f]) === f` — reference equality, nothing copied. That identity is
+    // why a single-source run cannot drift. `sources` is attached HERE, on both
+    // paths, so every renderer sees the same shape whatever the feed count.
+    feed = await mergeFeeds(loaded, { onNote: degrade });
+    feed.sources = feedSourceRows(order, loadedSrcs);
     progress.finish();
 
     progress.begin(1, 'Normalising times');
@@ -294,6 +385,7 @@ export async function runPipeline(options, source, emit) {
       asOf,
       sha256: feed.sha256,
       source: feed.source,
+      feeds: feed.sources,
       stops: stopCount,
       routes: routeCount,
       trips: tripCount,
@@ -746,6 +838,7 @@ function wireFeed(feed) {
   return {
     source: feed.source,
     sha256: feed.sha256,
+    sources: feed.sources || [],
     stops: feed.stops,
     routes: feed.routes,
     agencyName: feed.agencyName,
@@ -820,8 +913,9 @@ if (IN_WORKER) {
     if (started) return;
     started = true;
 
-    // `readSource` on the main thread sets exactly one of `file` / `url`.
-    const source = msg.file || msg.url;
+    // `readSources` on the main thread sends a `SourceRef[]` and nothing else:
+    // two ways to name the same input is how a stale main thread half-works.
+    const source = msg.sources;
     const post = (out) => self.postMessage(out);
     runPipeline(msg.options || {}, source, post).catch((err) => {
       post({

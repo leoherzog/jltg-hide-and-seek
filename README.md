@@ -4,8 +4,9 @@ Point it at a city's public transit feed. It tells you whether that city works a
 [Jet Lag: The Game's *Hide and Seek*](https://www.jetlagthegame.com/) home game, how good a map it
 is, and — if you're the one hiding — where to go.
 
-It runs entirely in your browser. Serve this directory with any static file server, open it, drop
-in a feed, and the whole pipeline runs client-side. The feed is never uploaded anywhere.
+It runs entirely in your browser. Serve this directory with any static file server, open it, pick
+your city off the map — or bring your own feed — and the whole pipeline runs client-side. The feed
+goes from the agency, or from your disk, straight into the tab. It is never uploaded anywhere.
 
 ---
 
@@ -34,17 +35,37 @@ feed and the same map files.
 Nothing to install and no build step. Serve the repo root with any static file server and open it:
 
 ```bash
-python3 -m http.server 8000     # then open http://localhost:8000/
+python3 -m http.server 8000              # then open http://localhost:8000/
+node tools/smoke.mjs                     # headless: the pipeline, against 19 golden numbers
+node tools/mdb-snapshot.mjs --check      # validate the committed feed catalogue, no network
 ```
 
-Paste a feed URL or drop a `.zip` on the page. Everything — the feed parse, the travel-time model,
-the map-feature lookups, the scoring — runs in your browser.
+**Pick your city on the map.** The landing page opens on a world map of 1,088 transit systems —
+one marker per feed, clustered, drawn from a tracked snapshot of the
+[Mobility Database](https://mobilitydatabase.org/) catalogue. Search for a city or an operator,
+click a marker, or draw a shape and take every system it touches. Two switches add the other 299
+in the snapshot — regional and long-distance networks, and feeds nobody publishes any more, both
+off by default because they overlap almost any shape you draw. Press Analyse. Everything — the
+feed download, the parse, the travel-time model, the map-feature lookups, the scoring — happens in
+your browser.
 
-Find a feed for your city on [Mobility Database](https://mobilitydatabase.org/) or
-[transit.land](https://www.transit.land/). Most agencies publish one. One wrinkle the page itself
+**Or bring your own feed.** Under *Or bring your own feed* the original flow is intact: drop a
+`.zip` or paste a URL. It's the path that works when the catalogue never loaded, when the map
+library is blocked, and when your agency simply never published to the Mobility Database. A map
+pick and a zip of your own **add up** rather than replacing each other. One wrinkle the page itself
 will warn you about: fetching a URL only works if the agency's server sends CORS headers, and
 plenty don't. When that happens, download the zip yourself and drop it in — same answer, one extra
-step.
+step. (The catalogue's own mirror URLs, which is what a map pick fetches, always send them.)
+
+**More than one system at a time.** A metro plus its commuter rail, or two neighbouring operators a
+drawn shape happened to cross, merge into one map. Up to six feeds per run; above three the page
+says so, because each one costs a download and a parse. Selecting more than one also pre-ticks
+*Skip OpenStreetMap* under **Advanced** — the map-feature layer's cost scales with the size of the
+border, and two metros make a big border. That happens once, the first time you go past one feed;
+after that the switch is yours. Untick it if you want the full audit and have the time.
+
+The map is optional, not load-bearing: search, Add and Analyse all work before the map library
+loads, and if it never loads.
 
 **How long it takes.** The schedule side runs in seconds. The map-feature layer is the slow part:
 on the Grand Rapids reference border it takes about 33 seconds, and the browser's HTTP cache makes
@@ -54,8 +75,11 @@ sub-score that needs map features is excluded from the denominator, not guessed 
 
 **Overrides.** The Advanced panel also holds an override for every inference — game size, zone
 radius, hiding period, start stop, border shape and box, departure time, analysis date, excluded
-stops and routes. Everything is inferred by default; the overrides exist for when you disagree, or
-when your group has already agreed on a border. Two more switches manage the feed cache: one
+stops and routes. One more control wakes up once you've drawn a shape on the map: *Use the shape I
+drew as the game border*, which takes that shape's bounding box instead of one fitted to the
+network — and a border box typed in by hand still wins over it. Everything is inferred by default;
+the overrides exist for when you disagree, or when your group has already agreed on a border. Two
+more switches manage the feed cache: one
 re-downloads a feed the browser has already cached (worth flipping when the agency publishes a new
 one), and one does the opposite — a cache miss becomes an error, so a run either reproduces exactly
 what an earlier run saw or stops and says so.
@@ -151,6 +175,20 @@ minutes, including waiting for the transfer, not a straight-line distance guess.
 
 From this it infers the game size (small/medium/large, using the rulebook's own definitions), the
 hub station, and the map border.
+
+**Several feeds become one.** When you pick more than one system, they are merged before anything
+downstream sees them, table by table: every id — stops, routes, trips, services, shapes, agencies —
+grows an `f0:` / `f1:` prefix so two agencies that both number a route `1` cannot collide, and each
+feed keeps its own calendar. The service window is the **intersection** of the feeds' windows, so
+the day the report picks is a day every system actually runs; if that intersection is empty or
+shorter than a week, the report says so rather than quietly choosing badly. Mixed time zones are a
+warning, never a refusal — every time in the pipeline is feed-local, so the only thing a mixed-zone
+merge is wrong about is the clock alignment of a ride *between* the two systems, and the page says
+that out loud. Connections between the systems come for free: transfers are built from stop
+proximity rather than from `transfers.txt`, so two agencies whose stops sit forty metres apart are
+already connected. Section 09 lists every feed that went in, with its own hash, window and operator.
+One thing the merge cannot average: the fare quoted in the house rules is the **primary** operator's
+(the feed with the most trips), because there is no honest way to add two fare tables together.
 
 ### 2. Look up what's actually there
 
@@ -263,14 +301,24 @@ they must get the same report, or it isn't evidence of anything.
 ## Repo layout
 
 ```
-index.html           the page shell: landing form, Advanced panel, nine skeleton sections
+index.html           the page shell: landing card, Advanced panel, nine skeleton sections
 app.js               main-thread controller: owns every element, listener, and the worker protocol
 worker.js            the pipeline orchestrator, off the main thread
 lib/ gtfs/ osm/ rules/   worker-side pipeline (no DOM)
+  gtfs/merge.js      merges several feeds into one, with per-feed id namespacing
 render/              main-side renderers (Report → HTML strings)
+  render/landing.js  the landing picker's markup, pure data → string
+  render/picker.js   the landing map: MapLibre, clustering, the hand-rolled draw tool
+lib/catalog.js       main-side reader for data/feeds.json: search, bbox intersection, feed URLs
+data/feeds.json      the feed catalogue snapshot the landing map draws — 1,387 systems, of
+                     which 1,088 are on the map before the two opt-in switches; one
+                     JSON object per line so a regeneration reads as a diff
 styles.css           the one stylesheet
 CONTRACT.md          authoritative for every shape crossing a module boundary
-tools/smoke.mjs      headless harness: runs the real pipeline, asserts 19 golden numbers
+tools/smoke.mjs      headless harness: runs the real pipeline, asserts 19 golden numbers,
+                     then the merge assertions
+tools/mdb-snapshot.mjs   rebuilds data/feeds.json from the Mobility Database CSV; --check
+                     validates the committed file without touching the network
 tools/osm-world/     builds the prebuilt OpenStreetMap files the app reads
   build.py           planet.osm.pbf -> per-category FlatGeobuf -> R2 (uv script)
   categories.json    the build table: one entry per category, plus the density grid
@@ -307,6 +355,27 @@ in this repo — they're kept outside the tree, so stop hunting for them.
   on the map — data the prebuilt files don't carry, short of shipping the global footpath network.
   So the test simply isn't run: candidate hiding spots are still found and listed, but every one of
   them is marked verify-on-the-ground, always. Stand somewhere legal.
+- **The feed catalogue is a snapshot, and its boxes are crude.** The markers on the landing map
+  come from `data/feeds.json`, curated from the Mobility Database's published CSV and regenerated
+  by hand with `node tools/mdb-snapshot.mjs`. Each system is placed and sized by the bounding box
+  that catalogue records, and most of those boxes were extracted in 2022 — enough to drop a marker
+  and to decide whether a drawn shape crosses a system, and *not* evidence of where that system
+  runs today. 154 systems whose box spans more than 250 km (intercity rail, national aggregates)
+  are hidden behind an opt-in switch, along with 167 whose feed is no longer updated; both can be
+  added anyway from the search results. Seven feeds need an API key and cannot be fetched by the
+  page at all — it shows them and links the agency's own download instead. And a system whose
+  agency never published to the Mobility Database is not on the map: that is what bringing your own
+  feed is for.
+- **A map pick downloads the catalogue's mirror, not the agency's own file.** MobilityData keeps a
+  copy of the latest zip it fetched for each source, and that copy is what the page can actually
+  read (it sends CORS headers; most agency servers don't). It is a different file from the one on
+  the agency's site, with a different hash and possibly a different publication date — so a run
+  from the map and a run from the agency's URL can legitimately disagree. Section 09 names the
+  exact source of every feed that went in, which is how you tell the two apart.
+- **Nothing yet guards the map layer against a country-sized border.** The OpenStreetMap layer's
+  cost scales with the border, and picking several systems, or drawing a very large shape, can
+  produce a border far bigger than anything this has been run on. Skipping OpenStreetMap is
+  pre-ticked above one feed for that reason; it is a mitigation, not a fix.
 - **The map layer has only been exercised on a handful of cities**, of small and large size; the
   schedule side on a few more, including heavy-rail systems. Behaviour beyond those is unproven.
 - **Some of this is interpretation**, and the rulebook is genuinely ambiguous in places. Those spots

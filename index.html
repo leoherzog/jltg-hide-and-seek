@@ -10,7 +10,7 @@
   instead of on a laptop.
 
   Three states, driven by one attribute on <body> (see styles.css §7):
-    landing  — pick a GTFS .zip or paste a URL
+    landing  — pick a city on the feed map, or bring your own .zip / URL
     running  — the nine sections as skeletons, header progress bar live
     ready    — the same nine sections, hydrated
 
@@ -31,7 +31,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="Is your city's transit system a good map for Jet Lag: The Game's Hide+Seek? Drop in a GTFS feed and find out — hiding zones, question audit, curse deck and a 100-point map-fitness score, computed in your browser.">
+<meta name="description" content="Is your city's transit system a good map for Jet Lag: The Game's Hide+Seek? Pick it off a map of more than a thousand transit feeds, or bring your own — hiding zones, question audit, curse deck and a 100-point map-fitness score, computed in your browser.">
 <title>Hide and Seek — Map Fitness Report</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl/dist/maplibre-gl.min.css">
 <!-- Theme + color palette -->
@@ -212,11 +212,34 @@
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Jet Lag: The Game · Hide+Seek</p>
         <h1 class="wa-heading-4xl">Is your city a good map?</h1>
-        <p id="landing-lede" class="wa-body-l">Give it a GTFS feed — the schedule file almost every transit agency publishes — and it works out how many distinct places there are to hide, which of the deck's questions actually split the map, which curses are unplayable here, and what all of that adds up to out of 100. Everything runs in this browser: the feed is never uploaded anywhere.</p>
+        <p id="landing-lede" class="wa-body-l">Pick your city off the map below — or bring your own GTFS feed, the schedule file almost every transit agency publishes — and it works out how many distinct places there are to hide, which of the deck's questions actually split the map, which curses are unplayable here, and what all of that adds up to out of 100. Everything runs in this browser: the feed goes straight from the agency, or from your disk, into this tab, and is never uploaded anywhere.</p>
       </header>
 
       <wa-card>
-        <form id="landing-form" class="wa-stack wa-gap-l">
+        <form id="landing-form" data-role="runform" class="wa-stack wa-gap-l">
+
+          <!-- THE PICKER. Ships as an EMPTY host on purpose: app.js fills it from
+               `render/landing.js` and unhides it only once `data/feeds.json` has
+               actually loaded, so a failed catalogue fetch leaves the bring-your-own
+               card as the whole of the page rather than an empty grey box that looks
+               broken. Everything inside it is built by render/landing.js and wired by
+               render/picker.js; nothing else on the page reads these ids.
+
+               It is INSIDE the one <form> deliberately (see the note on #advanced):
+               `boot()` binds a single submit listener and `readOptions` scopes its
+               eleven [data-opt] lookups to this element, so a second <form> anywhere
+               in here would silently steal both. -->
+          <wa-card id="picker" hidden>
+            <div data-role="pickerbody"></div>
+          </wa-card>
+
+          <!-- The original one-feed flow, intact and demoted to a disclosure: it is
+               the fallback that works when the catalogue never loads, when MapLibre is
+               blocked, and when the feed you want was never published to the Mobility
+               Database. A pick on the map and a zip from here ADD — app.js's
+               `readSources` concatenates them. -->
+          <wa-details summary="Or bring your own feed" id="byo">
+           <div class="wa-stack wa-gap-l">
 
           <!-- <wa-file-input> is the drop zone. It renders a `<label for>` wrapped
                around a native file input, so click, tap and keyboard activation are
@@ -253,8 +276,16 @@
                `input[type="url"]` — and a <wa-input>'s real input lives in a shadow
                root, where that selector cannot see it. Without the attribute
                `readSource` reads no URL at all and Analyse answers a pasted link by
-               claiming nothing was supplied. -->
-          <wa-input type="url" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
+               claiming nothing was supplied.
+
+               Deliberately NOT `type="url"` any more. This field now ships inside a
+               COLLAPSED <wa-details>, and a typeMismatch on a control the reader
+               cannot see suppresses the submit event with no focusable control to hang
+               the browser's bubble on — the form simply stops working, which is
+               exactly the trap #opt-world-base-url and #opt-zone-radius already
+               describe further down. `inputmode="url"` keeps the phone keyboard, and
+               `readSources` validates with `new URL()` and answers in a sentence. -->
+          <wa-input type="text" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
           <!-- Page prose, deliberately NOT `slot="hint"`: 72ch of CORS explanation
                belongs beside the field, not inside its accessible description and
                not inside its width. -->
@@ -262,6 +293,9 @@
                from this page. -->
           <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens, download the zip yourself and drop it in above.</p>
           <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Looking for a feed? Try the <a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database</a> or <a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland</a>.</p>
+
+           </div>
+          </wa-details>
 
           <wa-details summary="Advanced" id="advanced">
             <div class="wa-stack wa-gap-l">
@@ -390,12 +424,26 @@
               <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
                 <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
               </wa-switch>
+
+              <!-- Ships disabled; app.js enables it the moment a shape exists on the
+                   picker map and disables it again when the shape is cleared. It feeds
+                   `options.borderBbox` through `inferBorder`'s existing override, so
+                   there is no new field on the wire and no worker change. A value typed
+                   into Border box above WINS — the hint says so, and app.js only fills
+                   `borderBbox` from the shape when that field is blank. -->
+              <wa-checkbox id="opt-use-drawn-border" data-opt="useDrawnBorder" name="use-drawn-border" size="s" disabled>Use the shape I drew as the game border
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The drawn shape's bounding box becomes the border instead of one fitted to the network, and the border shape above is forced to a box. Border box overrides this if you fill it in.</span>
+              </wa-checkbox>
             </div>
           </wa-details>
 
           <div class="wa-cluster wa-gap-s wa-align-items-center">
-            <wa-button id="analyse" type="submit" variant="brand" appearance="filled">
-              <wa-icon slot="start" name="play"></wa-icon>Analyse
+            <!-- Ships `disabled` because on a cold landing there is nothing to
+                 analyse yet. `initLanding` (app.js) wires the enable/disable rule
+                 SYNCHRONOUSLY, before it fetches anything, so the bring-your-own path
+                 is never left holding a dead button if the catalogue fetch fails. -->
+            <wa-button id="analyse" type="submit" variant="brand" appearance="filled" disabled>
+              <wa-icon slot="start" name="play"></wa-icon><span data-role="analyselabel">Analyse</span>
             </wa-button>
             <span class="wa-caption-s wa-color-text-quiet">Most of a run is spent reading the map files; skipping them above is much faster.</span>
           </div>

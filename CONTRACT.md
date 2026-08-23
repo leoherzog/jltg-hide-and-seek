@@ -28,6 +28,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
 | External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
+| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. Use a plain `a < b ? -1 : a > b ? 1 : 0` comparator, never `localeCompare` (locale-dependent = non-deterministic). |
@@ -49,12 +50,16 @@ embedded JSON block; it is built from `state.report` in memory.
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
+| `render/landing.js` | main | `renderPickerCard`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`; the constants `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`), `PICK_WARN`, `BIG_DOWNLOAD_MB`. Pure `data → string`, no DOM — the landing feed picker's markup. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setSelection, setByo, refresh, resize, destroy}` (`handlers.osmSkipped()` reports the live state of the Advanced panel's Skip OpenStreetMap switch, which lives outside this card) — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
+| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `labelOf`, `placeOf`, `sourceRefFor`, `CATALOG_VERSION`. Reads `data/feeds.json` — a **same-origin repo asset**, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff, NOT a sixth external asset. No DOM, no MapLibre; importable from Node. |
 | `lib/cache.js` | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
 | `lib/http.js` | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
-| `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow` |
+| `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow`, `StopTimes`, `attachStopTimes`, `stopTimesOf` (the last three exist for `gtfs/merge.js`; `StopTimes.appendFrom` is how a merge copies a columnar store) |
+| `gtfs/merge.js` | worker | `mergeFeeds`, `mergeOrder`, `feedSourceRows`, `MERGE_TABLES`, `NAMESPACED_COLUMNS` — table-level merge of several feeds into one `Feed` |
 | `gtfs/service.js` | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates` |
 | `gtfs/raptor.js` | worker | `raptor`, `raptorReverse`, `buildJourney` |
 | `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
@@ -74,7 +79,7 @@ MAX_TRANSFERS DEFAULT_DEPARTURE SERVICE_DAY_SECONDS HEADWAY_WINDOW MIDDAY_WINDOW
 EVENING_WINDOW FREQUENT_HEADWAY_MIN STATION_CLUSTER_M HUB_SNAP_M T90_ORIGIN_STRIDE
 RADAR_SAMPLE_PAIRS RADAR_DEAD_HIGH RADAR_DEAD_LOW SEEKER_SAMPLE_CAP
 SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN
-MAPLIBRE_JS TILES_LIGHT TILES_DARK IMPERIAL_COUNTRIES`
+MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES`
 
 Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
 dowOf dateRange lowerMedian quantile normalise jdump sha256Bytes sha256Text`
@@ -83,6 +88,7 @@ Notes:
 * `num(x, dp = 0, {comma = true})`. Python keyword args are a trailing options object.
 * `jdump(obj, {floatDp = 6})`.
 * `HEADWAY_WINDOW`/`MIDDAY_WINDOW`/`EVENING_WINDOW` are frozen 2-element arrays of `'HH:MM:SS'`.
+* `MAX_FEEDS_PER_RUN` is the run's feed cap (6). It lives in `lib/core.js` because three modules have to agree on it and none may own it: the picker refuses the seventh pick, `readSources` refuses a seventh that arrived by the other door (six map picks plus a dropped zip), and `normaliseSources` refuses one the worker was handed anyway.
 * `IMPERIAL_COUNTRIES` is a frozen **sorted Array** (`['gb','lr','mm','us']`), not a Set, so it is clone-safe. Use `.includes()`.
 * **`sha256Text` and `sha256Bytes` are `async`** — `crypto.subtle.digest` returns a Promise. Every caller must `await`. This is the one signature that differs from the Python.
 * `rhu` is round-**half-up** implemented on the shortest round-trip decimal string. Verified equal to `Decimal(repr(x)).quantize(…, ROUND_HALF_UP)` on the boundary cases (`2.675→2.68`, `1.005→1.01`, `0.145→0.15`, `-0.5→-1`). Do not "simplify" it to `toFixed`.
@@ -92,13 +98,14 @@ Notes:
 
 ### `lib/geo.js` — exported symbols (already written)
 
-`haversineM Projection bboxOf bboxExpand bboxContains convexHull polygonArea ringCentroid
-pointInRing representativePoint polylineMidpoint segPointDist ringWithin
-minEnclosingCircle GridIndex`
+`haversineM Projection bboxOf bboxExpand bboxContains segIntersects bboxIntersectsRing
+convexHull polygonArea ringCentroid pointInRing representativePoint polylineMidpoint
+segPointDist ringWithin minEnclosingCircle GridIndex`
 
 Conventions:
 * Geographic point = `[lat, lon]` degrees. Planar point = `[x, y]` metres. Bbox = `[S, W, N, E]` (**Overpass order, not GeoJSON**). Ring = array of planar points, first point NOT repeated.
 * `Projection` is a class: `new Projection(lat0, lon0)`, `Projection.about(points)`, `Projection.from({lat0, lon0})`. Methods `xy(lat, lon) → [x, y]`, `lonlat(x, y) → [lon, lat]` (note the order — mirrors Python), `latlon(x, y) → [lat, lon]` (JS-only convenience), getters `mPerDegLat` / `mPerDegLon`, `toJSON() → {lat0, lon0}`. **Projection instances are class instances and cannot cross `postMessage`** — send `{lat0, lon0}` and rebuild with `Projection.from()`.
+* `segIntersects(a, b, c, d) → boolean` is the planar orientation test, collinear overlap included. `bboxIntersectsRing(bbox, ring) → boolean` answers "does this `[S,W,N,E]` box overlap this ring at all", and checks **all three** cases — a box corner inside the ring, a ring vertex inside the box, and a box edge crossing a ring edge — because any one alone is quietly wrong. Both are used by the landing picker to decide which feeds a drawn shape sweeps up.
 * `GridIndex(cell)`: `.add(key, x, y)`, `.addBbox(key, minx, miny, maxx, maxy, {cap = 400}) → boolean`, `.near(x, y, radius) → [[key, x, y], …]` sorted by `String(key)`, `.nearKeys(x, y, radius) → [key, …]` deduped + sorted. `radius` may be `Infinity`; the 3×3 neighbourhood restriction still applies (that is intentional and load-bearing for the area-index callers). Holds a `Map` — **not clone-safe**, build inside the worker.
 * `minEnclosingCircle` returns `[cx, cy, r]`. It uses a fixed-seed `mulberry32(0)` Fisher–Yates over the sorted+deduped point list. **This is the one intentional divergence from the CLI**, which uses `random.Random(0)` (Mersenne Twister). Fixed permutation, not entropy; the circle is permutation-invariant up to fp noise well inside the existing `1e-7` slack.
 
@@ -173,6 +180,20 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {string} feedEnd                      // feed_end,   'YYYYMMDD'
  * @property {string} feedVersion                  // feed_version, default ''
  * @property {string} publisher                    // publisher, default ''
+ * @property {FeedSourceRow[]} sources             // one row per input feed, in merge order. Length 1 for an ordinary run; `worker.js` attaches it on EVERY path so no renderer branches on the count.
+ * @property {string} [fareAgency]                 // MERGED FEEDS ONLY: whose `fare_attributes` rows the merge carried, so the fare house rule can name them. Absent on a single-feed run, which is why that run's wording is unchanged.
+ */
+
+/**
+ * @typedef {Object} FeedSourceRow   // one input feed of a run. Clone-safe; §09 prints them all.
+ * @property {string} tag            // 'f0' — the namespace prefix, minus its colon
+ * @property {string} label          // what the page calls it: 'The Rapid', 'mbta.zip'
+ * @property {string} source         // the URL or File name `loadFeed` recorded
+ * @property {string} sha256         // this feed's own hash — NOT the merged one
+ * @property {number|null} mdbId     // Mobility Database source id, or null
+ * @property {string} agencyName @property {string} agencyUrl @property {string} timezone
+ * @property {string} feedStart @property {string} feedEnd @property {string} feedVersion
+ * @property {number} stops @property {number} routes @property {number} trips
  */
 
 /**
@@ -185,6 +206,75 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {string[]} stopIds      // stop_ids — sorted
  */
 ```
+
+#### Merging several feeds — `gtfs/merge.js`
+
+A run may read more than one feed. `worker.js` loads each one, merges them at table
+level, and hands the rest of the pipeline a single `Feed`; nothing downstream can tell
+the difference.
+
+* **The identity rule.** `mergeFeeds([f]) === f` — reference equality, no copy, no table
+  touched, no typed view rebuilt. A single-source run cannot drift because on that path
+  the merge does nothing at all, and `tools/smoke.mjs` asserts it with a literal `===`.
+  Do not "tidy" the fast path away.
+* **Merge order is content-addressed**: feeds are sorted by `(sha256, source, input
+  index)`, code-point, and tagged `f0`, `f1`, … in that order. The merged feed is a pure
+  function of the feed bytes — independent of which download finished first, of the main
+  thread's own sort key, and of which source failed and was dropped.
+* **Ids are namespaced ALWAYS, not on collision.** Every id column grows a `f{i}:`
+  prefix. An id whose spelling depends on which *other* feed was picked is a trap for
+  `startStopId` / `excludeStops` and for anyone reading a stop id off the page. If any
+  input already spells an id `f0:…`, every prefix escalates uniformly to `f{i}::`.
+  A blank id stays blank, with one exception: a feed declaring exactly one agency may
+  omit `agency_id` on either side of the route→agency join, and both sides are filled
+  with that agency's namespaced id (or the bare tag when it has none).
+
+  | table | namespaced columns |
+  |---|---|
+  | `agency` | `agency_id` |
+  | `stops` | `stop_id`, `parent_station` |
+  | `routes` | `route_id`, `agency_id` |
+  | `trips` | `trip_id`, `route_id`, `service_id`, `shape_id`, `block_id` |
+  | `stop_times` | `trip_id`, `stop_id` — through the interning tables, never `rowAt()` |
+  | `calendar`, `calendar_dates` | `service_id` |
+  | `transfers` | `from_/to_` `stop_id`, `trip_id`, `route_id` |
+  | `frequencies` | `trip_id` |
+  | `shapes` | `shape_id` |
+  | `fare_attributes`, `feed_info` | none — see below |
+
+* **`MERGE_TABLES` is an allowlist of twelve**, never a denylist: `agency`, `calendar`,
+  `calendar_dates`, `fare_attributes`, `feed_info`, `frequencies`, `routes`, `shapes`,
+  `stop_times`, `stops`, `transfers`, `trips`. Everything else in the archive is dropped,
+  because an extension table nobody here has heard of carries un-namespaced ids and
+  dropping it is the only way to be sure one cannot leak through.
+* **`fare_attributes` carries exactly ONE feed's rows.** The primary feed — the one running
+  the most trips, ties falling to merge order — supplies them when it has any; when it ships
+  no `fare_attributes.txt` at all, the first feed in merge order that HAS fares supplies them
+  instead. `deriveRecommendations` prints `fare_attributes[0]`'s price as *the* fare for the
+  map, so a concatenated table would quote one operator's fare as the merged system's — and
+  taking the primary's empty table would silently delete the house rule a small city produces
+  on its own beside a big fare-less neighbour (MBTA has no fares; The Rapid does). `Feed`
+  gains `fareAgency` on the merged path, so the sentence names whose fare it is.
+* **`feed_info` is one synthesised row** carrying the merged window, so `_s1WindowDates`
+  over merged tables agrees with the window the merge computed instead of recovering the
+  union of the calendars. Each feed keeps its own `calendar` / `calendar_dates` rows.
+* **The window is the INTERSECTION** — `max(feedStart)` … `min(feedEnd)` — because
+  `dayTypes` picks a representative date by trip count over the window and a union would
+  happily land on a date one feed runs nothing on. An empty intersection falls back to
+  the union and emits a `degraded`; an intersection under seven days emits one too.
+* **Mixed timezones warn, never refuse.** `Feed.timezone` is display-only and every time
+  in the pipeline is feed-local seconds since midnight, so a mixed-zone merge is wrong
+  about exactly one thing — the clock alignment of a ride *between* the systems — and
+  that is a `degraded` message, not a crash. `merged.timezone` is the primary feed's.
+* **Cross-feed connectivity is free.** `s1Footpaths` (`gtfs/service.js`) builds footpaths
+  geometrically from stop proximity within `WALK_RADIUS_M` and only *consults*
+  `transfers.txt`, so two agencies whose stops sit 40 m apart connect with no
+  `transfers.txt` row between them.
+* **No merged-artifact cache.** The per-source download cache is unchanged
+  (`httpFetch`'s `cacheKey` is the exact URL). A `Feed` holds typed arrays and a Proxy
+  and is not serialisable; the only expensive part is already cached per source, so two
+  overlapping selections that both include one city download it once. `merged.sha256` is
+  the hash of the tagged per-feed hashes — a run **identity**, not a storage key.
 
 ### Service-day layer
 
@@ -724,7 +814,8 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  * @property {string} publisher @property {string} feedStart @property {string} feedEnd @property {string} asOf
  * @property {Array<{name:string,url:string,timezone:string}>} agencies
  * @property {string} generator @property {string} version
- * @property {string[]} argv                       // in the browser: a synthesised echo of the Options form
+ * @property {FeedSourceRow[]} feeds               // one row per input feed, in merge order. Length 1 for an ordinary run.
+ * @property {string[]} argv                       // in the browser: a synthesised echo of the Options form. A merged run echoes one `--feed <label>` per source instead of the single positional.
  * @property {OverpassQueryRecord[]} overpass      // sorted by (key, cacheKey)
  * @property {boolean} osmAvailable @property {string[]} osmNotes
  * @property {Object<string, number|null>} adminLevels   // '1'..'4'
@@ -829,8 +920,14 @@ Normalisation the main thread performs before posting (mirrors `parse_args`):
 sorted and deduped; `borderBbox` must be exactly four numbers or it is an error;
 `worldBaseUrl` must parse as an http(s) URL or it is an error, and loses any trailing
 slashes (`openWorld` joins with one of its own).
-`source` is carried in the `file` / `url` fields of the `run` message, not inside `options`
-(a `File` is clone-safe, but keeping the two apart makes the protocol readable).
+`source` stays a **display string** and is carried in `options`; the inputs themselves
+travel in the `run` message's `sources` list, not inside `options` (a `File` is
+clone-safe, but keeping the two apart makes the protocol readable). On a multi-feed run
+`source` is the labels joined with `' + '`.
+
+The landing map's drawn shape is a **page** control, not an `Options` field: it produces a
+`borderBbox` (and leaves `borderShape` at `'bbox'`), which `inferBorder` already honours
+as an override. Do not add a shape or ring field to the wire.
 
 ---
 
@@ -841,11 +938,30 @@ slashes (`openWorld` joins with one of its own).
 ### Main thread → worker — exactly one message
 
 ```js
-{ type: 'run', options: Options, file: File | null, url: string | null }
+{ type: 'run', options: Options, sources: SourceRef[] }     // 1 ≤ sources.length ≤ MAX_FEEDS_PER_RUN (6)
+
+/**
+ * @typedef {Object} SourceRef       // main → worker. A `File` is clone-safe; a string is.
+ * @property {'file'|'url'} kind
+ * @property {File|null} file        // kind === 'file'
+ * @property {string|null} url       // kind === 'url' — http(s) only
+ * @property {string} id             // STABLE IDENTITY, and what the list is sorted on:
+ *                                   //   'mdb:<id>' | 'url:<the url>' | 'file:<name>:<size>'
+ * @property {string} label          // 'The Rapid' | 'mbta.zip'
+ * @property {number|null} mdbId     // Mobility Database source id, or null
+ */
 ```
 
-Exactly one of `file` / `url` is non-null. The worker never receives a second message and
-never posts back a request; there is no request/response channel.
+`sources` is the only carrier — the older `file` / `url` pair is **gone**, because two
+ways to say the same thing is how a stale main thread half-works silently. The main
+thread sorts the list by `id`, code-point, before posting; the **merge** order is decided
+independently inside the worker, from the feed bytes (§(b)). It is still **exactly one
+message** however many feeds it names: the worker never receives a second one and never
+posts back a request; there is no request/response channel.
+
+`runPipeline(options, source, emit)` also accepts a bare `File` / `Blob` / buffer / URL
+string, or an array of them, as a list of one — that is the shape `tools/smoke.mjs` uses
+and the path the golden numbers are measured on.
 
 ### Worker → main thread — many messages
 
@@ -868,7 +984,7 @@ internally but must flatten before emitting. `Projection` crosses as `{lat0, lon
 
 | # | `stage` | Payload | Unblocks |
 |---|---|---|---|
-| 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, stops: number, routes: number, trips: number, place }` | hero, §04 partial |
+| 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, feeds: FeedSourceRow[], stops: number, routes: number, trips: number, place }` — every scalar describes the MERGED feed; `feeds` names what it was merged from | hero, §04 partial |
 | 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 |
 | 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], stops: StopRow[], proj: {lat0,lon0} }` | §04, §05 |
 | 4 | `'geo'` | `{ geo: GeoData }` | stage 5 |

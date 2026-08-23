@@ -10,6 +10,30 @@
 // deliberate. Never adjust an assertion to make it pass.
 //
 //   node tools/smoke.mjs [--feed <path>] [--quiet] [--json]
+//                        [--no-merge] [--merge-pipeline]
+//
+// After the goldens it runs the MERGE phases, which cover `gtfs/merge.js` and carry
+// their own pass/fail count, reported on its own line so the 19 above stay legible:
+//
+//   M1  self-merge — the reference feed merged with itself. Identical bytes mean
+//       identical hashes and a 100% id collision, which is the strongest namespacing
+//       test available and needs no second fixture.
+//   M2  two feeds — the reference plus Rochester, when that zip is cached. Additivity,
+//       the window intersection, the mixed-timezone warning, referential integrity.
+//   M3  end to end (`--merge-pipeline`) — a merged run reaching `done`. A SHAPE check,
+//       never a golden: a merged map is not a stable reference and must never grow one.
+//   M4  the failure path (`--merge-pipeline`) — three sources of which one cannot be
+//       downloaded. The run must survive it AND must credit the two feeds that
+//       actually loaded, because §09 exists so a merged report cannot lie about what
+//       it read; an index into the loaded list is not an index into the source list.
+//   M5  the big pair (`--merge-pipeline`) — the reference feed merged with MBTA, the
+//       one cached pair whose trip-count primary ships no `fare_attributes.txt`. It
+//       covers the fare fallback, which no self-merge or same-shaped pair can.
+//
+// `--merge-pipeline` opts into all three of the slow phases (each loads or runs a
+// whole pipeline; M5 alone reads an 18 MB feed). M1 and M2 are seconds and run by
+// default. `cache/` is gitignored, so a fixture that is not on this machine prints
+// SKIP and does not fail. `--no-merge` skips the phases entirely.
 //
 // Node has no `Worker`, no `indexedDB` and no `File`. All three are handled without
 // shimming the pipeline: `runPipeline` takes its message sink as an argument,
@@ -24,6 +48,9 @@ import process from 'node:process';
 
 import { runPipeline } from '../worker.js';
 import { SQM_PER_SQMI } from '../lib/core.js';
+import { openCache } from '../lib/cache.js';
+import { loadFeed, stopTimesOf } from '../gtfs/feed.js';
+import { mergeFeeds, mergeOrder, feedSourceRows, MERGE_TABLES } from '../gtfs/merge.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -37,6 +64,21 @@ const QUIET = argv.includes('--quiet');
 const JSON_OUT = argv.includes('--json');
 const feedArg = argv.indexOf('--feed');
 const FEED_PATH = feedArg >= 0 && argv[feedArg + 1] ? argv[feedArg + 1] : REFERENCE_FEED;
+const NO_MERGE = argv.includes('--no-merge');
+const MERGE_PIPELINE = argv.includes('--merge-pipeline');
+
+// Rochester, summer 2026 — 508 KB, a different timezone and no id in common with the
+// reference feed. Optional: `cache/` is gitignored.
+const SECOND_FEED = path.join(REPO, 'cache', 'gtfs', '7da582fb8508a2f9.zip');
+
+// MBTA, summer 2026 — 18 MB, 83,098 trips and NO `fare_attributes.txt`. The only
+// cached feed that outruns the reference on trips while shipping no fares, which is
+// what makes it the fixture for the fare fallback (M5). Optional, and slow.
+const BIG_FEED = path.join(REPO, 'cache', 'gtfs', '3e729bcf6f763c38.zip');
+
+// A host that cannot resolve, so M4's dead source fails in DNS rather than hanging on
+// a real server. `.invalid` is reserved by RFC 2606 and can never be registered.
+const DEAD_FEED_URL = 'https://feed.invalid/dead.zip';
 
 // ── console helpers ──────────────────────────────────────────────────────────
 
@@ -65,6 +107,292 @@ function show(value) {
 // to violate.
 
 const STAGES = ['feed', 'days', 'network', 'geo', 'rules', 'score', 'provenance'];
+
+// ── the merge phases ─────────────────────────────────────────────────────────
+
+/** Code-point order. The pipeline's comparator, and never `localeCompare`. */
+const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A picked-`File` duck type over a zip on disk, or null when it is not cached. */
+async function feedFile(zipPath, name) {
+  let bytes;
+  try {
+    bytes = await readFile(zipPath);
+  } catch {
+    return null;
+  }
+  return typeof File === 'function'
+    ? new File([bytes], name, { type: 'application/zip' })
+    : Object.assign(new Blob([bytes], { type: 'application/zip' }), { name });
+}
+
+/** Distinct non-blank values of one column. */
+function idSet(rows, col) {
+  const out = new Set();
+  for (const row of (rows || [])) {
+    const v = String(row[col] ?? '').trim();
+    if (v) out.add(v);
+  }
+  return out;
+}
+
+/**
+ * `gtfs/merge.js`, asserted.
+ *
+ * Every number below is additive or structural — the sum of two measured feeds, or a
+ * property that must hold whatever the feeds are. `merge.two.stopTimes` is asserted
+ * BOTH as its measured value and as the relation `a + b`, so a refreshed fixture
+ * reports honestly instead of silently.
+ *
+ * @returns {Promise<{results: Array<object>, skips: string[]}>}
+ */
+async function mergePhases() {
+  /** @type {Array<{name:string,expected:string,actual:string,pass:boolean}>} */
+  const results = [];
+  /** @type {string[]} */
+  const skips = [];
+  const is = (name, got, want) => results.push({
+    name, expected: show(want), actual: show(got), pass: got === want,
+  });
+
+  const cache = await openCache({ offline: false, refresh: false });
+
+  // ── M1 · self-merge ───────────────────────────────────────────────────────
+  // Identical bytes: identical sha256 (so `mergeOrder`'s label tie-break is what
+  // decides the tags) and every single id colliding. Nothing available is this hostile.
+  const refA = await feedFile(REFERENCE_FEED, 'ref-a.zip');
+  const refB = await feedFile(REFERENCE_FEED, 'ref-b.zip');
+  if (!refA || !refB) {
+    skips.push(`M1 self-merge — ${path.relative(REPO, REFERENCE_FEED)} is not cached`);
+  } else {
+    line('  M1 · the reference feed merged with itself');
+    const a = await loadFeed(refA, cache);
+    const b = await loadFeed(refB, cache);
+
+    // THE invariant the 19 goldens rest on: one source in, the SAME OBJECT out.
+    is('merge.identity', (await mergeFeeds([a])) === a, true);
+
+    /** @type {string[]} */
+    const notes = [];
+    const merged = await mergeFeeds([a, b], { onNote: (msg) => notes.push(msg) });
+
+    is('merge.self.stops', Object.keys(merged.stops).length, 2986);
+    is('merge.self.routes', Object.keys(merged.routes).length, 50);
+    is('merge.self.trips', merged.tables.trips.length, 11240);
+    is('merge.self.stopTimes', stopTimesOf(merged).length, 401532);
+
+    // Every id prefixed, and every id still distinct: 2n distinct values out of two
+    // copies of n is the whole claim the namespacing scheme makes.
+    const cols = [
+      ['stops', 'stop_id'], ['routes', 'route_id'], ['trips', 'trip_id'],
+      ['trips', 'service_id'], ['trips', 'shape_id'],
+    ];
+    let prefixed = true;
+    for (const [table, col] of cols) {
+      const mine = idSet(merged.tables[table], col);
+      const parts = idSet(a.tables[table], col).size + idSet(b.tables[table], col).size;
+      if (mine.size !== parts) prefixed = false;
+      for (const v of mine) if (!v.startsWith('f0:') && !v.startsWith('f1:')) prefixed = false;
+    }
+    is('merge.self.prefixes', prefixed, true);
+
+    const kept = Object.keys(merged.tables).sort(cmpStr);
+    const subset = kept.every((t) => MERGE_TABLES.includes(t));
+    const fares = (merged.tables.fare_attributes || []).length;
+    // The primary feed's rows, NOT both feeds' — the house rule quotes one price as
+    // the fare for the whole map.
+    is('merge.self.tables', subset && fares === (a.tables.fare_attributes || []).length, true);
+
+    is('merge.self.window', `${merged.feedStart}/${merged.feedEnd}`, '20260724/20260830');
+    is('merge.self.notz', notes.some((n) => /time ?zone/i.test(n)), false);
+
+    const rows = feedSourceRows(mergeOrder([a, b]), null);
+    is('merge.self.sources', rows.map((r) => r.tag).join(','), 'f0,f1');
+  }
+
+  // ── M2 · two real feeds ───────────────────────────────────────────────────
+  const secondName = path.basename(SECOND_FEED);
+  const twoA = await feedFile(REFERENCE_FEED, path.basename(REFERENCE_FEED));
+  const twoB = await feedFile(SECOND_FEED, secondName);
+  if (!twoA || !twoB) {
+    skips.push(`M2 two feeds — ${path.relative(REPO, SECOND_FEED)} is not cached`);
+  } else {
+    line('  M2 · the reference feed merged with Rochester');
+    const a = await loadFeed(twoA, cache);
+    const b = await loadFeed(twoB, cache);
+    /** @type {string[]} */
+    const notes = [];
+    const m = await mergeFeeds([a, b], { onNote: (msg) => notes.push(msg) });
+
+    is('merge.two.stops', Object.keys(m.stops).length, 2291);
+    is('merge.two.routes', Object.keys(m.routes).length, 53);
+    is('merge.two.trips', m.tables.trips.length, 6347);
+    is('merge.two.stopTimes', stopTimesOf(m).length, 224047);
+    // The same claim as a relation, so a refreshed fixture still catches row loss.
+    is('merge.two.stopTimesSum', stopTimesOf(m).length,
+      stopTimesOf(a).length + stopTimesOf(b).length);
+
+    // The INTERSECTION, not the union: `dayTypes` picks a representative date by trip
+    // count over the window, and a union would happily pick one nobody runs on.
+    is('merge.two.window', `${m.feedStart}/${m.feedEnd}`, '20260729/20260828');
+
+    const tzNote = notes.find((n) => /time ?zone/i.test(n)) || '';
+    is('merge.two.timezone',
+      tzNote.includes('America/New_York') && tzNote.includes('America/Chicago'), true);
+
+    // Referential integrity. The stop_times sweep is at a fixed stride, which is
+    // deterministic and still crosses both feeds' halves of the store.
+    let refsOk = true;
+    for (const row of m.tables.trips) {
+      if (!(String(row.route_id) in m.routes)) { refsOk = false; break; }
+    }
+    const services = new Set([
+      ...idSet(m.tables.calendar, 'service_id'),
+      ...idSet(m.tables.calendar_dates, 'service_id'),
+    ]);
+    for (const row of m.tables.trips) {
+      if (!services.has(String(row.service_id ?? '').trim())) { refsOk = false; break; }
+    }
+    const st = stopTimesOf(m);
+    for (let i = 0; i < st.length; i += 97) {
+      if (!(st.stopId(i) in m.stops)) { refsOk = false; break; }
+    }
+    is('merge.two.refs', refsOk, true);
+
+    // Content-addressed order: the argument order must not reach the output.
+    const swapped = await mergeFeeds([b, a]);
+    is('merge.two.deterministic',
+      swapped.sha256 === m.sha256
+      && Object.keys(swapped.stops).sort(cmpStr).join(' ')
+        === Object.keys(m.stops).sort(cmpStr).join(' '), true);
+
+    // ONE feed's fare table, never both concatenated, and the merge says whose:
+    // the house rule quotes `fare_attributes[0]` as the price for the whole map.
+    // Here the trip-count primary (the reference feed) is the one that has fares;
+    // M5 covers the other direction, where the primary ships none.
+    is('merge.two.fares',
+      `${(m.tables.fare_attributes || []).length}/${m.fareAgency}`,
+      `${(a.tables.fare_attributes || []).length}/${a.agencyName}`);
+
+    const info = m.tables.feed_info || [];
+    is('merge.two.feedinfo',
+      info.length === 1
+      && info[0].feed_start_date === m.feedStart
+      && info[0].feed_end_date === m.feedEnd, true);
+  }
+
+  // ── M3 · end to end ───────────────────────────────────────────────────────
+  // A SHAPE check and never a golden: a merged map is not a stable reference and must
+  // never grow one.
+  if (!MERGE_PIPELINE) {
+    skips.push('M3 end-to-end — pass --merge-pipeline to run it');
+  } else if (!twoA || !twoB) {
+    skips.push('M3 end-to-end — the second feed is not cached');
+  } else {
+    line('  M3 · a merged run, end to end');
+    const pipeA = await feedFile(REFERENCE_FEED, path.basename(REFERENCE_FEED));
+    const pipeB = await feedFile(SECOND_FEED, secondName);
+    let pipeFatal = null;
+    const sink = (msg) => {
+      if (msg.type === 'error' && msg.fatal) pipeFatal = `${msg.stage}: ${msg.message}`;
+    };
+    const opts = {
+      source: 'merged', useOsm: false, asOf: null, sizeOverride: null, zoneRadiusM: null,
+      hidingPeriodMin: null, startStopId: null, borderShape: 'bbox', borderBbox: null,
+      excludeStops: [], excludeRoutes: [], departure: '09:00:00', boardSlackS: 0,
+      offline: false, refresh: false,
+    };
+    const rep = await runPipeline(opts, [pipeA, pipeB], sink);
+    is('merge.pipe.fatal', pipeFatal, null);
+    is('merge.pipe.report', Boolean(rep), true);
+    if (rep) {
+      const served = Number((rep.metrics || {}).servedStops) || 0;
+      is('merge.pipe.servedStops', served >= 1493 && served <= 1493 + 798, true);
+      const score = (rep.fitness || {}).score;
+      is('merge.pipe.fitness', score !== null && score !== undefined, true);
+      is('merge.pipe.zones', (rep.zones || []).length > 0
+        && (rep.rankedZoneIds || []).length > 0, true);
+      // Labels, not just a count: a count of 2 stays green even when both rows are
+      // attributed to the wrong source. §09 is the record of what was read.
+      is('merge.pipe.feeds',
+        ((rep.provenance || {}).feeds || []).map((r) => r.label).join(','),
+        `${path.basename(REFERENCE_FEED)},${secondName}`);
+    }
+  }
+
+  // ── M4 · one source of three cannot be downloaded ──────────────────────────
+  // The path D8 was written for. What is asserted is not that it survives — M3
+  // already shows a merged run completing — but that the report NAMES the two feeds
+  // that loaded and nothing else: `feedSourceRows` walks the merge order, whose
+  // indices address the loaded list, so the source metadata has to travel beside the
+  // feed it produced rather than be looked up by position afterwards.
+  if (!MERGE_PIPELINE) {
+    skips.push('M4 a dead source — pass --merge-pipeline to run it');
+  } else if (!twoA || !twoB) {
+    skips.push('M4 a dead source — the second feed is not cached');
+  } else {
+    line('  M4 · three sources, the first one dead');
+    const liveA = await feedFile(REFERENCE_FEED, path.basename(REFERENCE_FEED));
+    const liveB = await feedFile(SECOND_FEED, secondName);
+    /** @type {string[]} */
+    const degradations = [];
+    let deadFatal = null;
+    const sink = (msg) => {
+      if (msg.type === 'degraded') degradations.push(String(msg.message));
+      if (msg.type === 'error' && msg.fatal) deadFatal = `${msg.stage}: ${msg.message}`;
+    };
+    const opts = {
+      source: 'merged', useOsm: false, asOf: null, sizeOverride: null, zoneRadiusM: null,
+      hidingPeriodMin: null, startStopId: null, borderShape: 'bbox', borderBbox: null,
+      excludeStops: [], excludeRoutes: [], departure: '09:00:00', boardSlackS: 0,
+      offline: false, refresh: false,
+    };
+    const rep = await runPipeline(opts, [
+      { kind: 'url', file: null, url: DEAD_FEED_URL, id: 'url:dead', label: 'Dead Mirror Transit', mdbId: 999 },
+      { kind: 'file', file: liveA, url: null, id: 'file:a', label: 'The Rapid', mdbId: 1 },
+      { kind: 'file', file: liveB, url: null, id: 'file:b', label: 'Rochester', mdbId: 2 },
+    ], sink);
+    is('merge.dead.fatal', deadFatal, null);
+    is('merge.dead.report', Boolean(rep), true);
+    const feeds = ((rep || {}).provenance || {}).feeds || [];
+    is('merge.dead.labels', feeds.map((r) => r.label).join(','), 'The Rapid,Rochester');
+    // Each row must describe the feed it names, not the one beside it.
+    is('merge.dead.sources', feeds.map((r) => r.source).join(','),
+      `${path.basename(REFERENCE_FEED)},${secondName}`);
+    // One failure, one line — the sentence that names the feed and the consequence.
+    is('merge.dead.degraded',
+      degradations.filter((d) => d.includes('Dead Mirror Transit')).length, 1);
+  }
+
+  // ── M5 · the big pair, for the fare fallback ───────────────────────────────
+  // The reference feed (5,620 trips, one fare row) merged with MBTA (83,098 trips, no
+  // `fare_attributes.txt`). The primary is MBTA, so taking the primary's table alone
+  // would silently delete the `carry_fare` house rule that Grand Rapids produces on
+  // its own — the commonest shape of merge is a small city beside a big neighbour.
+  const bigFeed = MERGE_PIPELINE ? await feedFile(BIG_FEED, path.basename(BIG_FEED)) : null;
+  if (!MERGE_PIPELINE) {
+    skips.push('M5 the big pair — pass --merge-pipeline to run it');
+  } else if (!refA || !bigFeed) {
+    skips.push(`M5 the big pair — ${path.relative(REPO, BIG_FEED)} is not cached`);
+  } else {
+    line('  M5 · the reference feed merged with MBTA');
+    const small = await loadFeed(await feedFile(REFERENCE_FEED, path.basename(REFERENCE_FEED)), cache);
+    const big = await loadFeed(bigFeed, cache);
+    const m = await mergeFeeds([small, big]);
+    // The primary really is the fare-less feed, or the assertion below proves nothing.
+    is('merge.big.primary',
+      big.tables.trips.length > small.tables.trips.length
+      && (big.tables.fare_attributes || []).length === 0, true);
+    is('merge.big.fares',
+      `${(m.tables.fare_attributes || []).length}/${m.fareAgency}`,
+      `${(small.tables.fare_attributes || []).length}/${small.agencyName}`);
+    // The mixed `shape_dist_traveled` case, which only this pair exercises.
+    is('merge.big.stopTimes', stopTimesOf(m).length,
+      stopTimesOf(small).length + stopTimesOf(big).length);
+  }
+
+  return { results, skips };
+}
 
 async function main() {
   let bytes;
@@ -252,16 +580,55 @@ async function main() {
     line('');
   }
 
+  // ── the merge phases ──────────────────────────────────────────────────────
+  // Reported on their own line: the 19 above are the algorithm's fingerprint and
+  // must stay legible, and a merge assertion is a different kind of claim.
+  /** @type {Array<{name:string,expected:string,actual:string,pass:boolean}>} */
+  let mergeResults = [];
+  /** @type {string[]} */
+  let mergeSkips = [];
+  if (!NO_MERGE) {
+    line('Merging several feeds into one (gtfs/merge.js)');
+    try {
+      ({ results: mergeResults, skips: mergeSkips } = await mergePhases());
+    } catch (err) {
+      process.stderr.write(`smoke: merge phase threw: ${err && err.stack ? err.stack : err}\n`);
+      return 1;
+    }
+    for (const r of mergeResults) {
+      const tag = r.pass ? colour(GREEN, 'PASS') : colour(RED, 'FAIL');
+      line(`  ${tag}  ${r.name.padEnd(24)} expected ${r.expected.padEnd(12)} actual ${r.actual}`);
+    }
+    for (const skip of mergeSkips) line(`  ${colour(DIM, 'SKIP')}  ${skip}`);
+    line('');
+  }
+
   const failed = results.filter((r) => !r.pass);
+  const mergeFailed = mergeResults.filter((r) => !r.pass);
   if (JSON_OUT) {
-    process.stdout.write(`${JSON.stringify({ results, degradations, errors }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({
+      mode: NO_MERGE ? 'goldens' : (MERGE_PIPELINE ? 'goldens+merge+pipeline' : 'goldens+merge'),
+      results,
+      mergeResults,
+      mergeSkips,
+      degradations,
+      errors,
+    }, null, 2)}\n`);
   }
   line(failed.length
     ? colour(RED, `SUMMARY: ${results.length - failed.length}/${results.length} golden numbers pass `
       + `— ${failed.map((f) => f.name).join(', ')} FAILED`)
     : colour(GREEN, `SUMMARY: ${results.length}/${results.length} golden numbers pass`));
+  if (!NO_MERGE) {
+    const n = mergeResults.length;
+    const skipTail = mergeSkips.length ? ` (${mergeSkips.length} skipped)` : '';
+    line(mergeFailed.length
+      ? colour(RED, `MERGE:   ${n - mergeFailed.length}/${n} merge assertions pass${skipTail} `
+        + `— ${mergeFailed.map((f) => f.name).join(', ')} FAILED`)
+      : colour(GREEN, `MERGE:   ${n}/${n} merge assertions pass${skipTail}`));
+  }
 
-  return failed.length ? 1 : 0;
+  return (failed.length || mergeFailed.length) ? 1 : 0;
 }
 
 process.exitCode = await main();

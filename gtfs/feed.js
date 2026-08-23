@@ -549,7 +549,7 @@ async function streamCsv(entry, onRecord) {
 // The columnar stop_times store
 // ══════════════════════════════════════════════════════════════════════════════
 
-class StopTimes {
+export class StopTimes {
   /** @param {StopTimes|null} shared reuse another store's interning tables */
   constructor(shared = null) {
     this.tripIds = shared ? shared.tripIds : [];
@@ -630,6 +630,38 @@ class StopTimes {
     this._cap = n;
   }
 
+  /**
+   * Bulk-append every row of another store, translating its interned keys through
+   * two remap tables. `tripRemap[k]` / `stopRemap[k]` are this store's keys for
+   * `other`'s trip/stop key `k` — the caller interns the (namespaced) strings once
+   * per distinct id, so this loop does no string work at all.
+   *
+   * One `_reserve` and one pass: O(rows), peak memory `1 × destination +
+   * 1 × largest source` rather than `2 × total`. `arrv`/`depv` carry the MISSING
+   * sentinel, so the raw `Int32` is copied and never interpreted. When this store
+   * tracks `shape_dist_traveled` and `other` does not, the appended rows get NaN,
+   * which `dist(i)` already reports as `null`.
+   *
+   * @param {StopTimes} other
+   * @param {Uint32Array} tripRemap @param {Uint32Array} stopRemap
+   */
+  appendFrom(other, tripRemap, stopRemap) {
+    const n = other.length;
+    const base = this.length;
+    this._reserve(base + n);
+    const otherDist = other.hasDist ? other.distv : null;
+    for (let r = 0; r < n; r++) {
+      const i = base + r;
+      this.trip[i] = tripRemap[other.trip[r]];
+      this.stop[i] = stopRemap[other.stop[r]];
+      this.seqv[i] = other.seqv[r];
+      this.arrv[i] = other.arrv[r];
+      this.depv[i] = other.depv[r];
+      if (this.hasDist) this.distv[i] = otherDist ? otherDist[r] : NaN;
+    }
+    this.length = base + n;
+  }
+
   tripId(i) { return this.tripIds[this.trip[i]]; }
   stopId(i) { return this.stopIds[this.stop[i]]; }
   arrival(i) { const v = this.arrv[i]; return v === MISSING ? null : v; }
@@ -703,7 +735,12 @@ export function stopTimesOf(feed) {
   return feed._s1StopTimes;
 }
 
-function attachStopTimes(feed, st) {
+/**
+ * Install a columnar store on a Feed and (re)install the lazy `tables.stop_times`
+ * view over it. Exported for `gtfs/merge.js`, which builds a store of its own.
+ * @param {Object} feed @param {StopTimes} st
+ */
+export function attachStopTimes(feed, st) {
   Object.defineProperty(feed, '_s1StopTimes', {
     value: st, writable: true, enumerable: false, configurable: true,
   });
@@ -864,6 +901,60 @@ function _s1WindowDates(tables) {
 }
 
 /**
+ * The agency row a feed should be named after.
+ *
+ * A multi-agency feed is not "the first row in agency.txt". MBTA's feed lists Cape
+ * Cod RTA first and MBTA second, which named a Boston-wide map after a bus operator
+ * 100 km away. Pick the agency that actually runs the most trips; ties break on
+ * agency_id so the choice is deterministic. Single-agency feeds are unaffected.
+ *
+ * Lifted out of `loadFeed` verbatim so the rule reads as one named question rather
+ * than a block in the middle of a 300-line loader. It is PRIVATE: `gtfs/merge.js`
+ * does not use it, and must not — a merged feed takes its timezone and agency name
+ * from the primary FEED (the one running the most trips), not from a re-vote over
+ * the pooled agency rows, which would let a big neighbour's timezone rename a map.
+ * A feed with no `agency.txt` at all answers with an empty row, which is what
+ * `loadFeed` has always used.
+ *
+ * @param {Object} tables a Feed's `tables`
+ * @returns {Object<string,string>} the primary agency row
+ */
+function pickPrimaryAgency(tables) {
+  const agencies = (tables.agency && tables.agency.length) ? tables.agency : [{}];
+  const tzSet = new Set();
+  for (const a of agencies) {
+    const tz = String(a.agency_timezone || '').trim();
+    if (tz) tzSet.add(tz);
+  }
+  const tzs = Array.from(tzSet).sort(cmpStr);
+  if (tzs.length > 1) {
+    LOG.warn(`feed declares ${tzs.length} agency timezones (${tzs.join(', ')}); `
+      + 'using the primary agency\'s');
+  }
+
+  let primary = agencies[0];
+  if (agencies.length > 1) {
+    const routeAgency = new Map();
+    for (const r of (tables.routes || [])) {
+      routeAgency.set(String(r.route_id || '').trim(), String(r.agency_id || '').trim());
+    }
+    const tripsPerAgency = new Map();
+    for (const row of (tables.trips || [])) {
+      const key = routeAgency.get(String(row.route_id || '').trim()) ?? '';
+      tripsPerAgency.set(key, (tripsPerAgency.get(key) || 0) + 1);
+    }
+    const trips = (a) => tripsPerAgency.get(String(a.agency_id || '').trim()) || 0;
+    const aid = (a) => String(a.agency_id || '').trim();
+    const ranked = agencies.slice().sort((x, y) => (trips(y) - trips(x)) || cmpStr(aid(x), aid(y)));
+    primary = ranked[0];
+    LOG.info(`multi-agency feed: ${agencies.length} agencies, using `
+      + `${JSON.stringify(String(primary.agency_name || '').trim())} `
+      + `(${trips(primary)} of ${(tables.trips || []).length} trips)`);
+  }
+  return primary;
+}
+
+/**
  * Fetch (or open) a GTFS zip and parse every `*.txt` into a `Feed`.
  *
  * Returns a fully normalised `Feed`: `tables` holds the raw rows, `stops`/`routes`
@@ -945,41 +1036,7 @@ export async function loadFeed(source, cache, opts = {}) {
     };
   }
 
-  const agencies = (tables.agency && tables.agency.length) ? tables.agency : [{}];
-  const tzSet = new Set();
-  for (const a of agencies) {
-    const tz = String(a.agency_timezone || '').trim();
-    if (tz) tzSet.add(tz);
-  }
-  const tzs = Array.from(tzSet).sort(cmpStr);
-  if (tzs.length > 1) {
-    LOG.warn(`feed declares ${tzs.length} agency timezones (${tzs.join(', ')}); `
-      + 'using the primary agency\'s');
-  }
-
-  // A multi-agency feed is not "the first row in agency.txt". MBTA's feed lists Cape
-  // Cod RTA first and MBTA second, which named a Boston-wide map after a bus operator
-  // 100 km away. Pick the agency that actually runs the most trips; ties break on
-  // agency_id so the choice is deterministic. Single-agency feeds are unaffected.
-  let primary = agencies[0];
-  if (agencies.length > 1) {
-    const routeAgency = new Map();
-    for (const r of tables.routes) {
-      routeAgency.set(String(r.route_id || '').trim(), String(r.agency_id || '').trim());
-    }
-    const tripsPerAgency = new Map();
-    for (const row of tables.trips) {
-      const key = routeAgency.get(String(row.route_id || '').trim()) ?? '';
-      tripsPerAgency.set(key, (tripsPerAgency.get(key) || 0) + 1);
-    }
-    const trips = (a) => tripsPerAgency.get(String(a.agency_id || '').trim()) || 0;
-    const aid = (a) => String(a.agency_id || '').trim();
-    const ranked = agencies.slice().sort((x, y) => (trips(y) - trips(x)) || cmpStr(aid(x), aid(y)));
-    primary = ranked[0];
-    LOG.info(`multi-agency feed: ${agencies.length} agencies, using `
-      + `${JSON.stringify(String(primary.agency_name || '').trim())} `
-      + `(${trips(primary)} of ${tables.trips.length} trips)`);
-  }
+  const primary = pickPrimaryAgency(tables);
   const timezone = String(primary.agency_timezone || 'UTC').trim();
 
   const [start, end] = _s1WindowDates(tables);

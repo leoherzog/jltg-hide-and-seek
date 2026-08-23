@@ -1149,10 +1149,21 @@ export function renderProvenance(payload) {
   const agencies = p.agencies || [];
   const agencyNames = s4JoinWords(agencies.map((a) => String(a.name || '')));
   const tz = String((agencies.length ? agencies[0].timezone : '') || '');
+  // One row per input feed on a merged run. A report built from three feeds that
+  // printed one hash and one file name would be describing a map that does not
+  // exist; below one feed there is nothing extra to say, and the rows are the ones
+  // this section has always had.
+  const feeds = p.feeds || [];
+  const merged = feeds.length > 1;
 
   /** @type {Array<[string,string,string]>} */
   const fingerprintRows = [
-    ['', 'Feed sha256', String(p.feedSha256 || '')],
+    ['', merged ? 'Merged feed sha256' : 'Feed sha256', String(p.feedSha256 || '')],
+    ...(merged ? feeds.map((f) => [
+      '',
+      `Feed sha256 · ${String(f.tag || '')} ${String(f.label || '')}`,
+      String(f.sha256 || ''),
+    ]) : []),
     ['generator', 'Generator', `${p.generator || GENERATOR} ${p.version || VERSION}`],
     // `memory` is the answer to "why did this run refetch everything?": IndexedDB
     // could not be opened, so the cache lived and died with the run. Printed
@@ -1176,7 +1187,15 @@ export function renderProvenance(payload) {
 
   /** @type {Array<[string,string,string]>} */
   const factRows = [
-    ['feed', "The agency's published timetable file", String(p.feedUrl || feed.source || '')],
+    ['feed', merged ? 'The published timetable files' : "The agency's published timetable file",
+      merged
+        ? `${num(feeds.length)} feeds merged, ids namespaced ${feeds.map((f) => `${f.tag}:`).join(' ')}`
+        : String(p.feedUrl || feed.source || '')],
+    ...(merged ? feeds.map((f) => ['', `${String(f.tag || '')} · ${String(f.label || '')}`,
+      [String(f.agencyName || ''), String(f.timezone || ''),
+        (f.feedStart && f.feedEnd)
+          ? `${prettyDate(String(f.feedStart))} – ${prettyDate(String(f.feedEnd))}` : '',
+        String(f.source || '')].filter((x) => x).join(' · ')]) : []),
     ['', 'Feed version / publisher',
       [String(p.feedVersion || ''), String(p.publisher || '')].filter((x) => x).join(' · ')],
     ['', 'Feed validity', (p.feedStart && p.feedEnd)

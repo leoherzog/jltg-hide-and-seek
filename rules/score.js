@@ -1588,6 +1588,11 @@ export function deriveRecommendations(reportParts) {
   }
 
   // 9 · fares
+  // On a merged run `fare_attributes` holds ONE feed's rows (see gtfs/merge.js): the
+  // primary's when it has fares, otherwise the first feed in merge order that does.
+  // This rule quotes one price as the fare for the whole map, so when the merge says
+  // which operator it quoted (`feed.fareAgency`, merged runs only) the sentence names
+  // them rather than saying "this feed" of a feed that is several.
   if (feed !== null) {
     const fares = (feed.tables && get(feed.tables, 'fare_attributes')) || [];
     if (fares.length) {
@@ -1601,8 +1606,10 @@ export function deriveRecommendations(reportParts) {
           ? ' Transfers are included.'
           : ' Transfers are not included, so budget a fare per boarding.';
       }
+      const fareAgency = String(get(feed, 'fareAgency') || '');
+      const whose = fareAgency ? `on ${fareAgency}` : 'in this feed';
       add('carry_fare', 55,
-        `Carry fare. A single ride is ${price} ${currency} in this feed.${note} Both sides `
+        `Carry fare. A single ride is ${price} ${currency} ${whose}.${note} Both sides `
         + 'will board more often than they expect.',
         'fare_attributes.txt');
     }
@@ -1696,11 +1703,18 @@ export function deriveRecommendations(reportParts) {
  * CONTRACT.md §(c) drops `argv` from `Options`, but §(b) `Provenance.argv` must
  * still show what was asked for. Only non-default fields are echoed, in a fixed
  * key order, so two identical form submissions produce identical provenance.
+ *
+ * A merged run echoes one `--feed <label>` per source, in merge order, instead of
+ * the single positional: `Options.source` is a display string that joins the labels
+ * with ' + ', and a reader who wants to reproduce the run needs them separated. A
+ * single-source run is byte-identical to what it was before the merge existed.
  */
-function synthArgv(opts) {
+function synthArgv(opts, feeds = []) {
   const argv = [];
   const src = get(opts, 'source');
-  if (typeof src === 'string' && src) argv.push(src);
+  if (feeds.length > 1) {
+    for (const f of feeds) argv.push('--feed', String(f.label || f.source || ''));
+  } else if (typeof src === 'string' && src) argv.push(src);
   else if (src && typeof src === 'object' && src.name) argv.push(String(src.name));
   if (get(opts, 'useOsm') === false) argv.push('--no-osm');
   // No such CLI flag — `generate.py` predates the world files — but §(b) asks what was
@@ -1743,6 +1757,10 @@ function synthArgv(opts) {
  * @returns {Object} a `Provenance`
  */
 export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
+  // One row per input feed, in merge order — length 1 for an ordinary run. §09 prints
+  // them all: a merged report that showed a single sha256 would be lying about what
+  // it read.
+  const feeds = Array.from(get(feed, 'sources') || []);
   let agencies = [];
   for (const row of ((feed.tables && get(feed.tables, 'agency')) || [])) {
     agencies.push({
@@ -1791,7 +1809,8 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
     agencies,
     generator: GENERATOR,
     version: VERSION,
-    argv: synthArgv(opts),
+    argv: synthArgv(opts, feeds),
+    feeds,
     overpass,
     osmAvailable: geo.available,                // osm_available
     osmNotes: Array.from(geo.notes || []),      // osm_notes

@@ -478,6 +478,65 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
    upgrades them, which costs nothing here: this card is already built from wa-card,
    wa-details, wa-icon and wa-radio-group, so it has never rendered without the kit. */
 
+/* ---- the landing feed picker ----
+   The map, the search results and the selected list. Everything here is scoped to
+   the picker's own ids so nothing can reach §05's map, which is skinned above.
+
+   `#landing` is 48rem, which is right for a form and far too narrow for a map — so
+   the widening is GATED on the landing state rather than changed at the source, and
+   the lede keeps its 60ch measure regardless. `#landing-fields`' 220px columns still
+   read at 72rem; they simply get four across instead of three. */
+body[data-state='landing'] #landing { max-inline-size: min(72rem, 100%); }
+
+/* What keeps the card off the horizontal scrollbar at 360px. A flex item's
+   `min-inline-size` defaults to `auto`, which is the item's content width — so one
+   long provider name in a row sets a floor the viewport cannot meet, and the whole
+   PAGE scrolls sideways. Scoped to the three flex contexts the picker owns rather
+   than `#picker *`, which would also let Web Awesome's own internals collapse. */
+#picker .pick-row,
+#picker .pick-row-text,
+#picker-toolbar > *,
+#picker-switches > * { min-inline-size: 0; }
+#picker-toolbar .picker-search { flex: 1 1 18rem; }
+#picker-switches wa-switch::part(hint) { max-inline-size: 60ch; }
+#picker-switches wa-switch::part(base) { align-self: start; }
+
+#catalog-map {
+  block-size: clamp(320px, 56vh, 560px);
+  inline-size: 100%;
+  border-radius: var(--wa-border-radius-m);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+/* MapLibre's own min-width would otherwise fight the grid, exactly as #netmap does */
+#catalog-map.maplibregl-map { min-width: 0; }
+/* draw mode. The canvas cursor is set in JS as well, because MapLibre writes its own
+   cursor onto the canvas element and wins the specificity argument there. */
+#catalog-map.drawing { cursor: crosshair; }
+
+#catalog-results {
+  max-block-size: 18rem;
+  overflow-y: auto;
+  border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+  border-radius: var(--wa-border-radius-m);
+  padding: var(--wa-space-2xs);
+}
+
+/* One row shape for both lists, so a feed looks the same wherever it is named. */
+.pick-row {
+  display: flex; gap: var(--wa-space-s);
+  align-items: center; justify-content: space-between;
+  flex-wrap: wrap;
+  padding: var(--wa-space-2xs) var(--wa-space-xs);
+  border-radius: var(--wa-border-radius-s);
+}
+.pick-row + .pick-row { border-block-start: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+.pick-row-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 14rem; }
+.pick-row-name { font-weight: 600; overflow-wrap: anywhere; }
+.pick-row-chosen { background: var(--wa-color-surface-lowered); }
+.pick-row-chosen + .pick-row-chosen { border-block-start: none; }
+#picks-count { font-variant-numeric: tabular-nums; }
+
 /* ---- the skeleton ----
    `wa-skeleton` sized to the thing that is coming, so the layout does not move when
    the real content lands.

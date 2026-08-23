@@ -22,9 +22,11 @@
 
 import {
   MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
-  IMPERIAL_COUNTRIES, DEFAULT_DEPARTURE, BOARD_SLACK_S,
+  IMPERIAL_COUNTRIES, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
   num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
 } from './lib/core.js';
+
+import { bboxOf } from './lib/geo.js';
 
 import {
   esc, el, join, waIcon, waCard, waDetails, jsonBlock, chip,
@@ -272,6 +274,25 @@ const state = {
   /** The report's `document.title`, parked while the secret view holds the tab.
    *  Empty means "not in the guide"; see `applyRoute`. */
   /** @type {string} */ strategyTitle: '',
+  /**
+   * Landing-page feed picker. `selected` is `Map<string, SourceRef>` keyed by the
+   * ref's stable `id`, and it is the ONLY place a map pick lives. With no picker on
+   * the page it stays empty and every path below behaves exactly as it did before
+   * the picker existed: `readSources` falls through to the bring-your-own card.
+   */
+  landing: {
+    /** @type {Object|null} */ catalog: null,
+    /** @type {Map<string, Object>} */ selected: new Map(),
+    /** @type {Array<[number,number]>|null} */ drawnRing: null,
+    includeRegional: false,
+    includeInactive: false,
+    /** The picker's handle — `{ setSelection, setByo, resize, destroy }` — or null
+     *  when the catalogue never loaded and the bring-your-own card is the whole page. */
+    /** @type {Object|null} */ picker: null,
+    /** Has `#opt-no-osm` already been ticked on the reader's behalf? Ticked once, on
+     *  the first move past one feed, and never unticked: after that the box is theirs. */
+    osmAutoTicked: false,
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -332,13 +353,20 @@ export function boot() {
   const fileInput = findFileInput(form);
   if (fileInput) {
     fileInput.addEventListener('change', () => {
-      if (!(fileInput.files && fileInput.files.length)) return;
-      const urlInput = findUrlInput(form);
-      if (urlInput && urlInput.value) urlInput.value = '';
+      // `<wa-file-input>` fires `change` when its own remove control EMPTIES the
+      // selection too, and `#picks` mirrors that file — so the re-sync happens on
+      // every change, not only on a pick. Only the URL-clearing half is conditional:
+      // there is no cross-field conflict left to resolve once the file is gone.
+      if (fileInput.files && fileInput.files.length) {
+        const urlInput = findUrlInput(form);
+        if (urlInput && urlInput.value) urlInput.value = '';
+      }
       clearFormError();
+      syncAnalyse();
     });
   }
   guardStrayDrops();
+  initLanding();
   // The whole router. It has one route and one fallback, and on a cold load with no
   // report the fallback is the landing form — silently, which is the point.
   window.addEventListener('hashchange', applyRoute);
@@ -366,6 +394,181 @@ function guardStrayDrops() {
   for (const type of ['dragover', 'drop']) {
     window.addEventListener(type, (event) => event.preventDefault());
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// The landing feed picker
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The catalogue snapshot. A **same-origin repo asset** (CONTRACT §0), generated
+ * offline by `tools/mdb-snapshot.mjs` and reviewed as a diff — not a sixth external
+ * dependency, and never fetched from upstream at runtime.
+ */
+const CATALOG_URL = new URL('./data/feeds.json', import.meta.url);
+
+/**
+ * Keep `#analyse` honest: enabled exactly when there is something to run, labelled
+ * with the count when there is more than one, and mirroring the bring-your-own file
+ * or URL into the picker's list so `#picks` is the single place that answers "what is
+ * about to run".
+ *
+ * Called from every path that can change either half of the answer. Cheap, and safe
+ * to call before the picker exists — `readByoSource` is the whole of the fallback.
+ */
+/** The Advanced panel's "Skip OpenStreetMap" switch, wherever it is on the page. */
+function osmSwitch() {
+  return document.querySelector('[data-opt="noOsm"]') || $id('opt-no-osm');
+}
+
+/** Its live state, for the picker's note. */
+function isOsmSkipped() {
+  const sw = osmSwitch();
+  return Boolean(sw && sw.checked);
+}
+
+function syncAnalyse() {
+  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const byo = readByoSource(form);
+  const ref = byo.error ? null : byo.ref;
+  if (state.landing.picker) state.landing.picker.setByo(ref);
+
+  const count = state.landing.selected.size + (ref ? 1 : 0);
+  const button = $id('analyse');
+  if (button) {
+    // A bring-your-own pair that is ALREADY wrong (a file and a URL at once) still
+    // counts as "something to run", so pressing Analyse surfaces the sentence that
+    // says why rather than leaving a dead button and no explanation.
+    button.disabled = count === 0 && !byo.error;
+    const label = button.querySelector('[data-role="analyselabel"]');
+    if (label) label.textContent = count > 1 ? `Analyse ${num(count)} feeds` : 'Analyse';
+  }
+
+  // PLAN D24. Two or more feeds means a border spanning two metros, and OSM-layer
+  // scale guards for a border that big are explicitly out of scope this round — so
+  // the default is "skip the map files", ticked ONCE and said in words by
+  // `#picker-note`. Never unticked afterwards: past the first tick the box is the
+  // reader's, and silently re-ticking it would be the page arguing with them.
+  if (count > 1 && !state.landing.osmAutoTicked) {
+    state.landing.osmAutoTicked = true;
+    const sw = osmSwitch();
+    if (sw && !sw.checked) sw.checked = true;
+    // The picker drew its note BEFORE this tick — it is called from the selection
+    // change that caused it — and setting `.checked` fires no event, so the note is
+    // asked to re-read the switch it now disagrees with.
+    if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
+  }
+}
+
+/**
+ * The reader removed the bring-your-own row from `#picks`. That row is a mirror of a
+ * control the picker does not own, so the clearing happens here.
+ */
+function onPickerRemoveByo() {
+  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const fileInput = findFileInput(form);
+  if (fileInput) {
+    // `<wa-file-input>.files` is a reactive `File[]`, so assigning re-renders the card;
+    // the inner native input keeps its own value and has to be blanked too or the same
+    // file cannot be chosen again.
+    if (fileInput.localName === 'wa-file-input') {
+      fileInput.files = [];
+      if (fileInput.input) fileInput.input.value = '';
+    } else {
+      fileInput.value = '';
+    }
+  }
+  const urlInput = findUrlInput(form);
+  if (urlInput) urlInput.value = '';
+  clearFormError();
+  syncAnalyse();
+}
+
+/** The picker moved the selection. This is the ONLY writer of `state.landing.selected`. */
+function onPickerChange(next) {
+  state.landing.selected = next;
+  clearFormError();
+  syncAnalyse();
+}
+
+/** A shape was closed or cleared. Gates `#opt-use-drawn-border`, which is disabled
+ *  in the shipped markup precisely because there is no shape on a cold landing. */
+function onPickerRing(ring) {
+  state.landing.drawnRing = ring;
+  const box = document.querySelector('[data-opt="useDrawnBorder"]') || $id('opt-use-drawn-border');
+  if (!box) return;
+  box.disabled = !ring;
+  if (!ring) box.checked = false;
+}
+
+/**
+ * Wire the landing card, then try to build the picker on top of it.
+ *
+ * ORDER IS THE POINT. Everything the bring-your-own path needs is wired
+ * SYNCHRONOUSLY, first, and cannot be skipped by a rejected import or a failed fetch.
+ * Only then does the catalogue load, and a failure there is silent-and-degraded — the
+ * picker card stays hidden, the bring-your-own disclosure is opened instead, and the
+ * page is exactly what it was before this feature existed. A grey box where a map
+ * should be is worse than no map.
+ *
+ * The three picker modules are imported dynamically for the same reason MapLibre is:
+ * the `#strategy` route and every report reload would otherwise pay to parse a card
+ * they never show.
+ */
+function initLanding() {
+  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const urlInput = findUrlInput(form);
+  if (urlInput) {
+    urlInput.addEventListener('input', () => { clearFormError(); syncAnalyse(); });
+  }
+  syncAnalyse();
+
+  const host = $id('picker');
+  const body = host && host.querySelector('[data-role="pickerbody"]');
+  if (!host || !body) return;
+
+  // The catalogue is ~370 KB, and on a slow connection the lede promises a map that
+  // is not on the page yet. One line of copy holds the space, the same way the report
+  // skeletons cover their own load; the failure path below hides the card again, so
+  // nobody is left with a promise and a blank.
+  body.innerHTML = '<p class="wa-caption-s wa-color-text-quiet" role="status">'
+    + 'Loading the list of transit feeds…</p>';
+  host.hidden = false;
+
+  (async () => {
+    const [catalog, landing, picker] = await Promise.all([
+      import('./lib/catalog.js'),
+      import('./render/landing.js'),
+      import('./render/picker.js'),
+    ]);
+    const doc = await catalog.loadCatalog(CATALOG_URL);
+    state.landing.catalog = doc;
+    body.innerHTML = landing.renderPickerCard();
+    host.hidden = false;
+    state.landing.picker = picker.initPicker(host, {
+      doc,
+      onChange: onPickerChange,
+      onRing: onPickerRing,
+      onRemoveByo: onPickerRemoveByo,
+      osmSkipped: isOsmSkipped,
+    });
+    // The note tells the reader they can untick Skip OpenStreetMap. When they do, it
+    // has to stop saying so — the switch is theirs from the first tick onwards.
+    const sw = osmSwitch();
+    if (sw) {
+      sw.addEventListener('change', () => {
+        if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
+      });
+    }
+    syncAnalyse();
+  })().catch((err) => {
+    host.hidden = true;
+    body.innerHTML = '';
+    const byo = $id('byo');
+    if (byo) byo.open = true;
+    // eslint-disable-next-line no-console
+    console.warn('The feed catalogue is unavailable — bring your own feed instead', err);
+  });
 }
 
 /** `<div id="tt">` — the page's own hover panel; `document()` emits it unconditionally. */
@@ -530,6 +733,20 @@ function readOptions(form) {
     }
   }
 
+  // The shape drawn on the picker map, offered as the game border.
+  //
+  // A value TYPED into Border box wins — this only fills `borderBbox` when the field
+  // is blank, which is what that field's hint promises. It lands in `inferBorder`'s
+  // existing `options.borderBbox` override, so there is no new field on the wire and
+  // no worker change: `borderShape` is forced to `bbox` because a ring's bounding box
+  // is a rectangle and fitting a circle to it would be a different shape than the one
+  // the reader drew.
+  if (options.borderBbox === null && readControl(form, 'useDrawnBorder') === true
+      && state.landing.drawnRing && state.landing.drawnRing.length >= 3) {
+    options.borderBbox = bboxOf(state.landing.drawnRing);
+    options.borderShape = 'bbox';
+  }
+
   options.excludeStops = idList(readControl(form, 'excludeStops'));
   options.excludeRoutes = idList(readControl(form, 'excludeRoutes'));
 
@@ -564,9 +781,13 @@ function readOptions(form) {
  * the extension is not checked; if the bytes turn out not to be a zip, `unzip` in
  * gtfs/feed.js raises the honest error once the download lands.
  *
- * @returns {{file: File|null, url: string|null, source: string, error: string}}
+ * This is the bring-your-own half only — the file input and the URL box. It is
+ * unchanged from when it was the whole of `readSource`, including both error
+ * sentences, and it stays the fallback that works when the picker never loads.
+ *
+ * @returns {{ref: Object|null, error: string}} a `SourceRef` (CONTRACT.md §(d)), or null
  */
-function readSource(form) {
+function readByoSource(form) {
   const fileInput = findFileInput(form);
   const file = (fileInput && fileInput.files && fileInput.files[0]) || null;
   const urlInput = findUrlInput(form);
@@ -574,35 +795,103 @@ function readSource(form) {
 
   if (file && url) {
     return {
-      file: null, url: null, source: '',
+      ref: null,
       error: 'Pick a file or paste a URL — not both. Clear one of them and try again.',
     };
   }
   if (file) {
     if (!/\.zip$/i.test(file.name)) {
       return {
-        file: null, url: null, source: '',
+        ref: null,
         error: `“${file.name}” is not a .zip. A GTFS feed is a zip archive of .txt tables — `
           + 'pick the archive itself, not a file from inside it.',
       };
     }
-    return { file, url: null, source: file.name, error: '' };
+    return {
+      ref: {
+        kind: 'file',
+        file,
+        url: null,
+        id: `file:${file.name}:${file.size}`,
+        label: file.name,
+        mdbId: null,
+      },
+      error: '',
+    };
   }
   if (url) {
     let parsed;
     try {
       parsed = new URL(url);
     } catch {
-      return { file: null, url: null, source: '', error: 'That is not a URL. It needs to start with https://' };
+      return { ref: null, error: 'That is not a URL. It needs to start with https://' };
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return { file: null, url: null, source: '', error: 'The feed URL has to be http:// or https://' };
+      return { ref: null, error: 'The feed URL has to be http:// or https://' };
     }
-    return { file: null, url, source: url, error: '' };
+    return {
+      ref: {
+        kind: 'url', file: null, url, id: `url:${url}`, label: url, mdbId: null,
+      },
+      error: '',
+    };
+  }
+  return { ref: null, error: '' };
+}
+
+/**
+ * Everything the run will read, as a `SourceRef[]` (CONTRACT.md §(d)).
+ *
+ * Two paths feed it and they ADD rather than replace: whatever the map picker put in
+ * `state.landing.selected`, then the bring-your-own file or URL. A map pick and a
+ * dropped zip together is a legal, useful combination — your city plus the feed your
+ * regional operator has not published to the catalogue.
+ *
+ * The list is sorted by the refs' stable `id`, code-point, so the same selection
+ * always produces the same message, the same run label and the same `Options.source`.
+ * The MERGE order is decided independently inside the worker, from the feed bytes.
+ *
+ * @returns {{sources: Object[], source: string, error: string}}
+ */
+function readSources(form) {
+  const byId = new Map();
+  for (const ref of state.landing.selected.values()) {
+    if (ref && ref.id) byId.set(String(ref.id), ref);
+  }
+
+  const byo = readByoSource(form);
+  if (byo.error) return { sources: [], source: '', error: byo.error };
+  if (byo.ref) byId.set(byo.ref.id, byo.ref);
+
+  const sources = Array.from(byId.keys())
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((id) => byId.get(id));
+  if (!sources.length) {
+    return {
+      sources: [],
+      source: '',
+      error: 'Pick a city on the map, or choose a GTFS .zip from your computer '
+        + 'or paste a link to one.',
+    };
+  }
+  // The cap is enforced HERE as well as in the picker, because the two halves add:
+  // the picker refuses a seventh MAP pick, and a reader with six of those can still
+  // drop a zip into "Or bring your own feed". Every feed past the sixth is memory and
+  // minutes the merge has no bound on, so this is a refusal, not a warning.
+  if (sources.length > MAX_FEEDS_PER_RUN) {
+    return {
+      sources: [],
+      source: '',
+      error: `That is ${num(sources.length)} feeds, and one run merges at most `
+        + `${num(MAX_FEEDS_PER_RUN)}. Remove ${num(sources.length - MAX_FEEDS_PER_RUN)} `
+        + 'of them and run the rest.',
+    };
   }
   return {
-    file: null, url: null, source: '',
-    error: 'Choose a GTFS .zip from your computer, or paste a link to one.',
+    sources,
+    // The display string §09 echoes. `Options.source` has always been one string.
+    source: sources.map((ref) => ref.label).join(' + '),
+    error: '',
   };
 }
 
@@ -649,7 +938,7 @@ function startRun(form) {
   if (state.running) return;
   clearFormError();
 
-  const src = readSource(form);
+  const src = readSources(form);
   if (src.error) {
     showFormError(src.error);
     return;
@@ -659,8 +948,9 @@ function startRun(form) {
     showFormError(errors.join(' '));
     return;
   }
-  // `source` stays on this side: CONTRACT §(c) carries it in the message's `file` /
-  // `url` fields, and keeping the two apart is what makes the protocol readable.
+  // `source` stays on this side: CONTRACT §(c) carries the inputs in the message's
+  // `sources` list, and keeping the display string apart from them is what makes the
+  // protocol readable.
   state.report.opts = { ...options, source: src.source };
 
   let worker;
@@ -694,7 +984,7 @@ function startRun(form) {
 
   enterRunningState(src);
   armWatchdog();
-  worker.postMessage({ type: 'run', options, file: src.file, url: src.url });
+  worker.postMessage({ type: 'run', options, sources: src.sources });
 }
 
 /** (Re)start the silence timer. Every message from the worker is a sign of life. */
@@ -745,13 +1035,22 @@ function setShellState(value) {
 /** Hide the landing form, reveal the report skeletons, start the progress readout. */
 function enterRunningState(src) {
   setShellState('running');
+  // Before the card is hidden, not after: a hidden WebGL context, its tile requests
+  // and its two theme observers would otherwise be held for the whole run.
+  if (state.landing.picker) {
+    try { state.landing.picker.destroy(); } catch { /* nothing to do about it */ }
+    state.landing.picker = null;
+  }
   const landing = pick('#landing', '[data-role="landing"]');
   if (landing) landing.hidden = true;
   const report = pick('#report', '[data-role="report"]', 'main');
   if (report) report.hidden = false;
+  const first = (src.sources && src.sources[0]) || null;
   setProgress({
     stage: 'feed',
-    label: src.file ? `Reading ${src.file.name}` : 'Fetching the feed',
+    label: (src.sources && src.sources.length > 1)
+      ? `Reading ${num(src.sources.length)} feeds`
+      : (first && first.kind === 'file' ? `Reading ${first.label}` : 'Fetching the feed'),
     done: 0,
     total: 100,
   });
@@ -846,6 +1145,10 @@ function applyStage(stage, payload) {
         feedEnd: payload.feedEnd || '',
         feedVersion: payload.feedVersion || '',
         publisher: payload.publisher || '',
+        // One row per input feed, in merge order — length 1 for an ordinary run.
+        // Matches `wireFeed`'s `sources`, so the staged feed and the final report
+        // agree about what was read (CONTRACT.md §(b) `FeedSourceRow`).
+        sources: payload.feeds || [],
       };
       r.feedCounts = {
         stops: payload.stops || 0,
