@@ -88,10 +88,12 @@
 # and OOM-killed if the FGB writer's per-feature cost runs above the measured law.
 #
 # NOT verified by running this file: I cannot execute GitHub Actions from here.
-# YAML syntax was checked with PyYAML and the merge.py modes it drives were
-# exercised locally end-to-end (banded == serial, cell-for-cell) — but matrix
-# expansion, aws-cli-against-R2 behaviour and real wall clocks are unverified
-# until dispatched.
+# Dispatched and proven: run 32599689118 published the live world in 37m42s with
+# 42/42 jobs green. Two earlier runs failed in `finalize` (a missing gdal-bin, then
+# a cleanup flag `aws s3 rm` does not accept) and both are fixed; because the merge
+# is deterministic, the reruns produced byte-identical files with identical content
+# hashes. What is still unexercised is a merge that has to re-run a FAILED per-layer
+# job and reuse another job's staging, which is why staging keys on run_id.
 
 name: world-merge
 

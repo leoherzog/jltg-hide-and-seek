@@ -88,7 +88,7 @@ a `Report`; both renderers consume that object and **format only — they never 
 
 - **S0 plumbing** — CLI, logging, content-addressed HTTP cache with mirror failover, one rounding
   policy (`rhu`/`num`/`mins`/`miles`), deterministic JSON, a pure-Python geometry toolkit
-  (haversine, equirectangular projection, hull, Welzl, ray casting, grid index), and ~25 HTML
+  (haversine, equirectangular projection, hull, Welzl, ray casting, grid index), and 30 HTML
   helpers that are the only sanctioned way to emit WebAwesome markup.
 - **S1 gtfs** — feed parse, service calendar (handles `calendar.txt`, `calendar_dates.txt`-only,
   and empty `frequencies.txt`), per-day spans and headway distributions, network metrics, a
@@ -128,7 +128,9 @@ survives questioning; a zone with a unique vector is named by one cheap question
 The same feed plus the same cached HTTP responses produce **byte-identical** HTML. No `random`
 outside a fixed-seed permutation inside the minimum-enclosing-circle, no unsorted iteration
 reaching output, no wall clock — dates come from `feed_info.txt`/`calendar*.txt` or `--as-of`.
-Cache keys are the fully-substituted request, so changing the border correctly invalidates.
+The CLI's cache keys are the fully-substituted request, so changing the border correctly
+invalidates. The browser caches only the feed; the map files are immutable, so nothing there
+needs invalidating.
 
 Verified by running twice with **identical arguments** and `cmp`-ing. Note that `argv` is recorded
 in the provenance block, so two runs that differ only in `--out` legitimately differ in output —
@@ -144,7 +146,8 @@ stay byte-identical, and every failure is silent. Without `--llm` the pages are 
 mention a model.
 
 This is narrow because it was measured. Full write-up: `scratchpad/MODEL_COMPARISON.md` and
-`scratchpad/QWEN_VERDICT.md`. Two local models were probed against hand-labelled ground truth:
+`scratchpad/QWEN_VERDICT.md` — both outside this tree, like every other `scratchpad/` path here
+(see the note above), so treat them as historical references rather than files to open. Two local models were probed against hand-labelled ground truth:
 
 | Probe | qwen3.5-9b | gemma-4-12b-qat |
 |---|---|---|

@@ -6,9 +6,11 @@
  *
  * This is a real transit routing algorithm over the actual timetable. "35 minutes
  * from the hub" means there is a genuine sequence of buses that gets you there in
- * 35 minutes, including transfer waits. The round structure, the marked-stop
- * bookkeeping and the target pruning are ported exactly; the golden t90 = 76.8 min
- * on the reference feed depends on that faithfulness.
+ * 35 minutes, including transfer waits. The round structure and the marked-stop
+ * bookkeeping are ported exactly; the golden t90 = 76.8 min on the reference feed
+ * depends on that faithfulness. There is no target pruning in either implementation —
+ * every query fans out to the whole network, because the callers want all arrival
+ * times, not one.
  *
  * The one shape change from the Python is representational, not behavioural:
  * labels, the marked sets and the parent pointers are typed arrays rather than
@@ -27,7 +29,7 @@
 
 import { MAX_TRANSFERS } from '../lib/core.js';
 
-/** `_S1_INF` / `_S1_NEG_INF`, generate.py lines 2115–2116. Both fit an Int32Array. */
+/** `_S1_INF` / `_S1_NEG_INF`, generate.py lines 2116–2117. Both fit an Int32Array. */
 const S1_INF = 1000000000;
 const S1_NEG_INF = -1000000000;
 
@@ -297,7 +299,7 @@ export function raptor(day, originStopIds, departureS) {
     departureS: dep0,
     arrivalS,
     rounds,
-    // `_s1_parent` / `_s1_round`, generate.py lines 3144–3145. Consumed only by
+    // `_s1_parent` / `_s1_round`, generate.py lines 3148–3149. Consumed only by
     // buildJourney; never crosses postMessage.
     _s1Parent: { kind: parentKind, a: parentA, b: parentB, c: parentC, d: parentD },
     _s1Round: roundOf,

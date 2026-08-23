@@ -5638,7 +5638,7 @@ def resolve_admin(cache: Cache, zones: Sequence[Zone], bbox: tuple[float, float,
 
     # The place name is the municipality that contains the most zone centres, not the
     # one under the bbox centre: the centre of a bounding box is a geometric artefact
-    # and on the reference feed it lands in a suburb (Wyoming, MI) while 171 of 393
+    # and on the reference feed it lands in a suburb (Wyoming, MI) while 171 of 319
     # zones sit in Grand Rapids. Nominatim's answer is the fallback, not the source.
     #
     # Which ordinal holds "the municipality" is not fixed across countries, or even
@@ -15705,12 +15705,13 @@ def strategy_script(report: Report) -> str:
 # legality call under majority-vote-of-5 (against a 50% baseline) while writing
 # reasons that contradicted its own verdicts. Therefore: deterministic Python owns
 # every number, score, ranking, eligibility call and every factual sentence on both
-# pages. The model may do exactly two things, and only under `--llm`:
-#   (a) break ties among items the deterministic layer already scored *exactly* equal;
-#   (b) write a flavour sentence into one visually distinct, explicitly labelled
-#       "machine-suggested" slot, constrained to a supplied fact list, with every
-#       number and proper noun validated against that list and the sentence dropped
-#       on any mismatch.
+# pages. The model may do exactly ONE thing, and only under `--llm`: break ties among
+# items the deterministic layer already scored *exactly* equal. A second capability
+# was built and removed — a flavour sentence in a labelled "machine-suggested" slot,
+# constrained to a supplied fact list, with every number and proper noun validated
+# against that list and the sentence dropped on any mismatch. It turned out not to be
+# worth the risk (README.md "Where the LLM fits"), so `--llm` now only breaks ties —
+# though its own `--help` text still advertises the removed feature.
 # Without `--llm` the pages are complete and never mention a model.
 
 class LLMClient:

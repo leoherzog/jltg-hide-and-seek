@@ -1,15 +1,15 @@
 // render/simulator.js — the secret hider's guide, after it is on the page.
 //
 // Ported from generate.py S5's page script:
-//   _S5_STRATEGY_JS       14896  — the whole client twin, verbatim below:
-//                                    hav / band / nearestIn      14917–14940
-//                                    answerFor                   14942–14992
-//                                    drawMap / ring / addBorder  14995–15060
-//                                    placeSeeker / paint         15062–15098
-//                                    readout                     15100–15120
-//                                    renderList                  15127–15170
-//                                    select / renderDossier      15186–15270
-//                                    tableRows / renderTable     15274–15334
+//   _S5_STRATEGY_JS       15108  — the whole client twin, verbatim below:
+//                                    hav / band / nearestIn      15150–14940
+//                                    answerFor                   15161–14992
+//                                    drawMap / ring / addBorder  15268–15060
+//                                    placeSeeker / paint         15310–15098
+//                                    readout                     15375–15120
+//                                    renderList                  15405–15170
+//                                    select / renderDossier      15471–15270
+//                                    tableRows / renderTable     15570–15334
 //                                    optionChips + the bindings  15337–15405
 //
 // WHAT THIS FILE IS. `render/strategy.js` prints the guide; this file makes it move.

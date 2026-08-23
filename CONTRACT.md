@@ -36,7 +36,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | File | Owner | Side | Exports |
 |---|---|---|---|
 | `index.html` | Shell agent | main | — (page shell, 9 skeleton sections, WebAwesome head) |
-| `styles.css` | Shell agent | main | — (`SHARED_CSS` line 1454 + `INDEX_CSS` line 10527, ported) |
+| `styles.css` | Shell agent | main | — (`SHARED_CSS` line 1454 + `INDEX_CSS` line 10662, ported) |
 | `app.js` | App agent | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | HTML agent | main | see §(e) |
 | `render/verdict.js` | Verdict agent | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
@@ -384,8 +384,10 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {[number,number,number,number]} bbox     // bbox
  * @property {number} count                           // count
  * @property {string} cacheKey                        // ALWAYS ''. Vestigial — kept so the record shape is stable.
- * @property {string} endpoint                        // NOT a URL. A world-file description: layer, feature count,
- *                                                    //   size, planet snapshot, sha256 prefix. See worldProvenance.
+ * @property {string} endpoint                        // A world-file description: the layer's URL followed by feature
+ *                                                    //   count, size, planet snapshot and sha256 prefix. For a layer
+ *                                                    //   that is absent or empty there is no file, so it is prose
+ *                                                    //   only and no URL appears. See worldProvenance.
  * @property {boolean} partial                        // TWO meanings now. (1) a size guard forced a degraded query,
  *                                                    //   as before; (2) for the six density-grid categories, always
  *                                                    //   true — the map-wide total is EXACT but the per-zone
@@ -458,7 +460,7 @@ like OSM `admin_level`s but do not mean the same thing.
 ```
 
 The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note)`
-(mirrors `build_report` lines 15697–15704):
+(mirrors `build_report` lines 15976–15984):
 
 ```js
 { available: false, bbox, pois: {}, counts: {}, zoneInventory: {}, zonePolygonHits: {},
@@ -971,15 +973,15 @@ meter(labelHtml, valuePct, rightHtml, { flank='6rem', ...attrs })
 budgetBar(segments, total, { ariaLabel, remainderTip='', variants=[], height='1.25rem', ...attrs })
                                                         // segments: Array<[letter, value, tipText]>
 searchInput(inputId, { placeholder, label })
-pullQuote(text, { attribution='' })
+pullQuote(text)
 section(sectionId, number, title, bodyHtml,
         { kicker='', lede='', answerHtml='', answerVariant='neutral', answerIcon='circle-info' })
 subhead(text, { anchorId='' })
 kpi(value, label, noteHtml = '', { chipHtml='' })
 provChip(...ids)                                        // variadic, like the Python
-dataTable(headers, rows, { className='', scrollable=true, ...attrs })
+dataTable(headers, rows, { className='', ...attrs })   // always wrapped in a scroller
                                                         // headers: plain text; rows: PRE-ESCAPED markup cells
-jsonBlock(blockId, payload, { floatDp = 6 })            // escapes '</' as '<\\/'
+jsonBlock(blockId, payload)                             // floatDp is fixed at 6; escapes EVERY '<'
 ```
 
 Behavioural notes that must survive the port (they are load-bearing, not style):
@@ -1012,7 +1014,7 @@ Behavioural notes that must survive the port (they are load-bearing, not style):
 * A section with no data emits **nothing at all** — not an empty card — and its nav entry
   disappears with it.
 
-### Section ids (from `render_index`, line 13660) — the shell must use exactly these
+### Section ids (from `render_index`, line 13815) — the shell must use exactly these
 
 | # | `id` | Nav group | Nav label | Icon | Renderer |
 |---|---|---|---|---|---|
@@ -1035,7 +1037,7 @@ CLI's ids, with the `-data` suffixes that avoid colliding with the section ancho
 
 ## (f) Error and degradation policy
 
-The rule from `build_report` (line 15690):
+The rule from `build_report` (line 15935):
 
 ```
 if useOsm:
@@ -1099,7 +1101,7 @@ Rules that follow from it, and that every module must obey:
 ## (g) The second view — `#strategy`
 
 `generate.py` emits two files per city: `index.html` and `strategy.html` (S5,
-`render_strategy`, line 13741), the hider's guide, which nothing links to. The invariant the
+`render_strategy`, line 15823), the hider's guide, which nothing links to. The invariant the
 CLI states at line 13539 is that the two pages never link to each other, because the seekers
 read the first one. The port has **one document**, so the invariant becomes: nothing in the
 report view mentions, links to or hints at the guide. The guide may link back — that link is
@@ -1168,7 +1170,7 @@ in three colours — it gets `--warn` back, as `generate.py:15526` gives it.
 
 ### The stylesheet is partitioned
 
-The CLI writes two files with two stylesheets (`INDEX_CSS` 10527, `STRATEGY_CSS` 1674;
+The CLI writes two files with two stylesheets (`INDEX_CSS` 10662, `STRATEGY_CSS` 1675;
 the note at 1449 is explicit that shipping one into the other was ~19 rules that could
 never match). One document cannot do that, so `styles.css` carries the guide's rules in
 a span delimited by the `/* == STRATEGY CSS` and `/* == END STRATEGY CSS` markers. The

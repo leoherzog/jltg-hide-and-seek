@@ -383,8 +383,8 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
                       --indicator-color: var(--gold); }
 #hydration-status { min-inline-size: 0; white-space: nowrap;
                     overflow: hidden; text-overflow: ellipsis; }
-/* The per-stage note is the thing that keeps an eight-minute Overpass wait from
-   reading as a hang, so it gets to wrap onto as many lines as it needs. */
+/* The per-stage note is the thing that keeps a long map-file read from reading as a
+   hang, so it gets to wrap onto as many lines as it needs. */
 #hydration-note, #hydration-wait { text-wrap: pretty; max-inline-size: 60ch; }
 /* Below the point where the wordmark, the bar and the two buttons stop fitting on
    one line, the bar takes a line of its own rather than being squeezed to a stub.

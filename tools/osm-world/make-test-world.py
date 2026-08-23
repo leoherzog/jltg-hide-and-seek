@@ -14,8 +14,10 @@ to serve from a local static server and run `collectGeodata` against for real.
 That matters because `collectGeodata` is ~250 lines of orchestration that nothing
 otherwise executes. It was shipped once with a function accidentally deleted out from
 under it and the failure was invisible: `worker.js` catches everything from that call
-and degrades to `emptyGeoData`, so a hard crash inside it looks exactly like "the origin
-is unreachable". A test that only checks the OSM section is absent would have passed.
+and degrades to `emptyGeoData`, so a hard crash inside it looked exactly like an
+unreachable origin. (`collectGeodata` now carries the real per-layer reasons out with
+it, but the catch is still there and a test that only checks the OSM section is absent
+would still have passed.)
 
     uv run tools/osm-world/make-test-world.py /tmp/world
     node tools/osm-world/test-pipeline.mjs /tmp/world

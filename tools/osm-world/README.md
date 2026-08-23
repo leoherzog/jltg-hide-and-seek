@@ -370,10 +370,10 @@ node tools/osm-world/probe-admin.mjs ~/osm-builds/admin-2026-07-22/admin.fgb
 | `SIMPLIFY` | `0.0001` | empty or `0` = full precision |
 | `BBOX` | — | `minLon,minLat,maxLon,maxLat`, for a smoke run |
 | `MEMORY_LIMIT` | `16GB` | DuckDB; 8 GB works by spilling to `$OUT/duckdb-tmp` |
-| `SRC`, `THREADS`, `KEEP_PARQUET` | | local parquet glob (skips the release check), thread cap, keep the intermediate |
+| `SRC`, `THREADS` | | local parquet glob (skips the release check), thread cap |
 
-It writes `admin.sql` (the generated, readable DuckDB script), `admin.parquet`,
-`admin.fgb` and an `admin.fgb.sha256` sidecar in `sha256sum -c` format. Release
+It writes `admin.sql` (the generated, readable DuckDB script), `admin.fgb` and an
+`admin.fgb.sha256` sidecar in `sha256sum -c` format. Release
 2026-07-22.0 is 1,073,093 source rows / 4.47 GB, and comes out as **984,219 features —
 2,292,533,384 bytes simplified** (the shipped variant, 6.3 GB peak RSS, ~67 s on 16
 cores) or 6,038,396,104 bytes at full precision. Budget ~10 GB of scratch.
@@ -404,7 +404,7 @@ Grand Rapids resolving to `US | Michigan US-MI | Kent County | Grand Rapids` whi
 neighbouring bbox must *not* pull Canada; Basel returning CH+DE+FR with each district
 rejecting the other two countries; **St Peter's returning VA and never IT**, which only
 works if enclaves are carried as interior rings and the client subtracts holes; and
-Baarle resolving BE and NL at two points 100 m apart. 39/39 pass against the shipped
+Baarle resolving BE and NL at two points ~1 km apart. 37/37 pass against the shipped
 file in 184 range requests / 19.01 MB. A Michigan-only file fails 20 of them, so the
 failure path is real.
 
@@ -600,8 +600,11 @@ otherwise, with byte-identical outputs to a control run. See `tools/osm-world/PL
 ## CI
 
 Six workflows. The two shard workflows are **proven at full scale** (2026-08-22:
-88/88 and 114/114 jobs, zero failures — `PLAN.md` §Phase 4 Result); the merge, admin
-and orchestrator workflows are **authored and validated but not yet dispatched**.
+87/87 and 113/113 jobs, zero failures — `PLAN.md` §Phase 4 Result). `world-admin.yml`
+and `world-merge.yml` have both been dispatched for real: admin on run 32591161893
+(which failed on a GDAL driver gap and drove the fix now in `build-admin.sh`), and
+merge on run 32599689118, which published the live world. Only `world-rebuild.yml`,
+the orchestrator, has never been run as a unit.
 `world-canary.yml` remains the cheap way to re-measure a runner.
 
 | workflow | what | matrix | timeout | R2 prefix |
@@ -609,7 +612,7 @@ and orchestrator workflows are **authored and validated but not yet dispatched**
 | `world-density-shards.yml` | fine shards (514) | batch ≤5 / ≤2 GB → 113 matrix jobs | 350 min | `shards/density/<id>/` |
 | `world-feature-shards.yml` | coarse shards (87) | batch 1 → 87 matrix jobs | 240 min | `shards/feature/<id>/` |
 | `world-admin.yml` | Overture admin build + probes | 1 job | 120 min | `admin/` (handoff) |
-| `world-merge.yml` | shards + admin → the world | 35 layers + N bands + 3 | 330 min max | `world/` |
+| `world-merge.yml` | shards + admin → the world | 35 layers + N bands + 3 | 350 min max | `world/` |
 | `world-rebuild.yml` | shards → admin → merge | calls the other four | — | — |
 
 All are `workflow_dispatch` (the shard schedules stay commented out), `max-parallel`
@@ -722,9 +725,9 @@ with-file empty `foreign_consulate` — and covers the legacy-manifest path wher
 an old `curse_animal_habitat` layer is present and must be read directly instead of
 through the identity.
 
-`test-update.py` runs three sections and reaches the parts of `build.py` no other harness
+`test-update.py` runs seven checks and reaches the parts of `build.py` no other harness
 can: the stage 0b replication-diff loop, the `where` rewriter (fold cases from the real
-table, plus the invariant that all 42 clauses in the build table round-trip
+table, plus the invariant that all 41 clauses in the build table round-trip
 byte-identical, plus the prefix-`NOT` refusal), and the geometry classes (the mixed +
 dedup layers are pinned so the `advertising` decision cannot be silently reverted).
 

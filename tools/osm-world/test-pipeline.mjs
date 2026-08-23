@@ -9,8 +9,8 @@
  * the FlatGeobuf reader. That gap is not theoretical — the world-file migration shipped
  * with `zoneInventory` accidentally deleted out from under its own call site, and the
  * failure was completely invisible, because `worker.js` catches everything from that
- * call and degrades to `emptyGeoData`. A crash inside the OSM layer is indistinguishable
- * from "the origin is unreachable" unless something actually runs it.
+ * call and degrades to `emptyGeoData`. A crash inside the OSM layer still reaches the
+ * page as a generic degradation unless something actually runs it.
  *
  * It serves the test world over real HTTP with real `Range` support rather than
  * injecting a fake `fetch`, because `collectGeodata` builds its own readers internally

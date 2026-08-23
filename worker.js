@@ -2,7 +2,7 @@
 // worker.js — the pipeline orchestrator
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Ported from `build_report` (generate.py line 15657). The order below is the
+// Ported from `build_report` (generate.py line 15935). The order below is the
 // Python's dependency order and it is the contract between sections: nothing later
 // may be needed by anything earlier. The one reordering is `travelTimeSamples`,
 // which the CLI computes last but CONTRACT.md §(d) puts in the `'network'` stage
@@ -116,7 +116,7 @@ const PHASES = Object.freeze([
   ['network:metrics', 'Measuring the network', 120],
   ['network:zones', 'Covering the map with hiding zones', 90],
   ['network:samples', 'Sampling ride times', 60],
-  ['geo', 'Asking OpenStreetMap', 180],
+  ['geo', 'Reading the map files', 180],
   ['rules:questions', 'Auditing the question deck', 60],
   ['rules:surv', 'Measuring information resistance', 60],
   ['score', 'Scoring the city', 30],

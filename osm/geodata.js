@@ -17,28 +17,29 @@
  * can re-run one, and `tools/osm-world/categories.json` is a mechanical translation of
  * them that has to be checkable against something.
  *
- * Budget on the reference map: ~10 requests, ~40 MB, once, then cached. Every
- * round-trip is announced through `onProgress(done, total, label)` because the user
- * is watching a bar.
+ * Budget on the reference map: ~290 range requests, ~14.6 MB, measured 2026-08-22.
+ * Nothing here caches; the files are immutable and served `max-age=31536000`, so the
+ * browser's own HTTP cache is what makes a second run cheap. Every round-trip is
+ * announced through `onProgress(done, total, label)` because the user is watching a bar.
  *
  * Everything below is deterministic: no wall clock reaches a return value, every
- * dict/set is iterated through a sort, every tie-break ends in a stable OSM id, and
- * every cache key is the fully-substituted request text.
+ * dict/set is iterated through a sort, and every tie-break ends in a stable OSM id.
  *
  * DEGRADATION IS A FIRST-CLASS PATH, NOT AN ERROR PATH, and there are two of them.
  * They are different states and must be reported separately, never conflated:
  *
- *   1. The whole OSM layer failed. `collectGeodata` throws only from the one-request
- *      category count audit; the caller answers with `emptyGeoData(bbox, note)` —
+ *   1. The whole OSM layer failed. `collectGeodata` throws only when NOT ONE layer
+ *      could be read (`layersRead === 0`); the caller answers with `emptyGeoData(bbox, note)` —
  *      `available: false`, empty containers, one honesty note — and the run
  *      continues with every OSM-backed score dropped from the denominator and a
  *      banner on the page. See CONTRACT.md §(f).
  *
- *   2. Only the "within 10 ft of a routable path" join failed or was skipped. The
- *      pages are complete and every count is real; what is lost is one refinement,
- *      so every candidate hiding spot comes back `verify: true` at half weight, the
- *      `legal-spot-path-filter` provenance row is `partial`, and a note says so.
- *      `available` stays `true`. This is NOT case 1 and must not read like it.
+ *   2. The "within 10 ft of a routable path" join is not evaluated AT ALL — `pathIds`
+ *      is unconditionally null (see the note above `legalEndgameSpots`). The pages are
+ *      complete and every count is real; what is lost is one refinement, so every
+ *      candidate hiding spot comes back `verify: true` at half weight. There is no
+ *      provenance row for it — nothing emits one — so the printed E1 definition is
+ *      where a reader is told. `available` stays `true`; this is NOT case 1.
  *
  * Everything between those two — a category missing from the manifest, an unreadable
  * layer, an unreadable density grid, an unreadable admin layer — degrades in place with
@@ -628,9 +629,9 @@ function maxOf(values) {
 }
 
 /**
- * Progress bookkeeping around every Overpass round-trip. `total` is an estimate and
- * MAY GROW as tiling and per-category fallbacks discover more work — the worker
- * protocol explicitly allows that.
+ * Progress bookkeeping around every world-file read. `total` is an estimate; the
+ * worker protocol allows it to grow, and `finish` raises it if the run overruns, but
+ * nothing plans for growth any more — a world-file run's shape is known up front.
  */
 class Progress {
   constructor(cb, total) {
@@ -639,8 +640,6 @@ class Progress {
     this.total = total;
     this._label = '';
   }
-
-  grow(n) { this.total += n; this._cb(this.done, this.total, this._label); }
 
   start(label) { this._label = label; this._cb(this.done, this.total, label); }
 
@@ -659,21 +658,6 @@ class Progress {
 }
 
 function noopLog() {}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Overpass statement splitting and the one-request count audit
-// ═══════════════════════════════════════════════════════════════════════════════
-
-
-
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Category fetching
-// ═══════════════════════════════════════════════════════════════════════════════
-
-
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Spatial index and the two zone predicates
@@ -1040,7 +1024,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
 
   // The place name is the municipality that contains the most zone centres, not the
   // one under the bbox centre: the centre of a bounding box is a geometric artefact
-  // and on the reference feed it lands in a suburb (Wyoming, MI) while 171 of 393
+  // and on the reference feed it lands in a suburb (Wyoming, MI) while 171 of 319
   // zones sit in Grand Rapids. This was already the source and Nominatim was already
   // the fallback, so dropping Nominatim leaves the normal path untouched — it only
   // changes what happens on a map with no zones at all, handled below.
@@ -1133,6 +1117,12 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     perZone,
     borderLevels,
     source,
+    // `source` answers "was there administrative data at all" and has only ever held
+    // 'world' or 'unknown', which distinguishes nothing. This is the manifest's own
+    // `admin_source`, and the renderers need it: Overture's levels are synthesised per
+    // subtype and deliberately do NOT mean what OSM's `admin_level` means, so a page
+    // that prints "OSM admin_level 8" for an Overture ladder is stating a falsehood.
+    adminSource,
   };
 }
 
@@ -1764,6 +1754,7 @@ export function emptyGeoData(bbox, note) {
       perZone: {},
       borderLevels: {},
       source: 'unknown',
+      adminSource: 'unknown',
     },
     curseCounts: {},
     cuisines: {},
@@ -1777,13 +1768,12 @@ export function emptyGeoData(bbox, note) {
  * Run the whole S2 pipeline and return `GeoData`.
  * (generate.py `collect_geodata`, line 6096)
  *
- * Order: the one-request category count audit → geometry fetches for the categories
- * that need it → the POI index → per-zone inventory → admin resolution →
- * curse predicates → cuisines → legal spots. Under `--no-osm`, or if Overpass fails
- * outright, the CALLER returns `emptyGeoData(...)`; every downstream consumer must
- * degrade rather than crash.
+ * Order: one bbox query per category → the POI index → per-zone inventory → admin
+ * resolution → curse predicates → cuisines → legal spots. Under `--no-osm`, or if not
+ * one layer can be read, the CALLER returns `emptyGeoData(...)`; every downstream
+ * consumer must degrade rather than crash.
  *
- * Budget on the reference map: ~10 requests, ~40 MB, once, then cached.
+ * Budget on the reference map: ~290 range requests, ~14.6 MB.
  *
  * @param {Object} opts Options
  * @param {Object} border Border
@@ -1810,7 +1800,14 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   // known up front and never grows. What used to be a count audit, four group fetches,
   // a building fetch, ⌈zones/150⌉ is_in batches and a Nominatim reverse geocode is now
   // one query per category, plus the density grid and the admin layer.
-  const progress = new Progress(h.onProgress, GEO_CATEGORIES.length + 2);
+  // Count what is actually spent, not how many categories exist: the six density-grid
+  // tallies never take a turn of their own (they are columns on one grid read), so
+  // budgeting for them stalled the bar at 86.8% and left `settle` to rewrite its own
+  // denominator at the end. Three non-category phases follow: curses, admin, density.
+  const progress = new Progress(
+    h.onProgress,
+    GEO_CATEGORIES.length - GEO_DENSITY_GRID_CATEGORIES.length + 3,
+  );
 
   // ── 1. features, one bbox query per category ──────────────────────────────
   //
@@ -1997,6 +1994,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
       perZone: {},
       borderLevels: {},
       source: 'unknown',
+      adminSource: 'unknown',
     },
     curseCounts: {},
     cuisines: {},
@@ -2146,14 +2144,16 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   const partialKeys = queries.filter((q) => q.partial).map((q) => q.key).sort(cmpStr);
   if (partialKeys.length) {
     notes.push(
-      'These queries returned a floor rather than a total and are marked partial: '
+      'These counts were not confirmed by reading the features and are marked partial — '
+      + 'either the category was too large to fetch, leaving an upper bound taken from the '
+      + "file's spatial index, or the layer could not be read: "
       + `${partialKeys.join(', ')}.`,
     );
   }
   notes.push(
-    'Counts reflect one OpenStreetMap snapshot; the mirror that answered is not recorded, '
-    + 'because recording it would make two identical runs produce different pages. Cached '
-    + 'responses keep reruns byte-identical.',
+    'Counts reflect one OpenStreetMap snapshot, taken when the map files were built rather '
+    + 'than when this page was generated — the snapshot date is on the provenance table. '
+    + 'The files are immutable, so two runs against the same build agree exactly.',
   );
 
   geo.notes = notes;

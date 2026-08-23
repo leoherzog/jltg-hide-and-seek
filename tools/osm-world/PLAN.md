@@ -17,8 +17,9 @@ S2 are **RESOLVED** — Option B is confirmed and Overture admin is adopted. Pha
 tooling, Phase 3's merge + cover, and Phase 4's workflows are written and exercised; the
 same retest wave verified `merge.py`'s recursive shard discovery, its loud
 incomplete-shard failure, `--unlink-source`, and the density `--clip-region` fix
-end-to-end against ground truth (§Phase 3). S3 (a real Actions run) is the one open
-spike; H2b (cross-tile feature duplication rate) is the one open measurement.
+end-to-end against ground truth (§Phase 3). Both of the items this paragraph used to
+call open — S3 (a real Actions run) and H2b (cross-tile feature duplication rate) —
+have since been closed; see §Phase 4 Result and the H2b measurements below.
 
 | | before | after | |
 | --- | ---: | ---: | ---: |
@@ -680,7 +681,7 @@ and the three-layers-only caveat.
 
 ---
 
-## Phase 4 — orchestration — **workflows authored, S3 not yet run**
+## Phase 4 — orchestration — **complete; S3 run, all six workflows authored**
 
 **CI fit (GitHub Actions, standard runners: 4 vCPU / 16 GB / 6 h; disk free ≈ 22 GB
 x64, ≈ 45 GB arm64):**
@@ -766,7 +767,7 @@ All 601 shard manifests landed under `shards/{feature,density}/<id>/manifest.jso
 ## Phase 5 — client wiring and test closure — **mostly done**
 
 - ~~Thread `worldBaseUrl` from UI → `app.js` → worker~~ **done**; `DEFAULT_WORLD_BASE_URL`
-  still needs the real bucket domain.
+  carries the real bucket domain.
 - ~~Extend `make-test-world.py`/`test-pipeline.mjs`: closed-way dedup case (Phase 0),
   `features: 0` manifest entries, bbox-diagonal curse layers (R1)~~ **done** — the suite
   grew from 68 to **83 assertions** (path-less manifest entries and the `partial: true`

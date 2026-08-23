@@ -684,7 +684,7 @@ export class FlatGeobufReader {
     // overlapped — and blocks a few hundred bytes apart in the file were fetched
     // separately, even though RANGE_COALESCE_BYTES was declared for exactly that and
     // used only by `query`. Measured on the live `shop` layer over the Grand Rapids
-    // border: 98 serial requests and 7.4 s became 8 requests and 0.7 s, for an
+    // border: 99 serial requests and 13.2 s became 6 requests and 1.8 s, for an
     // identical offset list. The traversal below is unchanged — same tests, same order
     // of descent — only the fetching is batched.
     /** @type {Array<number>} node indices at the current level. */

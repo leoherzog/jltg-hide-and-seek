@@ -1,16 +1,16 @@
 // render/verdict.js — the hero and §01–§03 (generate.py S4).
 //
 // Ported from:
-//   index_hero            11455   + _s4_band_bounds 11278, _s4_band_ladder 11295,
-//                                   _s4_points_budget 11312, _s4_subscore_meters 11336,
-//                                   _s4_day_tiles 11351, _s4_scorecard 11381,
-//                                   _s4_axis_word 11528, _s4_axis_card 11542,
-//                                   band_variant 13516
-//   index_verdict         11580   + _s4_verdict_title 11708          → §01 `#verdict`
-//   index_score_trace     12579   + _s4_source_tag 12545,
-//                                   _s4_trace_table 12554            → §02 `#trace`
-//   index_your_game       12785   + _s4_findings_half 12675,
-//                                   _s4_house_rules_half 12746       → §03 `#yourgame`
+//   index_hero            11590   + _s4_band_bounds 11413, _s4_band_ladder 11430,
+//                                   _s4_points_budget 11447, _s4_subscore_meters 11471,
+//                                   _s4_day_tiles 11486, _s4_scorecard 11516,
+//                                   _s4_axis_word 11663, _s4_axis_card 11698,
+//                                   band_variant 13688
+//   index_verdict         11743   + _s4_verdict_title 11871          → §01 `#verdict`
+//   index_score_trace     12751   + _s4_source_tag 12717,
+//                                   _s4_trace_table 12726            → §02 `#trace`
+//   index_your_game       12957   + _s4_findings_half 12847,
+//                                   _s4_house_rules_half 12918       → §03 `#yourgame`
 //
 // This file also owns the shared S4 formatting helpers (generate.py 10611–10724) and
 // the per-day view helpers (10726–10800). `render/map.js` and `render/deck.js` import
@@ -428,7 +428,7 @@ export function s4MetricLookup(report) {
 // ── shared small markup helpers ──────────────────────────────────────────────
 
 /**
- * A `.sw` colour swatch. (generate.py `_s4_swatch`, line 11780.)
+ * A `.sw` colour swatch. (generate.py `_s4_swatch`, line 11943.)
  *
  * Shape overrides go in `style`, not a utility class: `.sw` is unlayered, so it beats
  * anything in `@layer wa-utilities` — `class="wa-border-radius-circle"` would lose to
@@ -752,8 +752,8 @@ export function renderHero(payload) {
   const kicker = [
     'Feasibility report',
     window,
-    // `place` falls back to the agency name when Nominatim was not consulted
-    // (--no-osm, or an Overpass failure), so guard against "CTA, CTA".
+    // `place` falls back to the agency name when the admin layer produced no place
+    // name (--no-osm, or an unreadable layer), so guard against "CTA, CTA".
     (place && place !== agency) ? `${agency}, ${place}` : agency,
   ].filter((x) => x).join(' · ');
 

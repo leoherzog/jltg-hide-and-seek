@@ -2,12 +2,12 @@
  * render/map.js — §04 At a Glance, §05 The Map You're Playing On, §06 Getting Around.
  *
  * Ported from generate.py S4:
- *   index_key_numbers       11718  + _s4_legend 11773, _s4_swatch 11780,
- *                                    _s4_card_header 11784               → §04 `#numbers`
- *   index_network_map       11986                                        → §05 `#network`
- *   index_transit_reality   11877  + _s4_headway_bin 11797, _s4_heatmap_rows 11805,
- *                                    _s4_heatmap_table 11815, _s4_heatmap 11846,
- *                                    _s4_chart_max 11075                 → §06 `#transit`
+ *   index_key_numbers       11881  + _s4_legend 11936, _s4_swatch 11943,
+ *                                    _s4_card_header 11947               → §04 `#numbers`
+ *   index_network_map       12149                                        → §05 `#network`
+ *   index_transit_reality   12040  + _s4_headway_bin 11960, _s4_heatmap_rows 11968,
+ *                                    _s4_heatmap_table 11978, _s4_heatmap 12009,
+ *                                    _s4_chart_max 11210                 → §06 `#transit`
  *   the per-day views       10724–11032 (_s4_day_view … _s4_tiles_html)
  *
  * The shared S4 formatting helpers (`_s4_dist`, `_s4_area`, `_s4_val`, `_s4_plural`,
@@ -175,7 +175,7 @@ export function s4Legend(items) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The day summary for one key, or `null`. (`_s4_day_by_key`, line 10759.)
+ * The day summary for one key, or `null`. (`_s4_day_by_key`, line 10894.)
  *
  * The CLI returns a full `ServiceDay`; in the browser `report.days` holds the
  * clone-safe `DaySummary` (CONTRACT §(d)), which carries every field §04–§06 read.

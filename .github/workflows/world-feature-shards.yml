@@ -23,9 +23,12 @@
 # fail every run; consider commenting it out (leaving workflow_dispatch) until the
 # token exists.
 #
-# Cost model (PLAN.md §Phase 4, unverified against a real CI runner — see
-# world-canary.yml / spike S3, whose result should recalibrate the timeout below):
-#   - RAM flat ~2.4 GB regardless of shard size, so RAM is never the constraint here.
+# Cost model (PLAN.md §Phase 4), calibrated against world-canary.yml's measured
+# runner envelope and since confirmed by a full-scale run — 87/87 jobs, zero
+# failures, 2026-08-22:
+#   - RAM was estimated flat ~2.4 GB regardless of shard size; the real run peaked at
+#     6.34 GB RSS. Still far under the runner's 15 GB, so the conclusion holds and RAM
+#     is not the constraint here — but the number was wrong, so do not reuse it.
 #   - DISK is: build-shard.sh passes --unlink-source, so build.py DELETES the raw
 #     extract the moment stage 1's filtered intermediate exists (safe: feature
 #     shards never run stage 4, the only later reader of the raw extract). That is
@@ -46,8 +49,7 @@
 #     tools/osm-world/ + these workflows into a separate public repo.
 #   - Concurrency defaults to 20 (Free-tier ceiling); raise if this repo has more.
 #
-# NOT verified by running this file: I cannot execute GitHub Actions from here.
-# YAML syntax was checked with PyYAML; behavior is unverified until dispatched.
+# Proven at full scale on 2026-08-22: 87/87 matrix jobs, zero failures.
 
 name: world-feature-shards
 
@@ -136,8 +138,8 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     # Coarse shards can be continent-sized pre-Phase-1-split members (PLAN.md: "six
-    # continents whole" was the pre-split cover) — generous pending S3's real
-    # measurement, and pending confirmation of the disk-driven ~8 GB coarse rule.
+    # continents whole" was the pre-split cover). NOT generous: the worst real job
+    # used 92% of this, so a slower runner or a grown extract will trip it.
     timeout-minutes: 240
     strategy:
       fail-fast: false

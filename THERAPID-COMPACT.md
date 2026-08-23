@@ -3,7 +3,8 @@
 Plain-text conversion of The Rapid's Summer 2026 schedule book, generated from
 the agency's official GTFS feed (connect.ridetherapid.org/InfoPoint/GTFS-Zip.ashx).
 
-- **Service period:** July 1 - August 30, 2026
+- **Service period:** July 24 - August 30, 2026  
+  <sub>From the feed's own `feed_info.txt` (`feed_version` 20260724). Regenerate this file when the operator publishes a new feed — nothing checks it automatically.</sub>
 - **Agency:** The Rapid (Interurban Transit Partnership), ridetherapid.org, 616-776-1100
 - **Timezone:** America/New_York. **All times below are 24-hour clock** (e.g. 13:05 = 1:05 pm).
   Times past midnight wrap (e.g. a 0:15 at the end of a run is 12:15 am the next morning).
@@ -24,7 +25,7 @@ Full timetables are in THERAPID.md.
 - **Senior/Disabled reduced cash fare: $0.85** (proof required: Rapid-issued ID, Medicare card, or proof of age 65+).
 - **Children under 3'6" ride free** with a fare-paying adult.
 - **Wave card** (reloadable, $3 purchase fee, wave.ridetherapid.org):
-  - **Transfers free for 1 hour 45 minutes** after first tap.
+  - **Transfers free for 2 hours** after first tap (`transfer_duration=7200`).
   - **Daily fare cap: $5.25** — rides after the cap are free that day.
   - **Monthly fare cap: $60** (calendar month, Wave card only).
 - **Contactless payment** (Visa/Mastercard/Discover, Apple/Samsung/Google Pay) accepted on all

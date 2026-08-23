@@ -2,19 +2,19 @@
 // the page footer, and the interactive behaviour of the two deck tables.
 //
 // Ported from generate.py S4:
-//   index_questions       12219  + _s4_status_tag 12122, _s4_question_categories 12132,
-//                                  _s4_funnel 12158, _s4_definition_list 12202
+//   index_questions       12386  + _s4_status_tag 12285, _s4_question_categories 12299,
+//                                  _s4_funnel 12325, _s4_definition_list 12369
 //                                                                    → §07 `#questions`
-//   index_curses          12446  + _s4_action_tag 12374, _s4_curse_rows 12383,
-//                                  _s4_deck_strip 12412               → §08 `#curses`
-//   index_provenance      12834  + _s4_fact_rows 12821,
-//                                  _s4_sources_index 13006            → §09 `#sources`
-//   _s4_footer            13610                                       → the page footer
-//   _S4_INDEX_JS          13048  — `bindFilter`, `bindSearch`, `bindSpending`, plus the
+//   index_curses          12618  + _s4_action_tag 12542, _s4_curse_rows 12555,
+//                                  _s4_deck_strip 12584               → §08 `#curses`
+//   index_provenance      13006  + _s4_fact_rows 12993,
+//                                  _s4_sources_index 13178            → §09 `#sources`
+//   _s4_footer            13782                                       → the page footer
+//   _S4_INDEX_JS          13220  — `bindFilter`, `bindSearch`, `bindSpending`, plus the
 //                                  sort and paging the browser build adds on top
 //
-// Also ported here because nothing else owns them yet: `_s4_table` (11760) and
-// `_s4_chip_group` (11739). Everything under "unit and value formatting" comes from
+// Also ported here because nothing else owns them yet: `_s4_table` (11923) and
+// `_s4_chip_group` (11902). Everything under "unit and value formatting" comes from
 // `./verdict.js`; none of it is redefined below.
 //
 // THREE THINGS THIS FILE IS OPINIONATED ABOUT, and they are the reason it exists.
@@ -249,7 +249,7 @@ function fnum(x) {
  * `data-action`. Only the labels are plain English. An option may carry a third
  * element, its icon name; the word always stays.
  *
- * (generate.py `_s4_chip_group`, line 11739.)
+ * (generate.py `_s4_chip_group`, line 11902.)
  *
  * @param {string} groupId @param {string} name
  * @param {ReadonlyArray<[string,string]|[string,string,string]>} options
@@ -287,7 +287,7 @@ function s4ChipGroup(groupId, name, options, opts) {
  * both fire `click` — which is the whole reason it is a button and not a `<span>` with
  * a listener. Plain-string headers render exactly as the CLI's do.
  *
- * (generate.py `_s4_table`, line 11760.)
+ * (generate.py `_s4_table`, line 11923.)
  *
  * @param {ReadonlyArray<string|[string,string,string]>} headers
  * @param {ReadonlyArray<[Object, ReadonlyArray<string>]>} rows
@@ -329,7 +329,7 @@ function s4Table(headers, rows, opts = {}) {
  * definition list on the page, not a tooltip: tooltips do not exist on a phone, and
  * this reader is on a phone.
  *
- * (generate.py `_s4_definition_list`, line 12202.)
+ * (generate.py `_s4_definition_list`, line 12369.)
  *
  * @param {ReadonlyArray<[string,string,string]>} rows
  * @returns {string}
@@ -414,7 +414,7 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
  * (see `S4_STATUS_TAG`), and calling them the rulebook's turned judgement calls
  * into rules ~98 times per report.
  *
- * (generate.py `_s4_status_tag`, line 12122.)
+ * (generate.py `_s4_status_tag`, line 12285.)
  *
  * @param {string} status @returns {string}
  */
@@ -433,7 +433,7 @@ function s4StatusTag(status) {
  * the category that is dead or degenerate — which is exactly the chance that a
  * Randomize redraw, which stays inside the category, hands the hider a free card.
  *
- * (generate.py `_s4_question_categories`, line 12132.)
+ * (generate.py `_s4_question_categories`, line 12299.)
  *
  * @param {Object} report @returns {Array<Object>}
  */
@@ -477,7 +477,7 @@ function s4QuestionCategories(report) {
 /**
  * "The questions that break this map" — the greedy map-wide narrowing order.
  *
- * (generate.py `_s4_funnel`, line 12158.)
+ * (generate.py `_s4_funnel`, line 12325.)
  *
  * @param {Object} report @returns {string}
  */
@@ -605,7 +605,7 @@ function s4LiveCounts(report) {
  * reading — are collected below the table, one row each, still one click and one
  * permalink from the row they belong to.
  *
- * (generate.py `index_questions`, line 12219.)
+ * (generate.py `index_questions`, line 12386.)
  *
  * @param {Object} payload — the partial `Report` app.js has accumulated
  * @returns {string}
@@ -818,7 +818,7 @@ export function renderQuestions(payload) {
  * prescribe is which specific curses to take out, and that is what tier 1 records
  * (`S4_TIER_DEF`).
  *
- * (generate.py `_s4_action_tag`, line 12374.)
+ * (generate.py `_s4_action_tag`, line 12542.)
  *
  * @param {string} action @returns {string}
  */
@@ -833,7 +833,7 @@ function s4ActionTag(action) {
 /**
  * The `(rowAttrs, cells)` pairs for one block of curses.
  *
- * (generate.py `_s4_curse_rows`, line 12383.)
+ * (generate.py `_s4_curse_rows`, line 12555.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses
  * @returns {Array<[Object, string[]]>}
@@ -899,7 +899,7 @@ function s4CurseRows(report, curses) {
  * appear in the thing it labels is worse than no legend. (The Points Budget is the
  * opposite case: its six sub-scores are identity, so it stays one hue.)
  *
- * (generate.py `_s4_deck_strip`, line 12412.)
+ * (generate.py `_s4_deck_strip`, line 12584.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses @returns {string}
  */
@@ -940,7 +940,7 @@ function s4DeckStrip(report, curses) {
  * table's cells, are collected into one appendix at the foot; every row links to its
  * own by permalink.
  *
- * (generate.py `index_curses`, line 12446.)
+ * (generate.py `index_curses`, line 12618.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1066,7 +1066,7 @@ function s4RemovedCurses(report) {
  * A blank value suppresses the whole row, which is why `_s4_sources_index` is handed
  * the exact same list: an index entry can never point at a row that never rendered.
  *
- * (generate.py `_s4_fact_rows`, line 12821.)
+ * (generate.py `_s4_fact_rows`, line 12993.)
  *
  * @param {ReadonlyArray<[string,string,string]>} rows @returns {string}
  */
@@ -1093,7 +1093,7 @@ function s4FactRows(rows) {
  * score trace's own order, then the provenance card's own row order, then the Overpass
  * keys in the order that table already sorts them.
  *
- * (generate.py `_s4_sources_index`, line 13006.)
+ * (generate.py `_s4_sources_index`, line 13178.)
  *
  * @param {Object} report @param {ReadonlyArray<[string,string,string]>} factRows
  * @returns {string}
@@ -1137,7 +1137,7 @@ function s4SourcesIndex(report, factRows) {
  * elided or paginated: an unabridged list of what was asked and what came back is the
  * difference between a report and an opinion.
  *
- * (generate.py `index_provenance`, line 12834.)
+ * (generate.py `index_provenance`, line 13006.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1245,32 +1245,30 @@ export function renderProvenance(payload) {
         el('b', esc(String(q.key || ''))),
         el('span', esc(shownCount), { className: 'wa-text-nowrap' }),
         el('pre', esc(String(q.selector || ''))),
-        el('span', esc(String(q.cacheKey || '')), {
-          className: 'wa-caption-xs wa-color-text-quiet', style: 'font-family:var(--mono)',
-        }),
         el('span', esc(String(q.endpoint || '')), {
           className: 'wa-caption-xs wa-color-text-quiet', style: 'overflow-wrap:anywhere',
         }),
       ]]);
     }
-    // The last two columns are the CLI's cache key plus the mirror the request was
-    // aimed at. The cache key is the content address of the query text: two runs that
-    // print the same key were answered from the same cached body, and a key that
-    // changes between runs is a re-fetch. There is no separate hit/miss flag on the
-    // record, so this is the honest way to show which is which.
+    // There used to be a "Cache key" column here holding the content address of the
+    // query text, back when this page was answered by live Overpass requests that could
+    // hit or miss a cache. Nothing populates it now — every record carries `cacheKey: ''`
+    // — so it was a column of blanks under a paragraph explaining what the blanks meant.
+    // The last column is the file each count was read from, which is the useful half.
     const note = 'Every count is the number of matching OpenStreetMap elements inside the '
-      + 'border, from one bbox-wide query per category. A count marked with a + is a floor: a '
-      + 'size guard forced a degraded query. Selectors are printed verbatim so you can re-run '
-      + 'any of them at overpass-turbo.eu and check this page against a live database. The '
-      + 'cache key is the content address of the query text — the same key across two runs '
-      + 'means the same cached answer was reused rather than re-fetched.';
+      + 'border. A count marked with a + was not confirmed by reading the features: either '
+      + 'the category is too large to fetch and the number is an upper bound taken from the '
+      + "file's spatial index, or that layer could not be read at all. Selectors are printed "
+      + 'verbatim so you can re-run any of them at overpass-turbo.eu and check this page '
+      + 'against a live database.';
     blocks.push(waCard(join(
       el('p', esc(note), { className: 'wa-body-s wa-color-text-quiet' }),
-      s4Table(['Category', 'Count', 'What was searched for', 'Cache key', 'Answered by'], rows),
+      s4Table(['Category', 'Count', 'What was searched for', 'Read from'], rows),
     ), {
       headerHtml: s4CardHeader(
-        `${num(overpass.length)} OpenStreetMap queries`,
-        'One query per category, run against the border and cached by content.',
+        `${num(overpass.length)} OpenStreetMap categories`,
+        'One selector per category. The predicate was applied when the map files were '
+        + 'built; this run read the matching features inside the border.',
       ),
     }));
   }
@@ -1286,7 +1284,11 @@ export function renderProvenance(payload) {
       if (level === null || level === undefined) {
         items.push(`${ordinal}: no ${ordinal}th-level division on this map`);
       } else {
-        items.push(`${ordinal}: OSM admin_level ${num(level)}`);
+        // Overture synthesises a level per subtype and those numbers deliberately do
+        // NOT mean what OSM's `admin_level` means, so the source has to reach the label.
+        items.push(p.adminSource === 'overture'
+          ? `${ordinal}: Overture level ${num(level)}`
+          : `${ordinal}: OSM admin_level ${num(level)}`);
       }
     }
     let text = `Country ${String(admin.countryName || admin.countryCode || 'unknown')} · `
@@ -1301,8 +1303,8 @@ export function renderProvenance(payload) {
       {
         headerHtml: s4CardHeader(
           'Administrative divisions',
-          "The rulebook's 1st–4th divisions mean different OSM levels in every country, so the "
-          + "ladder is derived from the country's own ISO-3166-2 encoding and never assumed.",
+          "The rulebook's 1st–4th divisions land on different levels in every country, so "
+          + 'the ladder is derived per country from the division data itself and never assumed.',
         ),
       },
     ));
@@ -1390,7 +1392,7 @@ export function renderProvenance(payload) {
  * The ids match the shell's skeleton (`#footer-figures`, `#footer-credit`) so app.js
  * can either replace the whole `<footer>` or swap the two children in place.
  *
- * (generate.py `_s4_footer`, line 13610.)
+ * (generate.py `_s4_footer`, line 13782.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1421,7 +1423,10 @@ export function renderFooter(payload) {
     + `${feed.agencyName || ''}'s GTFS feed`
     + ((p.feedStart && p.feedEnd)
       ? ` (valid ${prettyDate(String(p.feedStart))} – ${prettyDate(String(p.feedEnd))})` : '')
-    + '. Map features and administrative divisions from OpenStreetMap contributors, ODbL. '
+    + '. Map features from OpenStreetMap contributors, ODbL. '
+    + (p.adminSource === 'overture'
+      ? 'Administrative divisions from the Overture Maps Foundation. '
+      : 'Administrative divisions from OpenStreetMap contributors, ODbL. ')
     + "Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The Game's "
     + 'Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking on the '
     + 'day.'
@@ -1444,7 +1449,7 @@ export function renderFooter(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // The CLI ships one static document and binds three things to it: a chip filter, a
-// search box and the no-spending switch (`_S4_INDEX_JS`, lines 13399–13480). The
+// search box and the no-spending switch (`_S4_INDEX_JS`, lines 13592–13620). The
 // browser build adds column sorting and an opt-in page size on top, and then has to
 // solve a problem the CLI does not have: app.js re-renders a whole section when a
 // later stage lands or the reader switches service day, which throws away every
@@ -1682,7 +1687,7 @@ function applyRows(spec) {
  * The no-spending switch: Egg Partner, Impressionable Consumer and Lemon Phylactery
  * become `remove` together, and the action filter follows the switch.
  *
- * (generate.py `bindSpending`, line 13460.)
+ * (generate.py `bindSpending`, line 13606.)
  */
 function applySpending() {
   const sw = document.getElementById('nospend');

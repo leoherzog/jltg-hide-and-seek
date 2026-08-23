@@ -27,12 +27,9 @@
  *
  * ── The two ways this can silently disagree with Overpass ────────────────────
  *
- *   1. The R-tree indexes bounding boxes, so `search` returns a SUPERSET: a diagonal
- *      river whose bbox clips the map corner comes back even when the river does not
- *      enter the map. `worldPois` filters that superset down by real geometry, so a
- *      category's features and its count agree. `worldCount` does NOT — it is the cheap
- *      pre-check, it is an upper bound, and it is only ever used to decide whether a
- *      category is too big to fetch.
+ *   1. The R-tree indexes bounding boxes, so `search` returns a SUPERSET. `worldPois`
+ *      filters it down by real geometry; `worldCount` does not and is an upper bound.
+ *      See `worldCount`'s own docstring, which is where that contract is stated.
  *
  *   2. The build applies its predicate ONCE, offline, against a planet snapshot. An
  *      Overpass run reflects OSM as of minutes ago. Every count is therefore as-of the
@@ -678,8 +675,8 @@ export async function worldPois(world, layerKey, category, bbox, proj, opts = {}
 /**
  * Read the sparse density grid over `bbox`.
  *
- * Replaces both `out center qt` for buildings and the four count-only categories
- * (bridge, car_street, footpath, street). The grid is a FlatGeobuf of points — one per
+ * Replaces both `out center qt` for buildings and the five other count-only categories
+ * (bridge, car_street, footpath, street, tree). The grid is a FlatGeobuf of points — one per
  * populated cell, with an integer column per category — so it is read with exactly the
  * same index walk as everything else.
  *

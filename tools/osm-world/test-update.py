@@ -8,7 +8,7 @@ tools/osm-world/test-update.py — build.py/merge.py internals no other harness 
 
     uv run tools/osm-world/test-update.py
 
-Sections, all about code that runs in the middle of an eight-hour job where a
+Seven checks, all about code that runs in the middle of an eight-hour job where a
 wrong answer is invisible: the replication-diff loop (stage 0b), the `where` rewriter
 that keeps `ogr2ogr` from silently discarding an attribute filter, the per-layer
 geometry classes that decide whether an open way is exported at all, the density

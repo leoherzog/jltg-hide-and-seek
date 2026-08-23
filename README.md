@@ -249,9 +249,10 @@ follows you between the two pages.
 The same feed and the same cached data produce **byte-identical** HTML. No unsorted iteration
 reaching the output, no clock — every date on the page comes from the feed's own calendar or from
 `--as-of`. There is exactly one call into `random` — a fixed-seed permutation inside the
-minimum-enclosing-circle, which is a fixed shuffle rather than entropy. Network responses are cached
-by a hash of the exact request, so once a city is cached the whole thing runs offline and
-reproducibly.
+minimum-enclosing-circle, which is a fixed shuffle rather than entropy. The CLI caches network
+responses by a hash of the exact request, so once a city is cached the whole thing runs offline and
+reproducibly. In the browser only the GTFS feed is cached that way; the map files are immutable and
+content-addressed, so a run is reproducible without being offline.
 
 This is the point of the project, not a nicety. If two people generate the report for the same city
 they must get the same report, or it isn't evidence of anything.
@@ -336,7 +337,9 @@ SEEKING.md           /
 THERAPID*.md         prose rendering of the reference feed, handy for sanity checks
 package.json         the WebAwesome Pro component dependency
 build/               generated output (gitignored)
-cache/               cached HTTP responses (gitignored), shared by both
+cache/               the CLI's cached HTTP responses (gitignored). The browser port
+                     does not use it — it keeps the same content-addressed scheme in
+                     IndexedDB, and only for the GTFS feed.
 ```
 
 The browser port is the repo root and needs no build step — serve the directory and open it.
@@ -356,8 +359,8 @@ sources, and the specs the file's docstring cites, are kept outside this tree.
   rulebook's own legitimacy test (5+ Google reviews) has no OSM equivalent; the report says so where
   it matters, but expect some category disagreements at the margins.
 - **The OSM layer has only been exercised on a handful of cities**, of small and large size; the
-  schedule side on a few more, including heavy-rail systems. Overpass behaviour beyond those is
-  unproven.
+  schedule side on a few more, including heavy-rail systems. Behaviour beyond those is unproven —
+  Overpass's for the CLI, and the prebuilt world files' for the web app.
 - **The path-proximity test no longer runs in the web app.** The rulebook's "within 10 ft of a
   routable path" check needs a 5 m buffer around every walkable way on the map. The CLI still asks
   Overpass to do that server-side, where it is the most expensive query in the pipeline: on a large

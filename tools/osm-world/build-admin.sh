@@ -19,9 +19,10 @@
 #     © OpenStreetMap contributors, ODbL 1.0 — via Overture Maps Foundation
 #
 # ODbL is share-alike: a derived database that is publicly used must be offered
-# under ODbL as well. Keep the attribution line with the artefact — the manifest
-# records `admin_source: "overture"` and the release id precisely so the served
-# page can render this without guessing.
+# under ODbL as well. Keep the attribution line with the artefact. The world manifest
+# records `admin_source: "overture"`, which is what the page renders from; the release
+# id is written to admin.meta.json beside the build and is NOT currently threaded into
+# the manifest or served, so nothing can print it yet.
 #
 # ─── USAGE ────────────────────────────────────────────────────────────────────
 #   OUT=~/osm-builds/admin-2026-07-22 ./tools/osm-world/build-admin.sh

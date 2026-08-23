@@ -15,10 +15,10 @@
 # is explicit that merge does not fit a runner and runs by hand on kadro.
 #
 # NOT verified by running this file: I (the authoring agent) cannot execute GitHub
-# Actions from here. Syntax was checked with PyYAML (see the task's closing report);
-# behavior — wall clock, RSS, disk headroom, whether ubuntu-latest's apt gdal-bin is
-# new enough for build.py's preflight() — is NOT verified and is exactly what
-# dispatching this workflow for real is for.
+# Actions from here. It has since been dispatched twice (PLAN.md §Phase 4), and the
+# envelope it measured is what every other workflow's timeouts are sized against:
+# 4 vCPU / 15 GB RAM / 86.2 GB free of 144.3 GB, and an apt gdal-bin new enough for
+# build.py's preflight(). Re-dispatch it whenever the runner image changes.
 
 name: world-canary
 

@@ -357,7 +357,7 @@ export const CURSES = Object.freeze([
   C('right_turn', 'Curse of the Right Turn', 2, 'car_street',
     'The rulebook says outright that the curse has no effect where there are no streets, ' +
     'so remove it when the motor-vehicle street count is zero.'),
-  C('water_weight', 'Curse of Water Weight', 2, 'water',
+  C('water_weight', 'Curse of the Water Weight', 2, 'water',
     'The casting cost is a geographic gate: with no non-pool body of water on the map the ' +
     'curse can never be cast.'),
 
@@ -406,7 +406,7 @@ export const CURSES = Object.freeze([
   C('overflowing_chalice', 'Curse of the Overflowing Chalice', 4, null,
     'Not map-contingent. Its note is the only place the rulebook independently restates ' +
     'the base draw/keep numbers, and they agree with SEEKING.md exactly.'),
-  C('spotty_memory', 'Curse of Spotty Memory', 4, null,
+  C('spotty_memory', 'Curse of the Spotty Memory', 4, null,
     'Not map-contingent, but note that a SMALL game has only five categories, so a six is ' +
     'a reroll — and that the curse hurts most on a map where only two categories are any ' +
     'good.'),

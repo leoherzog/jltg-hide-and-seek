@@ -1,15 +1,15 @@
 // render/strategy.js — the secret hider's guide (generate.py S5), static markup.
 //
 // Ported from:
-//   render_strategy         15533  — the hero, the pull quote, the five sections
-//   strategy_pick_card      14309                              → the hero's #1 card
-//   strategy_shortlist      14608  + strategy_zone_map 14459,
-//                                    strategy_zone_list 14570,
-//                                    strategy_dossier_template 14596  → §01 `#s-zones`
-//   strategy_all_candidates 14618                              → §02 `#s-all`
-//   strategy_tactics        14734                              → §03 `#s-tactics`
-//   strategy_axes           14380                              → §04 `#s-axes`
-//   strategy_provenance     14856                              → §05 `#s-method`
+//   render_strategy         15823  — the hero, the pull quote, the five sections
+//   strategy_pick_card      14505                              → the hero's #1 card
+//   strategy_shortlist      14779  + strategy_zone_map 14655,
+//                                    strategy_zone_list 14752,
+//                                    strategy_dossier_template 14801  → §01 `#s-zones`
+//   strategy_all_candidates 14817                              → §02 `#s-all`
+//   strategy_tactics        14941                              → §03 `#s-tactics`
+//   strategy_axes           14573                              → §04 `#s-axes`
+//   strategy_provenance     15067                              → §05 `#s-method`
 //   the constants and helpers at 13814–13998 (_S5_AXES … _s5_travel_minutes) and the
 //   three payload builders at 14095–14270 (_s5_zone_payload, _s5_poi_payload,
 //   _s5_mode_chips), which become `zoneViews`, `poiCategories` and `modeChips`.
@@ -64,7 +64,7 @@ import { QUESTIONS } from '../rules/catalogue.js';
 
 /**
  * The six zone axes: `(id, name, what it measures, the rulebook clause behind it)`.
- * (generate.py `_S5_AXES`, line 13814.) `simulator.js` reads this for the dossier's
+ * (generate.py `_S5_AXES`, line 13986.) `simulator.js` reads this for the dossier's
  * score block, so it is exported rather than kept private.
  * @type {ReadonlyArray<readonly [string, string, string, string]>}
  */
@@ -105,7 +105,7 @@ export const AXIS_IDS = Object.freeze(AXES.map((a) => a[0]));
 
 /**
  * Axis id → (the plain name the page leads with, the short word a column header can
- * hold). (generate.py `_S5_AXIS_PLAIN`, line 13851.) The rulebook's own name for the
+ * hold). (generate.py `_S5_AXIS_PLAIN`, line 14023.) The rulebook's own name for the
  * axis is never dropped — it rides alongside the plain one as a quiet caption in
  * §04's accordion labels, and the letter survives as a `<code>` beside every plain
  * name and in every `data-sort` index.
@@ -413,7 +413,7 @@ function flagChip(flag) {
  * held out — unreachable, or the designated station has no service — and they still
  * reach the page, because nothing is ever silently dropped (generate.py 14120–14126).
  *
- * `_s5_tie_break` (14062) is `--llm`-only and the port has no LLM, so it is dropped.
+ * `_s5_tie_break` (14243) is `--llm`-only and the port has no LLM, so it is dropped.
  *
  * @param {Object} report the complete `Report`
  * @returns {ZoneView[]}
@@ -999,7 +999,7 @@ function mapCard(report) {
 
 /**
  * §01's ranked rail and the dossier shell the simulator fills.
- * (`strategy_zone_list` 14570 + `strategy_dossier_template` 14596.)
+ * (`strategy_zone_list` 14752 + `strategy_dossier_template` 14801.)
  *
  * The rail is a `role="listbox"` of `role="option"` rows built client-side; it is a
  * shortlist rather than the field, and the link under it says so.
@@ -1239,8 +1239,8 @@ function sectionTactics(report) {
   if (parks) {
     tips.push([
       'Parks are the best-in-class final spot',
-      'Publicly accessible at all hours, no risk of being asked to leave, and their path '
-      + `networks satisfy the ten-feet-of-a-mapped-path rule. This map has ${num(parks)} of `
+      'Publicly accessible at all hours and no risk of being asked to leave — though this '
+      + `tool does not check the ten-feet-of-a-mapped-path rule. This map has ${num(parks)} of `
       + 'them. A large park is doubly useful: “nearest park” measures to the map icon, so '
       + 'you can be standing in one park and truthfully name a different one.',
       'Hiding Spots — publicly accessible during all game hours; Matching — measure to the '
@@ -1517,7 +1517,7 @@ function sectionMethod(report) {
   const body = el('div', join(
     dataTable(['Parameter', 'Value'], rows.map(([k, v]) => [esc(k), v])),
     el('p', esc(
-      'Zone scores come from the feed and from OpenStreetMap via Overpass; the full method, '
+      'Zone scores come from the feed and from the prebuilt map files; the full method, '
       + 'the exact selectors and the complete score trace are on the feasibility report. '
       + 'Scheduled times are planning estimates — verify against live tracking on game day.',
     ), { className: 'wa-body-s' }),
@@ -1575,8 +1575,9 @@ export function renderStrategy(report) {
     + 'are shopping for below.',
   );
 
-  const credit = 'Map features and administrative divisions from OpenStreetMap contributors, '
-    + 'ODbL. Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The '
+  const credit = 'Map features from OpenStreetMap contributors, ODbL. Administrative '
+    + 'divisions from the Overture Maps Foundation. '
+    + 'Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The '
     + "Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking "
     + 'on the day.';
 

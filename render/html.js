@@ -613,7 +613,7 @@ export function kpi(value, label, noteHtml = '', opts = {}) {
 /**
  * A provenance chip — the drafts' superscript citation mechanism, repurposed.
  *
- * Every printed number carries the id of the metric or Overpass query that produced
+ * Every printed number carries the id of the metric or map-data category that produced
  * it; the chip links to that row in the score trace or the provenance section, both
  * of which the sources index gives a named home. This is how "every point traces to a
  * named metric" actually reaches the UI.

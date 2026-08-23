@@ -420,14 +420,14 @@ export function noServiceDates(feed, start, end) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {Object} S1StopIndex   // `_S1StopIndex`, generate.py line 2729.
+ * @typedef {Object} S1StopIndex   // `_S1StopIndex`, generate.py line 2733.
  * Bidirectional stop_id ↔ dense-index map over the whole feed's stops.
  * @property {Map<string, number>} byId
  * @property {string[]} ids        // sorted
  */
 
 /**
- * @typedef {Object} S1Pattern     // `_S1Pattern`, generate.py line 2737.
+ * @typedef {Object} S1Pattern     // `_S1Pattern`, generate.py line 2741.
  * Trips sharing an identical stop sequence, stored column-major.
  *
  * `dep[offset]` and `arr[offset]` are per-trip vectors in trip order (sorted by
@@ -445,7 +445,7 @@ export function noServiceDates(feed, start, end) {
  */
 
 /**
- * @typedef {Object} S1DayExtras   // `_S1DayExtras`, generate.py line 2757.
+ * @typedef {Object} S1DayExtras   // `_S1DayExtras`, generate.py line 2761.
  * Per-day vectors shared by the metrics, headway and question layers.
  * @property {Object<string, [string, string]>} tripRoute   // trip_id → [route_id, direction_id]
  * @property {Object<string, number[]>} dedup               // stop_id → one departure per trip
@@ -848,7 +848,7 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
       stopName,
       routeLabel,
     },
-    // `_s1_slack`, generate.py line 3010. Read back by raptor.js.
+    // `_s1_slack`, generate.py line 3020. Read back by raptor.js.
     _s1Slack: Math.trunc(boardSlackS),
   };
 }

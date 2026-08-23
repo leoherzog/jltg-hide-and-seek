@@ -92,7 +92,7 @@ trap on_exit EXIT
 # ── mode args ────────────────────────────────────────────────────────────────
 # Computed BEFORE the download: --kind density needs a cover geometry out of the
 # checkout, and a missing one is a hard error. Discovering that after the transfer
-# would throw away up to 1.16 GB (quebec, the largest fine shard) for a bad --id.
+# would throw away up to 7.90 GB (africa, the largest fine shard) for a bad --id.
 #
 # --unlink-source (feature only): delete the raw extract the moment stage 1's
 #   filtered intermediate exists. Feature shards never run stage 4 — the only later
@@ -158,7 +158,7 @@ log "md5 ok ($got_md5)"
 # NOTE for reviewers: for --kind density, build.py's main() still runs the full
 # stage-1 filter pass unconditionally before checking --only (it is not gated on
 # which layers were requested) — an inefficiency in build.py, not this script, and
-# out of scope for a CI-authoring change. Phase 4's "499 fine shards fit easily"
+# out of scope for a CI-authoring change. Phase 4's finding that the fine shards (514)
 # measurement in PLAN.md already reflects build.py as it stands.
 log "building ($KIND)"
 /usr/bin/time -v -o "$SHARD_WORK/time.log" uv run "$REPO_ROOT/tools/osm-world/build.py" \

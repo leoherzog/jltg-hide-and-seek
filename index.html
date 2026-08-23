@@ -358,7 +358,7 @@
                      not repeat it: two copies of a URL is one copy too many, and the
                      one that would go stale is this one. -->
                 <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="field-wide" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
-                  <span slot="hint">Where the prebuilt OpenStreetMap files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one. Point it at a local static server to try a build before it ships; it has to answer HTTP range requests and expose <code>content-range</code> to CORS, or the files read as corrupt.</span>
+                  <span slot="hint">Where the prebuilt map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one. Point it at a local static server to try a build before it ships; it has to answer HTTP range requests and expose <code>content-range</code> to CORS, or the files read as corrupt.</span>
                 </wa-input>
 
               </div>
@@ -371,20 +371,20 @@
                    matches the ten hints above it; the reading width now comes from
                    `#advanced wa-switch::part(hint)` in styles.css. -->
               <wa-switch id="opt-no-osm" data-opt="noOsm" name="no-osm" size="s">Skip OpenStreetMap (much faster)
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Overpass and Nominatim are the slow part of a run, by a wide margin. Skipping them keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at, so the score says so out loud.</span>
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Reading the map files is the slow part of a run, by a wide margin. Skipping them keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at, so the score says so out loud.</span>
               </wa-switch>
 
-              <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore cached OpenStreetMap answers
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Overpass answers are cached in this browser and reused, which is what makes a second run of the same map fast. Turn this on to refetch them — a full run against the public mirrors, several minutes, and only worth it if the map itself has changed.</span>
+              <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore the cached transit feed
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused, which is what makes a second run of the same feed quick to start. Turn this on to download it again — worth doing when the operator has published a new one. It does not affect the map files: those are immutable, addressed by content, and always read from the network.</span>
               </wa-switch>
 
-              <!-- `offline` is live end to end — app.js 560, worker.js 236,
-                   cache.js 224 — and CONTRACT §(c) does NOT list it among the options
+              <!-- `offline` is live end to end — app.js 526, worker.js 244,
+                   cache.js 159 — and CONTRACT §(c) does NOT list it among the options
                    dropped as meaningless in a browser. Without a control here
                    `readControl` returns undefined and app.js 560-561 is a dead branch
                    the reader can never reach. -->
-              <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only cached OpenStreetMap answers
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The mirror image of the switch above: a cache miss becomes an error instead of a fetch. Nothing goes out to the network, so a run either reproduces exactly what an earlier one saw or stops and tells you which query it could not answer. Useful on a plane, or when you want two runs to be comparable.</span>
+              <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
+                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The mirror image of the switch above: a cache miss becomes an error instead of a download, so the feed either reproduces exactly what an earlier run saw or stops and says so. This does not make the run offline — the map files are still read over the network unless OpenStreetMap is skipped as well.</span>
               </wa-switch>
             </div>
           </wa-details>
@@ -393,7 +393,7 @@
             <wa-button id="analyse" type="submit" variant="brand" appearance="filled">
               <wa-icon slot="start" name="play"></wa-icon>Analyse
             </wa-button>
-            <span class="wa-caption-s wa-color-text-quiet">A city-sized feed takes a few minutes, most of it waiting on OpenStreetMap.</span>
+            <span class="wa-caption-s wa-color-text-quiet">Most of a run is spent reading the map files; skipping them above is much faster.</span>
           </div>
 
           <!-- The callout is shipped here rather than built as a string: `showFormError`
@@ -721,7 +721,7 @@
       </div>
       <!-- app.js prepends the "Generated by … from …'s GTFS feed" sentence, which
            needs the feed. Everything after it is true of every run. -->
-      <p id="footer-credit" class="wa-body-s" style="max-width:88ch">Map features and administrative divisions from OpenStreetMap contributors, ODbL. Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking on the day.</p>
+      <p id="footer-credit" class="wa-body-s" style="max-width:88ch">Map features from OpenStreetMap contributors, ODbL. Administrative divisions from the Overture Maps Foundation. Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking on the day.</p>
       <a href="#top" class="wa-link wa-caption-s wa-cluster wa-gap-2xs"><wa-icon name="arrow-up"></wa-icon>Back to top</a>
     </div>
   </footer>
