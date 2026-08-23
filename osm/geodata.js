@@ -515,6 +515,13 @@ export const ADMIN_ORDINAL_OVERRIDES = Object.freeze({
 // table above must never be consulted for an overture world and vice versa. A country
 // absent here takes the generic path, which for overture always anchors at level 4.
 export const OVERTURE_ADMIN_ORDINAL_OVERRIDES = Object.freeze({
+  us: Object.freeze([4, 6, 8, null]),   // state / county / place; NO fourth rung —
+  // without this entry the generic path anchors at 4 and fills the fourth rung with
+  // level 9, which is `macrohood`. The census below then takes the deepest ordinal
+  // holding ANY tally, so a US map was named after a neighbourhood: Grand Rapids came
+  // out "Third Ward" (44 of 319 zones) and the CTA map "Austin" (44 of 1,204), while
+  // level 8 held "Grand Rapids" (138 of 319) and "Chicago" (1,070 of 1,204). US cities
+  // are Overture localities at 8; what sits below is not a division a map is named for.
   fr: Object.freeze([4, 6, 8, 10]),     // region / department / commune / neighbourhood
   it: Object.freeze([4, 6, 8, 10]),     // regione / provincia / comune / neighbourhood
   jp: Object.freeze([4, 6, 8, null]),   // prefecture / municipality / ward
@@ -936,19 +943,50 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   /** @type {Map<string, Map<number, string>>} */
   const perZoneLevels = new Map();
   const levelsPresent = new Set();
+
+  // Divisions OVERLAP within a level, so the ladder cannot be built by last-write-wins.
+  // Overture files a US city and a US civil township both as `locality`, so both land
+  // on level 8 and a zone is legitimately inside two of them: 1,070 of the CTA map's
+  // 1,204 zones are in "Chicago" while 265 of those same zones are also in "Lake".
+  // Keeping whichever name happened to arrive last named that map "Lake" off 263 zones.
+  // Collect every name a zone falls in, then let map-wide prevalence choose its rung —
+  // the division that covers most of the map is the one the zone is meaningfully in.
+  /** @type {Map<string, Map<number, Set<string>>>} */
+  const perZoneAll = new Map();
+  /** @type {Map<number, Map<string, number>>} level → name → zones it contains */
+  const levelTally = new Map();
   const pairs = Math.min(ordered.length, perPoint.length);
   for (let i = 0; i < pairs; i++) {
     const zone = ordered[i];
+    /** @type {Map<number, Set<string>>} */
     const ladder = new Map();
     for (const tags of perPoint[i]) {
       if (tags.boundary !== 'administrative') continue;
       const level = adminLevel(tags);
       const name = tags['name:en'] || tags.name || '';
       if (level === null || !name) continue;
-      ladder.set(level, name);
+      if (!ladder.has(level)) ladder.set(level, new Set());
+      ladder.get(level).add(name);
       levelsPresent.add(level);
     }
-    perZoneLevels.set(zone.zoneId, ladder);
+    for (const [level, names] of ladder) {
+      if (!levelTally.has(level)) levelTally.set(level, new Map());
+      const tally = levelTally.get(level);
+      for (const name of names) tally.set(name, (tally.get(name) || 0) + 1);
+    }
+    perZoneAll.set(zone.zoneId, ladder);
+  }
+  // Collapse to one name per level. Ties break on the name, so the answer never
+  // depends on the order the areas came back in.
+  for (const [zoneId, ladder] of perZoneAll) {
+    const one = new Map();
+    for (const [level, names] of ladder) {
+      const tally = levelTally.get(level);
+      one.set(level, Array.from(names).sort(
+        (x, y) => ((tally.get(y) || 0) - (tally.get(x) || 0)) || cmpStr(x, y),
+      )[0]);
+    }
+    perZoneLevels.set(zoneId, one);
   }
 
   // Country identity, entirely from the admin layer. `source` is now one value where
@@ -1029,6 +1067,18 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
       if (!tally.size) continue;
       const best = Array.from(tally.entries())
         .sort((a, b) => (b[1] - a[1]) || cmpStr(a[0], b[0]))[0];
+      // "Deepest ordinal holding any tally" is too weak on its own: one stray division
+      // covering a handful of zones beats an ordinal that names the whole map. The
+      // table above fixes the countries listed there; this is what protects the ones
+      // that are not, since the generic overture path always fills the fourth rung.
+      // A third is the loosest bar that separates the measured cases — a neighbourhood
+      // holding 13.8% of zones fails it, a city holding 43% passes — and a map whose
+      // deepest leader is thinner than that is more honestly named by the level above.
+      if (best[1] * 3 < zoneIds.length) {
+        log('info', `ordinal ${ordinal} skipped for the place name: its leader `
+          + `${JSON.stringify(best[0])} holds only ${best[1]} of ${zoneIds.length} zones`);
+        continue;
+      }
       [placeName] = best;
       log('info', `place name ${JSON.stringify(placeName)} from ordinal ${ordinal} `
         + `(${best[1]} of ${zoneIds.length} zones, ${tally.size} divisions there)`);
