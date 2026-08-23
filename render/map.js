@@ -85,8 +85,15 @@ const S4_DECK_SKELETON_WIDTHS = Object.freeze([
  * Headway heatmap bins in minutes. The middle element is the `data-hb` value the cell
  * carries; the six ramp steps are styled by `[data-hb='N']`, unscoped so the 92x30 grid
  * cell and the 11px `.sw` legend key share one fill rule.
+ *
+ * Exported since 2026-08-23: the map's frequency layer bins per-stop headways on
+ * these thresholds and paints them from `--seq-100`…`--seq-650`, the same six tokens
+ * `[data-hb='1']`…`[data-hb='6']` use. `app.js` ships the thresholds into `#data` as
+ * `game.headway_bins_min` rather than letting `PAGE_RUNTIME_JS` keep a second copy —
+ * a map that binned at different edges from the grid two cards down would be a lie
+ * that nothing on the page could catch.
  */
-const S4_HEADWAY_BINS = Object.freeze([
+export const S4_HEADWAY_BINS = Object.freeze([
   Object.freeze([10.0, '1', '≤10 min']),
   Object.freeze([15.0, '2', '≤15']),
   Object.freeze([25.0, '3', '≤25']),
@@ -874,6 +881,24 @@ export function s4MapLegends(report, flags) {
       + `back so the zones read. Zones are ${radius} circles.`));
   }
 
+  // The frequency block. Its window is NAMED, because §06's grid is the median per
+  // route-direction between 10:00 and 14:00 and this is the median per STOP over all
+  // routes between 06:00 and 22:00 — two honest measurements of "how often", which
+  // legitimately disagree (Wyoming: 60 midday, 43 all-day). Unnamed, the map would
+  // contradict the grid two cards down and neither would be wrong.
+  if (stopsShown) {
+    blocks.push(block('frequency', [
+      ...S4_HEADWAY_BINS.map(([, binId, label]) => [
+        el('span', '', { className: 'sw', dataHb: binId }), label,
+      ]),
+      [el('span', '', { className: 'sw', dataHb: 'none' }), 'No service that day'],
+    ], 'Stops, coloured by the median minutes between departures at that one stop, all '
+      + 'routes together, between 06:00 and 22:00 on the selected day. Lighter = more '
+      + 'service. The grid under Getting around measures a different thing — one route '
+      + "direction at a time, between 10:00 and 14:00 — so the two legitimately "
+      + 'disagree. Zone dots fade back so the stops read.'));
+  }
+
   blocks.push(block('always', always, ''));
   return blocks.join('');
 }
@@ -952,6 +977,13 @@ export function renderNetworkMap(payload) {
       : `Colour by Reach recolours those zone dots by scheduled travel time from `
         + `${startName}, with the ${hpMin}-minute hiding period as the cliff, and follows `
         + 'the day selector. Colour by Plain is the flat blue.',
+    stopsShown
+      ? 'Colour by Frequency recolours the stops instead, on the same six steps as the '
+        + 'headway grid under Getting around — but measured per stop over all routes '
+        + 'between 06:00 and 22:00, which is a different question from that grid’s.'
+      : `Over ${num(S4_MAX_MAP_STOPS)} stops the individual dots are dropped, so the `
+        + 'frequency layer is unavailable on this feed and the colour selector offers '
+        + 'Plain and Reach only.',
     `★ = ${hub.name}, the inferred round-start station.`,
     'Dashed gold frame = the game border. Nothing outside it exists for this game.',
     'If your browser blocks the map library the map is omitted and everything below still works.',
@@ -965,6 +997,12 @@ export function renderNetworkMap(payload) {
   const colourBy = reachDay === null ? '' : el('wa-radio-group', join(
     el('wa-radio', esc('Plain'), { value: 'base', appearance: 'button', size: 's' }),
     el('wa-radio', esc('Reach'), { value: 'reach', appearance: 'button', size: 's' }),
+    // No Frequency button when the stop layer was dropped over `MAX_MAP_STOPS`: the
+    // per-stop headways ride with the stops and there is nothing to colour. The
+    // caption says so rather than leaving a control that does nothing.
+    stopsShown
+      ? el('wa-radio', esc('Frequency'), { value: 'frequency', appearance: 'button', size: 's' })
+      : '',
   ), {
     id: 'colourby',
     name: 'colourby',

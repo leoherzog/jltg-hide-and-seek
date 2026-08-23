@@ -628,7 +628,8 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 #netlegend > [data-legend-for] { display: none; }
 #netlegend > [data-legend-for='always'] { display: block; }
 #netlegend[data-mode='base'] > [data-legend-for='base'],
-#netlegend[data-mode='reach'] > [data-legend-for='reach'] { display: block; }
+#netlegend[data-mode='reach'] > [data-legend-for='reach'],
+#netlegend[data-mode='frequency'] > [data-legend-for='frequency'] { display: block; }
 
 /* The generated "what to notice" line under the map. It is written by the runtime
    from the day payload, so it ships empty and must not claim a row of the stack

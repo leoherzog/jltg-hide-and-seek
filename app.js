@@ -43,6 +43,7 @@ import {
 } from './render/verdict.js';
 import {
   renderGlanceRail, renderNetworkMap, renderTransitReality, s4TilesHtml,
+  S4_HEADWAY_BINS,
 } from './render/map.js';
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
@@ -2156,6 +2157,13 @@ function dataPayload(report) {
       inferred: size.inferred,
       chart_max_min: chartMax(report),
       scale_unit: imperial(report) ? 'imperial' : 'metric',
+      // The map's frequency layer bins per-stop headways on exactly the thresholds
+      // §06's headway grid uses, from the one constant both read. `Infinity` is not
+      // JSON, so the open-ended last bin ships as `null` and the runtime treats it as
+      // "everything above the one before". (2026-08-23.)
+      headway_bins_min: S4_HEADWAY_BINS.map(
+        ([limit]) => (Number.isFinite(limit) ? limit : null),
+      ),
     } : null,
     border: border ? {
       kind: border.kind,
@@ -2701,7 +2709,7 @@ function saveDay(k) { try { localStorage.setItem(DAY_KEY, k); } catch (e) {} }
    survives a trip into #strategy and back. MODES is the whitelist: a stale value in
    storage from another build must not put the map in a mode it no longer has. */
 const LAYER_KEY = 'jltg-netlayers';
-const MODES = ['base', 'reach'];
+const MODES = ['base', 'reach', 'frequency'];
 function loadLayers() {
   const out = { mode: 'reach', zones: false };
   try {
@@ -3080,8 +3088,24 @@ async function buildMap() {
     reachTight: cssVar('--gold-mark'),  /* fits, but past three quarters of it */
     reachBust: cssVar('--crit'),        /* busts the hiding period */
     reachNone: cssVar('--baseline'),    /* no journey on this day */
+    /* the six steps [data-hb='1']…[data-hb='6'] paint the headway grid with */
+    hb: [cssVar('--seq-100'), cssVar('--seq-200'), cssVar('--seq-300'),
+         cssVar('--seq-400'), cssVar('--seq-550'), cssVar('--seq-650')],
     off: cssVar('--off'),
   });
+
+  /* The frequency layer bins on the thresholds #data carries, which app.js takes
+     from render/map.js's S4_HEADWAY_BINS — the constant the headway grid bins on. A
+     trailing null is the open-ended last bin (Infinity is not JSON). */
+  const BINS = (G.headway_bins_min && G.headway_bins_min.length)
+    ? G.headway_bins_min : [10, 15, 25, 35, 50, null];
+  const binOf = v => {
+    for (let i = 0; i < BINS.length; i++) {
+      const lim = BINS[i];
+      if (lim === null || lim === undefined || v <= lim) return i + 1;
+    }
+    return BINS.length;
+  };
 
   /* Rebuild the two data-bearing sources from whatever #stops now holds, then repaint
      for the current colour mode. Never setStyle, never fitBounds: a day switch, a
@@ -3112,15 +3136,26 @@ async function buildMap() {
         }),
       });
     }
+    const hw = (S.hw || {})[day] || null;
     const ss = W.map.getSource('stops');
     if (ss) {
       ss.setData({
         type: 'FeatureCollection',
-        features: (S.stops || []).map(s => ({
-          type: 'Feature',
-          properties: { name: s[2], routes: s[3], freq: s[4] || 0 },
-          geometry: { type: 'Point', coordinates: [s[0], s[1]] },
-        })),
+        features: (S.stops || []).map((s, i) => {
+          /* hb 0 is "no service at this stop on this day" — the row set is the
+             busiest day's served stops on every day (CONTRACT §(d) StopRow), and a
+             null headway is how the other days say so. */
+          const v = hw && hw[i] !== null && hw[i] !== undefined ? hw[i] : null;
+          return {
+            type: 'Feature',
+            properties: {
+              name: s[2], routes: s[3], freq: s[4] || 0,
+              hb: v === null ? 0 : binOf(v),
+              hwv: v === null ? -1 : v,
+            },
+            geometry: { type: 'Point', coordinates: [s[0], s[1]] },
+          };
+        }),
       });
     }
     applyMode();
@@ -3155,6 +3190,20 @@ async function buildMap() {
       set('zone-dots', 'circle-opacity', 0.9);
       set('stop-dots', 'circle-color', RAMP.off);
       set('stop-dots', 'circle-opacity', 0.4);
+    } else if (mode === 'frequency') {
+      /* A single-hue lightness ramp: CVD-safe by construction, and already
+         re-anchored for dark in styles.css §2 ("more service = lighter"). Same six
+         steps and same thresholds as the headway grid, so the two teach each other. */
+      set('stop-dots', 'circle-color', ['case',
+        ['<=', ['get', 'hb'], 0], RAMP.off,
+        ['match', ['get', 'hb'],
+          1, RAMP.hb[0], 2, RAMP.hb[1], 3, RAMP.hb[2],
+          4, RAMP.hb[3], 5, RAMP.hb[4], 6, RAMP.hb[5], RAMP.hb[5]]]);
+      set('stop-dots', 'circle-opacity', ['case', ['<=', ['get', 'hb'], 0], 0.35, 0.9]);
+      set('zone-dots', 'circle-color', p.zone);
+      set('zone-dots', 'circle-stroke-color', p.edge);
+      set('zone-dots', 'circle-stroke-width', 1);
+      set('zone-dots', 'circle-opacity', 0.3);
     } else {
       set('zone-dots', 'circle-color', p.zone);
       set('zone-dots', 'circle-stroke-color', p.edge);
@@ -3229,7 +3278,12 @@ async function buildMap() {
   /* delegated layer events survive setStyle, so bind them once */
   map.on('mousemove', 'stop-dots', e => {
     const f = e.features[0].properties;
-    showTip(e, '<b>' + esc(f.name || 'Stop') + '</b>' + f.routes + ' route(s) on this day');
+    const wait = Number(f.hwv);
+    showTip(e, '<b>' + esc(f.name || 'Stop') + '</b>' + f.routes + ' route(s) on this day'
+              + (!isFinite(wait) || wait < 0
+                ? ' · no service on the day you picked'
+                : ' · a departure about every ' + wait + ' min, 06:00-22:00')
+              + (Number(f.freq) ? ' · on a 15-minute route-direction' : ''));
   });
   map.on('mouseleave', 'stop-dots', () => { tt.style.display = 'none'; });
   map.on('mousemove', 'zone-dots', e => {
@@ -3261,12 +3315,19 @@ async function buildMap() {
     /* Attribute first, then property: a wa-radio-group that has not upgraded yet
        reads the attribute, and one that has reads the property. The same order
        render/deck.js's filters use. */
-    if (MODES.indexOf(W.layers.mode) < 0) W.layers.mode = 'base';
+    /* The modes THIS map offers, not the ones the build knows: a feed over
+       MAX_MAP_STOPS ships no Frequency button, and a value left in storage by a
+       feed that did must not put the map in a mode with no control. */
+    const offered = [].slice.call(cb.querySelectorAll('wa-radio'))
+      .map(r => r.getAttribute('value'));
+    if (offered.indexOf(W.layers.mode) < 0) {
+      W.layers.mode = offered.indexOf('reach') >= 0 ? 'reach' : 'base';
+    }
     cb.setAttribute('value', W.layers.mode);
     cb.value = W.layers.mode;
     cb.addEventListener('change', () => {
       const want = cb.value || 'base';
-      W.layers.mode = MODES.indexOf(want) >= 0 ? want : 'base';
+      W.layers.mode = offered.indexOf(want) >= 0 ? want : 'base';
       saveLayers();
       applyMode();
     });
