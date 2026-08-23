@@ -57,6 +57,9 @@ import { FlatGeobufReader } from './flatgeobuf.js';
  */
 export const DEFAULT_WORLD_BASE_URL = 'https://jltg.herzog.tech/world';
 
+/** Seconds before the manifest fetch is abandoned. See `RANGE_TIMEOUT_S`. */
+export const MANIFEST_TIMEOUT_S = 20;
+
 /**
  * The two identity columns `osmium export -c` is configured to write, via the config's
  * `attributes: {type: 'osm_type', id: 'osm_id'}`. They must be PROPERTIES, not the
@@ -237,7 +240,24 @@ export async function openWorld(baseUrl = DEFAULT_WORLD_BASE_URL, opts = {}) {
   const doFetch = opts.fetchImpl || ((...args) => fetch(...args));
   const base = String(baseUrl).replace(/\/+$/, '');
 
-  const response = await doFetch(`${base}/manifest.json`);
+  // Same abort-based timeout the layer reads use. This one matters more, not less: it
+  // is the first request of the run, and a stall here means the page never gets as far
+  // as reporting which layer was the problem.
+  const controller = new AbortController();
+  const timer = setTimeout(() => { controller.abort(); }, MANIFEST_TIMEOUT_S * 1000);
+  let response;
+  try {
+    response = await doFetch(`${base}/manifest.json`, { signal: controller.signal });
+  } catch (exc) {
+    if (exc && exc.name === 'AbortError') {
+      throw new Error(
+        `world files: ${base}/manifest.json did not answer within ${MANIFEST_TIMEOUT_S}s`,
+      );
+    }
+    throw exc;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
     throw new Error(`world files: manifest.json returned ${response.status} from ${base}`);
   }

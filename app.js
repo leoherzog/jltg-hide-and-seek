@@ -216,8 +216,19 @@ function emptyGeoLocal() {
   };
 }
 
+/**
+ * Seconds of COMPLETE SILENCE from the worker before the run is called dead. Not a
+ * wall-clock deadline on the run: a cold first visit legitimately spends minutes
+ * reading world files, and cutting that off would be worse than the bug. What is never
+ * legitimate is the worker going quiet — it announces every round trip through
+ * `onProgress`, so silence means a fetch that will never return or a hang, and until
+ * this existed the page span on that forever with nothing to click.
+ */
+const WORKER_SILENCE_S = 120;
+
 const state = {
   /** @type {Worker|null} */ worker: null,
+  /** @type {number|null} */ watchdog: null,
   /** @type {Object} */ report: emptyReport(),
   /** @type {Set<string>} */ arrived: new Set(),
   /** @type {string[]} */ degradations: [],
@@ -646,6 +657,7 @@ function startRun(form) {
   state.running = true;
 
   worker.addEventListener('message', (event) => {
+    armWatchdog();
     try {
       onWorkerMessage(event.data);
     } catch (err) {
@@ -663,7 +675,26 @@ function startRun(form) {
   });
 
   enterRunningState(src);
+  armWatchdog();
   worker.postMessage({ type: 'run', options, file: src.file, url: src.url });
+}
+
+/** (Re)start the silence timer. Every message from the worker is a sign of life. */
+function armWatchdog() {
+  clearWatchdog();
+  state.watchdog = setTimeout(() => {
+    state.watchdog = null;
+    fatalError('worker', `The analysis stopped responding — nothing was heard from it `
+      + `for ${WORKER_SILENCE_S} seconds. The most likely cause is a map file request `
+      + 'that never came back.');
+  }, WORKER_SILENCE_S * 1000);
+}
+
+function clearWatchdog() {
+  if (state.watchdog !== null) {
+    clearTimeout(state.watchdog);
+    state.watchdog = null;
+  }
 }
 
 /**
@@ -925,6 +956,7 @@ function finish(report) {
   // alternative is a page stuck behind the running-state chrome.
   setShellState('ready');
   setProgress({ stage: 'done', label: 'Report complete', done: 1, total: 1 });
+  clearWatchdog();
   if (state.worker) {
     state.worker.terminate();
     state.worker = null;
@@ -1311,6 +1343,7 @@ function fatalError(stage, message) {
   if (state.fatal) return;
   state.fatal = true;
   state.running = false;
+  clearWatchdog();
   if (state.worker) {
     state.worker.terminate();
     state.worker = null;

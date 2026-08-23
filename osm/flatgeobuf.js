@@ -52,11 +52,33 @@ const NODE_ITEM_LEN = 40;              // 4 doubles of bbox + one uint64 offset
 /** How much to read on the first request. Big enough for essentially every header. */
 const HEADER_PROBE_BYTES = 16384;
 
+/**
+ * Seconds before one Range request is abandoned. An origin that accepts the connection
+ * and then says nothing is indistinguishable from a slow one until a timer says
+ * otherwise, and without this the page spins for as long as the reader is willing to
+ * wait — which was forever. `lib/http.js` has had the same abort-based timeout since
+ * the Overpass days; this is that pattern, applied to the transport that replaced it.
+ */
+export const RANGE_TIMEOUT_S = 30;
+
 /** Two ranges closer together than this are fetched as one. */
 const RANGE_COALESCE_BYTES = 8192;
 
 /** Never ask for a single range larger than this. */
 const MAX_RANGE_BYTES = 8 << 20;
+
+/**
+ * How many index reads to have in flight at once during a level of the R-tree walk.
+ * The origin is nowhere near the constraint — R2 answered 1,200 concurrent range
+ * requests against one object in 2.9 s with no failures — so this is set for the
+ * browser's own per-host connection limit rather than for the server.
+ */
+const INDEX_READ_CONCURRENCY = 12;
+
+/** Cap the resident chunk cache by BYTES, not by entry count: one walk of a busy
+ *  layer touches ~150 KB across a couple of hundred small blocks, so a 64-entry cap
+ *  evicted the head of the walk before its tail had been read. */
+const CHUNK_CACHE_BYTES = 4 << 20;
 
 /** ColumnType, from the FlatGeobuf schema. Order is the wire order — do not sort. */
 const COLUMN_TYPE = Object.freeze({
@@ -197,6 +219,7 @@ class RangeReader {
     this._fetch = opts.fetchImpl || ((...args) => fetch(...args));
     /** @type {Array<{start: number, end: number, bytes: Uint8Array}>} */
     this._chunks = [];
+    this._cachedBytes = 0;
     this.bytesFetched = 0;
     this.requests = 0;
     // Learned from the first 206's `Content-Range`. Until then reads are unclamped,
@@ -266,9 +289,27 @@ class RangeReader {
     const hit = this._cached(start, end);
     if (hit) return hit;
 
-    const response = await this._fetch(this.url, {
-      headers: { Range: `bytes=${start}-${end - 1}` },
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, RANGE_TIMEOUT_S * 1000);
+    let response;
+    try {
+      response = await this._fetch(this.url, {
+        headers: { Range: `bytes=${start}-${end - 1}` },
+        signal: controller.signal,
+      });
+    } catch (exc) {
+      // `AbortError` alone says nothing about which layer stalled, and this message
+      // travels all the way to the reader through `collectGeodata`'s failure list.
+      if (exc && exc.name === 'AbortError') {
+        throw new Error(
+          `FlatGeobuf: ${this.url} did not answer a Range request within `
+          + `${RANGE_TIMEOUT_S}s`,
+        );
+      }
+      throw exc;
+    } finally {
+      clearTimeout(timer);
+    }
     if (response.status !== 206) {
       throw new Error(
         `FlatGeobuf: ${this.url} answered ${response.status} to a Range request; `
@@ -284,8 +325,13 @@ class RangeReader {
     this.requests += 1;
     this.bytesFetched += bytes.length;
     this._chunks.push({ start, end: start + bytes.length, bytes });
-    // Keep the cache small; the index blocks that matter are re-read immediately.
-    if (this._chunks.length > 64) this._chunks.splice(0, this._chunks.length - 64);
+    this._cachedBytes += bytes.length;
+    // Evict oldest-first until the cache is back under budget. Counting entries
+    // instead of bytes made the cap depend on the size of the reads that happened to
+    // land in it, which is why an index walk could evict its own working set.
+    while (this._cachedBytes > CHUNK_CACHE_BYTES && this._chunks.length > 1) {
+      this._cachedBytes -= this._chunks.shift().bytes.length;
+    }
     // Never hand back more than was asked for, but a short tail read is normal.
     return bytes.subarray(0, Math.min(end - start, bytes.length));
   }
@@ -523,6 +569,13 @@ export class FlatGeobufReader {
     this.reader = new RangeReader(url, opts);
     /** @type {null|{featuresCount: number, indexNodeSize: number, columns: Array, geometryType: number, dataStart: number, indexStart: number}} */
     this.head = null;
+    // The last walk, keyed by rect. `worldCount` and `worldPois` are called back to
+    // back on the same layer with the same rect — the first to decide whether the
+    // category is affordable, the second to fetch it — and each ran a full independent
+    // walk of the same tree. One entry is all that is needed: the caller moves on to
+    // the next layer and never comes back to this one.
+    /** @type {null|{key: string, offsets: Array<number>}} */
+    this._lastSearch = null;
   }
 
   /** Bytes fetched so far, for the provenance row. */
@@ -604,6 +657,10 @@ export class FlatGeobufReader {
    * @returns {Promise<Array<number>>} byte offsets relative to `dataStart`, ascending
    */
   async search(rect) {
+    const memoKey = `${rect.minX},${rect.minY},${rect.maxX},${rect.maxY}`;
+    if (this._lastSearch !== null && this._lastSearch.key === memoKey) {
+      return this._lastSearch.offsets.slice();
+    }
     const head = await this.open();
     if (head.featuresCount === 0) return [];
     if (head.indexNodeSize === 0) {
@@ -621,44 +678,92 @@ export class FlatGeobufReader {
     // entry it produces is `[0, 1]`, so node index 0 is the root. Starting anywhere
     // else walks into the middle of the leaf level and reads feature offsets as if they
     // were node indices.
-    /** @type {Array<[number, number]>} `[nodeIndex, level]`; level 0 is the leaves. */
-    const queue = [[0, bounds.length - 1]];
+    // Walk one LEVEL at a time, not one node at a time. Every node in a level is
+    // independent of its siblings, so draining a queue with `shift()` and awaiting each
+    // read in turn spends the entire walk waiting on round trips that could have
+    // overlapped — and blocks a few hundred bytes apart in the file were fetched
+    // separately, even though RANGE_COALESCE_BYTES was declared for exactly that and
+    // used only by `query`. Measured on the live `shop` layer over the Grand Rapids
+    // border: 98 serial requests and 7.4 s became 8 requests and 0.7 s, for an
+    // identical offset list. The traversal below is unchanged — same tests, same order
+    // of descent — only the fetching is batched.
+    /** @type {Array<number>} node indices at the current level. */
+    let frontier = [0];
 
-    while (queue.length) {
-      const [nodeIndex, level] = queue.shift();
+    for (let level = bounds.length - 1; level >= 0 && frontier.length; level--) {
       const isLeafLevel = level === 0;
+      const levelEnd = bounds[level][1];
 
-      // Read this node and its siblings in one request: children of one parent are
-      // contiguous, and every one of them is about to be tested.
-      const blockStart = nodeIndex;
-      const blockEnd = Math.min(blockStart + head.indexNodeSize, bounds[level][1]);
-      const view = await this.reader.view(
-        head.indexStart + blockStart * NODE_ITEM_LEN,
-        head.indexStart + blockEnd * NODE_ITEM_LEN,
-      );
+      // One block per frontier node, deduplicated and ordered: two parents can point
+      // into the same block, and reading it twice is pure waste.
+      const blocks = Array.from(new Set(frontier)).sort((a, b) => a - b)
+        .map((nodeIndex) => ({
+          start: nodeIndex,
+          end: Math.min(nodeIndex + head.indexNodeSize, levelEnd),
+        }));
 
-      for (let i = 0; i < blockEnd - blockStart; i++) {
-        const at = i * NODE_ITEM_LEN;
-        const minX = view.getFloat64(at, true);
-        const minY = view.getFloat64(at + 8, true);
-        const maxX = view.getFloat64(at + 16, true);
-        const maxY = view.getFloat64(at + 24, true);
-        if (rect.maxX < minX || rect.maxY < minY || rect.minX > maxX || rect.minY > maxY) {
-          continue;
+      // Merge blocks close enough that one request is cheaper than two, subject to the
+      // single-request ceiling.
+      /** @type {Array<{start: number, end: number, bytes?: Uint8Array}>} */
+      const runs = [];
+      for (const block of blocks) {
+        const last = runs[runs.length - 1];
+        if (last
+            && (block.start - last.end) * NODE_ITEM_LEN <= RANGE_COALESCE_BYTES
+            && (block.end - last.start) * NODE_ITEM_LEN <= MAX_RANGE_BYTES) {
+          last.end = Math.max(last.end, block.end);
+        } else {
+          runs.push({ start: block.start, end: block.end });
         }
-        // The same uint64 field means two different things by level: on an internal
-        // node it is the index of the child block, on a leaf it is the byte offset of
-        // the feature. That is the format, not a shortcut.
-        const offset = Number(view.getBigUint64(at + 32, true));
-        if (isLeafLevel) offsets.push(offset);
-        else queue.push([offset, level - 1]);
       }
+
+      for (let at = 0; at < runs.length; at += INDEX_READ_CONCURRENCY) {
+        const batch = runs.slice(at, at + INDEX_READ_CONCURRENCY);
+        /* eslint-disable-next-line no-await-in-loop */
+        const parts = await Promise.all(batch.map((run) => this.reader.read(
+          head.indexStart + run.start * NODE_ITEM_LEN,
+          head.indexStart + run.end * NODE_ITEM_LEN,
+        )));
+        batch.forEach((run, k) => { run.bytes = parts[k]; });
+      }
+
+      /** @type {Array<number>} */
+      const next = [];
+      for (const block of blocks) {
+        const run = runs.find((r) => r.start <= block.start && r.end >= block.end);
+        const view = new DataView(
+          run.bytes.buffer, run.bytes.byteOffset, run.bytes.byteLength,
+        );
+        const base = (block.start - run.start) * NODE_ITEM_LEN;
+        for (let i = 0; i < block.end - block.start; i++) {
+          const at = base + i * NODE_ITEM_LEN;
+          // A clamped tail read can hand back a short block; stop rather than read past.
+          if (at + NODE_ITEM_LEN > view.byteLength) break;
+          const minX = view.getFloat64(at, true);
+          const minY = view.getFloat64(at + 8, true);
+          const maxX = view.getFloat64(at + 16, true);
+          const maxY = view.getFloat64(at + 24, true);
+          if (rect.maxX < minX || rect.maxY < minY || rect.minX > maxX || rect.minY > maxY) {
+            continue;
+          }
+          // The same uint64 field means two different things by level: on an internal
+          // node it is the index of the child block, on a leaf it is the byte offset of
+          // the feature. That is the format, not a shortcut.
+          const offset = Number(view.getBigUint64(at + 32, true));
+          if (isLeafLevel) offsets.push(offset);
+          else next.push(offset);
+        }
+      }
+      frontier = next;
     }
 
     // Ascending order turns the reads into a forward scan, which is what makes
     // coalescing worthwhile.
     offsets.sort((a, b) => a - b);
-    return offsets;
+    // Hand out a copy, always, so a caller that sorts or splices its result cannot
+    // corrupt what the next caller gets back.
+    this._lastSearch = { key: memoKey, offsets };
+    return offsets.slice();
   }
 
   /**
