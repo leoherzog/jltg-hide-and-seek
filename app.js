@@ -3143,9 +3143,6 @@ async function buildMap() {
     return BINS.length;
   };
 
-  /* Rebuild the two data-bearing sources from whatever #stops now holds, then repaint
-     for the current colour mode. Never setStyle, never fitBounds: a day switch, a
-     score landing and a tile click must not move the viewport. */
   /* Which per-day columns #stops actually carried, last time paintMap read it. The
      reach column is absent on a feed the RAPTOR could not sample; the headway column
      goes with the stop tuples over MAX_MAP_STOPS. Cached rather than re-derived,
@@ -3153,6 +3150,10 @@ async function buildMap() {
   let HAS_REACH = Boolean(STOPS.reach && Object.keys(STOPS.reach).length);
   let HAS_HW = Boolean(STOPS.hw && Object.keys(STOPS.hw).length);
 
+  /* Rebuild the two data-bearing sources from whatever #stops now holds, re-filter the
+     spokes to the selected day, then repaint for the current colour mode. Never
+     setStyle, never fitBounds: a day switch, a score landing and a tile click must not
+     move the viewport. */
   const paintMap = () => {
     if (!W.map || !W.map.getSource) return;
     const S = D('stops') || STOPS || {};
@@ -3281,7 +3282,8 @@ async function buildMap() {
     if (legend) legend.setAttribute('data-mode', mode);
   };
   /* ── tile → map highlight ──────────────────────────────────────────────────
-     Five of the twelve stat tiles name a fact the map can point at. Hovering or
+     Six of the twelve stat tiles name a fact the map can point at — five facts, as
+     the map area and the network diameter both light the extent. Hovering or
      focusing one previews that fact on the map; clicking it (or Enter/Space) pins
      it, one at a time. Focus IS hover here, by construction — the same keyboard
      idiom #dayscores [data-day] already uses, so the page has one, not two.
