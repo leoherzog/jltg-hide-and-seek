@@ -373,9 +373,9 @@ export function waAccordion(items, opts = {}) {
  *
  * The only sanctioned way to render a question status, a curse action, a finding
  * severity or a metric source on either page. The reason is measured: against the
- * warm-paper surface `--warn` is 1.66:1, `--gold` 1.96:1 and `--q-edge` 2.07:1, all
- * under the 3:1 non-text floor, so the hue cannot carry the signal by itself. Those
- * hues are the page's identity and stay; the word and the icon are the redundancy.
+ * off-white surface `--warn` and `--q-edge` are 2.38:1 and `--gold` 1.44:1, all under
+ * the 3:1 non-text floor, so the hue cannot carry the signal by itself. Those hues
+ * are the brand and stay; the word and the icon are the redundancy.
  *
  * `appearance` is `wa-tag`'s, which has no `plain`: use `outlined` (the default),
  * `filled`, `filled-outlined` or `accent`. Anything else is silently ignored and

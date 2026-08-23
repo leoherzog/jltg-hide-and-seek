@@ -103,7 +103,7 @@ const NUDGE_DEG = Object.freeze({
 /**
  * The answer partition, as an icon **and** a word.
  *
- * `--q-edge` measures 2.07:1 against the page surface and cannot carry a signal by
+ * `--q-edge` measures 2.38:1 against the page surface and cannot carry a signal by
  * itself (html.js:447 states the rule); every colour on the map is therefore repeated
  * as a word in the readout chip.
  * @type {Object<string, [string, string, string]>}  answer → [word, variant, icon]
@@ -623,8 +623,8 @@ function buildInstance(root, report) {
   /** The paint colour for one dot key, resolved live so a theme flip re-reads it. */
   function dotColourExpression() {
     const expr = ['match', ['get', 'a']];
-    for (const [key, token] of DOT_COLOUR) expr.push(key, cssVar(token) || '#7a8899');
-    expr.push(cssVar('--off') || '#a49f92');
+    for (const [key, token] of DOT_COLOUR) expr.push(key, cssVar(token) || '#7a8897');
+    expr.push(cssVar('--off') || '#9ca6b1');
     return expr;
   }
 
@@ -661,7 +661,7 @@ function buildInstance(root, report) {
       type: 'line',
       source: 's-border',
       paint: {
-        'line-color': cssVar('--gold-deep') || '#a97b00',
+        'line-color': cssVar('--gold-deep') || '#906600',
         'line-width': 1.5,
         'line-dasharray': [3, 2],
       },
@@ -675,13 +675,13 @@ function buildInstance(root, report) {
       id: 's-zonefill',
       type: 'fill',
       source: 's-zone',
-      paint: { 'fill-color': cssVar('--accent') || '#2a78d6', 'fill-opacity': 0.1 },
+      paint: { 'fill-color': cssVar('--accent') || '#202f40', 'fill-opacity': 0.1 },
     });
     map.addLayer({
       id: 's-zonering',
       type: 'line',
       source: 's-zone',
-      paint: { 'line-color': cssVar('--accent') || '#2a78d6', 'line-width': 1.5 },
+      paint: { 'line-color': cssVar('--accent') || '#202f40', 'line-width': 1.5 },
     });
 
     map.addSource('s-leg', {
@@ -693,7 +693,7 @@ function buildInstance(root, report) {
       type: 'line',
       source: 's-leg',
       paint: {
-        'line-color': cssVar('--q-edge') || '#e0a000',
+        'line-color': cssVar('--q-edge') || '#f57a3c',
         'line-width': 2,
         'line-dasharray': [2, 1],
       },
@@ -713,7 +713,7 @@ function buildInstance(root, report) {
           'circle-color': dotColourExpression(),
           'circle-opacity': 0.9,
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.6, 14, 5, 16, 7],
-          'circle-stroke-color': cssVar('--wa-color-surface-default') || '#ffffff',
+          'circle-stroke-color': cssVar('--wa-color-surface-default') || '#f0f0f0',
           'circle-stroke-width': 1,
         },
       });

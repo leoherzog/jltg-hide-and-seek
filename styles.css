@@ -22,29 +22,44 @@
   --wa-border-radius-scale: 1.25;        /* 10–12px cards, as before */
   --wa-content-spacing: var(--wa-space-l);
 
-  /* surfaces & text — the warm-paper identity */
-  --wa-color-surface-default: #f4f4ef;
-  --wa-color-surface-raised:  #fcfcf9;
-  --wa-color-surface-lowered: #eaeae2;
-  --wa-color-surface-border:  #e2ded2;
-  --wa-color-text-normal: #191713;
-  --wa-color-text-quiet:  #57534a;
-  --wa-color-text-link:   #1c5cab;
-  --wa-color-shadow: #191713;
-  --wa-color-focus:  #2a78d6;
+  /* surfaces & text — Jet Lag's navy on off-white. The five brand hexes are navy
+     #202f40, off-white #f0f0f0, gold #ffbf40, orange #f57a3c and red #eb3539; every
+     other value below is a tint or shade of one of them, derived in oklch and
+     measured against the surface it sits on. */
+  --wa-color-surface-default: #f0f0f0;   /* brand off-white */
+  --wa-color-surface-raised:  #fafafa;
+  --wa-color-surface-lowered: #e1e3e5;
+  --wa-color-surface-border:  #d7d9dc;
+  --wa-color-text-normal: #202f40;       /* brand navy */
+  --wa-color-text-quiet:  #556577;       /* navy at oklch L .50 · 5.24:1 on the paper */
+  --wa-color-text-link:   #b1511e;       /* brand orange darkened to 4.53:1 on the paper */
+  --wa-color-shadow: #202f40;
+  --wa-color-focus:  #b1511e;
 
-  /* variant colours — exact hues from the old palette */
-  --wa-color-brand-fill-loud:   #2a78d6;
-  --wa-color-brand-on-loud:     #ffffff;
+  /* variant colours — the brand family is navy (the logo's pill: navy ground, off-white
+     type), warning is the brand orange, danger the brand red. Success keeps its green:
+     the brand has no green, and a grade scale needs one. WA derives the quiet/normal
+     steps from its own blue scale, so the brand family is written out in full here or
+     the rail's aria-current wash and every filled brand control would stay blue. */
+  --wa-color-brand-fill-loud:     #202f40;
+  --wa-color-brand-fill-normal:   #c3d3e5;
+  --wa-color-brand-fill-quiet:    #e6ecf3;
+  --wa-color-brand-on-loud:       #f0f0f0;
+  --wa-color-brand-on-normal:     #202f40;
+  --wa-color-brand-on-quiet:      #202f40;
+  --wa-color-brand-border-loud:   #202f40;
+  --wa-color-brand-border-normal: #7c95b1;
+  --wa-color-brand-border-quiet:  #c3d3e5;
   --wa-color-success-fill-loud: #0ca30c;
   --wa-color-success-on-loud:   #ffffff;
   --wa-color-success-on-quiet:  #006300;
-  --wa-color-warning-fill-loud: #fab219;
-  --wa-color-warning-on-loud:   #3a2800;
-  --wa-color-warning-on-quiet:  #8a5c00;
-  --wa-color-danger-fill-loud:  #d03b3b;
+  --wa-color-warning-fill-loud: #f57a3c;   /* brand orange · navy on it is 5.01:1 */
+  --wa-color-warning-on-loud:   #202f40;
+  --wa-color-warning-on-quiet:  #b1511e;
+  --wa-color-danger-fill-loud:  #eb3539;   /* brand red · white on it is 4.12:1, the best
+                                              of the five; navy would be 2.85:1 */
   --wa-color-danger-on-loud:    #ffffff;
-  --wa-color-danger-on-quiet:   #b02a2a;
+  --wa-color-danger-on-quiet:   #c73837;   /* brand red darkened to 4.55:1 on the paper */
 
   /* ── legacy aliases: READ BY SVG CHART + MAP JS. Do not rename in JS. ── */
   --paper:      var(--wa-color-surface-default);
@@ -52,9 +67,9 @@
   --surface-2:  var(--wa-color-surface-lowered);
   --ink:        var(--wa-color-text-normal);
   --ink-2:      var(--wa-color-text-quiet);
-  --ink-3:      #8d887c;                       /* identical in both schemes */
+  --ink-3:      #7a8897;                       /* identical in both schemes */
   --grid:       var(--wa-color-surface-border);
-  --baseline:   #c6c1b2;
+  --baseline:   #bfc5cc;
   --accent:     var(--wa-color-brand-fill-loud);
   --accent-ink: var(--wa-color-text-link);
   --good:       var(--wa-color-success-fill-loud);
@@ -70,40 +85,54 @@
   --mono:  var(--wa-font-family-code);
 
   /* ── semantic chart colours WA has no token for ── */
-  --gold: #eda100; --gold-mark: #eda100; --gold-deep: #a86e00;
-  --off: #a49f92;
-  --seq-100:#cde2fb; --seq-200:#9ec5f4; --seq-300:#6da7ec;
-  --seq-400:#3987e5; --seq-550:#1c5cab; --seq-650:#104281;
-  --serious: #ec835a; --serious-text: #9c3d16;
-  --q-yes:#2e9d5b; --q-no:#d1495b; --q-edge:#e0a000; --q-un:#7a8899;
+  /* --gold is the brand gold, the logo's banner; --gold-deep is the same hue taken
+     down to 4.51:1 on the paper for the places it is read as text. */
+  --gold: #ffbf40; --gold-mark: #ffbf40; --gold-deep: #906600;
+  --off: #9ca6b1;
+  /* the sequential ramp is navy let down towards the paper; --seq-650 IS the navy */
+  --seq-100:#dbe6f2; --seq-200:#c0ccd9; --seq-300:#a6b2c1;
+  --seq-400:#808e9d; --seq-550:#4e5c6d; --seq-650:#202f40;
+  --serious: #f57a3c; --serious-text: #b1511e;
+  --q-yes:#2e9d5b; --q-no:#eb3539; --q-edge:#f57a3c; --q-un:#7a8897;
 }
 
 /* ══ 2. THEME TOKENS — DARK ══════════════════════════════════════════════ */
 .wa-dark, .wa-invert {
-  --wa-color-surface-default: #12110e;
-  --wa-color-surface-raised:  #1b1a16;
-  --wa-color-surface-lowered: #24221c;
-  --wa-color-surface-border:  #2c2a24;
-  --wa-color-text-normal: #f2efe6;
-  --wa-color-text-quiet:  #c3beb0;
-  --wa-color-text-link:   #6da7ec;
+  /* the logo turned inside out: navy is now the ground and off-white the type */
+  --wa-color-surface-default: #152434;
+  --wa-color-surface-raised:  #202f40;   /* brand navy */
+  --wa-color-surface-lowered: #2f3f50;
+  --wa-color-surface-border:  #3f4f61;
+  --wa-color-text-normal: #f0f0f0;       /* brand off-white · 11.95:1 on the navy */
+  --wa-color-text-quiet:  #b5bfcb;
+  --wa-color-text-link:   #f57a3c;       /* brand orange reads at 5.01:1 on the navy */
   --wa-color-shadow: #000000;
-  --wa-color-focus:  #3987e5;
-  --wa-color-brand-fill-loud:  #3987e5;
+  --wa-color-focus:  #f57a3c;
+  /* navy cannot be its own accent on a navy ground, so the brand family lifts to a
+     tint of the same hue — the move the old palette made from #2a78d6 to #3987e5 */
+  --wa-color-brand-fill-loud:     #91b5dd;   /* 6.39:1 on the navy; navy on it 6.39:1 */
+  --wa-color-brand-fill-normal:   #3a5573;
+  --wa-color-brand-fill-quiet:    #2c3f54;
+  --wa-color-brand-on-loud:       #202f40;
+  --wa-color-brand-on-normal:     #f0f0f0;
+  --wa-color-brand-on-quiet:      #91b5dd;
+  --wa-color-brand-border-loud:   #91b5dd;
+  --wa-color-brand-border-normal: #607d9d;
+  --wa-color-brand-border-quiet:  #3a5573;
   --wa-color-success-on-quiet: #3fc43f;
-  --wa-color-warning-on-quiet: #fab219;
-  --wa-color-danger-on-quiet:  #e66767;
-  --baseline: #3b3830;
-  --gold-mark: #c98500; --gold-deep: #c98500;
-  --off: #5f5a4f;
-  --serious-text: #ec835a;
-  --q-yes:#3db374; --q-no:#e0616f; --q-edge:#d9a50a; --q-un:#8b99aa;
+  --wa-color-warning-on-quiet: #f57a3c;
+  --wa-color-danger-on-quiet:  #f26962;   /* brand red lifted to 4.52:1 on the navy */
+  --baseline: #495a6d;
+  --gold-mark: #ffbf40; --gold-deep: #ffbf40;   /* gold on navy is the logo: 8.29:1 */
+  --off: #657383;
+  --serious-text: #f57a3c;
+  --q-yes:#3db374; --q-no:#f26962; --q-edge:#f57a3c; --q-un:#8b99aa;
   /* the sequential ramp re-anchors on the dark surface (more service = lighter).
-     Measured against --wa-color-surface-raised #1b1a16: 13.29 · 10.17 · 7.52 · 5.31
-     · 3.53 · 2.22:1, monotone in lightness. Unanchored, --seq-650 sat at 1.90:1 and
-     the worst-frequency bin vanished. */
-  --seq-100:#cfe3fa; --seq-200:#a5c9f4; --seq-300:#7aaeea;
-  --seq-400:#5590dc; --seq-550:#3771bd; --seq-650:#24528f;
+     Measured against --wa-color-surface-raised #202f40: 11.13 · 8.65 · 6.58 · 5.10
+     · 3.06 · 2.13:1, monotone in lightness. Unanchored, --seq-650 would be the surface
+     itself and the worst-frequency bin would vanish. */
+  --seq-100:#daeafc; --seq-200:#b2d1f5; --seq-300:#99b7da;
+  --seq-400:#84a1c3; --seq-550:#5e7a9a; --seq-650:#466180;
 }
 
 /* ══ 3. UI VOICE — serif reading text, sans chrome (the page's identity) ══ */
@@ -262,12 +291,12 @@ nav[slot='navigation'] a[aria-current] {
      map ids are dropped entirely and the class carries it. `.dark-map` is set by the
      map builders and by nothing else, so the selector is exact — and this way the
      shared sheet names no map the report does not have. */
-  .dark-map .maplibregl-ctrl-group { background: #24221c; box-shadow: 0 0 0 1.5px rgba(242,239,230,.12); }
+  .dark-map .maplibregl-ctrl-group { background: #2f3f50; box-shadow: 0 0 0 1.5px rgba(240,240,240,.12); }
   .dark-map .maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(.9) hue-rotate(180deg); }
-  .dark-map .maplibregl-ctrl-attrib { background: rgba(27,26,22,.75); }
+  .dark-map .maplibregl-ctrl-attrib { background: rgba(32,47,64,.75); }
   .dark-map .maplibregl-ctrl-attrib,
-  .dark-map .maplibregl-ctrl-attrib a { color: #c3beb0; }
-  .dark-map .maplibregl-ctrl-scale { background: rgba(27,26,22,.6); color: #c3beb0; border-color: #8d887c; }
+  .dark-map .maplibregl-ctrl-attrib a { color: #b5bfcb; }
+  .dark-map .maplibregl-ctrl-scale { background: rgba(32,47,64,.6); color: #b5bfcb; border-color: #7a8897; }
 
 /* ---- index.html only ---- */
 #prov-trace table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 13px; }
@@ -284,8 +313,8 @@ nav[slot='navigation'] a[aria-current] {
 /* ---- the Points Budget / deck strip is a <wa-chart stacked index-axis="y"> — see
    budgetBar() in render/html.js and the budgetSeg plugin in app.js. The fill stays
    --seq-550 rather than --seq-400 for the same measured reason it always was: the
-   letters are 11px bold, so 4.5:1 applies, and white on --seq-400 is 3.64:1 light /
-   3.28:1 dark against --seq-550's 6.2:1 / 4.9:1. The bar is identity-encoded, so
+   letters are 11px bold, so 4.5:1 applies, and white on --seq-400 is 3.35:1 light /
+   2.67:1 dark against --seq-550's 6.83:1 / 4.44:1. The bar is identity-encoded, so
    which step of the ramp it uses is otherwise free. ---- */
 
 /* ---- the hero's three day tiles are controls, so they need to look like controls:
@@ -310,13 +339,16 @@ table.hw td:first-child b { color: var(--ink); font-family: var(--mono); font-si
    keys. `[data-hb]` is deliberately unscoped: only `.cell` and `.sw` carry it. */
 .cell { width: 92px; height: 30px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-variant-numeric: tabular-nums; cursor: default; }
 /* the hairline is the measured fix for the light end of the ramp: --seq-100 is
-   1.20:1 against the paper, and that bin is "a bus every 10 minutes". The defect is
+   1.11:1 against the paper, and that bin is "a bus every 10 minutes". The defect is
    the mark's edge, not its fill, so re-stepping the ramp would be the wrong fix — and
    it travels WITH the fills, because the 11px legend key needs it as much as the grid. */
 [data-hb] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent); }
 [data-hb='none'] { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 4px, var(--paper) 4px, var(--paper) 8px); color: var(--ink-3); font-weight: 500; }
-[data-hb='1'] { background: var(--seq-100); color: #0d366b; } [data-hb='2'] { background: var(--seq-200); color: #0d366b; }
-[data-hb='3'] { background: var(--seq-300); color: #0d366b; } [data-hb='4'] { background: var(--seq-400); color: #fff; }
+/* the ink flips between bins 4 and 5, where the ramp crosses the navy/white
+   crossover: navy on --seq-400 is 4.07:1 light / 5.10:1 dark, white on it 3.35 /
+   2.67, and from --seq-550 down white wins (6.83 / 4.44 and 13.62 / 6.40). */
+[data-hb='1'] { background: var(--seq-100); color: #202f40; } [data-hb='2'] { background: var(--seq-200); color: #202f40; }
+[data-hb='3'] { background: var(--seq-300); color: #202f40; } [data-hb='4'] { background: var(--seq-400); color: #202f40; }
 [data-hb='5'] { background: var(--seq-550); color: #fff; } [data-hb='6'] { background: var(--seq-650); color: #fff; }
 #hwmap .cell[data-dim], #hwmap2 .cell[data-dim] { opacity: .33; }
 #hwmap th[data-sel], #hwmap2 th[data-sel] { color: var(--accent-ink); }

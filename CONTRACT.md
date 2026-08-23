@@ -998,7 +998,7 @@ Behavioural notes that must survive the port (they are load-bearing, not style):
   Chart.js read their container size once, at construction; a collapsed item has none.
 * `chip()` is the **only** sanctioned way to render a question status, a curse action, a
   finding severity or a metric source. Icon **and** word, never colour alone: against the
-  warm-paper surface `--warn` is 1.66:1, `--gold` 1.96:1 and `--q-edge` 2.07:1, all under
+  off-white surface `--warn` and `--q-edge` are 2.38:1 and `--gold` 1.44:1, all under
   the 3:1 non-text floor.
 * `meter()`'s `valuePct` is 0–100 and is computed by the caller, never inside the helper.
 * `budgetBar` is a `<wa-chart stacked index-axis="y">`, one dataset per segment.

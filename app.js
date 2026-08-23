@@ -2259,15 +2259,14 @@ function openTargeted() {
 }
 if (!W.hashBound) { W.hashBound = 1; addEventListener('hashchange', openTargeted); }
 
-/* Scrollspy: aria-current on the rail link of the section nearest the top, plus the
-   status strip's "you are in" readout. One observer, no scroll listener, no timers. */
+/* Scrollspy: aria-current on the rail link of the section nearest the top. One
+   observer, no scroll listener, no timers. */
 function bindSpy() {
   if (W.spy) { W.spy.disconnect(); W.spy = null; }
   const links = [...document.querySelectorAll('nav[slot="navigation"] a[href^="#"]')];
   const pairs = links.map(a => [document.getElementById(a.getAttribute('href').slice(1)), a])
                      .filter(p => p[0]);
   if (!pairs.length || !('IntersectionObserver' in window)) return;
-  const out = $('nowat');
   let cur = null;
   const tick = () => {
     let hit = pairs[0];
@@ -2276,7 +2275,6 @@ function bindSpy() {
     if (cur) cur.removeAttribute('aria-current');
     cur = hit[1];
     cur.setAttribute('aria-current', 'true');
-    if (out) out.textContent = cur.textContent.trim();
   };
   const io = new IntersectionObserver(tick, { rootMargin: '-140px 0px -55% 0px', threshold: [0, 1] });
   pairs.forEach(p => io.observe(p[0]));
@@ -2544,8 +2542,10 @@ async function buildMap() {
     : [[bb[1], bb[0]], [bb[3], bb[0]], [bb[3], bb[2]], [bb[1], bb[2]], [bb[1], bb[0]]];
 
   const STYLES = { light: '__TILES_LIGHT__', dark: '__TILES_DARK__' };
-  const PAL = { light: { stop: '#57534a', edge: '#ffffff', gold: '#a86e00', zone: '#2a78d6' },
-                dark:  { stop: '#8d887c', edge: '#1b1a16', gold: '#c98500', zone: '#3987e5' } };
+  /* the same values as styles.css §1/§2 — --ink-2, --surface, --gold-deep, --accent —
+     written out because MapLibre paint takes no var() */
+  const PAL = { light: { stop: '#556577', edge: '#fafafa', gold: '#906600', zone: '#202f40' },
+                dark:  { stop: '#b5bfcb', edge: '#202f40', gold: '#ffbf40', zone: '#91b5dd' } };
   const isDark = () => document.documentElement.classList.contains('wa-dark');
   let dark = isDark();
 
