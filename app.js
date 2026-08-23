@@ -3151,8 +3151,9 @@ async function buildMap() {
     hb: [cssVar('--seq-100'), cssVar('--seq-200'), cssVar('--seq-300'),
          cssVar('--seq-400'), cssVar('--seq-550'), cssVar('--seq-650')],
     off: cssVar('--off'),
-    spoke: cssVar('--ink-2'),          /* a route line */
+    spoke: cssVar('--ink-2'),          /* a route line, and every mark's hairline */
     spokeHub: cssVar('--gold-deep'),   /* a route that calls at the hub */
+    ink: cssVar('--ink'),              /* the ring that makes a fill a shape */
   });
 
   /* The frequency layer bins on the thresholds #data carries, which app.js takes
@@ -3247,6 +3248,12 @@ async function buildMap() {
      choice of layer is theirs, and dropping the highlight must give it straight back.
      Everything the highlight does is a setPaintProperty or a setFilter, so there is
      nothing else to restore. (2026-08-23, the tile-to-map highlight.) */
+  /* The stop dots' own edge ramp, as added at style.load, and the slightly heavier
+     one the frequency layer needs so a 1.3 px dot at z9 still has an edge. Named
+     here because every branch below has to be able to put the other one back. */
+  const STOP_EDGE_W = ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1];
+  const STOP_EDGE_HB = ['interpolate', ['linear'], ['zoom'], 9, .6, 13, 1.2];
+
   const applyMode = (force) => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
@@ -3261,25 +3268,44 @@ async function buildMap() {
       if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
     };
     if (mode === 'reach') {
-      /* Four bins that differ in LIGHTNESS and in SHAPE, not only in hue: blue → gold
-         → red is roughly monotone in lightness, and the fourth bin is a hollow ring,
-         which survives a colour-blind reading and a greyscale print. (MapLibre has no
-         dash on a circle stroke, so "hollow" is the shape channel, not a dash.) */
+      /* Four bins that differ in HUE and in RING, and the ring is what carries them
+         when hue does not. The lightness order is NOT monotone in the light theme —
+         --gold-mark is lighter than --accent, which is nearly black — so lightness
+         cannot be the redundant channel and the stroke is: the tight bin wears a
+         --gold-deep ring, the bust bin a dark --ink one, and the no-journey bin is
+         nothing but a ring. (MapLibre has no dash on a circle stroke, so "hollow" is
+         the shape channel, not a dash — the legend key draws it solid to match.)
+
+         The strokes are also the contrast fix. Measured against the positron land
+         colour #f2efe9, the gold fill is 1.46:1 and the pale no-journey ring was
+         1.55:1 — both far under the 3:1 a graphical object whose COLOUR is the
+         information needs, and the reach layer's whole point is finding the zones
+         that fail. p.edge is a near-white halo and helped neither. --gold-deep is
+         4.6:1 on that ground, --ink-2 5.3:1 and --ink 12:1, in the light theme;
+         in dark every one of them is a light ink on a dark style. The fills are
+         untouched — they are §06's ride-chart tokens and stay quoted from it.
+         (Fixed 2026-08-23; the ramp's own measurements were taken against --paper,
+         and the map's ground is a tile basemap.) */
       set('zone-dots', 'circle-color', ['case',
         ['<', ['get', 'frac'], 0], 'rgba(0,0,0,0)',
         ['<=', ['get', 'frac'], 0.75], RAMP.reachOk,
         ['<=', ['get', 'frac'], 1.0], RAMP.reachTight,
         RAMP.reachBust]);
       set('zone-dots', 'circle-stroke-color', ['case',
-        ['<', ['get', 'frac'], 0], RAMP.reachNone,
-        ['>', ['get', 'frac'], 1.0], RAMP.reachBust,
+        ['<', ['get', 'frac'], 0], RAMP.spoke,
+        ['>', ['get', 'frac'], 1.0], RAMP.ink,
+        ['>', ['get', 'frac'], 0.75], RAMP.spokeHub,
         p.edge]);
       set('zone-dots', 'circle-stroke-width', ['case',
         ['<', ['get', 'frac'], 0], 1.5,
         ['>', ['get', 'frac'], 1.0], 1.6,
+        ['>', ['get', 'frac'], 0.75], 1.4,
         1]);
+      set('zone-dots', 'circle-stroke-opacity', 0.95);
       set('zone-dots', 'circle-opacity', 0.9);
       set('stop-dots', 'circle-color', RAMP.off);
+      set('stop-dots', 'circle-stroke-color', p.edge);
+      set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
       set('stop-dots', 'circle-opacity', 0.4);
     } else if (mode === 'frequency') {
       /* A single-hue lightness ramp: CVD-safe by construction, and already
@@ -3291,16 +3317,29 @@ async function buildMap() {
           1, RAMP.hb[0], 2, RAMP.hb[1], 3, RAMP.hb[2],
           4, RAMP.hb[3], 5, RAMP.hb[4], 6, RAMP.hb[5], RAMP.hb[5]]]);
       set('stop-dots', 'circle-opacity', ['case', ['<=', ['get', 'hb'], 0], 0.35, 0.9]);
+      /* The hairline the grid's cells and its legend keys already carry, for the
+         reason styles.css measured: the light end of this ramp is 1.1:1 against
+         pale ground, and that bin is "a bus every ten minutes". The defect is the
+         mark's EDGE, not its fill, so it travels with the fills — and a 1.3 px dot
+         on a positron basemap needs it more than a 92x30 grid cell does. Without
+         it the four best-served bins were 1.1–2.9:1 and the best half of the
+         network was white specks on white. (Fixed 2026-08-23.) */
+      set('stop-dots', 'circle-stroke-color', RAMP.spoke);
+      set('stop-dots', 'circle-stroke-width', STOP_EDGE_HB);
       set('zone-dots', 'circle-color', p.zone);
       set('zone-dots', 'circle-stroke-color', p.edge);
       set('zone-dots', 'circle-stroke-width', 1);
+      set('zone-dots', 'circle-stroke-opacity', 0.85);
       set('zone-dots', 'circle-opacity', 0.3);
     } else {
       set('zone-dots', 'circle-color', p.zone);
       set('zone-dots', 'circle-stroke-color', p.edge);
       set('zone-dots', 'circle-stroke-width', 1);
+      set('zone-dots', 'circle-stroke-opacity', 0.85);
       set('zone-dots', 'circle-opacity', 0.9);
       set('stop-dots', 'circle-color', p.stop);
+      set('stop-dots', 'circle-stroke-color', p.edge);
+      set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
       set('stop-dots', 'circle-opacity', 0.8);
     }
     const legend = $('netlegend');
