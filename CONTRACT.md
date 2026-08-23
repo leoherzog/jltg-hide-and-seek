@@ -1139,15 +1139,24 @@ Behavioural notes that must survive the port (they are load-bearing, not style):
 
 | # | `id` | Nav group | Nav label | Icon | Renderer |
 |---|---|---|---|---|---|
-| 01 | `verdict` | The Answer | Verdict | `circle-check` | `verdict.js` |
-| 02 | `trace` | The Answer | Where the Points Came From | `chart-simple` | `verdict.js` |
-| 03 | `yourgame` | (split) | House Rules `#recs` / What Works, What Fights You `#findings` | `list-check` / `circle-exclamation` | `verdict.js` |
-| 04 | `numbers` | The Map | At a Glance | `hashtag` | `map.js` |
-| 05 | `network` | The Map | The Map You're Playing On | `map-location-dot` | `map.js` |
-| 06 | `transit` | The Map | Getting Around | `route` | `map.js` |
-| 07 | `questions` | The Deck | The Questions | `circle-question` | `deck.js` |
-| 08 | `curses` | The Deck | The Curse Deck | `wand-magic-sparkles` | `deck.js` |
+| 01 | `numbers` | The Map | At a Glance | `hashtag` | `map.js` |
+| 02 | `network` | The Map | The Map You're Playing On | `map-location-dot` | `map.js` |
+| 03 | `yourgame` | Your Game (split) | House Rules `#recs` / What Works, What Fights You `#findings` | `list-check` / `circle-exclamation` | `verdict.js` |
+| 04 | `transit` | Your Game | Getting Around | `route` | `map.js` |
+| 05 | `verdict` | The Answer | Verdict | `circle-check` | `verdict.js` |
+| 06 | `questions` | The Deck | The Questions | `circle-question` | `deck.js` |
+| 07 | `curses` | The Deck | The Curse Deck | `wand-magic-sparkles` | `deck.js` |
+| 08 | `trace` | The Receipts | Where the Points Came From | `chart-simple` | `verdict.js` |
 | 09 | `sources` | The Receipts | Where These Numbers Come From | `book-open` | `deck.js` |
+
+**This order is page order** (reordered 2026-08-23; it used to open on the verdict and
+close on the sources). It is stated in four places that must be kept in lockstep: the
+`<section>` order in `index.html`, `app.js`'s `NUMBERED` — the array `renumberSections`
+actually walks, so it, not the DOM, hands out the ordinals — `app.js`'s `SECTIONS`, and
+the nav rail. The rail matters as much as the rest: `bindSpy` takes the **last** link
+whose section is above the fold, walking the links in document order, so a rail that is
+not in page order silently highlights the wrong entry. Every nav group is therefore a
+**contiguous run** of this table.
 
 Ordinals (`data-n`) are assigned **after** empty sections are dropped, so the printed
 sequence never has a hole. The embedded `<script type="application/json">` blocks keep the

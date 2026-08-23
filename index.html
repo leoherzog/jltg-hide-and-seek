@@ -108,26 +108,39 @@
        (13655) with §03 split into its two in-section anchors, exactly as
        `nav_source` does. app.js prunes what turns out to be empty.
 
+       LINK ORDER IS DOCUMENT ORDER, and that is load-bearing, not tidiness:
+       `bindSpy` (app.js) walks these links in order and keeps the LAST one whose
+       section is within 140px of the top, so a rail out of page order highlights
+       the wrong entry all the way down. Every group is therefore a CONTIGUOUS RUN
+       of the section order in §(e) of CONTRACT.md — which is why "Getting Around"
+       sits under Your Game and the point-by-point trace sits with the receipts
+       (regrouped 2026-08-23 with the section reorder; it was The Answer / The Map /
+       The Deck / The Receipts when the verdict opened the page).
+
        `data-when="report"` for the same reason every other piece of report chrome
        has it: in the landing state styles.css §7 hides all nine sections, so an
        ungated rail would advertise ten anchors into `display:none` and every one
        of them would scroll nowhere. -->
   <nav slot="navigation" data-when="report" class="wa-stack wa-gap-l">
     <div class="wa-stack wa-gap-3xs">
-      <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Answer</span>
-      <div class="wa-stack wa-gap-3xs">
-        <a href="#verdict" data-drawer="close" data-nav-for="verdict" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-check" class="wa-color-text-quiet"></wa-icon><span>Verdict</span></a>
-        <a href="#trace" data-drawer="close" data-nav-for="trace" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="chart-simple" class="wa-color-text-quiet"></wa-icon><span>Where the Points Came From</span></a>
-        <a href="#recs" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="list-check" class="wa-color-text-quiet"></wa-icon><span>House Rules</span></a>
-        <a href="#findings" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-exclamation" class="wa-color-text-quiet"></wa-icon><span>What Works, What Fights You</span></a>
-      </div>
-    </div>
-    <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Map</span>
       <div class="wa-stack wa-gap-3xs">
         <a href="#numbers" data-drawer="close" data-nav-for="numbers" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="hashtag" class="wa-color-text-quiet"></wa-icon><span>At a Glance</span></a>
         <a href="#network" data-drawer="close" data-nav-for="network" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="map-location-dot" class="wa-color-text-quiet"></wa-icon><span>The Map You’re Playing On</span></a>
+      </div>
+    </div>
+    <div class="wa-stack wa-gap-3xs">
+      <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">Your Game</span>
+      <div class="wa-stack wa-gap-3xs">
+        <a href="#recs" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="list-check" class="wa-color-text-quiet"></wa-icon><span>House Rules</span></a>
+        <a href="#findings" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-exclamation" class="wa-color-text-quiet"></wa-icon><span>What Works, What Fights You</span></a>
         <a href="#transit" data-drawer="close" data-nav-for="transit" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="route" class="wa-color-text-quiet"></wa-icon><span>Getting Around</span></a>
+      </div>
+    </div>
+    <div class="wa-stack wa-gap-3xs">
+      <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Answer</span>
+      <div class="wa-stack wa-gap-3xs">
+        <a href="#verdict" data-drawer="close" data-nav-for="verdict" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-check" class="wa-color-text-quiet"></wa-icon><span>Verdict</span></a>
       </div>
     </div>
     <div class="wa-stack wa-gap-3xs">
@@ -140,6 +153,7 @@
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Receipts</span>
       <div class="wa-stack wa-gap-3xs">
+        <a href="#trace" data-drawer="close" data-nav-for="trace" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="chart-simple" class="wa-color-text-quiet"></wa-icon><span>Where the Points Came From</span></a>
         <a href="#sources" data-drawer="close" data-nav-for="sources" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="book-open" class="wa-color-text-quiet"></wa-icon><span>Where These Numbers Come From</span></a>
       </div>
     </div>
