@@ -616,6 +616,13 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    long button label would otherwise scroll the whole PAGE sideways at 360px. */
 #netcontrols { flex-wrap: wrap; }
 #netcontrols > * { min-inline-size: 0; }
+/* `hidden` has to actually hide these two. The runtime sets it on both when
+   MapLibre is blocked (app.js `giveUp`) so a Colour by group, two layer switches
+   and a four-block colour key do not sit on the page describing a map that was
+   never drawn — but they are `wa-cluster` / `wa-stack`, whose `display: flex`
+   comes from Web Awesome's @layer, and ANY author rule beats the UA's
+   `[hidden] { display: none }`. (2026-08-23.) */
+#netlayers[hidden], #netlegend[hidden] { display: none; }
 
 /* ---- the map legend, one block per colour mode (2026-08-23, the reach layer)
    Every block is rendered; `#netlegend[data-mode]` — written by the runtime when the
