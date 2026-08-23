@@ -558,9 +558,11 @@ function readOptions(form) {
 /**
  * The one thing worth being strict about: the source has to be a GTFS zip.
  *
- * A `File` must end `.zip`. A URL must be http(s); an extensionless endpoint is fine
- * (plenty of agencies serve their feed from `/gtfs` or `?format=zip`), but a URL that
- * plainly points at something else is rejected with the extension named.
+ * A `File` must end `.zip`. A URL only has to be http(s) — its path says nothing
+ * reliable about what comes back. Plenty of agencies serve the zip from `/gtfs`,
+ * `?format=zip`, or a script handler (`GTFS-Zip.ashx`, `feed.php`, `export.aspx`), so
+ * the extension is not checked; if the bytes turn out not to be a zip, `unzip` in
+ * gtfs/feed.js raises the honest error once the download lands.
  *
  * @returns {{file: File|null, url: string|null, source: string, error: string}}
  */
@@ -595,14 +597,6 @@ function readSource(form) {
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return { file: null, url: null, source: '', error: 'The feed URL has to be http:// or https://' };
-    }
-    const ext = (parsed.pathname.match(/\.([a-z0-9]+)$/i) || [])[1];
-    if (ext && ext.toLowerCase() !== 'zip') {
-      return {
-        file: null, url: null, source: '',
-        error: `That URL points at a .${ext.toLowerCase()} file. A GTFS feed is a .zip archive — `
-          + 'this page cannot read anything else.',
-      };
     }
     return { file: null, url, source: url, error: '' };
   }

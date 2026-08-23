@@ -812,9 +812,15 @@ export function renderHero(payload) {
   // of the text beside it, so centring buries the headline under ~275px of dead space
   // once the two columns fit side by side (~1176px viewport and up). Below that the
   // columns wrap, each flex line holds one item, and the two alignments are identical.
+  //
+  // `min-inline-size:0` on the card's flex item is load-bearing. The points budget
+  // inside it is a <wa-chart>, and Chart.js writes its rendered width back onto the
+  // canvas as an inline pixel style; a flex item's default `min-width:auto` then can
+  // never go below that, so the chart's ResizeObserver never fires on the way down
+  // and the card stays at the widest width it was ever laid out at.
   return el('header', el('div', join(
     left,
-    card ? el('div', card, { style: 'flex:1 1 26rem' }) : '',
+    card ? el('div', card, { style: 'flex:1 1 26rem;min-inline-size:0' }) : '',
   ), { className: 'wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start' }), {
     id: 'top', className: 'wa-stack wa-gap-l',
   });
