@@ -522,7 +522,11 @@ export function renderGlanceRail(payload) {
   });
   const caption = 'Measured on the service day selected above, on the map you are '
     + 'looking at. Tiles with a gold rule and a “changes by day” chip move when you '
-    + 'change the day; the rest are map-wide or come straight from the rulebook.';
+    + 'change the day; the rest are map-wide or come straight from the rulebook. '
+    // Promised when the rail was folded in, delivered with the runtime that makes it
+    // true; the six tiles that name a place carry `data-hl`. (2026-08-23.)
+    + 'Where a tile names a place, hovering it lights that place on the map above — '
+    + 'or move to it with the keyboard and press Enter to pin it there.';
   return el('div', join(
     subhead('At a glance'),
     el('p', esc(caption), {
@@ -1245,6 +1249,15 @@ export function renderNetworkMap(payload) {
         id: 'netlegend',
         dataMode: reachDay === null ? 'base' : 'reach',
         className: 'wa-stack wa-gap-3xs',
+      }),
+      // A colour change on a <canvas> is invisible to a screen reader, so a PINNED
+      // tile highlight says what it is showing, here, politely. Previews (hover and
+      // focus) deliberately do not announce: tabbing across five tiles must not
+      // narrate five times. Ships empty; `:empty` takes the row back. (2026-08-23.)
+      el('p', '', {
+        id: 'netpin',
+        ariaLive: 'polite',
+        className: 'wa-caption-s wa-color-text-quiet',
       }),
       // "What to notice", generated. The renderer's own copy is the representative
       // day's; once `score` lands, `renderDay()` swaps in the selected day's

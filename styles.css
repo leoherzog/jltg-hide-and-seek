@@ -638,6 +638,14 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 #netcaption { max-inline-size: 72ch; }
 #netcaption:empty { display: none; }
 
+/* The pinned-highlight announcement. It is a live region first and a line of text
+   second: a recolouring of a <canvas> is invisible to a screen reader, and this is
+   the only thing that says which tile the map is currently answering. Marked with
+   the same gold the pinned tile carries, so the two read as one state. */
+#netpin:empty { display: none; }
+#netpin { border-inline-start: var(--wa-border-width-m) solid var(--gold);
+          padding-inline-start: var(--wa-space-xs); }
+
 /* ---- the map's stat rail (folded in from §04 on 2026-08-23) ----
    The tiles that name a place carry `data-hl` — six of the twelve, five highlights,
    because the map area and the network diameter both light the extent — and the

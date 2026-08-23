@@ -1498,6 +1498,8 @@ function mountSection(id, html) {
       runtime.mapReady = 0;
       runtime.paintMap = null;
       runtime.refreshMapData = null;
+      runtime.highlight = null;
+      runtime.highlightPinned = null;
     }
   }
 
@@ -2106,6 +2108,10 @@ const MAX_MAP_ZONE_RINGS = 1200;
  * The scalar metrics the page prints, flattened for `#data`. Deliberately not the
  * whole `metrics` dict: that carries per-day zone-centre id lists and hull rings,
  * which would triple the page weight for values nothing on index.html reads.
+ *
+ * `mec` is the one non-scalar in the list: three numbers, `[lat, lon, radiusM]`, and
+ * the only geometry the *Network diameter* tile's note quotes. The map draws it when
+ * that tile is highlighted, which is why it has to cross. (2026-08-23.)
  */
 const CURATED_METRIC_KEYS = [
   'servedStops', 'stopsInFeed', 'stations', 'nZones', 'nZonesHalfMile',
@@ -2113,7 +2119,7 @@ const CURATED_METRIC_KEYS = [
   'spanHours', 'firstDepartureS', 'lastDepartureS', 'medianHeadwayMin',
   'medianWorstGapMin', 'medianLastDepartureS', 'frequentShare', 'frequentStops',
   'share30min', 'multiRouteStopShare', 'transferStops2plus', 'transferStops3plus',
-  'routesPerStopMax', 'hubDominance', 'hubTripShare', 'networkShape',
+  'routesPerStopMax', 'hubDominance', 'hubTripShare', 'networkShape', 'mec',
   'isolatedZoneShare', 't90Min', 'hubTravelP50Min', 'hubTravelP95Min',
   'reachableZoneShare', 'reachWithinHidingPeriod', 'eveningZoneShare',
   'weekendRatio', 'satTripRatio', 'sunTripRatio', 'fullServiceDateShare',
@@ -2851,6 +2857,8 @@ function renderDay() {
   renderTT();
   /* The map's data layers read the selected day; the viewport does not move. */
   if (W.paintMap) W.paintMap();
+  /* #tiles was just replaced, so the tile controls need their attributes back. */
+  bindRail();
 }
 
 function setDay(k) {
@@ -3091,6 +3099,8 @@ async function buildMap() {
      must reach the map through W, never through a captured local. */
   W.map = map;
   W.mapReady = 1;
+  /* The tiles only become controls once there is a map to light. */
+  bindRail();
 
   const zoneRings = STOPS.rings ? {
     type: 'FeatureCollection',
@@ -3197,11 +3207,18 @@ async function buildMap() {
     applyMode();
   };
 
-  /* Colour only — setPaintProperty on two layers, no source churn and no re-layout. */
-  const applyMode = () => {
+  /* Colour only — setPaintProperty on two layers, no source churn and no re-layout.
+
+     The force argument lets a tile highlight put the map into the mode that makes its
+     fact visible WITHOUT writing that mode to W.layers or to storage: the reader's own
+     choice of layer is theirs, and dropping the highlight must give it straight back.
+     Everything the highlight does is a setPaintProperty or a setFilter, so there is
+     nothing else to restore. (2026-08-23, the tile-to-map highlight.) */
+  const applyMode = (force) => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
-    const mode = (W.layers && W.layers.mode) || 'base';
+    const offeredMode = (W.layers && W.layers.mode) || 'base';
+    const mode = force || offeredMode;
     const set = (layer, prop, value) => {
       if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
     };
@@ -3251,8 +3268,91 @@ async function buildMap() {
     const legend = $('netlegend');
     if (legend) legend.setAttribute('data-mode', mode);
   };
-  W.paintMap = paintMap;
-  W.refreshMapData = paintMap;
+  /* ── tile → map highlight ──────────────────────────────────────────────────
+     Five of the twelve stat tiles name a fact the map can point at. Hovering or
+     focusing one previews that fact on the map; clicking it (or Enter/Space) pins
+     it, one at a time. Focus IS hover here, by construction — the same keyboard
+     idiom #dayscores [data-day] already uses, so the page has one, not two.
+
+     Every branch below is a setPaintProperty, a setFilter or a setLayoutProperty.
+     Nothing touches a source, nothing re-renders, nothing writes W.layers, and
+     nothing moves the viewport — so clearing a highlight is one applyMode() call
+     and two hidden layers, with nothing left over. (2026-08-23.) */
+  const HL_NONE = ['==', ['literal', 0], ['literal', 1]];   /* matches no feature */
+  const HL_LABEL = {
+    zones: 'the hiding zones',
+    stops: 'the served stops',
+    frequency: 'the stops on a 15-minute route-direction',
+    reach: 'the zones the hiding period cannot reach',
+    extent: 'the border and the smallest circle that holds the network',
+  };
+  let hlPinned = null;
+  let hlPreview = null;
+
+  const applyHl = () => {
+    if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
+    const kind = hlPreview || hlPinned || null;
+    const set = (layer, prop, value) => {
+      if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
+    };
+    const filt = (layer, value) => {
+      if (W.map.getLayer(layer)) W.map.setFilter(layer, value);
+    };
+    const show = (layer, on) => {
+      if (W.map.getLayer(layer)) {
+        W.map.setLayoutProperty(layer, 'visibility', on ? 'visible' : 'none');
+      }
+    };
+    /* Back to the reader's own layer state first, then add the emphasis on top. */
+    applyMode(kind === 'frequency' ? 'frequency' : kind === 'reach' ? 'reach' : null);
+    filt('n-hl-zones', HL_NONE);
+    filt('n-hl-stops', HL_NONE);
+    show('n-mec-line', false);
+    if (W.map.getLayer('border-line')) {
+      W.map.setPaintProperty('border-line', 'line-width', kind === 'extent' ? 3 : 1.6);
+      W.map.setPaintProperty('border-line', 'line-opacity', kind === 'extent' ? 1 : .85);
+    }
+    if (kind === 'zones') {
+      set('stop-dots', 'circle-opacity', .12);
+    } else if (kind === 'stops') {
+      set('zone-dots', 'circle-opacity', .12);
+      set('stop-dots', 'circle-opacity', .95);
+    } else if (kind === 'frequency') {
+      /* freq is the 15-minute route-direction flag the tile's own value counts. */
+      set('stop-dots', 'circle-opacity', ['case', ['>', ['get', 'freq'], 0], .95, .07]);
+      set('zone-dots', 'circle-opacity', .1);
+      filt('n-hl-stops', ['>', ['get', 'freq'], 0]);
+    } else if (kind === 'reach') {
+      /* frac < 0 is "no journey at all"; frac > 1 busts the window. Everything that
+         fits drops away, so the tile's four zones are the only lit things. */
+      const missed = ['any', ['<', ['get', 'frac'], 0], ['>', ['get', 'frac'], 1]];
+      set('zone-dots', 'circle-opacity', ['case', missed, 1, .08]);
+      set('stop-dots', 'circle-opacity', .06);
+      filt('n-hl-zones', missed);
+    } else if (kind === 'extent') {
+      set('stop-dots', 'circle-opacity', .25);
+      set('zone-dots', 'circle-opacity', .25);
+      show('n-mec-line', true);
+    }
+    const note = $('netpin');
+    if (note) note.textContent = hlPinned ? 'Showing: ' + (HL_LABEL[hlPinned] || '') : '';
+  };
+
+  /* Published for bindRail(), which lives outside this closure because #tiles is
+     rewritten on every day switch and the bindings have to be re-stamped from
+     renderDay(). Same reason W.map is published: a later injectRuntime() builds a
+     fresh closure and returns early on the mapBuilt guard. */
+  W.highlight = (kind, pin) => {
+    if (pin === 'pin') hlPinned = (hlPinned === kind) ? null : kind;
+    else hlPreview = kind;
+    applyHl();
+    return hlPinned;
+  };
+  W.highlightPinned = () => hlPinned;
+
+  const paintAll = () => { paintMap(); applyHl(); };
+  W.paintMap = paintAll;
+  W.refreshMapData = paintAll;
 
   map.on('style.load', () => {
     const p = PAL[isDark() ? 'dark' : 'light'];
@@ -3320,10 +3420,39 @@ async function buildMap() {
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.6, 14, 5, 16, 7],
         'circle-stroke-color': p.edge, 'circle-stroke-width': 1, 'circle-stroke-opacity': .85 } });
 
+    /* Two halo layers, always present and filtered to nothing until a tile asks for
+       them. A halo is additive — it never hides what is under it — which is what
+       lets the highlight be pure paint with nothing to restore. They sit on top of
+       the dots on purpose: the point is to find four zones in three hundred. */
+    map.addLayer({ id: 'n-hl-zones', type: 'circle', source: 'zonedots',
+      filter: ['==', ['literal', 0], ['literal', 1]],
+      paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
+        'circle-stroke-width': 3, 'circle-stroke-opacity': .55,
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 5.2, 12, 6.6, 14, 8, 16, 10] } });
+    map.addLayer({ id: 'n-hl-stops', type: 'circle', source: 'stops',
+      filter: ['==', ['literal', 0], ['literal', 1]],
+      paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
+        'circle-stroke-width': 2, 'circle-stroke-opacity': .5,
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 3.3, 12, 4.4, 14, 5.6, 16, 7.4] } });
+
+    /* The smallest circle that holds the whole network — the radius the Network
+       diameter tile's own note quotes. Drawn only while that tile is highlighted,
+       from #data's metrics, through the same ringOf() the zone circles use. */
+    const mec = (DATA.metrics || {}).mec;
+    map.addSource('n-mec', { type: 'geojson', data: {
+      type: 'Feature', properties: {}, geometry: { type: 'LineString',
+        coordinates: (mec && mec.length === 3) ? ringOf(mec[1], mec[0], mec[2], 96) : [] } } });
+    map.addLayer({ id: 'n-mec-line', type: 'line', source: 'n-mec',
+      layout: { visibility: 'none' },
+      paint: { 'line-color': RAMP.spokeHub, 'line-width': 1.4, 'line-opacity': .7,
+        'line-dasharray': [2, 2] } });
+
     /* The sources above carry the shape; this fills in everything that arrives later
        or changes with the day, and applies the reader's saved colour mode. It runs on
-       every style.load, so a theme flip re-reads the ramp from the stylesheet. */
+       every style.load, so a theme flip re-reads the ramp from the stylesheet — and
+       re-applies whatever tile the reader has pinned. */
     paintMap();
+    applyHl();
   });
 
   const star = document.createElement('div');
@@ -3427,6 +3556,75 @@ async function buildMap() {
     .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 }
 
+/* ── the stat rail's tiles, as map controls ──────────────────────────────────
+   Five of the twelve tiles name a fact the map can point at, and carry data-hl for
+   it. This turns those cards into controls: hover or focus previews the fact, click
+   or Enter/Space pins it, one at a time, aria-pressed says which.
+
+   DELEGATED on #glance, because renderDay() replaces #tiles' innerHTML wholesale on
+   every day switch and a per-card listener would be gone with it. The attributes DO
+   have to be re-stamped after each of those rewrites, which is why this is called
+   from renderDay() as well as from bootPage().
+
+   It stamps nothing unless the map actually built. With MapLibre blocked the tiles
+   stay inert text: styles.css hangs the pointer, the hover border and the focus ring
+   off [aria-pressed], not off [data-hl], so a highlight that cannot happen is never
+   advertised. */
+function railCard(host, e) {
+  const t = e.target;
+  const card = t && t.closest ? t.closest('[data-hl]') : null;
+  return card && host.contains(card) ? card : null;
+}
+
+function bindRail() {
+  const host = $('glance');
+  if (!host || !W.mapReady || !W.highlight) return;
+  const sync = () => {
+    const pinned = W.highlightPinned ? W.highlightPinned() : null;
+    host.querySelectorAll('[data-hl]').forEach(card => {
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-pressed', card.dataset.hl === pinned ? 'true' : 'false');
+    });
+  };
+  if (!host.dataset.railBound) {
+    host.dataset.railBound = '1';
+    const pin = card => { W.highlight(card.dataset.hl, 'pin'); sync(); };
+    host.addEventListener('mouseover', e => {
+      const c = railCard(host, e);
+      if (c) W.highlight(c.dataset.hl);
+    });
+    host.addEventListener('mouseout', e => {
+      const c = railCard(host, e);
+      /* moving between two children of the same card is not a leave */
+      if (!c || (e.relatedTarget && c.contains(e.relatedTarget))) return;
+      W.highlight(null);
+    });
+    host.addEventListener('focusin', e => {
+      const c = railCard(host, e);
+      if (c) W.highlight(c.dataset.hl);
+    });
+    host.addEventListener('focusout', e => {
+      const c = railCard(host, e);
+      if (!c || (e.relatedTarget && c.contains(e.relatedTarget))) return;
+      W.highlight(null);
+    });
+    host.addEventListener('click', e => {
+      const c = railCard(host, e);
+      if (c) pin(c);
+    });
+    host.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const c = railCard(host, e);
+      if (!c) return;
+      e.preventDefault();
+      pin(c);
+    });
+  }
+  sync();
+}
+W.bindRail = bindRail;
+
 /* ── table filters ───────────────────────────────────────────────────────── */
 /* Rows are all rendered ahead of time and carry their own data-* key, so filtering is
    a 'hidden' toggle: the table is complete and readable with scripting off. */
@@ -3514,6 +3712,7 @@ function bindSpending(reapplyFilter) {
   bindSpending(bindFilter('cchips', 'ctable', 'action'));
   renderDay();
   buildMap();
+  bindRail();
   bindSpy();
   bindProgress();
   openTargeted();
