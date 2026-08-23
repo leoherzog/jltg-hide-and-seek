@@ -660,17 +660,21 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
 /* ---- the map's stat rail (folded in from §04 on 2026-08-23) ----
    The tiles that name a place carry `data-hl` — six of the twelve, five highlights,
    because the map area and the network diameter both light the extent — and the
-   runtime turns them into controls — tabindex, role, aria-pressed — ONLY when
-   MapLibre actually built. So the affordances below hang off `[aria-pressed]`, not
-   off `[data-hl]`: with the map blocked the tiles stay inert text and must not offer
-   a pointer or a focus ring for a highlight that cannot happen. Otherwise these are
-   `#dayscores [data-day]`'s own rules, so the page has one keyboard idiom for
-   "preview, then pin", not two. */
-#tiles wa-card[data-hl][aria-pressed] { cursor: pointer; }
-#tiles wa-card[data-hl][aria-pressed]:hover { border-color: var(--gold); }
-#tiles wa-card[data-hl][aria-pressed]:focus-visible { outline: var(--wa-focus-ring);
+   runtime turns them into controls — tabindex and aria-current — ONLY when MapLibre
+   actually built. So the affordances below hang off `[aria-current]`, not off
+   `[data-hl]`: with the map blocked the tiles stay inert text and must not offer a
+   pointer or a focus ring for a highlight that cannot happen. Otherwise these are
+   `#dayscores [data-day]`'s own rules, down to the attribute — the page has one
+   keyboard idiom for "preview, then pin", not two.
+
+   `aria-current`, not `aria-pressed`: each of these cards holds a provenance link,
+   so it cannot be a button without making that link presentational, and aria-pressed
+   means nothing without the button role. (Changed 2026-08-23.) */
+#tiles wa-card[data-hl][aria-current] { cursor: pointer; }
+#tiles wa-card[data-hl][aria-current]:hover { border-color: var(--gold); }
+#tiles wa-card[data-hl][aria-current]:focus-visible { outline: var(--wa-focus-ring);
                                       outline-offset: var(--wa-focus-ring-offset); }
-#tiles wa-card[data-hl][aria-pressed='true'] { border-color: var(--gold);
+#tiles wa-card[data-hl][aria-current='true'] { border-color: var(--gold);
                                       box-shadow: inset 0 0 0 var(--wa-border-width-m) var(--gold); }
 
 /* ---- errors surfaced by app.js (worker `error`, a CORS failure, a bad zip)

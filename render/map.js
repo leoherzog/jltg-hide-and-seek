@@ -1227,7 +1227,13 @@ export function renderNetworkMap(payload) {
   // the same card, and the pad/area sentence moved into "How to read this map" with
   // its provenance chip. `#geocopy` keeps its id. (R5, 2026-08-23.)
   const toolbar = el('div', join(
-    el('div', layerControls, { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
+    // `#netlayers` so the runtime can take the whole layer group away when MapLibre
+    // is blocked: a Colour by group and two switches for a map that was never drawn
+    // are dead controls. The copy buttons beside them work without a map and stay.
+    // (2026-08-23.)
+    el('div', layerControls, {
+      id: 'netlayers', className: 'wa-cluster wa-gap-s wa-align-items-center',
+    }),
     el('div', join(
       waCopyButton(geojsonText, { label: 'Copy GeoJSON', id: 'geocopy' }),
       waCopyButton(degText, { label: 'Copy coordinates', id: 'bboxcopy' }),

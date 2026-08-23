@@ -1580,6 +1580,16 @@ function dropSection(def) {
     if (host) {
       host.setAttribute('data-state', 'empty');
       host.hidden = true;
+      // Blanking the host destroys any nested host inside it, so evict their cached
+      // strings too — the same hole `mountSection` closes before `replaceWith`. Left
+      // in the cache, a nested section whose string had not changed would be skipped
+      // as "unchanged" on the next pass and would never come back. (2026-08-23.)
+      if (host.querySelectorAll) {
+        for (const nested of host.querySelectorAll('[data-section]')) {
+          const nid = nested.getAttribute('data-section');
+          if (nid && nid !== def.id) state.rendered.delete(nid);
+        }
+      }
       host.innerHTML = '';
     }
     return;
@@ -3043,8 +3053,21 @@ async function buildMap() {
   if (!host || W.mapBuilt || !DATA || !STOPS || !DATA.border || !DATA.hub) return;
   W.mapBuilt = 1;
   /* Undo the claim, so the next injectRuntime() gets to try again rather than
-     inheriting a flag that says a map already exists. */
-  const giveUp = (msg, e) => { W.mapBuilt = 0; console.warn(msg, e || ''); };
+     inheriting a flag that says a map already exists.
+
+     It also takes the map's own chrome off the page. The renderer ships a Colour by
+     group, two layer switches and a four-block colour key; with MapLibre blocked
+     none of them can do anything and the key would sit there describing a blank box,
+     frozen on the renderer's initial data-mode. The two copy buttons are NOT hidden:
+     the border is text and copies fine without a map. Same guard bindRail already
+     applies to the tiles. (Fixed 2026-08-23.) */
+  const setChrome = (on) => {
+    for (const id of ['netlayers', 'netlegend']) {
+      const n = $(id);
+      if (n) n.hidden = !on;
+    }
+  };
+  const giveUp = (msg, e) => { W.mapBuilt = 0; setChrome(false); console.warn(msg, e || ''); };
   let maplibregl;
   /* ns.default ?? ns, never .default alone: maplibre-gl 6 dropped the default export
      and ships named exports only, so .default is undefined on the unpinned CDN URL and
@@ -3099,6 +3122,8 @@ async function buildMap() {
      must reach the map through W, never through a captured local. */
   W.map = map;
   W.mapReady = 1;
+  /* A retry after an earlier giveUp() finds the chrome hidden; this gives it back. */
+  setChrome(true);
 
   const zoneRings = STOPS.rings ? {
     type: 'FeatureCollection',
@@ -3355,8 +3380,14 @@ async function buildMap() {
       set('zone-dots', 'circle-opacity', .25);
       show('n-mec-line', true);
     }
+    /* A live region announces on MUTATION, not on change, and applyHl runs on every
+       hover, mouseout, focusin and focusout across the rail. Writing the identical
+       sentence a dozen times as the pointer crosses twelve tiles would narrate it a
+       dozen times, which is the opposite of "previews deliberately do not announce".
+       So write only when the text actually differs. (Fixed 2026-08-23.) */
     const note = $('netpin');
-    if (note) note.textContent = hlPinned ? 'Showing: ' + (HL_LABEL[hlPinned] || '') : '';
+    const say = hlPinned ? 'Showing: ' + (HL_LABEL[hlPinned] || '') : '';
+    if (note && note.textContent !== say) note.textContent = say;
   };
 
   /* Published for bindRail(), which lives outside this closure because #tiles is
@@ -3382,6 +3413,12 @@ async function buildMap() {
   bindRail();
 
   map.on('style.load', () => {
+    /* The geo-stage re-mount builds a SECOND map and orphans this one, listeners and
+       all. Both would answer a theme flip, and everything below reaches the live map
+       through W.map — so the orphan's style.load would repaint the new map from its
+       own closure and, with hlPinned null in here, drop the reader's pinned tile.
+       A superseded instance does nothing. (Fixed 2026-08-23.) */
+    if (W.map !== map) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
     RAMP = readRamp();
 
@@ -3567,11 +3604,21 @@ async function buildMap() {
       const want = cb.value || 'base';
       W.layers.mode = offered.indexOf(want) >= 0 ? want : 'base';
       saveLayers();
-      applyMode();
+      /* applyHl(), never applyMode(): applyMode rewrites the very paint properties
+         the highlight overwrote, so calling it alone wiped a pinned tile's dimming
+         off the canvas while the tile still said aria-current and #netpin still
+         claimed the map was showing it. applyHl calls applyMode with the right
+         force argument and then re-applies the pin, which is why every other
+         repaint path (renderDay, style.load, refreshMapData) goes through it.
+         (Fixed 2026-08-23.) */
+      applyHl();
     });
   }
 
   const retheme = () => {
+    /* Same reason as style.load above: the orphaned instance keeps this listener and
+       its MutationObserver, and a setStyle on a map nobody can see is pure work. */
+    if (W.map !== map) return;
     const d = isDark();
     if (d === dark) return;
     dark = d;
@@ -3586,7 +3633,7 @@ async function buildMap() {
 /* ── the stat rail's tiles, as map controls ──────────────────────────────────
    Five of the twelve tiles name a fact the map can point at, and carry data-hl for
    it. This turns those cards into controls: hover or focus previews the fact, click
-   or Enter/Space pins it, one at a time, aria-pressed says which.
+   or Enter/Space pins it, one at a time, aria-current says which.
 
    DELEGATED on #glance, because renderDay() replaces #tiles' innerHTML wholesale on
    every day switch and a per-card listener would be gone with it. The attributes DO
@@ -3595,12 +3642,24 @@ async function buildMap() {
 
    It stamps nothing unless the map actually built. With MapLibre blocked the tiles
    stay inert text: styles.css hangs the pointer, the hover border and the focus ring
-   off [aria-pressed], not off [data-hl], so a highlight that cannot happen is never
+   off [aria-current], not off [data-hl], so a highlight that cannot happen is never
    advertised. */
-function railCard(host, e) {
+function railCard(host, e, strict) {
   const t = e.target;
   const card = t && t.closest ? t.closest('[data-hl]') : null;
-  return card && host.contains(card) ? card : null;
+  if (!card || !host.contains(card)) return null;
+  // Every one of these tiles carries a provenance citation — a wa-link anchor into
+  // the sources section — and three of the six carry two. A click or an Enter that
+  // started on one of those belongs to the LINK: without this bail the delegated
+  // keydown preventDefault()ed the anchor's own activation and pinned a highlight
+  // instead, so the citation could not be followed by keyboard at all, and a mouse
+  // click both navigated and pinned. Hover and focus previews are not strict —
+  // previewing while the pointer is over the citation is right. (Fixed 2026-08-23.)
+  if (strict && t.closest) {
+    const inner = t.closest('a[href], button, input, select, textarea, wa-button, wa-copy-button');
+    if (inner && inner !== card && card.contains(inner)) return null;
+  }
+  return card;
 }
 
 function bindRail() {
@@ -3610,8 +3669,14 @@ function bindRail() {
     const pinned = W.highlightPinned ? W.highlightPinned() : null;
     host.querySelectorAll('[data-hl]').forEach(card => {
       card.setAttribute('tabindex', '0');
-      card.setAttribute('role', 'button');
-      card.setAttribute('aria-pressed', card.dataset.hl === pinned ? 'true' : 'false');
+      /* aria-current, NOT role=button + aria-pressed: every one of these cards holds
+         a real provenance link, and a button's children are presentational, so the
+         role would take the citation out of the accessibility tree while leaving it
+         in the tab order. aria-current is a GLOBAL attribute — valid on a plain
+         focusable element — it is what #dayscores [data-day] already uses for
+         exactly this "one of a set is the live one" state, and the pinned tile is
+         also announced in words by #netpin. (Changed 2026-08-23.) */
+      card.setAttribute('aria-current', card.dataset.hl === pinned ? 'true' : 'false');
     });
   };
   if (!host.dataset.railBound) {
@@ -3637,12 +3702,12 @@ function bindRail() {
       W.highlight(null);
     });
     host.addEventListener('click', e => {
-      const c = railCard(host, e);
+      const c = railCard(host, e, 1);
       if (c) pin(c);
     });
     host.addEventListener('keydown', e => {
       if (e.key !== 'Enter' && e.key !== ' ') return;
-      const c = railCard(host, e);
+      const c = railCard(host, e, 1);
       if (!c) return;
       e.preventDefault();
       pin(c);
