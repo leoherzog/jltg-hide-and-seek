@@ -287,12 +287,19 @@ export function waSwitch(label, opts = {}) {
  * Used for the border GeoJSON: the rulebook's hard requirement is that every player
  * uses the *exact same* border, so it has to be copy-pasteable.
  *
+ * `trigger` slots a visible control into the component's default slot instead of its
+ * icon-only default. Two copy buttons side by side are otherwise two identical
+ * glyphs, told apart only by a tooltip nobody gets on a touch screen — and on the map
+ * frame the two payloads are different things (a GeoJSON Feature, four labelled
+ * degrees). `label` stays the accessible name and the tooltip either way.
+ * (`trigger` added 2026-08-23.)
+ *
  * @param {string} payload @param {Object} [opts]
  * @returns {string}
  */
 export function waCopyButton(payload, opts = {}) {
-  const { label = 'Copy', ...rest } = opts;
-  return el('wa-copy-button', '', { value: payload, copyLabel: label, ...rest });
+  const { label = 'Copy', trigger = '', ...rest } = opts;
+  return el('wa-copy-button', trigger, { value: payload, copyLabel: label, ...rest });
 }
 
 /**

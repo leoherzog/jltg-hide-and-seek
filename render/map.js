@@ -45,7 +45,7 @@ import {
 } from '../lib/core.js';
 
 import {
-  esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton,
+  esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton, waButton,
   chip, kpi, section, subhead, provChip,
 } from './html.js';
 
@@ -396,7 +396,7 @@ export function s4Tiles(report, dayKey) {
         : `${num(reach.reachableZones)} of ${num(nZones)} zones are within `
           + `${num(size.hidingPeriodMin || 0)} minutes of ${startName} at ${departure} `
           + `on a ${label} — the ${num(reach.unreachableZoneIds.length)} that are not are `
-          + "the red and hollow dots on the map's reach layer. "
+          + "red on the map's reach layer, hollow where there is no journey at all. "
           + `(${num(reachN)} of ${num(served)} served stops are, which is the looser test.)`),
     },
     {
@@ -912,6 +912,13 @@ export function s4MapCaption(report, dayKey) {
   }
 
   // ── 3. the day that is worse ────────────────────────────────────────────────
+  // Two tests, not one. Ranking on the set difference ALONE named a strictly better
+  // day as the worse one: on the reference feed a Sunday reader was told "on a
+  // Saturday, another 6 zones fall outside the window" when Saturday's own total is
+  // 81 against Sunday's 143 — true as a set difference, false as the impression.
+  // A day only qualifies now if it is worse overall as well as additive. Both are
+  // lengths of carried lists, so this stays a filter and a comparison, never
+  // renderer arithmetic. (Fixed 2026-08-23.)
   const here = new Set((reach && reach.unreachableZoneIds) || []);
   let worstKey = null;
   let worstExtra = 0;
@@ -919,7 +926,9 @@ export function s4MapCaption(report, dayKey) {
     if (key === dayKey) continue;
     const cell = s4ReachDay(r, key);
     if (cell === null) continue;
-    const extra = (cell.unreachableZoneIds || []).filter((id) => !here.has(id)).length;
+    const missedThere = (cell.unreachableZoneIds || []);
+    if (missedThere.length <= here.size) continue;
+    const extra = missedThere.filter((id) => !here.has(id)).length;
     if (extra > worstExtra) { worstExtra = extra; worstKey = key; }
   }
   if (worstKey !== null) {
@@ -1023,16 +1032,29 @@ export function s4MapLegends(report, flags) {
   const blocks = [block('base', baseItems, '')];
 
   if (s4ReachDay(report, s4BestDay(report)) !== null) {
+    // Every key draws exactly what the canvas draws, which is why three of these
+    // four carry a ring: the map strokes the gold bin --gold-deep, the red bin
+    // --ink and the no-journey bin --ink-2, because the fills alone are 1.5:1 on a
+    // pale basemap and because a ring is the channel that survives a colour-blind
+    // reading. The no-journey key is SOLID, not dashed: MapLibre has no dash on a
+    // circle stroke, so the map cannot draw one and the key must not promise it.
+    //
+    // The gold label is the one label here that is NOT quoted verbatim from §06's
+    // ride chart ("Fits, but tight or two changes"). The chart bins on the window
+    // AND on transfers; this layer bins on the window alone, so the shared wording
+    // would promise a meaning the canvas does not encode. (Both fixed 2026-08-23.)
     blocks.push(block('reach', [
       [s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'),
         `Fits the ${hp}-minute window`],
-      [s4Swatch('background:var(--gold-mark);border-radius:var(--wa-border-radius-circle)'),
-        'Fits, but tight or two changes'],
-      [s4Swatch('background:var(--crit);border-radius:var(--wa-border-radius-circle)'),
-        'Busts the hiding period'],
-      [s4Swatch('background:transparent;border:1.5px dashed var(--baseline);'
+      [s4Swatch('background:var(--gold-mark);border:1.4px solid var(--gold-deep);'
         + 'border-radius:var(--wa-border-radius-circle)'),
-        'No service on the selected day'],
+        'Fits, but past three quarters of the window'],
+      [s4Swatch('background:var(--crit);border:1.6px solid var(--ink);'
+        + 'border-radius:var(--wa-border-radius-circle)'),
+        'Busts the hiding period'],
+      [s4Swatch('background:transparent;border:1.5px solid var(--ink-2);'
+        + 'border-radius:var(--wa-border-radius-circle)'),
+        'No journey at all on the selected day'],
     ], `Zone dots, coloured by scheduled travel time from ${startName} at ${departure} on `
       + 'the selected day — the same measurement the ride chart under Getting around '
       + 'draws as bars. '
@@ -1050,7 +1072,13 @@ export function s4MapLegends(report, flags) {
       ...S4_HEADWAY_BINS.map(([, binId, label]) => [
         el('span', '', { className: 'sw', dataHb: binId }), label,
       ]),
-      [el('span', '', { className: 'sw', dataHb: 'none' }), 'No service that day'],
+      // Flat --off, faded, with the same hairline the six bins carry — because that
+      // is what applyMode() paints. The grid's 45-degree hatch belongs to a table
+      // cell; a reader scanning the canvas for hatched dots would find none.
+      // (Fixed 2026-08-23.)
+      [s4Swatch('background:color-mix(in srgb, var(--off) 45%, transparent);'
+        + 'box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent)'),
+        'No service that day'],
     ], 'Stops, coloured by the median minutes between departures at that one stop, all '
       + 'routes together, between 06:00 and 22:00 on the selected day. Lighter = more '
       + 'service. The grid under Getting around measures a different thing — one route '
@@ -1171,24 +1199,33 @@ export function renderNetworkMap(payload) {
 
   // Colour modes are exclusive — two ramps at once is mush and needs two legends —
   // so this is a radio group, not switches, and it says so instead of leaving the
-  // reader to discover it. It exists only when there is reach data to draw.
-  // (2026-08-23.)
-  const colourBy = reachDay === null ? '' : el('wa-radio-group', join(
+  // reader to discover it.
+  //
+  // It offers exactly the modes THIS feed has a column for, and it exists whenever
+  // that is more than none. Gating the whole group on reach alone lost the frequency
+  // layer on any feed whose RAPTOR pass degraded — the per-stop headways still cross
+  // in `#stops`, the legend block was still emitted, and nothing could ever switch
+  // to it. Same rule as the stop cap, applied to the other column.
+  // (Fixed 2026-08-23.)
+  const modeButtons = join(
     el('wa-radio', esc('Plain'), { value: 'base', appearance: 'button', size: 's' }),
-    el('wa-radio', esc('Reach'), { value: 'reach', appearance: 'button', size: 's' }),
+    reachDay === null
+      ? ''
+      : el('wa-radio', esc('Reach'), { value: 'reach', appearance: 'button', size: 's' }),
     // No Frequency button when the stop layer was dropped over `MAX_MAP_STOPS`: the
     // per-stop headways ride with the stops and there is nothing to colour. The
     // caption says so rather than leaving a control that does nothing.
     stopsShown
       ? el('wa-radio', esc('Frequency'), { value: 'frequency', appearance: 'button', size: 's' })
       : '',
-  ), {
+  );
+  const colourBy = (reachDay === null && !stopsShown) ? '' : el('wa-radio-group', modeButtons, {
     id: 'colourby',
     name: 'colourby',
     size: 's',
     orientation: 'horizontal',
     label: 'Colour by',
-    value: 'reach',
+    value: reachDay === null ? 'base' : 'reach',
   });
 
   const layerControls = join(
@@ -1235,8 +1272,19 @@ export function renderNetworkMap(payload) {
       id: 'netlayers', className: 'wa-cluster wa-gap-s wa-align-items-center',
     }),
     el('div', join(
-      waCopyButton(geojsonText, { label: 'Copy GeoJSON', id: 'geocopy' }),
-      waCopyButton(degText, { label: 'Copy coordinates', id: 'bboxcopy' }),
+      // Slotted triggers, not the component's icon-only default: side by side the
+      // two defaults are the same glyph twice, and the payloads are not
+      // interchangeable — one is a GeoJSON Feature, the other four labelled
+      // degrees. The old border card said which was which in its own copy; this
+      // says it on the buttons. (Fixed 2026-08-23.)
+      waCopyButton(geojsonText, {
+        label: 'Copy GeoJSON', id: 'geocopy',
+        trigger: waButton('Copy GeoJSON'),
+      }),
+      waCopyButton(degText, {
+        label: 'Copy coordinates', id: 'bboxcopy',
+        trigger: waButton('Copy coordinates'),
+      }),
     ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
   ), { id: 'netcontrols', className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s' });
 

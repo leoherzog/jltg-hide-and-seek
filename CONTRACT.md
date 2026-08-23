@@ -1157,7 +1157,7 @@ waScroller(bodyHtml, { orientation='horizontal', ...attrs })
 waProgressBar(value, { label='', ...attrs })           // value 0..100, rounded to 1 dp via num()
 waProgressRing(value, { label='', innerHtml='', ...attrs })
 waSwitch(label, { checked=false, size='s', ...attrs })
-waCopyButton(payload, { label='Copy', ...attrs })
+waCopyButton(payload, { label='Copy', trigger='', ...attrs })  // trigger: slotted visible control; label stays the accessible name
 waChart(chartType, configJson, opts = {})               // configJson MUST come from jdump()
 waAccordion(items, { mode='single-collapsible', appearance='plain', headingLevel='4', ...attrs })
                                                         // items: Array<[itemId, labelHtml, bodyHtml, expanded]>
