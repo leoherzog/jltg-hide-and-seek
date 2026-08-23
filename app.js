@@ -111,7 +111,7 @@ const SECTIONS = [
   { id: 'hero', needs: 'feed', redo: ['days', 'network', 'rules', 'score'], render: (r) => renderHero(r) },
   { id: 'network', needs: 'network', redo: ['geo', 'score'], render: (r) => renderNetworkMap(r) },
   // Not a numbered section and not in `NUMBERED`: the stat rail lives INSIDE §05, in
-  // a nested `data-section="glance"` host §05's own markup ships empty. It needs
+  // a nested `data-section="glance"` host that §05's own markup ships empty. It needs
   // exactly what §05 needs (`size`, `metrics`, `days`, all at the `network` stage) and
   // redoes on everything §05 must not: `days` adds the day chips, `geo` flips km→mi,
   // `rules` fills the deck tiles, `score` corrects the live-question and removed-curse
