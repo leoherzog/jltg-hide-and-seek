@@ -451,6 +451,14 @@ function intersectsBbox(feature, bbox) {
   }
   for (const polygon of feature.polygons) {
     for (const [lon, lat] of polygon.outer) if (bboxContains(bbox, lat, lon)) return true;
+    // Inner rings too, or stage 3's invariant is false: a hole lying WHOLLY inside the
+    // map has no vertex outside to make it cross an edge, so stage 2 cannot see it, and
+    // stage 3 then finds the centre inside the hole and rejects the whole feature. That
+    // is the silent count/feature disagreement this file exists to prevent — observed on
+    // `green` relation 7911045, where worldCount said 1 and worldPois said 0.
+    for (const ring of polygon.inners) {
+      for (const [lon, lat] of ring) if (bboxContains(bbox, lat, lon)) return true;
+    }
   }
 
   const edges = rectEdges(bbox);

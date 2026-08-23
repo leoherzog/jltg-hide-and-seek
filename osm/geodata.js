@@ -1499,6 +1499,23 @@ export function legalEndgameSpots(zones, geo, proj, radiusM, pathOkIds) {
  * @param {Projection} proj @param {number} radiusM
  */
 function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
+  // Seed every zone to zero FIRST, and do it even when the grid came back empty.
+  // `zoneInventory` does the same for the fetched categories (`for (const key of
+  // categories) counts[key] = 0;`) so that "key absent" reliably means "not queried" —
+  // `audit.js` returns null on an absent key and drops the zone from the denominator.
+  // This function used to write a key only where a nearby cell carried one, and
+  // `worldDensity` omits zero-valued columns on read, so a zone with genuinely no
+  // buildings got no `building` key at all. Every such zone then left the denominator,
+  // which pinned the four building photo questions to `degenerate coverage=1` on any
+  // map containing a building, and to a false `unknown` — "not queried on this run" —
+  // on a rural map whose real count is printed two rows up in the same provenance
+  // table. A present-but-empty grid is a real zero and must read as one.
+  for (const zone of zones) {
+    const row = inventory[zone.zoneId] || (inventory[zone.zoneId] = {});
+    for (const key of GEO_DENSITY_GRID_CATEGORIES) {
+      if (row[key] === undefined) row[key] = 0;
+    }
+  }
   if (!density.cells.length) return;
 
   // Index the cells once, at the zone radius, so a 2,000-zone map does not become a
@@ -1764,6 +1781,8 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   const counts = {};
   const partialCategories = new Set();
   let layersRead = 0;
+  /** Distinct per-category failure reasons, kept so the throw below can name a cause. */
+  const layerFailures = new Set();
 
   for (const category of GEO_CATEGORIES) {
     const key = category.key;
@@ -1795,6 +1814,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     } catch (exc) {
         // One dead layer is a caveat; all of them dead is the next check.
       partialCategories.add(key);
+      layerFailures.add(String((exc && exc.message) ? exc.message : exc));
       log('warn', `category ${key} unavailable: ${exc}`);
     } finally {
       progress.finish();
@@ -1807,7 +1827,15 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   // having read nothing at all. Throwing on the FIRST failure instead would turn one
   // missing layer into a dead OSM section, which is the bug this shape avoids.
   if (layersRead === 0) {
-    throw new Error('world files: no layer could be read; the origin is unreachable');
+    // NOT necessarily an unreachable origin — this line is reachable only AFTER
+    // `openWorld` fetched and parsed manifest.json, so the origin answered. A dead
+    // origin fails earlier, in `openWorld`, with its own message. Naming the network
+    // here made a code regression inside this loop — a renamed export, a decoder that
+    // throws on every feature — read to the player as "the map files were unreachable",
+    // which is the exact confusion this module's header warns about. Carry the real
+    // reasons out instead; they were previously visible only in the console.
+    const why = Array.from(layerFailures).sort(cmpStr).slice(0, 3).join('; ');
+    throw new Error(`world files: no layer could be read${why ? `: ${why}` : ''}`);
   }
 
   // ── 2. the density grid: the categories that are tallies, not icons ───────

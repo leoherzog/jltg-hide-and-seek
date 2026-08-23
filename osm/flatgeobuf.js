@@ -226,6 +226,40 @@ class RangeReader {
     // unsatisfiable range.
     if (this.size !== null) end = Math.min(end, this.size);
     if (end <= start) return new Uint8Array(0);
+    if (end - start <= MAX_RANGE_BYTES) return this._readOne(start, end);
+
+    // An oversize span is DATA, not a bug. `query` derives it from the feature's own
+    // 4-byte length prefix, and OSM really does hold single features tens of megabytes
+    // wide — Lake Nasser is 21 MB and one `pitch` covering the Alaska panhandle is 31 MB,
+    // 3.7× this ceiling. Refusing threw out of `query` entirely, so every OTHER feature
+    // in the run was lost too and `geodata.js` recorded the whole category as partial
+    // with nothing on the page to say so: a ~0.04° box over Savonlinna lost all four
+    // `water` features, a 2 km box over Juneau all fifteen `pitch`. Split the read and
+    // let the ceiling do the one job it should — bounding a single request.
+    const parts = [];
+    let total = 0;
+    for (let at = start; at < end; at += MAX_RANGE_BYTES) {
+      const want = Math.min(MAX_RANGE_BYTES, end - at);
+      const part = await this._readOne(at, at + want);
+      parts.push(part);
+      total += part.length;
+      if (part.length < want) break;   // a short tail read is normal; stop, do not spin
+    }
+    const joined = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) { joined.set(part, at); at += part.length; }
+    return joined;
+  }
+
+  /**
+   * One Range request, at most `MAX_RANGE_BYTES` wide. `read` is the entry point;
+   * this is where the ceiling is enforced, and the throw is now unreachable from
+   * outside — it survives only as an assertion that `read` did its own arithmetic right.
+   * @returns {Promise<Uint8Array>}
+   */
+  async _readOne(start, end) {
+    if (this.size !== null) end = Math.min(end, this.size);
+    if (end <= start) return new Uint8Array(0);
     if (end - start > MAX_RANGE_BYTES) {
       throw new Error(`FlatGeobuf: refusing a ${end - start} byte range from ${this.url}`);
     }

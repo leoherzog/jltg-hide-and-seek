@@ -442,7 +442,7 @@ export async function runPipeline(options, source, emit) {
       degrade(`The OpenStreetMap files could not be read (${name}), so every question, `
         + 'curse and score that needs map features is excluded rather than guessed at.');
       geo = emptyGeoData(border.bbox,
-        'The map files were unreachable; OSM-backed scores are excluded.');
+        'The map files could not be read; OSM-backed scores are excluded.');
     }
   } else {
     // Not `--no-osm`: there is no command line here. The reader flipped a switch
