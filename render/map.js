@@ -899,7 +899,12 @@ export function s4MapLegends(report, flags) {
       + 'disagree. Zone dots fade back so the stops read.'));
   }
 
-  blocks.push(block('always', always, ''));
+  // The always-on block carries the cap sentence when a cap bit, because that block
+  // is the one part of the legend no colour mode hides. A dropped layer that says
+  // nothing is indistinguishable from a broken one.
+  blocks.push(block('always', always, stopsShown ? ''
+    : `Over ${num(S4_MAX_MAP_STOPS)} served stops the individual dots are not drawn, so `
+      + 'this map has no frequency layer and Colour by offers Plain and Reach only.'));
   return blocks.join('');
 }
 
