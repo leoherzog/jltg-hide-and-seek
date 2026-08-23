@@ -608,6 +608,22 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    the real map appears. */
 #netmap-frame { inline-size: 100%; }
 
+/* ---- the map's stat rail (folded in from §04 on 2026-08-23) ----
+   The tiles that name a place carry `data-hl` — six of the twelve, five highlights,
+   because the map area and the network diameter both light the extent — and the
+   runtime turns them into controls — tabindex, role, aria-pressed — ONLY when
+   MapLibre actually built. So the affordances below hang off `[aria-pressed]`, not
+   off `[data-hl]`: with the map blocked the tiles stay inert text and must not offer
+   a pointer or a focus ring for a highlight that cannot happen. Otherwise these are
+   `#dayscores [data-day]`'s own rules, so the page has one keyboard idiom for
+   "preview, then pin", not two. */
+#tiles wa-card[data-hl][aria-pressed] { cursor: pointer; }
+#tiles wa-card[data-hl][aria-pressed]:hover { border-color: var(--gold); }
+#tiles wa-card[data-hl][aria-pressed]:focus-visible { outline: var(--wa-focus-ring);
+                                      outline-offset: var(--wa-focus-ring-offset); }
+#tiles wa-card[data-hl][aria-pressed='true'] { border-color: var(--gold);
+                                      box-shadow: inset 0 0 0 var(--wa-border-width-m) var(--gold); }
+
 /* ---- errors surfaced by app.js (worker `error`, a CORS failure, a bad zip)
    #landing-error is a wa-callout now and owns its own `display: flex`; forcing
    `display: block` on it from here would beat the shadow rule and stack the icon

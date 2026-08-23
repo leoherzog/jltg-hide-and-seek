@@ -1,9 +1,9 @@
 /**
- * render/map.js — §04 At a Glance, §05 The Map You're Playing On, §06 Getting Around.
+ * render/map.js — the map section (its stat rail and its map) and §06 Getting Around.
  *
  * Ported from generate.py S4:
  *   index_key_numbers      + _s4_legend, _s4_swatch,
- *                            _s4_card_header             → §04 `#numbers`
+ *                            _s4_card_header             → the `#glance` stat rail
  *   index_network_map                                    → §05 `#network`
  *   index_transit_reality  + _s4_headway_bin, _s4_heatmap_rows,
  *                            _s4_heatmap_table, _s4_heatmap,
@@ -26,6 +26,16 @@
  * DETERMINISM. No clock, no randomness, and no unsorted iteration of an object whose
  * key order could vary. The sort below (`_s4_heatmap_rows`) carries the Python's full
  * tie-break tuple for exactly that reason.
+ *
+ * §04 WAS FOLDED INTO §05 on 2026-08-23. `index_key_numbers` no longer renders a
+ * numbered section of its own: `renderGlanceRail` returns the twelve stat tiles as a
+ * plain `#glance` div that lives INSIDE the map section, through its own nested
+ * `data-section="glance"` host with its own hydration clock (`needs: 'network'`, its
+ * own `redo` — see app.js's `SECTIONS`). The two cannot share one clock: §05's string
+ * must not move at `rules` or `score`, because a changed string re-mounts the section
+ * and tears the MapLibre instance down with it, and the tiles move at both. `#tiles`
+ * keeps its exact id because `renderDay()` rewrites that container's innerHTML on
+ * every day switch.
  *
  * @module render/map
  */
@@ -51,7 +61,7 @@ import {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §04's three tile groups. `s4Tiles` tags every tile with a `g` key; the grouping is
+ * The rail's three tile groups. `s4Tiles` tags every tile with a `g` key; the grouping is
  * produced here rather than around `#tiles`, because `renderDay()` replaces that
  * container's `innerHTML` wholesale and would overwrite any chrome outside this string.
  */
@@ -59,6 +69,16 @@ const S4_TILE_GROUPS = Object.freeze([
   Object.freeze(['map', 'The map']),
   Object.freeze(['clock', 'The clock']),
   Object.freeze(['deck', 'The deck']),
+]);
+
+/**
+ * The two placeholder tiles the deck group shows before the `rules` stage lands.
+ * Widths are literals for the same reason every other skeleton's are: the markup
+ * must be byte-stable, and nothing here may read a clock or a random number.
+ */
+const S4_DECK_SKELETON_WIDTHS = Object.freeze([
+  Object.freeze(['82%', '70%']),
+  Object.freeze(['60%', '84%']),
 ]);
 
 /**
@@ -195,8 +215,13 @@ export function s4DayByKey(report, dayKey) {
  * Seven of the twelve move with the day; the other five are map-wide or rulebook
  * constants and are repeated so that one list renders the whole grid.
  *
+ * `hl` is on exactly the tiles that name a fact the map can point at, and is the
+ * `data-hl` the runtime binds tile↔map highlighting to (added 2026-08-23 with the
+ * §04→§05 merge). The other tiles deliberately carry nothing: a tile that lights
+ * nothing must not look like a control.
+ *
  * @param {Object} report @param {string} dayKey
- * @returns {Array<{g:string,day:string,prov:string,v:string,l:string,n:string}>}
+ * @returns {Array<{g:string,day:string,prov:string,v:string,l:string,n:string,hl?:string}>}
  */
 export function s4Tiles(report, dayKey) {
   const v = s4DayView(report, dayKey);
@@ -248,6 +273,7 @@ export function s4Tiles(report, dayKey) {
       g: 'map',
       day: '1',
       prov: 'A1',
+      hl: 'zones',
       v: num(g('nZones', (report.zones || []).length)),
       l: 'Distinct hiding zones',
       n: `One zone per ${radius} circle — a cover of the ${num(served)} stops with `
@@ -257,6 +283,7 @@ export function s4Tiles(report, dayKey) {
       g: 'map',
       day: '1',
       prov: 'feed',
+      hl: 'stops',
       v: `${num(served)} / ${num(inFeed)}`,
       l: 'Stops served / in the feed',
       n: `${num(inFeed - served)} stops in the feed see no departure on a ${label}.`,
@@ -274,6 +301,7 @@ export function s4Tiles(report, dayKey) {
       g: 'map',
       day: '',
       prov: 'feed',
+      hl: 'extent',
       v: s4Area(report, hull),
       l: 'Map area',
       n: 'The area the buses actually cover — the convex hull of the served stops. '
@@ -285,6 +313,7 @@ export function s4Tiles(report, dayKey) {
       g: 'map',
       day: '',
       prov: 'feed',
+      hl: 'extent',
       v: s4Dist(report, diameter, 1),
       l: 'Network diameter',
       n: 'The longest straight line between two served stops. The smallest circle '
@@ -315,6 +344,7 @@ export function s4Tiles(report, dayKey) {
       g: 'clock',
       day: '1',
       prov: 'C3',
+      hl: 'frequency',
       v: pct(freqShare),
       l: 'Stops on a 15-minute route',
       n: `${num(freqStops)} stops where one single route-direction runs every `
@@ -334,6 +364,7 @@ export function s4Tiles(report, dayKey) {
       g: 'clock',
       day: '1',
       prov: 'A2',
+      hl: 'reach',
       v: pct(reachShare),
       l: 'Zones reachable in the hiding period',
       n: `${num(reachN)} of ${num(served)} served stops are within `
@@ -368,6 +399,12 @@ export function s4Tiles(report, dayKey) {
  * replaces that container's `innerHTML` wholesale and would overwrite any chrome that
  * lived outside this string.
  *
+ * The deck group's two tiles count questions and curses, which do not exist until the
+ * `rules` stage — three stages after the rail itself lands. They are drawn as
+ * skeletons until then rather than as a truthful-but-useless "0 of 0", and rather
+ * than being dropped, so the rail does not change height under the reader when the
+ * audit arrives. (Added 2026-08-23 with the §04→§05 merge.)
+ *
  * @param {Object} report @param {string} dayKey @returns {string}
  */
 export function s4TilesHtml(report, dayKey) {
@@ -375,12 +412,19 @@ export function s4TilesHtml(report, dayKey) {
   const dayChip = chip('changes by day', 'calendar-day', {
     title: 'Measured on the selected service day',
   });
+  const pending = !(report.questions || []).length;
   const groups = [];
   for (const [key, title] of S4_TILE_GROUPS) {
-    const cards = tiles.filter((t) => t.g === key).map((t) => waCard(
-      kpi(t.v, t.l, esc(t.n) + provChip(t.prov), { chipHtml: t.day ? dayChip : '' }),
-      { dataDaySensitive: t.day ? true : null },
-    ));
+    const cards = (key === 'deck' && pending)
+      ? S4_DECK_SKELETON_WIDTHS.map(([a, b]) => el('div', join(
+        el('wa-skeleton'),
+        el('wa-skeleton', '', { style: `inline-size:${a}` }),
+        el('wa-skeleton', '', { style: `inline-size:${b}` }),
+      ), { className: 'sk-tile' }))
+      : tiles.filter((t) => t.g === key).map((t) => waCard(
+        kpi(t.v, t.l, esc(t.n) + provChip(t.prov), { chipHtml: t.day ? dayChip : '' }),
+        { dataDaySensitive: t.day ? true : null, dataHl: t.hl || null },
+      ));
     if (!cards.length) continue;
     groups.push(el('div', join(
       subhead(title),
@@ -418,37 +462,46 @@ export function s4ChartMax(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · §04 AT A GLANCE (generate.py)
+// S4 · AT A GLANCE — the stat rail, inside the map section (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §04 — the twelve stat tiles in three groups, each with value, label, note and chip.
+ * The twelve stat tiles in three groups, each with value, label, note and chip.
+ *
+ * Was §04, a numbered section of its own, until 2026-08-23; it is now the rail under
+ * the map, and therefore returns a plain `<div id="glance">` — no `section()`, no
+ * `S4_ORDINAL`, no `data-n`, no kicker. app.js mounts it through its own nested
+ * `data-section="glance"` host inside §05 and stamps `data-section` / `data-state`
+ * onto this root itself.
+ *
+ * The old §04 answer line went with the merge: it said "N places to hide across
+ * A km², served by R of M routes", which is the hero's headline and, two cards up,
+ * §05's own answer. The rail states its measuring conditions and then shows numbers.
+ *
+ * Its gate is unchanged and is why the rail's `needs` is `network` and not `rules`:
+ * `size`, `metrics` and `days` all land at the `network` stage.
+ *
  * @param {Object} payload the (possibly partial) `Report`
  * @returns {string} HTML, or '' when there is nothing to show yet
  */
-export function renderKeyNumbers(payload) {
+export function renderGlanceRail(payload) {
   const report = payload || {};
   if (!report.size || !report.metrics || !report.days || !report.days.length) return '';
   const best = s4BestDay(report);
-  const v = s4DayView(report, best);
   const grid = el('div', s4TilesHtml(report, best), {
     className: 'wa-stack wa-gap-l',
     id: 'tiles',
   });
-  const lede = 'Every figure is measured on this feed, on the representative day for the '
-    + 'service type selected above. Tiles with a gold rule and a “changes by day” chip '
-    + 'move when you change the day; the rest are map-wide or come straight from the '
-    + 'rulebook.';
-  const nZones = (v.nZones === null || v.nZones === undefined)
-    ? (report.zones || []).length : v.nZones;
-  const answer = el('p', esc(
-    `${num(nZones)} places to hide across `
-    + `${s4Area(report, Number(v.hullSqM || 0.0))}, served by `
-    + `${num(v.routes || 0)} of ${num(feedRouteCount(report))} routes.`,
-  ), { className: 'wa-body-s' });
-  return section('numbers', S4_ORDINAL, 'The map at a glance', grid, {
-    kicker: 'Key numbers', lede, answerHtml: answer,
-  });
+  const caption = 'Measured on the service day selected above, on the map you are '
+    + 'looking at. Tiles with a gold rule and a “changes by day” chip move when you '
+    + 'change the day; the rest are map-wide or come straight from the rulebook.';
+  return el('div', join(
+    subhead('At a glance'),
+    el('p', esc(caption), {
+      className: 'wa-body-s wa-color-text-quiet', style: 'max-inline-size:72ch',
+    }),
+    grid,
+  ), { id: 'glance', className: 'wa-stack wa-gap-s' });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -740,6 +793,16 @@ export function renderTransitReality(payload) {
  *
  * Never wrap the map in a `wa-scroller`.
  *
+ * WHAT THIS FUNCTION MAY READ, and nothing else: `border`, `hub`, `size`, `zones`,
+ * `days` / `selectedDay`, `metrics` and `stops` — every one of them a `network`-stage
+ * field, plus `geo.admin.countryCode` reaching it through `s4Dist`/`s4Area`. Quoting
+ * a question count, a curse, a score or a finding here would change this string at
+ * `rules` or `score`, and a changed string re-mounts the section, which destroys the
+ * MapLibre instance and throws away the reader's pan and zoom. That is why the stat
+ * rail — which counts all four — is a NESTED section host with its own clock, and it
+ * is the invariant CONTRACT §(d) records. Anything arriving later reaches the map
+ * through `#stops` and the runtime, never through this string.
+ *
  * @param {Object} payload the (possibly partial) `Report`
  * @returns {string} HTML, or '' when there is nothing to show yet
  */
@@ -873,8 +936,22 @@ export function renderNetworkMap(payload) {
     + `${num(zones.length)} places you are allowed to hide. Copy the border before anyone `
     + 'draws a card.',
   ), { className: 'wa-body-s' });
+  // The stat rail's host, empty. app.js mounts `renderGlanceRail` into it in the same
+  // hydration pass that mounts this section, and re-mounts it on its own clock
+  // afterwards (`days`, `geo`, `rules`, `score` and every day click) without this
+  // string — and therefore the map — moving at all.
+  const glanceHost = el('div', '', {
+    id: 'glance',
+    dataSection: 'glance',
+    dataStage: 'rules',
+    dataState: 'skeleton',
+    ariaBusy: 'true',
+    className: 'wa-stack wa-gap-s',
+  });
+
   return section('network', S4_ORDINAL, 'The map you’re playing on',
-    el('div', join(mapCard, borderCard), { className: 'wa-stack wa-gap-s' }),
+    join(el('div', join(mapCard, borderCard), { className: 'wa-stack wa-gap-s' }),
+      glanceHost),
     { kicker: 'The network', lede, answerHtml: answer });
 }
 

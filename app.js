@@ -7,10 +7,16 @@
  *
  * The CLI computes a whole `Report` and then prints one finished document. The
  * browser cannot: an eight-minute Overpass pass would be eight minutes of blank
- * page. So the same document is assembled progressively — the shell ships nine
+ * page. So the same document is assembled progressively — the shell ships eight
  * skeleton sections, the worker streams staged partial results, and each section is
  * swapped for real markup the moment its data lands. The *output* is the same
  * artifact; only the arrival order changed.
+ *
+ * Eight, not nine, since 2026-08-23: §04's stat rail was folded into §05 and now
+ * hydrates through a NESTED `data-section="glance"` host inside the map section, with
+ * its own `needs`/`redo`. Two hydration clocks in one section is what lets the tiles
+ * be corrected at `rules`, at `score` and on every day click without re-rendering the
+ * map section — a re-render swaps `#netmap` out and tears down MapLibre.
  *
  * Division of labour, unchanged from the CLI:
  *   • the worker computes, and never touches the DOM;
@@ -35,7 +41,9 @@ import {
 import {
   renderHero, renderVerdict, renderScoreTrace, renderYourGame, bandVariant,
 } from './render/verdict.js';
-import { renderKeyNumbers, renderNetworkMap, renderTransitReality } from './render/map.js';
+import {
+  renderGlanceRail, renderNetworkMap, renderTransitReality, s4TilesHtml,
+} from './render/map.js';
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
 } from './render/deck.js';
@@ -85,9 +93,13 @@ const DEFAULT_OPTIONS = Object.freeze({
  *
  * `redo` is not a nicety: `scoreZones` fills `QuestionAudit.surv_mean` in place, so
  * §07 rendered from the `'rules'` copy is missing its funnel column (CONTRACT §(d)),
- * and §04's tiles count live questions and removed curses. Every redo is compared
- * against the markup already on the page and skipped when identical, so a section
- * that did not actually change never reflows.
+ * and the stat rail's tiles count live questions and removed curses. Every redo is
+ * compared against the markup already on the page and skipped when identical, so a
+ * section that did not actually change never reflows.
+ *
+ * ORDER IS LOAD-BEARING FOR `glance`, and only for it: `hydrate` walks this array in
+ * order, so `network` must mount its markup — which carries the rail's empty host —
+ * before `glance` is asked to mount into it in the same pass.
  */
 const SECTIONS = [
   // The hero's redo list is long on purpose. Its headline sentence reads "N of the M
@@ -97,8 +109,14 @@ const SECTIONS = [
   // several minutes of a confidently wrong sentence. `days` is here for the same
   // reason at smaller stakes: it adds the "Best day" chip.
   { id: 'hero', needs: 'feed', redo: ['days', 'network', 'rules', 'score'], render: (r) => renderHero(r) },
-  { id: 'numbers', needs: 'rules', redo: ['score'], render: (r) => renderKeyNumbers(r) },
   { id: 'network', needs: 'network', redo: ['geo', 'score'], render: (r) => renderNetworkMap(r) },
+  // Not a numbered section and not in `NUMBERED`: the stat rail lives INSIDE §05, in
+  // a nested `data-section="glance"` host §05's own markup ships empty. It needs
+  // exactly what §05 needs (`size`, `metrics`, `days`, all at the `network` stage) and
+  // redoes on everything §05 must not: `days` adds the day chips, `geo` flips km→mi,
+  // `rules` fills the deck tiles, `score` corrects the live-question and removed-curse
+  // counts. None of those may touch §05's string. (Added 2026-08-23, the §04→§05 merge.)
+  { id: 'glance', needs: 'network', redo: ['days', 'geo', 'rules', 'score'], render: (r) => renderGlanceRail(r) },
   { id: 'yourgame', needs: 'score', redo: [], render: (r) => renderYourGame(r) },
   { id: 'transit', needs: 'network', redo: ['score'], render: (r) => renderTransitReality(r) },
   { id: 'verdict', needs: 'score', redo: [], render: (r) => renderVerdict(r) },
@@ -113,7 +131,9 @@ const SECTIONS = [
 ];
 
 /**
- * The nine numbered sections, in page order. `hero` is chrome, not a numbered card.
+ * The eight numbered sections, in page order. `hero` is chrome, not a numbered card,
+ * and neither is the map's `glance` rail — it is a nested host inside `network`, so
+ * it takes no ordinal and appears here nowhere.
  *
  * This array — not the DOM — is what `renumberSections` walks to hand out `data-n`,
  * so it and the <section> order in index.html must be kept in lockstep: move a
@@ -125,7 +145,8 @@ const SECTIONS = [
  * questions, curses, sources): the map is the artifact readers recognise, so it
  * opens the report, and the point-by-point trace is reference material that now
  * sits with the receipts. `SECTIONS` above is in the same order for the same
- * reason — reading the array should read the page.
+ * reason — reading the array should read the page. `numbers` left this list the same
+ * day, when its tiles became §05's rail; nine numbered sections became eight.
  *
  * ONE CONSEQUENCE FOR EVERY COMMENT IN THIS REPO: the `§NN` written throughout
  * these files is the numbering the port was written under (§01 verdict … §09
@@ -134,7 +155,7 @@ const SECTIONS = [
  * place to trust for it. (`render/strategy.js` and `render/simulator.js` number
  * the strategy view's own five sections and never meant these at all.)
  */
-const NUMBERED = ['numbers', 'network', 'yourgame', 'transit', 'verdict',
+const NUMBERED = ['network', 'yourgame', 'transit', 'verdict',
   'questions', 'curses', 'trace', 'sources'];
 
 /**
@@ -170,8 +191,8 @@ const STAGE_DOING = {
 /** Reader-facing section names, for the “could not be rendered” notice. */
 const SECTION_NAME = {
   hero: 'the headline',
-  numbers: 'At a Glance',
   network: 'The Map You’re Playing On',
+  glance: 'At a Glance',
   yourgame: 'House Rules',
   transit: 'Getting Around',
   verdict: 'Verdict',
@@ -1027,7 +1048,7 @@ function clearWatchdog() {
 }
 
 /**
- * Move the shell from `landing` to `running`: hide the form, reveal the nine
+ * Move the shell from `landing` to `running`: hide the form, reveal the eight
  * skeletons, start the progress readout.
  *
  * `document.body.dataset.state` is the switch, and styles.css §7 is the only thing
@@ -1444,10 +1465,27 @@ function mountSection(id, html) {
   // markup and the flag would stop the new one ever being built, leaving a
   // `height:0` div where the map was. Clearing the flag when the swap actually
   // carries a map frame is what makes `redo: ['geo', 'score']` safe for §05.
+  //
+  // Since the §04→§05 merge this is the `geo`-stage path and a safety net, not a
+  // routine one: the tiles that used to move under the map every stage are a nested
+  // section of their own now, and the only thing that still rewrites §05's string is
+  // the km→mi flip at `geo`. The rail's own host never contains `#netmap`, so
+  // re-mounting it cannot reach this branch.
   const hadMap = host.querySelector && host.querySelector('#netmap');
   if (hadMap && root.querySelector && root.querySelector('#netmap')) {
     const runtime = window.__jltg;
     if (runtime) runtime.mapBuilt = 0;
+  }
+
+  // Nested section hosts (§05's `#glance`) go out with their parent's markup. Their
+  // cached string would otherwise still match on the next `hydrate()` pass, the child
+  // would be skipped as "unchanged", and the parent's freshly written skeleton host
+  // would stay on the page for good. (Added 2026-08-23 with the §04→§05 merge.)
+  if (host.querySelectorAll) {
+    for (const nested of host.querySelectorAll('[data-section]')) {
+      const nid = nested.getAttribute('data-section');
+      if (nid && nid !== id) state.rendered.delete(nid);
+    }
   }
 
   host.replaceWith(root);
@@ -1503,9 +1541,11 @@ async function fillChunked(parked) {
  * A section that rendered nothing disappears, and its nav entry goes with it.
  *
  * The CLI can make that call once, holding the whole report. Here the call is only
- * safe when no later stage could still fill the section — §04 renders empty until the
- * geo layer decides what units to print in — so an early empty result merely hides the
- * card, and only a stage with nothing left to wait for removes it for good.
+ * safe when no later stage could still fill the section — the map's stat rail renders
+ * empty until the geo layer decides what units to print in — so an early empty result
+ * merely hides the card, and only a stage with nothing left to wait for removes it
+ * for good. A nested host (`glance`) is hidden and removed by exactly this path, and
+ * its rail link goes with it.
  */
 function dropSection(def) {
   const host = sectionHost(def.id);
@@ -1542,7 +1582,7 @@ function renumberSections() {
     const heading = host.querySelector('[data-n]');
     if (heading) heading.setAttribute('data-n', String(n).padStart(2, '0'));
   }
-  // Anything still holding the placeholder is not one of the nine numbered cards.
+  // Anything still holding the placeholder is not one of the eight numbered cards.
   // Blank beats printing '--' at a reader.
   for (const node of document.querySelectorAll(`[data-n="${ORDINAL_PLACEHOLDER}"]`)) {
     node.removeAttribute('data-n');
@@ -1709,7 +1749,7 @@ function fatalError(stage, message) {
   const slot = pick('#run-error', '[data-role="runerror"]');
   if (slot) {
     // The shell has a place for this. Use it, and clear away the skeletons that are
-    // never going to fill — a stopped run must not leave nine shimmering cards
+    // never going to fill — a stopped run must not leave eight shimmering cards
     // implying work is still happening.
     slot.innerHTML = el('div', card, { className: 'wa-stack wa-gap-l' });
     slot.hidden = false;
@@ -1984,29 +2024,23 @@ function chartMax(report) {
 }
 
 /**
- * §04's tile grid for one day.
+ * The stat rail's tile grid for one day.
  *
- * The CLI renders `_s4_tiles_html` per day and ships the strings. Here the tiles live
- * inside `renderKeyNumbers`, so the same strings are obtained by rendering §04 once
- * per day type with `selectedDay` swapped and lifting `#tiles`. Same output, and only
- * one implementation of the tile markup.
+ * The CLI renders `_s4_tiles_html` per day and ships the strings, and so does this:
+ * `s4TilesHtml` is the same exported function the rail itself renders through, called
+ * with the day key directly. It used to render the whole of §04 per day type with
+ * `report.selectedDay` swapped and lift `#tiles` back out of the result — one section
+ * render and one `parseHtml` per day type per `writeDataBlocks`, for a string the
+ * renderer would have handed over. (Simplified 2026-08-23 with the §04→§05 merge.)
  */
 function tilesHtmlFor(report, dayKey) {
-  const previous = report.selectedDay;
-  report.selectedDay = dayKey;
-  let html = '';
   try {
-    html = renderKeyNumbers(report) || '';
+    return s4TilesHtml(report, dayKey) || '';
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[app] tiles render failed', err);
-    html = '';
-  } finally {
-    report.selectedDay = previous;
+    return '';
   }
-  if (!html) return '';
-  const tiles = parseHtml(html).querySelector('#tiles');
-  return tiles ? tiles.innerHTML : '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2057,7 +2091,7 @@ function curatedMetrics(report) {
 function dataPayload(report) {
   const f = report.fitness;
   const days = {};
-  // The per-day markup costs one §04 render per day type, and it is not *true* until
+  // The per-day markup costs one tile render per day type, and it is not *true* until
   // the score lands — the banner prints a fitness delta and the tiles count live
   // questions. Before then the block ships `days: {}` and the runtime's `renderDay()`
   // returns early, which is also what keeps the eight-minute OSM wait cheap.

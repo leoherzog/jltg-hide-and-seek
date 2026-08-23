@@ -11,8 +11,8 @@
 
   Three states, driven by one attribute on <body> (see styles.css §7):
     landing  — pick a city on the feed map, or bring your own .zip / URL
-    running  — the nine sections as skeletons, header progress bar live
-    ready    — the same nine sections, hydrated
+    running  — the eight sections as skeletons, header progress bar live
+    ready    — the same eight sections, hydrated
 
   IMPORTANT, and different from the CLI: generate.py DROPS a section that
   produced nothing, and its nav entry disappears with it ("no empty cards",
@@ -118,15 +118,19 @@
        The Deck / The Receipts when the verdict opened the page).
 
        `data-when="report"` for the same reason every other piece of report chrome
-       has it: in the landing state styles.css §7 hides all nine sections, so an
+       has it: in the landing state styles.css §7 hides all eight sections, so an
        ungated rail would advertise ten anchors into `display:none` and every one
-       of them would scroll nowhere. -->
+       of them would scroll nowhere.
+
+       `#glance` is an in-section anchor, the way `#recs` and `#findings` are: it is
+       the stat rail INSIDE the map section, so it follows `#network` here for the
+       same document-order reason (folded in from §04 on 2026-08-23). -->
   <nav slot="navigation" data-when="report" class="wa-stack wa-gap-l">
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Map</span>
       <div class="wa-stack wa-gap-3xs">
-        <a href="#numbers" data-drawer="close" data-nav-for="numbers" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="hashtag" class="wa-color-text-quiet"></wa-icon><span>At a Glance</span></a>
         <a href="#network" data-drawer="close" data-nav-for="network" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="map-location-dot" class="wa-color-text-quiet"></wa-icon><span>The Map You’re Playing On</span></a>
+        <a href="#glance" data-drawer="close" data-nav-for="glance" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="hashtag" class="wa-color-text-quiet"></wa-icon><span>At a Glance</span></a>
       </div>
     </div>
     <div class="wa-stack wa-gap-3xs">
@@ -479,12 +483,16 @@
     </div>
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         THE REPORT — all nine sections, shipped at once as skeletons.
+         THE REPORT — all eight sections, shipped at once as skeletons.
 
          [data-section] is app.js's SECTION ID — the key it looks a host up by
          (`sectionHost`), and the value it stamps back onto the markup it swaps
          in. It is NOT the stage name: two sections share a stage, and a
-         `[data-section="<stage>"]` lookup would hand §02's map to §04.
+         `[data-section="<stage>"]` lookup would hand the map to the questions.
+         It is not a top-level element either: `#glance`, the map's stat rail, is a
+         NESTED host with its own hydration clock, and every piece of the machinery
+         below treats it exactly like a section because all of it walks
+         `[data-section]` globally.
          [data-stage] records which worker stage first fills the section
          (CONTRACT §(d)); it is documentation, nothing reads it.
          [data-state="skeleton"] holds until app.js swaps in real markup, and
@@ -499,8 +507,9 @@
          The `§NN` markers and the shipped `data-n` are provisional: app.js
          assigns the real ordinals AFTER the empty sections are dropped.
          Reordered 2026-08-23 so the page opens with the map instead of the
-         verdict: numbers, network, yourgame, transit, verdict, questions,
-         curses, trace, sources.
+         verdict, and §04 folded into §05 the same day: network, yourgame,
+         transit, verdict, questions, curses, trace, sources. Eight, not nine —
+         At a Glance is the rail inside the map section now, and takes no ordinal.
          ══════════════════════════════════════════════════════════════════ -->
 
     <!-- the day strip is card-weight and sits in the content, not full-bleed in
@@ -510,40 +519,15 @@
     <!-- A fatal worker error lands here (app.js `fatalError`): the source could not
          be fetched, the zip could not be opened, or the feed has no stop_times.txt.
          app.js also removes the still-skeleton sections when it fills this, because
-         a stopped run must not leave nine shimmering cards behind. -->
+         a stopped run must not leave eight shimmering cards behind. -->
     <div id="run-error" data-role="runerror" data-when="report" hidden></div>
 
-    <!-- §01 ─────────────────────────────────────────────────────────────── -->
-    <section id="numbers" data-when="report" data-section="numbers" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
-      <header class="wa-stack wa-gap-3xs">
-        <p class="kicker wa-caption-s wa-text-uppercase">Key numbers</p>
-        <h2 class="wa-heading-2xl" data-n="01">The map at a glance</h2>
-        <p class="wa-body-l">Every figure is measured on this feed, on the representative day for the service type selected above. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come straight from the rulebook.</p>
-      </header>
-      <div class="wa-stack wa-gap-l sk-body">
-        <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton><wa-skeleton style="inline-size:95%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton><wa-skeleton style="inline-size:90%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:85%"></wa-skeleton><wa-skeleton style="inline-size:75%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:65%"></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton><wa-skeleton style="inline-size:92%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:82%"></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:68%"></wa-skeleton><wa-skeleton style="inline-size:86%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:76%"></wa-skeleton><wa-skeleton style="inline-size:94%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:60%"></wa-skeleton><wa-skeleton style="inline-size:84%"></wa-skeleton></div>
-          <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:74%"></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- §02 · never wrap the map frame in a wa-scroller or a disclosure:
+    <!-- §01 · never wrap the map frame in a wa-scroller or a disclosure:
          MapLibre reads its container size once, at construction ─────────── -->
     <section id="network" data-when="report" data-section="network" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The network</p>
-        <h2 class="wa-heading-2xl" data-n="02">The map you’re playing on</h2>
+        <h2 class="wa-heading-2xl" data-n="01">The map you’re playing on</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-s sk-body">
@@ -565,14 +549,44 @@
           </div>
         </wa-card>
       </div>
+
+      <!-- THE STAT RAIL — a NESTED [data-section] host, and the only one on the
+           page (folded in from §04 on 2026-08-23). It is looked up, mounted,
+           renumbered (it takes no ordinal), pruned and swept by exactly the same
+           machinery as a top-level section, because all of that walks
+           `[data-section]` / `[data-state]` globally — and it hydrates on its OWN
+           clock, which is the whole point: the tiles are corrected at `days`,
+           `geo`, `rules`, `score` and on every day click, and §05's markup must not
+           move at any of them or MapLibre is torn down and rebuilt each time.
+           `#tiles` is the id `renderDay()` rewrites the innerHTML of. -->
+      <div id="glance" data-section="glance" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-s">
+        <h3 class="wa-heading-s wa-color-text-quiet wa-text-uppercase">At a glance</h3>
+        <p class="wa-body-s wa-color-text-quiet" style="max-inline-size:72ch">Measured on the service day selected above, on the map you are looking at. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come straight from the rulebook.</p>
+        <div id="tiles" class="wa-stack wa-gap-l sk-body">
+          <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton><wa-skeleton style="inline-size:95%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton><wa-skeleton style="inline-size:90%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:85%"></wa-skeleton><wa-skeleton style="inline-size:75%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:65%"></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton><wa-skeleton style="inline-size:92%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:82%"></wa-skeleton><wa-skeleton style="inline-size:70%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:68%"></wa-skeleton><wa-skeleton style="inline-size:86%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:76%"></wa-skeleton><wa-skeleton style="inline-size:94%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:88%"></wa-skeleton><wa-skeleton style="inline-size:72%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:60%"></wa-skeleton><wa-skeleton style="inline-size:84%"></wa-skeleton></div>
+            <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:74%"></wa-skeleton><wa-skeleton style="inline-size:78%"></wa-skeleton></div>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <!-- §03 · a container; the rail addresses its two halves directly, so both
+    <!-- §02 · a container; the rail addresses its two halves directly, so both
          #recs and #findings must resolve before any data arrives ─────────── -->
     <section id="yourgame" data-when="report" data-section="yourgame" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Before you play</p>
-        <h2 class="wa-heading-2xl" data-n="03">What this means for your game</h2>
+        <h2 class="wa-heading-2xl" data-n="02">What this means for your game</h2>
       </header>
       <div class="wa-stack wa-gap-2xl sk-body">
         <div class="wa-stack wa-gap-s">
@@ -595,11 +609,11 @@
       </div>
     </section>
 
-    <!-- §04 ─────────────────────────────────────────────────────────────── -->
+    <!-- §03 ─────────────────────────────────────────────────────────────── -->
     <section id="transit" data-when="report" data-section="transit" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">How long things take</p>
-        <h2 class="wa-heading-2xl" data-n="04">Getting around</h2>
+        <h2 class="wa-heading-2xl" data-n="03">Getting around</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-s sk-body">
@@ -626,11 +640,11 @@
       </div>
     </section>
 
-    <!-- §05 ─────────────────────────────────────────────────────────────── -->
+    <!-- §04 ─────────────────────────────────────────────────────────────── -->
     <section id="verdict" data-when="report" data-section="verdict" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The verdict</p>
-        <h2 class="wa-heading-2xl" data-n="05"><wa-skeleton style="block-size:1.4em;inline-size:min(100%,28ch)"></wa-skeleton></h2>
+        <h2 class="wa-heading-2xl" data-n="04"><wa-skeleton style="block-size:1.4em;inline-size:min(100%,28ch)"></wa-skeleton></h2>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
         <!-- "Why this is a Medium map" — the four size axes as a table -->
@@ -654,13 +668,13 @@
       </div>
     </section>
 
-    <!-- §06 · hydrated on stage `rules`, then RE-hydrated on stage `score`:
+    <!-- §05 · hydrated on stage `rules`, then RE-hydrated on stage `score`:
          scoreZones fills QuestionAudit.survMean in place and is the only thing
          that sees both the audit rows and the survival table (CONTRACT §(d)). -->
     <section id="questions" data-when="report" data-section="questions" data-stage="rules" data-rehydrate="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The deck</p>
-        <h2 class="wa-heading-2xl" data-n="06">The questions</h2>
+        <h2 class="wa-heading-2xl" data-n="05">The questions</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
@@ -695,11 +709,11 @@
       </div>
     </section>
 
-    <!-- §07 ─────────────────────────────────────────────────────────────── -->
+    <!-- §06 ─────────────────────────────────────────────────────────────── -->
     <section id="curses" data-when="report" data-section="curses" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The curse deck</p>
-        <h2 class="wa-heading-2xl" data-n="07">The curse deck</h2>
+        <h2 class="wa-heading-2xl" data-n="06">The curse deck</h2>
         <p class="wa-body-l">Every curse in the hider's deck, checked against this map's geography and this feed's network. A count is the number of qualifying features inside the border — outside does not count, because outside does not exist for this game.</p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
@@ -725,11 +739,11 @@
       </div>
     </section>
 
-    <!-- §08 ─────────────────────────────────────────────────────────────── -->
+    <!-- §07 ─────────────────────────────────────────────────────────────── -->
     <section id="trace" data-when="report" data-section="trace" data-stage="score" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Every point, traced</p>
-        <h2 class="wa-heading-2xl" data-n="08">Where the points came from</h2>
+        <h2 class="wa-heading-2xl" data-n="07">Where the points came from</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-m sk-body">
@@ -749,11 +763,11 @@
       </div>
     </section>
 
-    <!-- §09 ─────────────────────────────────────────────────────────────── -->
+    <!-- §08 ─────────────────────────────────────────────────────────────── -->
     <section id="sources" data-when="report" data-section="sources" data-stage="provenance" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">Provenance</p>
-        <h2 class="wa-heading-2xl" data-n="09">Where these numbers come from</h2>
+        <h2 class="wa-heading-2xl" data-n="08">Where these numbers come from</h2>
         <p class="wa-body-l">Every number above, traced to the query that produced it.</p>
       </header>
       <div class="wa-stack wa-gap-s sk-body">
@@ -784,7 +798,7 @@
 
   <!-- `data-state="pending"`, not `skeleton`, and the hero (149) matches: `fatalError`
        (app.js 1350) sweeps away every `[data-state="skeleton"]` element on a stopped
-       run, which is right for the nine report sections and wrong for the two chrome
+       run, which is right for the eight report sections and wrong for the two chrome
        hosts — it would take `#top` (the wordmark's and this footer's anchor) and
        `#footer-credit`, the OpenStreetMap/ODbL attribution that is true of every run,
        off the error page. app.js settles these two in place instead. -->

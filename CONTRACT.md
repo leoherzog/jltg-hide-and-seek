@@ -46,7 +46,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | `app.js` | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | main | see §(e) |
 | `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
-| `render/map.js` | main | `renderKeyNumbers`, `renderNetworkMap`, `renderTransitReality` |
+| `render/map.js` | main | `renderGlanceRail`, `renderNetworkMap`, `renderTransitReality`, `s4TilesHtml` |
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
@@ -984,9 +984,9 @@ internally but must flatten before emitting. `Projection` crosses as `{lat0, lon
 
 | # | `stage` | Payload | Unblocks |
 |---|---|---|---|
-| 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, feeds: FeedSourceRow[], stops: number, routes: number, trips: number, place }` — every scalar describes the MERGED feed; `feeds` names what it was merged from | hero, §04 partial |
+| 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, feeds: FeedSourceRow[], stops: number, routes: number, trips: number, place }` — every scalar describes the MERGED feed; `feeds` names what it was merged from | hero |
 | 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 |
-| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], stops: StopRow[], proj: {lat0,lon0} }` | §04, §05 |
+| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], stops: StopRow[], proj: {lat0,lon0} }` | §05 and its stat rail |
 | 4 | `'geo'` | `{ geo: GeoData }` | stage 5 |
 | 5 | `'rules'` | `{ questions: QuestionAudit[], curses: CurseAudit[], questionOrder: string[], questionFunnel: number[] }` | §07, §08 |
 | 6 | `'score'` | `{ fitness: Fitness, caps: FitnessCap[], zoneScores: Object<string,ZoneScore>, rankedZoneIds: string[], dossierZoneIds: string[], findings: Finding[], recommendations: Recommendation[], questions: QuestionAudit[] }` | §01, §02, §03 |
@@ -1025,6 +1025,16 @@ Notes on the stage payloads:
    * @property {string|null} zoneId                  // the zone whose circle designates it, or null
    */
   ```
+* **§05's rendered string must not depend on `rules` or `score`.** A string that changes
+  there re-mounts the section, and `mountSection` clears `window.__jltg.mapBuilt` when the
+  swap carries a `#netmap`, which destroys the MapLibre instance and throws away the
+  reader's pan and zoom. The stat rail counts live questions and removed curses and so
+  moves at both, which is why it is a **nested** `data-section` host with its own
+  `needs`/`redo` rather than part of §05's markup — two hydration clocks in one section.
+  §05's string does still change at `geo`, because `s4Imperial` flips km→mi and rewrites
+  the zone radius, the border pad and the border area; that rebuild is pre-existing and
+  is the only one. Anything arriving after `network` reaches the map through `#stops`,
+  never through §05's string.
 * **Stages 4–7 must still emit when the OSM layer is unavailable**, carrying the
   degradation. See §(f).
 * **S5 changed no payload here, and that is deliberate.** The hider's guide (§(g)) is built
@@ -1139,15 +1149,21 @@ Behavioural notes that must survive the port (they are load-bearing, not style):
 
 | # | `id` | Nav group | Nav label | Icon | Renderer |
 |---|---|---|---|---|---|
-| 01 | `numbers` | The Map | At a Glance | `hashtag` | `map.js` |
-| 02 | `network` | The Map | The Map You're Playing On | `map-location-dot` | `map.js` |
-| 03 | `yourgame` | Your Game (split) | House Rules `#recs` / What Works, What Fights You `#findings` | `list-check` / `circle-exclamation` | `verdict.js` |
-| 04 | `transit` | Your Game | Getting Around | `route` | `map.js` |
-| 05 | `verdict` | The Answer | Verdict | `circle-check` | `verdict.js` |
-| 06 | `questions` | The Deck | The Questions | `circle-question` | `deck.js` |
-| 07 | `curses` | The Deck | The Curse Deck | `wand-magic-sparkles` | `deck.js` |
-| 08 | `trace` | The Receipts | Where the Points Came From | `chart-simple` | `verdict.js` |
-| 09 | `sources` | The Receipts | Where These Numbers Come From | `book-open` | `deck.js` |
+| 01 | `network` | The Map | The Map You're Playing On | `map-location-dot` | `map.js` |
+| — | `glance` | The Map | At a Glance | `hashtag` | `map.js` |
+| 02 | `yourgame` | Your Game (split) | House Rules `#recs` / What Works, What Fights You `#findings` | `list-check` / `circle-exclamation` | `verdict.js` |
+| 03 | `transit` | Your Game | Getting Around | `route` | `map.js` |
+| 04 | `verdict` | The Answer | Verdict | `circle-check` | `verdict.js` |
+| 05 | `questions` | The Deck | The Questions | `circle-question` | `deck.js` |
+| 06 | `curses` | The Deck | The Curse Deck | `wand-magic-sparkles` | `deck.js` |
+| 07 | `trace` | The Receipts | Where the Points Came From | `chart-simple` | `verdict.js` |
+| 08 | `sources` | The Receipts | Where These Numbers Come From | `book-open` | `deck.js` |
+
+`glance` is the map's stat rail — the twelve tiles that used to be §04 `numbers`, folded
+into §05 on 2026-08-23. It is **not** a numbered section: it is a NESTED
+`data-section="glance"` host inside `#network` with its own `needs`/`redo`, it takes no
+ordinal and appears in `NUMBERED` nowhere, and `#glance` is an in-section anchor exactly
+the way `#recs` and `#findings` are. Nine numbered sections became eight.
 
 **This order is page order** (reordered 2026-08-23; it used to open on the verdict and
 close on the sources). It is stated in four places that must be kept in lockstep: the

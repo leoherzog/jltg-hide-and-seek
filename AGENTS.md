@@ -70,8 +70,13 @@ is the pipeline orchestrator and emits stages (`feed`, `days`, `network`, `geo`,
 progressively rather than appearing at the end. `runPipeline` takes its message sink as an
 argument, which is what lets `tools/smoke.mjs` import it from Node.
 
-The report's nine sections are rendered by `render/verdict.js`, `render/map.js` and
-`render/deck.js`. The strategy view is **fragment-only** — `render/strategy.js` (markup, pure
+The report's **eight** sections are rendered by `render/verdict.js`, `render/map.js` and
+`render/deck.js`. Eight, not nine, since 2026-08-23: the At a Glance tiles were folded
+into the map section and now hydrate through a **nested** `data-section="glance"` host
+inside it, with its own `needs`/`redo`. That is not a decoration — §05's rendered string
+must not change after the `network` stage, because a re-render swaps `#netmap` out and
+tears down the MapLibre instance, and the tiles are corrected at `rules`, at `score` and
+on every day click. Two hydration clocks, one section. See `CONTRACT.md` §(d) and §(e). The strategy view is **fragment-only** — `render/strategy.js` (markup, pure
 `Report → string`) plus `render/simulator.js` (every DOM mutation in that view). It is reached only
 by `#strategy` and appears in no nav or link. See `CONTRACT.md` §(g).
 
