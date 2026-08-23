@@ -22,7 +22,7 @@ would still have passed.)
     uv run tools/osm-world/make-test-world.py /tmp/world
     node tools/osm-world/test-pipeline.mjs /tmp/world
 
-THE WORLD MIRRORS WHAT build.py NOW PRODUCES (PLAN.md Phase 0 + Phase 1):
+THE WORLD MIRRORS WHAT build.py NOW PRODUCES (DESIGN.md Phase 0 + Phase 1):
 
   * layers carry ONLY the runtime columns (R5) — the build projects the rest away;
   * the curse layers are 2-point bbox-diagonal linestrings with no properties (R1);
@@ -165,7 +165,7 @@ LAYERS: dict[str, list] = {
     ],
 }
 
-# ── the count-only layers (PLAN.md Phase 1 R1/R2) ────────────────────────────
+# ── the count-only layers (DESIGN.md Phase 1 R1/R2) ────────────────────────────
 #
 # What the real build ships for these: one 2-point (minX,minY)→(maxX,maxY) linestring
 # per feature, NO properties. The source geometry below is what the envelope is
@@ -204,7 +204,7 @@ DIAGONAL_LAYERS: dict[str, list[str]] = {
 
 # ── the layers built through build.py's REAL pipeline ────────────────────────
 #
-# An OSM XML fixture with the cases PLAN.md Phase 0 exists for:
+# An OSM XML fixture with the cases DESIGN.md Phase 0 exists for:
 #   w7101  a CLOSED way (leisure=pitch)      — must export exactly ONCE (the old
 #                                              all-types export wrote it twice);
 #   w7102  an UNCLOSED way with an area tag  — a mapping error, dropped by the

@@ -1,4 +1,4 @@
-# .github/workflows/world-density-shards.yml — Phase 4 (see tools/osm-world/PLAN.md
+# .github/workflows/world-density-shards.yml — Phase 4 (see tools/osm-world/DESIGN.md
 # §Phase 4). Builds the DENSITY grid only (build.py --only density) for every "fine"
 # shard in tools/osm-world/shards.json (the 514-member finest Geofabrik cover, written
 # by cover.py — Phase 3) and uploads each shard's output to R2 under
@@ -12,7 +12,7 @@
 # cell sums double-count every way in the buffers. cover-geometries/ and shards.json
 # come from the same cover.py run — regenerate and commit them together.
 #
-# This workflow does NOT merge shards into the global density grid. PLAN.md §Phase 4:
+# This workflow does NOT merge shards into the global density grid. DESIGN.md §Phase 4:
 # "the merge does not fit a runner today" (transient disk ~2x layer bytes, and the
 # pre-reduction global numbers are tens of GB) — merge runs by hand on kadro:
 #
@@ -43,15 +43,15 @@
 # exercises the density path — but the monthly `schedule` trigger will fail every
 # time and should probably stay disabled (comment it out) until the token exists.
 #
-# Cost model (PLAN.md §Phase 4), calibrated against world-canary.yml's measured
+# Cost model (DESIGN.md §Phase 4), calibrated against world-canary.yml's measured
 # runner envelope and since confirmed by a full-scale run — 113/113 jobs, zero
 # failures, 2026-08-22:
 #   - Density shards fit easily: <=~5 GB RSS worst case (quebec), ~1.2 GB disk,
 #     "minutes each" on kadro-class hardware. CI-class wall time is unmeasured.
 #   - Public repos get unlimited included Actions minutes; private repos on the Pro
 #     plan get 3,000 min/mo then $0.005/min (2-core arm64 runner rate cited in
-#     PLAN.md — this workflow uses ubuntu-latest/x64, check current pricing before
-#     relying on that number). If overage becomes real, PLAN.md's fallback is
+#     DESIGN.md — this workflow uses ubuntu-latest/x64, check current pricing before
+#     relying on that number). If overage becomes real, DESIGN.md's fallback is
 #     splitting tools/osm-world/ + these workflows into a separate public repo.
 #   - Matrix hard cap is 256 jobs/workflow, hence the batching below. Batches are
 #     capped BOTH by count (5) and by accumulated est_bytes (2 GB): the fine shards
@@ -76,7 +76,7 @@ on:
   # and no notification anybody reads. README §CI: "disable schedule: and
   # keep workflow_dispatch until then." Re-arm by uncommenting the two live lines.
   # schedule:
-  #   # Monthly cadence (PLAN.md §Phase 4: "parks and libraries do not move weekly").
+  #   # Monthly cadence (DESIGN.md §Phase 4: "parks and libraries do not move weekly").
   #   # 06:00 UTC on the 3rd of the month, offset from the 1st to dodge whatever else
   #   # piles onto midnight-on-the-1st across every other repo's monthly cron.
   #   - cron: "0 6 3 * *"
@@ -175,7 +175,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      # 20 = GitHub Free-tier concurrent-job ceiling for private repos (PLAN.md
+      # 20 = GitHub Free-tier concurrent-job ceiling for private repos (DESIGN.md
       # §Phase 4). Public repos aren't limited this way, but 20 is also just a
       # reasonable default so a bad shard's retries don't monopolize the runner
       # pool this repo shares with everything else it builds. Raise to 40 if this

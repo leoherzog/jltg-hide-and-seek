@@ -1,9 +1,9 @@
-# .github/workflows/world-feature-shards.yml — Phase 4 (see tools/osm-world/PLAN.md
+# .github/workflows/world-feature-shards.yml — Phase 4 (see tools/osm-world/DESIGN.md
 # §Phase 4). Builds FEATURE layers only (build.py --skip-density) for every "coarse"
 # shard in tools/osm-world/shards.json (~60-70 coarsest Geofabrik regions, written by
 # cover.py — Phase 3) and uploads each shard's output to R2 under shards/feature/<id>/.
 #
-# This workflow does NOT merge shards into the global feature layers. PLAN.md
+# This workflow does NOT merge shards into the global feature layers. DESIGN.md
 # §Phase 4: "the merge does not fit a runner today" — merge runs by hand on kadro:
 #
 #   uv run tools/osm-world/merge.py --shards <dir with one subdir per shard build> \
@@ -23,7 +23,7 @@
 # fail every run; consider commenting it out (leaving workflow_dispatch) until the
 # token exists.
 #
-# Cost model (PLAN.md §Phase 4), calibrated against world-canary.yml's measured
+# Cost model (DESIGN.md §Phase 4), calibrated against world-canary.yml's measured
 # runner envelope and since confirmed by a full-scale run — 87/87 jobs, zero
 # failures, 2026-08-22:
 #   - RAM was estimated flat ~2.4 GB regardless of shard size; the real run peaked at
@@ -32,10 +32,10 @@
 #   - DISK is: build-shard.sh passes --unlink-source, so build.py DELETES the raw
 #     extract the moment stage 1's filtered intermediate exists (safe: feature
 #     shards never run stage 4, the only later reader of the raw extract). That is
-#     what makes PLAN.md's "peak ~2.6x source" math real — without the deletion the
+#     what makes DESIGN.md's "peak ~2.6x source" math real — without the deletion the
 #     peak is source + intermediate + outputs (~3.5x: africa's 7.90 GB would peak
 #     ~28 GB against ~22 GB of x64 runner disk and fail). 2.6x bounds a single
-#     coarse shard around ~8.6 GB on these runners — PLAN.md's "<=~8 GB coarse
+#     coarse shard around ~8.6 GB on these runners — DESIGN.md's "<=~8 GB coarse
 #     rule" — hence ONE shard per matrix job below (batch_size 1), unlike density's
 #     batch-of-5: there is no comparable disk headroom to run two coarse shards
 #     back-to-back's worst case with margin.
@@ -44,8 +44,8 @@
 #     a future cover.py re-run producing more/smaller coarse shards doesn't require
 #     touching this file.
 #   - Public repos: unlimited included Actions minutes. Private/Pro: 3,000 min/mo
-#     then $0.005/min (arm64 2-core rate cited in PLAN.md; this workflow runs x64 —
-#     check current pricing). PLAN.md's fallback if overage bites: split
+#     then $0.005/min (arm64 2-core rate cited in DESIGN.md; this workflow runs x64 —
+#     check current pricing). DESIGN.md's fallback if overage bites: split
 #     tools/osm-world/ + these workflows into a separate public repo.
 #   - Concurrency defaults to 20 (Free-tier ceiling); raise if this repo has more.
 #
@@ -137,7 +137,7 @@ jobs:
     name: build (${{ matrix.batch_id }})
     needs: setup
     runs-on: ubuntu-latest
-    # Coarse shards can be continent-sized pre-Phase-1-split members (PLAN.md: "six
+    # Coarse shards can be continent-sized pre-Phase-1-split members (DESIGN.md: "six
     # continents whole" was the pre-split cover). NOT generous: the worst real job
     # used 92% of this, so a slower runner or a grown extract will trip it.
     timeout-minutes: 240

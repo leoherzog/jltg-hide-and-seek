@@ -1,4 +1,4 @@
-# .github/workflows/world-rebuild.yml — Phase 6 (see tools/osm-world/PLAN.md
+# .github/workflows/world-rebuild.yml — Phase 6 (see tools/osm-world/DESIGN.md
 # §Phase 6). The orchestrator: one dispatch rebuilds the whole world with nothing
 # left for a workstation —
 #

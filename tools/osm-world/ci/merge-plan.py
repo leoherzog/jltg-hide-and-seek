@@ -3,7 +3,7 @@
 tools/osm-world/ci/merge-plan.py — plan world-merge.yml's matrices from the shard
 manifests actually present in R2.
 
-See PLAN.md §Phase 6. Consumed by .github/workflows/world-merge.yml's `plan` job,
+See DESIGN.md §Phase 6. Consumed by .github/workflows/world-merge.yml's `plan` job,
 which syncs every shard's `manifest.json` (and nothing else) out of R2 into two
 local directories and points this script at them. It answers three questions the
 workflow must not answer for itself:
@@ -14,7 +14,7 @@ workflow must not answer for itself:
      from the cover (shards.json) but still present in R2 would silently merge
      stale data — and for density that means DOUBLE-COUNTING, because the dropped
      member's cells were reassigned to later members of the difference chain
-     (PLAN.md §Phase 6, the lakes-mask five-shard delta). So the manifest set must
+     (DESIGN.md §Phase 6, the lakes-mask five-shard delta). So the manifest set must
      equal shards.json's id set EXACTLY, both directions, per cover. Failure names
      every offender; `--skip-cover-check` is the explicit, logged escape hatch for
      deliberate partial merges.
@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="path to categories.json (the layer table)")
     parser.add_argument("--cells-per-band", type=int, default=30_000_000,
                         help="density cells per merge band (default 30M — sized "
-                             "so one band's FGB write stays ~3 GB RSS, PLAN.md "
+                             "so one band's FGB write stays ~3 GB RSS, DESIGN.md "
                              "§Phase 6)")
     parser.add_argument("--skip-cover-check", action="store_true",
                         help="tolerate a manifest set that does not equal "

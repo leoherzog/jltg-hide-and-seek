@@ -2,7 +2,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # build-admin.sh — the global administrative-boundary layer, from Overture.
 #
-# PLAN.md Phase 2. Produces one `admin.fgb` whose columns are exactly what
+# DESIGN.md Phase 2. Produces one `admin.fgb` whose columns are exactly what
 # `osm/worldfile.js:worldAdminAreas` already reads — `admin_level`, `name`,
 # `name:en`, `ISO3166-1`, `ISO3166-2` — so the client needs no change beyond
 # reading `"admin_source": "overture"` in the manifest.

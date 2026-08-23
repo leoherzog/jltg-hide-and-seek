@@ -193,7 +193,7 @@ DOWNLOADERS = (
 
 
 # The geometry classes a layer may ask `osmium export` for. Passing all three to every
-# layer was the double-emit bug (PLAN.md §Phase 0): osmium exports a closed way ONCE PER
+# layer was the double-emit bug (DESIGN.md §Phase 0): osmium exports a closed way ONCE PER
 # REQUESTED INTERPRETATION, so `point,linestring,polygon` writes every closed way twice
 # — its polygon, then the same ring re-read as a zero-area linestring — and nothing
 # downstream dedups ways. `point,polygon` makes a closed way a polygon and only that.
@@ -224,7 +224,7 @@ class Layer:
     layers): the client walks the R-tree and counts (`worldCount` in osm/worldfile.js)
     without touching one feature byte. Those ship as 2-point bbox-diagonal linestrings
     with no properties — same envelope, so every R-tree node and every search result
-    is bit-identical, at a fraction of the bytes (PLAN.md §Phase 1 R1). See
+    is bit-identical, at a fraction of the bytes (DESIGN.md §Phase 1 R1). See
     `diagonalize_layer`, which also dedups on `(osm_type, osm_id)`.
     """
 
@@ -246,7 +246,7 @@ class Table:
     include_tags: tuple[str, ...] = ()
     # The columns the CLIENT reads off a shipped feature, plus the `(osm_type, osm_id)`
     # identity. Everything else in `include_tags` exists so a `where` clause can see it
-    # and is projected away by `ogr2ogr -select` (PLAN.md §Phase 1 R5). Identity stays
+    # and is projected away by `ogr2ogr -select` (DESIGN.md §Phase 1 R5). Identity stays
     # even on layers that never read it, because the Phase-3 shard merge dedups on it.
     runtime_columns: tuple[str, ...] = ()
 
@@ -811,7 +811,7 @@ def export_layer(source: Path, layer: Layer, work: Path, table: Table, force: bo
         "osmium", "export", str(cut),
         "--index-type", OSMIUM_INDEX,
         "--config", str(export_config(work, table)),
-        # PER LAYER, and that is the double-emit fix (PLAN.md §Phase 0). osmium exports
+        # PER LAYER, and that is the double-emit fix (DESIGN.md §Phase 0). osmium exports
         # a closed way once per requested interpretation, so asking every layer for all
         # three types wrote every closed way twice — polygon plus zero-area linestring
         # — inflating counts up to 2× and planting a second POI at a different
@@ -882,7 +882,7 @@ def apply_geometry_dedup(geojson: Path, layer: Layer) -> Path:
     """
     Drop a way's linestring reading when the same way was also exported as a polygon.
 
-    This is the half of the double-emit fix (PLAN.md §Phase 0) that per-layer
+    This is the half of the double-emit fix (DESIGN.md §Phase 0) that per-layer
     `--geometry-types` cannot cover: a genuinely mixed layer (`water` holds lake
     polygons AND river linestrings) must keep `linestring` in its export, and osmium
     then writes every CLOSED way twice — its polygon, plus the same ring re-read as a
@@ -968,7 +968,7 @@ def geometry_envelope(coords) -> tuple[float, float, float, float] | None:
 
 def diagonalize_layer(filtered: Path, layer: Layer, work: Path) -> Path:
     """
-    Reduce a count-only layer to 2-point bbox-diagonal linestrings (PLAN.md §Phase 1 R1).
+    Reduce a count-only layer to 2-point bbox-diagonal linestrings (DESIGN.md §Phase 1 R1).
 
     The curse predicate layers are never drawn and never read feature-by-feature: the
     client calls `worldCount`, which walks the R-tree and reads zero feature bytes. All
@@ -1340,7 +1340,7 @@ def convert_layer(geojson: Path, layer: Layer, out_dir: Path, work: Path,
     packed Hilbert R-tree the browser walks with Range requests. Without it the client
     must download the file to find anything in it.
 
-    `-select` projects away the build-only columns (PLAN.md §Phase 1 R5): the layer
+    `-select` projects away the build-only columns (DESIGN.md §Phase 1 R5): the layer
     ships only what the client reads at runtime plus the `(osm_type, osm_id)` identity
     the Phase-3 merge dedups on. `-where` still sees every column — GDAL applies the
     attribute filter against the SOURCE layer, before the field map — so a `where` on
@@ -1508,7 +1508,7 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
     since a long street belongs wholly to the cell where it starts. That trade is
     documented in categories.json's `_density_comment` and surfaced in provenance.
 
-    `--clip-region` is the sharded-build half of that exactness rule (PLAN.md
+    `--clip-region` is the sharded-build half of that exactness rule (DESIGN.md
     §Phase 3): Geofabrik extracts overlap by design (buffered cutting polygons), so
     a shard build must count only what falls inside its ASSIGNED DISJOINT region
     (cover.py's `cover-geometries/<id>.geojson`) or every way in the overlap buffer
@@ -1682,7 +1682,7 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
                         round(row * cell_deg + half, 7),
                     ],
                 },
-                # Zero-valued counts are OMITTED per cell (PLAN.md §Phase 1 R4): the
+                # Zero-valued counts are OMITTED per cell (DESIGN.md §Phase 1 R4): the
                 # client already reads an absent column as zero — `worldDensity` skips
                 # zero and non-finite values on read (osm/worldfile.js), so absent and
                 # 0 are indistinguishable by construction. A cell only exists because
@@ -1802,7 +1802,7 @@ def r2_client():
     """
     The boto3 S3 client for R2, from the four `R2_*` environment variables.
 
-    Split out of `stage_upload` so `merge.py` can reuse THE SAME uploader (PLAN.md
+    Split out of `stage_upload` so `merge.py` can reuse THE SAME uploader (DESIGN.md
     §Phase 6, gap B4) instead of growing a second aws-cli code path with its own
     ContentType/CacheControl conventions to drift.
     """
@@ -1917,7 +1917,7 @@ def main(argv: list[str] | None = None) -> int:
                              "Omit for unchanged whole-extract behaviour")
     parser.add_argument("--unlink-source", action="store_true",
                         help="delete the --planet file as soon as stage 1's filtered "
-                             "intermediate exists (runner-disk headroom; PLAN.md "
+                             "intermediate exists (runner-disk headroom; DESIGN.md "
                              "§Phase 4). Refused when the density stage will run — "
                              "stage 4 is the only later reader of the raw extract")
     parser.add_argument("--force", action="store_true",

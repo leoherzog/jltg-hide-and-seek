@@ -108,7 +108,7 @@ THE MANIFEST is build.py's shape plus:
     dropping (loudly) any existing keys the current layer table no longer
     contains — and clears `partial` once the table is complete.
 
-CI MODES AND UPLOAD (PLAN.md §Phase 6 — world-merge.yml drives these; nothing below
+CI MODES AND UPLOAD (DESIGN.md §Phase 6 — world-merge.yml drives these; nothing below
 changes the serial `--shards … --admin … --out …` behaviour above):
 
   * `--upload --prefix P [--manifest-dest KEY]` publishes what THIS run produced,
@@ -180,7 +180,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import build  # noqa: E402 — build.py, same directory; stdlib-only at import time.
 # The R2 uploader (r2_client / r2_upload / check_upload_env) lives there and is
-# REUSED, never duplicated (PLAN.md §Phase 6 gap B4): one uploader, one set of
+# REUSED, never duplicated (DESIGN.md §Phase 6 gap B4): one uploader, one set of
 # ContentType/CacheControl rules, one multipart configuration.
 
 TABLE_PATH = HERE / "categories.json"

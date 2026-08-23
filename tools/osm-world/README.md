@@ -180,7 +180,7 @@ private-repo Actions runner is 2 vCPU / 8 GB RAM, a public one is 4 vCPU / 16 GB
 the merge depends on public runners' disk. Measured on ours, 2026-08-22:
 `cores: 4   ram: 15 GB`, **`disk: 86.2 GB free of 144.3 GB`** — against the 14 GB
 GitHub documents. Every workflow prints that line as its first step, because the figure
-is undocumented, has moved twice, and the merge sizing depends on it (`PLAN.md` §Phase 6).
+is undocumented, has moved twice, and the merge sizing depends on it (`DESIGN.md` §Phase 6).
 
 **Credentials, verified against the live bucket** — the S3 key pair needs **Object Read
 & Write**, nothing more and nothing less. Write covers `upload_file`, which becomes
@@ -237,7 +237,7 @@ decides what a feature carries. Together with the identity below they took michi
 643,681,472 to 232,847,376 bytes (−63.8%) and germany from 9,004,762,856 to
 3,343,969,105 (−62.9%) — no published number moved except the ones that were wrong, and
 several were. (Those are the `advertising`-fix, `-v3` totals — see §Testing the reader
-and `tools/osm-world/PLAN.md` for the intermediate `-v2` numbers this fix corrected.)
+and `tools/osm-world/DESIGN.md` for the intermediate `-v2` numbers this fix corrected.)
 
 ### `geometry` — the per-layer `osmium export --geometry-types`
 
@@ -459,7 +459,7 @@ constraints:
   fix is verified against ground truth**: a clipped merge of two adjacent German
   states matches a whole-Germany reference density build exactly (0 differing cells
   across 335,516 compared cells); the unclipped merge is detectably wrong, inflating
-  the shared boundary band by up to +27.7% per category (`tools/osm-world/PLAN.md`
+  the shared boundary band by up to +27.7% per category (`tools/osm-world/DESIGN.md`
   §Phase 3 retest has the full comparison).
 - **coarse — 87 regions, each ≤ 8 GB, 82.2 GB**, for the feature layers, which run flat
   at ~2.4 GB RSS and are bounded by runner disk instead. It is derived from the fine
@@ -594,13 +594,13 @@ to `--out` on failure), a real `--only park` run merging into an existing 37-lay
 manifest (`--only: merged 1 layer entr(y|ies) into the existing manifest's 37`, byte-
 identical manifest, no spurious `partial`), and `--unlink-source` refusing instantly
 whenever density would run and correctly deleting a real 21 MB extract mid-build
-otherwise, with byte-identical outputs to a control run. See `tools/osm-world/PLAN.md`
+otherwise, with byte-identical outputs to a control run. See `tools/osm-world/DESIGN.md`
 §Phase 3 retest for the full detail.
 
 ## CI
 
 Six workflows. The two shard workflows are **proven at full scale** (2026-08-22:
-87/87 and 113/113 jobs, zero failures — `PLAN.md` §Phase 4 Result). `world-admin.yml`
+87/87 and 113/113 jobs, zero failures — `DESIGN.md` §Phase 4 Result). `world-admin.yml`
 and `world-merge.yml` have both been dispatched for real: admin on run 32591161893
 (which failed on a GDAL driver gap and drove the fix now in `build-admin.sh`), and
 merge on run 32599689118, which published the live world. Only `world-rebuild.yml`,
@@ -647,7 +647,7 @@ non-zero exit, because peak RSS and wall clock are how an OOM kill is told apart
 bug, and an OOM-killed process writes no stderr at all.
 
 **The merge is in CI as of 2026-08-22** — authored, not yet dispatched — as
-`world-merge.yml`, the shape the 14-agent investigation (`PLAN.md` §Phase 6)
+`world-merge.yml`, the shape the 14-agent investigation (`DESIGN.md` §Phase 6)
 concluded fits a public runner: a **per-layer matrix** rather than one serial job
 (the serial version measured ~5.4 h against the 6-hour cap with no checkpointing),
 with the density grid merged in **N = ceil(cells / 30M) interleaved row bands

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/osm-world/ci/build-shard.sh — download, build, and upload ONE Geofabrik shard.
 #
-# See PLAN.md §Phase 4. Called in a loop, once per shard in its batch, by
+# See DESIGN.md §Phase 4. Called in a loop, once per shard in its batch, by
 # .github/workflows/world-density-shards.yml and world-feature-shards.yml. Not meant
 # to be run standalone outside CI, though it will work locally given the same env.
 #
@@ -159,7 +159,7 @@ log "md5 ok ($got_md5)"
 # stage-1 filter pass unconditionally before checking --only (it is not gated on
 # which layers were requested) — an inefficiency in build.py, not this script, and
 # out of scope for a CI-authoring change. Phase 4's finding that the fine shards (514)
-# measurement in PLAN.md already reflects build.py as it stands.
+# measurement in DESIGN.md already reflects build.py as it stands.
 log "building ($KIND)"
 /usr/bin/time -v -o "$SHARD_WORK/time.log" uv run "$REPO_ROOT/tools/osm-world/build.py" \
   --planet "$PBF" \

@@ -253,7 +253,7 @@ export const GEO_DENSITY_GRID_CATEGORIES = Object.freeze(
 
 // `curse_animal_habitat` was the second-largest layer in the build and almost all of
 // it was a copy of `green`, which every build already ships. It is no longer built;
-// its count is reconstructed from a partition identity instead (PLAN.md §Phase 1 R2).
+// its count is reconstructed from a partition identity instead (DESIGN.md §Phase 1 R2).
 //
 // The identity is exact, and it is exact because `landuse` is single-valued. Writing
 // the two selectors out:
@@ -507,7 +507,7 @@ export const ADMIN_ORDINAL_OVERRIDES = Object.freeze({
 });
 
 // The same ladder judgements for a world whose `admin` layer was built from Overture
-// divisions (manifest `admin_source: 'overture'`, PLAN.md Phase 2). Overture has no
+// divisions (manifest `admin_source: 'overture'`, DESIGN.md Phase 2). Overture has no
 // `admin_level`; the build synthesises one per subtype — country=2, dependency=3,
 // region=4, county=6, localadmin=7, locality=8, macrohood=9, neighborhood=10 — and
 // stamps ISO3166-1 only on levels 2–3 and ISO3166-2 only on level 4. The numbers
@@ -1135,7 +1135,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
  * fallback expression.
  *
  * The order is deliberate and is the whole backward-compatibility story. A world
- * built before PLAN.md §Phase 1 R2 — and every fixture world, and any world a reader
+ * built before DESIGN.md §Phase 1 R2 — and every fixture world, and any world a reader
  * points the app at by hand — still carries `curse_animal_habitat`, and for those the
  * layer is read directly and no arithmetic happens at all. The expression is reached
  * only when the named layer is genuinely absent from the manifest, which is the new

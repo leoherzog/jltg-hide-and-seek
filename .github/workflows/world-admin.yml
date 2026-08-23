@@ -1,4 +1,4 @@
-# .github/workflows/world-admin.yml — Phase 2 in CI (see tools/osm-world/PLAN.md
+# .github/workflows/world-admin.yml — Phase 2 in CI (see tools/osm-world/DESIGN.md
 # §Phase 2 and §Phase 6). Builds the global `admin` layer from Overture
 # `division_area` — NOT from OSM: admin boundaries are relations, and a relation
 # only assembles into a polygon when it fits entirely inside an extract, so a
@@ -35,7 +35,7 @@
 #     a runner's 4 cores and network make this minutes-to-tens-of-minutes.
 #     Timeout is generous.
 #   - Cadence: rarely, by hand. Boundaries move on a timescale of years
-#     (PLAN.md §Phase 2); this build is deliberately outside the shard cadence,
+#     (DESIGN.md §Phase 2); this build is deliberately outside the shard cadence,
 #     which is why world-rebuild.yml runs it but nothing schedules it.
 #
 # Overture PRUNES old releases (only ~2 live on S3 at a time). build-admin.sh
@@ -188,7 +188,7 @@ jobs:
           OUT="$RUNNER_TEMP/admin-build"
 
           # Meta first, locally: the release id is what lets the served page
-          # render the ODbL attribution without guessing (PLAN.md §Phase 2 —
+          # render the ODbL attribution without guessing (DESIGN.md §Phase 2 —
           # "© OpenStreetMap contributors, ODbL 1.0 — via Overture Maps
           # Foundation").
           python3 - "$OUT" "$REL" "$SIMPLIFY" <<'PY'

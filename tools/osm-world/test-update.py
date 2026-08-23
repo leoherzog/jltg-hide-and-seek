@@ -189,7 +189,7 @@ def check_geometry_classes(build, failures: list[str]) -> None:
 
 def check_density_clip(build, failures: list[str]) -> None:
     """
-    `--clip-region` — the sharded-density exactness rule (PLAN.md §Phase 3).
+    `--clip-region` — the sharded-density exactness rule (DESIGN.md §Phase 3).
 
     Geofabrik extracts overlap their neighbours (buffered cutting polygons), so a
     density shard that bins EVERY way of its extract double-counts the buffers once

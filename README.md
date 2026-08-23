@@ -281,7 +281,6 @@ AGENTS.md            notes for AI coding agents: architecture, conventions, meas
 GUIDE.md             \
 HIDING.md             >  the Hide+Seek rulebook — the authority on game rules
 SEEKING.md           /
-THERAPID*.md         prose rendering of the reference feed, handy for sanity checks
 package.json         a LOCAL copy of Web Awesome Pro, for reading component source
                      offline. NOTHING imports it: the page loads Web Awesome from the
                      hosted kit pinned in index.html, and that kit — not this — is the

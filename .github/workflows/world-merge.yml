@@ -1,11 +1,11 @@
-# .github/workflows/world-merge.yml — Phase 6 (see tools/osm-world/PLAN.md §Phase 6).
+# .github/workflows/world-merge.yml — Phase 6 (see tools/osm-world/DESIGN.md §Phase 6).
 # Merges the per-shard outputs in R2 (shards/feature/<id>/, shards/density/<id>/ —
 # written by world-feature-shards.yml and world-density-shards.yml) plus the Overture
 # admin build (admin/ — written by world-admin.yml) into THE world the client reads:
 # content-addressed layer files under world/, and world/manifest.json as the one
 # mutable object, uploaded strictly last.
 #
-# Shape (PLAN.md §Phase 6 — the 14-agent investigation's design, sized against the
+# Shape (DESIGN.md §Phase 6 — the 14-agent investigation's design, sized against the
 # 2026-08-22 measured shard totals):
 #
 #   plan ──► merge-layer (one job per layer, 35 jobs, pooled-bytes-descending so
@@ -51,7 +51,7 @@
 # EQUALS shards.json's id set, both directions, per cover. A missing manifest is a
 # shard job that never ran (silently short counts); an EXTRA manifest is a stale
 # shard from an older cover, and merging it DOUBLE-COUNTS density (its cells were
-# reassigned along the difference chain — PLAN.md §Phase 6, the lakes-mask
+# reassigned along the difference chain — DESIGN.md §Phase 6, the lakes-mask
 # five-shard delta). The `skip_cover_check` input is the explicit escape hatch.
 #
 # CANARY SWITCHES — `only_layers`, `skip_density`, `skip_finalize` exist so a
@@ -82,7 +82,7 @@
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
 #
 # `jlumbroso/free-disk-space` is MANDATORY on the merge jobs, not conditional
-# (PLAN.md §Phase 6): the 86.2 GB measured free disk is undocumented headroom
+# (DESIGN.md §Phase 6): the 86.2 GB measured free disk is undocumented headroom
 # (GitHub documents 14 GB), and green's merge peaks ~60 GB of transient disk.
 # swap-storage is deliberately KEPT — 4 GB of swap is the difference between slow
 # and OOM-killed if the FGB writer's per-feature cost runs above the measured law.
@@ -333,7 +333,7 @@ jobs:
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
-      - name: free disk space (MANDATORY on merge jobs — PLAN.md §Phase 6)
+      - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
           # +~31 GB in ~3 min. green's merge peaks ~60 GB of transient disk
@@ -444,7 +444,7 @@ jobs:
     # which an expanded matrix job would reject — so the whole job is skipped.
     if: ${{ (inputs.skip_density || 'false') != 'true' }}
     runs-on: ubuntu-latest
-    # ~35 min/band at 30M cells (PLAN.md §Phase 6) plus ~10 min syncing the
+    # ~35 min/band at 30M cells (DESIGN.md §Phase 6) plus ~10 min syncing the
     # 15.06 GB density tree; doubled by the retry-once wrapper.
     timeout-minutes: 180
     strategy:
@@ -468,7 +468,7 @@ jobs:
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
-      - name: free disk space (MANDATORY on merge jobs — PLAN.md §Phase 6)
+      - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
           # Band jobs peak ~45 GB (15 GB of shard grids + sort spill + the band
@@ -592,7 +592,7 @@ jobs:
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
-      - name: free disk space (MANDATORY on merge jobs — PLAN.md §Phase 6)
+      - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
           # ~15 GB of bands in + ~15 GB out + the writer's hidden ~2× temp.

@@ -1,12 +1,17 @@
 # CONTRACT.md
 
-Authoritative for every shape that crosses a module boundary in the browser port of
-`generate.py`. If this file and your intuition disagree, this file wins. If this file and
-`generate.py` disagree, `generate.py` wins and this file is a bug — say so in your report,
-do not silently diverge.
+Authoritative for every shape that crosses a module boundary. If this file and your
+intuition disagree, this file wins. If this file and the CODE disagree, that is a bug in
+one of them — work out which, fix it, and say so in your report. Never silently diverge.
 
-Line references are to `generated/generate.py`. Grep the snake_case name in the trailing
-comment of any field to find its Python original.
+This file was written before the port, as the interface eleven parallel agents built
+against: nothing composed unless every boundary shape was fixed in advance, which is why
+it is this precise about sorting, key order and number formatting. Those rules are still
+live and still the reason two runs agree.
+
+The snake_case name in a field's trailing comment is its original in the Python CLI that
+this code was ported from. That file has been deleted; the names are provenance, not a
+reference you can follow.
 
 **Scope.** `index.html`, plus `strategy.html` (S5) as a **fragment-only
 second view of the same document** — §(g). S5 adds no worker stage, no `Report` field and no
@@ -23,7 +28,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
 | External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
-| Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. Byte-identity with the Python CLI is *not* required. |
+| Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. Use a plain `a < b ? -1 : a > b ? 1 : 0` comparator, never `localeCompare` (locale-dependent = non-deterministic). |
 | Sorting numbers | `Array.prototype.sort()` is lexicographic by default. Always pass `(a, b) => a - b`. |
@@ -33,33 +38,33 @@ embedded JSON block; it is built from `state.report` in memory.
 
 ## (a) Module map
 
-| File | Owner | Side | Exports |
-|---|---|---|---|
-| `index.html` | Shell agent | main | — (page shell, 9 skeleton sections, WebAwesome head) |
-| `styles.css` | Shell agent | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
-| `app.js` | App agent | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
-| `render/html.js` | HTML agent | main | see §(e) |
-| `render/verdict.js` | Verdict agent | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
-| `render/map.js` | Map agent | main | `renderKeyNumbers`, `renderNetworkMap`, `renderTransitReality` |
-| `render/deck.js` | Deck agent | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
-| `render/strategy.js` | Strategy agent | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
-| `render/simulator.js` | Strategy agent | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `worker.js` | Worker agent | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
-| `lib/core.js` | **Contract agent (done)** | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
-| `lib/geo.js` | **Contract agent (done)** | worker+main | geometry toolkit |
-| `lib/cache.js` | Infra agent | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
-| `lib/http.js` | Infra agent | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
-| `gtfs/feed.js` | GTFS agent | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow` |
-| `gtfs/service.js` | GTFS agent | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates` |
-| `gtfs/raptor.js` | GTFS agent | worker | `raptor`, `raptorReverse`, `buildJourney` |
-| `gtfs/network.js` | Network agent | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
-| `gtfs/infer.js` | Network agent | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
-| `osm/flatgeobuf.js` | OSM agent | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
-| `osm/worldfile.js` | OSM agent | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
-| `osm/geodata.js` | OSM agent | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
-| `rules/catalogue.js` | Rules agent | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
-| `rules/audit.js` | Rules agent | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
-| `rules/score.js` | Score agent | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
+| File | Side | Exports |
+|---|---|---|
+| `index.html` | main | — (page shell, 9 skeleton sections, WebAwesome head) |
+| `styles.css` | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
+| `app.js` | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
+| `render/html.js` | main | see §(e) |
+| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
+| `render/map.js` | main | `renderKeyNumbers`, `renderNetworkMap`, `renderTransitReality` |
+| `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
+| `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
+| `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
+| `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
+| `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
+| `lib/geo.js` | worker+main | geometry toolkit |
+| `lib/cache.js` | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
+| `lib/http.js` | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
+| `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow` |
+| `gtfs/service.js` | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates` |
+| `gtfs/raptor.js` | worker | `raptor`, `raptorReverse`, `buildJourney` |
+| `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
+| `gtfs/infer.js` | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
+| `osm/flatgeobuf.js` | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
+| `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
+| `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
+| `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
+| `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
+| `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
 
 ### `lib/core.js` — exported symbols (already written)
 
@@ -121,7 +126,7 @@ the port.
 ## (b) Data shapes
 
 All shapes are plain JS objects. Field names are camelCase; the trailing comment gives the
-snake_case Python original so you can grep `generate.py`.
+snake_case Python original it was ported from — provenance only; that file is gone.
 
 Python `frozenset` → JS **Array, sorted** unless stated otherwise (a `Set` is not
 clone-safe). Python `tuple` → JS **Array**. Python `dict[str, X]` → JS plain object keyed
@@ -1100,9 +1105,9 @@ Rules that follow from it, and that every module must obey:
 
 ## (g) The second view — `#strategy`
 
-`generate.py` emits two files per city: `index.html` and `strategy.html` (S5,
-`render_strategy`), the hider's guide, which nothing links to. The invariant the
-CLI states is that the two pages never link to each other, because the seekers
+The CLI emitted two files per city: `index.html` and `strategy.html` (S5,
+`render_strategy`), the hider's guide, which nothing links to. The invariant it
+stated is that the two pages never link to each other, because the seekers
 read the first one. The port has **one document**, so the invariant becomes: nothing in the
 report view mentions, links to or hints at the guide. The guide may link back — that link is
 only ever visible to someone already inside it.

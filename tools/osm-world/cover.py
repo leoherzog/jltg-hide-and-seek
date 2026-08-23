@@ -14,7 +14,7 @@ tools/osm-world/cover.py — derive the two shard partitions from Geofabrik's in
 Downloads https://download.geofabrik.de/index-v1.json and computes:
 
   * `fine` — the finest DISJOINT cover of the planet by Geofabrik regions, for the
-    density shards (PLAN.md §Phase 3: each shard counts ways whose first node falls in
+    density shards (DESIGN.md §Phase 3: each shard counts ways whose first node falls in
     its assigned disjoint region, so boundary cells receive partial tallies that sum
     to the true total).
 

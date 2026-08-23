@@ -158,7 +158,7 @@ development, carried forward as a record of what was checked.
   payload inert inside JSON blocks and no premature `</script>`.
 - Headway model cross-checked against an independent computation from raw `stop_times`: the
   reported figure is the **midday (10:00–14:00) median over the route-direction's stops**. It
-  legitimately differs from `THERAPID-COMPACT.md` on peak-heavy routes (Wyoming: 60 midday vs 43
+  legitimately differs from an all-day mean on peak-heavy routes (Wyoming: 60 midday vs 43
   all-day mean) — different definition, both correct.
 - Generality: BART (pure rail, semi-radial → MEDIUM) and MBTA (7,770 stops, 401 routes,
   polycentric → LARGE) both produce clean pages; reference zone counts are Grand Rapids 319,
@@ -170,8 +170,6 @@ development, carried forward as a record of what was checked.
   nothing should start to.
 - Commit messages stay bare: no `Co-Authored-By`, no `Claude-Session` trailer.
 - `GUIDE.md` / `HIDING.md` / `SEEKING.md` are the rulebook and the authority on game rules.
-- `THERAPID*.md` are a prose rendering of the reference feed, useful for sanity checks; they are
-  **not** an input to the app, which reads GTFS directly.
 - `package.json` is a LOCAL copy of Web Awesome Pro for reading component source offline. NOTHING
   imports it: the page loads Web Awesome from the hosted kit pinned in `index.html`, and that kit —
   not this — is the version users get. Do not delete it as unused, and do not "align" the two

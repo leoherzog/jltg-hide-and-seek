@@ -1,4 +1,9 @@
-# PLAN — Option B: sharded build, global delivery
+# DESIGN — the sharded build and global delivery of the OSM layer
+
+> Written as a plan, kept as the design record: this describes work that is DONE and
+> shipped, and the reasoning, measurements and failure modes behind it. Seventeen files
+> across `tools/osm-world/`, `.github/workflows/` and `osm/geodata.js` cite it for *why*.
+> Do not delete it as a finished plan — the rationale lives nowhere else.
 
 The goal: serve the OSM layer entirely from static files, globally, with the browser
 client **unchanged** from what `osm/worldfile.js` + `osm/flatgeobuf.js` already implement

@@ -1,4 +1,4 @@
-# .github/workflows/world-canary.yml — spike S3 (see tools/osm-world/PLAN.md §Phase 4
+# .github/workflows/world-canary.yml — spike S3 (see tools/osm-world/DESIGN.md §Phase 4
 # and §Open questions/spikes).
 #
 # S3's question: "one ~1 GB shard on an actual Actions runner (time, disk headroom)"
@@ -11,11 +11,11 @@
 # i.e. no --skip-density / --only), no R2 upload (no secrets required to run this at
 # all — it uploads its output as a workflow artifact instead, so anyone with repo
 # write access can dispatch it without R2 credentials being minted first). The merge
-# step (tools/osm-world/merge.py) is out of scope everywhere in Phase 4 CI — PLAN.md
+# step (tools/osm-world/merge.py) is out of scope everywhere in Phase 4 CI — DESIGN.md
 # is explicit that merge does not fit a runner and runs by hand on kadro.
 #
 # NOT verified by running this file: I (the authoring agent) cannot execute GitHub
-# Actions from here. It has since been dispatched twice (PLAN.md §Phase 4), and the
+# Actions from here. It has since been dispatched twice (DESIGN.md §Phase 4), and the
 # envelope it measured is what every other workflow's timeouts are sized against:
 # 4 vCPU / 15 GB RAM / 86.2 GB free of 144.3 GB, and an apt gdal-bin new enough for
 # build.py's preflight(). Re-dispatch it whenever the runner image changes.
