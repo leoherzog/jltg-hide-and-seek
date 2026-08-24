@@ -1,0 +1,344 @@
+# .github/workflows/world-transit.yml — the global `transit_route` layer in CI
+# (see tools/osm-world/DESIGN.md §Phase 7 and §Phase 6). Builds the one layer that
+# carries route relations — assembled urban-rail lines with their ordered stops —
+# which is what lets a city with no GTFS feed at all be played from OSM alone.
+#
+# It is a sibling of world-admin.yml in every structural way, and for the same
+# reason: a relation only assembles when it fits ENTIRELY inside the extract being
+# read, so neither admin boundaries nor route relations can come from the 87
+# Geofabrik shards. Both are built globally, once, and join the world at merge time
+# (`merge.py --admin` / `merge.py --transit`). Everything below — stable handoff
+# prefix, fgb-then-sidecar-then-meta upload order, probes before publish — is
+# world-admin.yml's shape, deliberately.
+#
+# WHAT MAKES THIS ONE DIFFERENT: it reads the planet. That is the whole risk.
+#
+#   * `tools/osm-world/build-transit.py` runs `osmium tags-filter <planet>
+#     r/route=subway,train,light_rail,tram,monorail,funicular`, and tags-filter
+#     reads its input TWICE when it must also collect the members it references.
+#     After that first cut everything works on a file measured in hundreds of
+#     megabytes and the job is minutes of work.
+#   * Disk, against the MEASURED envelope (canary run 32566905248: `disk: 86.2 GB
+#     free of 144.3 GB`, against the 14 GB GitHub documents): the planet is ~94 GB.
+#     86.2 alone does not fit it, which is why `jlumbroso/free-disk-space` (+31 GB,
+#     ~3 min) is MANDATORY here rather than optional — 117 GB against 94 GB leaves
+#     roughly 23 GB, and the intermediate needs a fraction of that. The envelope is
+#     undocumented headroom that could shrink without notice, so the gate below
+#     REFUSES the run by name instead of discovering it as ENOSPC an hour into a
+#     download.
+#   * RAM is the other unmeasured part, and it is the one that would show up as an OOM
+#     kill rather than as a timeout: pass B holds every path way's coordinates at once,
+#     which is a few GB of Python tuples at planet scale against this runner's 16 GB.
+#     Berlin measured 1.85 GB peak RSS, but almost all of that is pyosmium's fixed cost
+#     and it does not extrapolate. `build-transit.py`'s header says what to change if it
+#     ever does bite.
+#   * Wall clock is the unmeasured part: a ~94 GB download plus two streaming passes
+#     over it, against the 6 h job cap. The timeout is set generously and the job is
+#     resumable in the only sense that matters — nothing is published until the
+#     probes pass, so a timeout costs time and no correctness.
+#
+# Stage 0b (replication diffs) never runs here: `--no-update` is passed explicitly,
+# and build.py would skip it anyway for a freshly downloaded file. Applying diffs
+# rewrites the whole PBF and transiently needs ~2.1× the planet in free space, which
+# no runner has; a fresh download IS the update.
+#
+# Cadence: with the rest of a rebuild. Unlike admin (whose boundaries move on a
+# timescale of years) route relations change constantly — new lines, new stops,
+# re-tagged colours — so this is not a "run it once a year" layer. It is chained
+# from world-rebuild.yml beside admin.
+#
+# R2 secrets required (repo or environment secrets):
+#   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
+#
+# NOT verified by running this file: I cannot execute GitHub Actions from here.
+# YAML syntax was checked with PyYAML; build-transit.py itself was run for real
+# against a Berlin extract (237 relations, byte-identical on a re-run), but the
+# planet-scale disk, RAM and wall-clock numbers above are arithmetic on measurements
+# taken elsewhere and are unverified until this is dispatched.
+
+name: world-transit
+
+on:
+  workflow_dispatch:
+    inputs:
+      transit_prefix:
+        description: "Stable R2 prefix for the handoff to world-merge.yml (default: transit)"
+        required: false
+        default: "transit"
+      planet_url:
+        description: "Override build.py's planet mirror list. A REGIONAL EXTRACT HERE IS A SMOKE RUN ONLY — set upload=false with it"
+        required: false
+        default: ""
+      upload:
+        description: "Publish to the handoff prefix (uncheck to build and probe without publishing)"
+        required: false
+        default: true
+        type: boolean
+  # Callable from world-rebuild.yml with the same inputs.
+  workflow_call:
+    inputs:
+      transit_prefix:
+        required: false
+        type: string
+        default: "transit"
+      planet_url:
+        required: false
+        type: string
+        default: ""
+      upload:
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: world-transit
+  cancel-in-progress: false
+
+env:
+  TRANSIT_PREFIX: ${{ inputs.transit_prefix || 'transit' }}
+  PLANET_URL: ${{ inputs.planet_url || '' }}
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+  AWS_DEFAULT_REGION: auto
+
+jobs:
+  build-transit:
+    runs-on: ubuntu-latest
+    # A ~94 GB download plus two passes over it. The job cap is 6 h and this is
+    # the one workflow in the set whose wall clock is a guess rather than a
+    # measurement, so it asks for all of it.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: runner envelope (this build depends on undocumented headroom)
+        run: |
+          set -euo pipefail
+          echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
+          df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
+
+      - name: refuse a regional extract with an upload
+        if: ${{ inputs.upload && inputs.planet_url != '' }}
+        run: |
+          echo "::error::planet_url is set AND upload is on. A regional extract"
+          echo "::error::produces a transit_route layer covering only that region,"
+          echo "::error::and merge.py places whatever --transit names as THE global"
+          echo "::error::layer — publishing one would silently delete every route"
+          echo "::error::outside it. Re-run with upload unchecked, or without planet_url."
+          exit 1
+
+      - name: preflight R2 secrets (before a 94 GB download, not after)
+        if: ${{ inputs.upload }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            [ -n "${!v:-}" ] || missing+=("$v")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::missing secrets: ${missing[*]} — the upload step would fail after the whole build"
+            exit 1
+          fi
+
+      - name: free disk space (MANDATORY here — the planet does not fit without it)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          # +~31 GB in ~3 min, taking the measured 86.2 GB envelope to ~117 GB
+          # against a ~94 GB planet. Same knobs as the merge jobs; swap stays.
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: disk gate (fail by name, not as ENOSPC an hour in)
+        run: |
+          set -euo pipefail
+          df -Pk "$RUNNER_TEMP" | awk 'NR==2{printf "after cleanup: %.1f GB free\n", $4/1048576}'
+          free_gb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2{print int($4/1048576)}')
+          # 100 GB: a ~94 GB planet, the filtered intermediate, and enough slack
+          # that a slightly larger snapshot does not turn into a mid-download
+          # failure. Below this the run cannot succeed and must not be started.
+          if [ "$free_gb" -lt 100 ]; then
+            echo "::error::only ${free_gb} GB free after cleanup; this job needs ~100 GB"
+            echo "::error::for the planet plus its filtered intermediate. The 86 GB"
+            echo "::error::envelope this plan rests on (DESIGN.md §Phase 6) is"
+            echo "::error::undocumented headroom — if it has shrunk, the transit layer"
+            echo "::error::has to be built on a workstation and uploaded to"
+            echo "::error::$TRANSIT_PREFIX/ by hand. Nothing was downloaded."
+            exit 1
+          fi
+
+      - name: install osmium-tool, gdal, uv
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin aria2
+          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
+          # exist and still lack a driver a step needs — fail here, by name, in
+          # seconds. Plain grep, not -q: under pipefail, -q's early exit kills
+          # ogrinfo with SIGPIPE and fails the pipeline on success.
+          for drv in FlatGeobuf GeoJSONSeq; do
+            ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
+              || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
+          done
+          python3 -m pip install --user --upgrade uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: build transit_route.fgb (planet download included)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/transit-build"
+          args=(--planet "$RUNNER_TEMP/planet-latest.osm.pbf"
+                --out "$RUNNER_TEMP/transit-build"
+                # Explicit, though build.py would skip stage 0b for a freshly
+                # downloaded file anyway: applying replication diffs rewrites the
+                # whole PBF and transiently wants ~2.1x the planet in free space,
+                # which no runner has. A fresh download IS the update.
+                --no-update)
+          if [ -n "$PLANET_URL" ]; then
+            args+=(--planet-url "$PLANET_URL")
+          fi
+          uv run tools/osm-world/build-transit.py "${args[@]}"
+
+      - name: verification probes (a plausible file with wrong columns is the failure)
+        run: |
+          set -euo pipefail
+          FGB="$RUNNER_TEMP/transit-build/transit_route.fgb"
+          FAIL=0
+
+          # Structural: the count, the geometry class, and a parseable stops
+          # column. All three are invisible in a build log and all three are what
+          # osm/synth.js reads.
+          FEATURES="$(ogrinfo -so -al "$FGB" | sed -n 's/^Feature Count: //p')"
+          [ "${FEATURES:-0}" -gt 0 ] \
+            || { echo "   FAIL layer is empty"; FAIL=1; }
+          ogrinfo -so -al "$FGB" | grep 'Geometry: Multi Line String' >/dev/null \
+            || { echo "   FAIL layer geometry is not Multi Line String"; FAIL=1; }
+          ogrinfo -so -al "$FGB" | sed -n '/^osm_type/,$p'
+
+          # Berlin's U8. Verified against a Berlin extract on 2026-08-24: two
+          # relations, ref U8, colour #224F86, 24 stops each, running in OPPOSITE
+          # directions — which is the assembly's hardest property (the chainer
+          # seeds on a node id and cannot know which way trains run, so the stop
+          # members decide). A bbox probe here catches a build that produced
+          # plausible linework with the columns shifted by one.
+          got="$(ogrinfo -ro -q -al -geom=NO -spat 13.40 52.50 13.44 52.54 \
+                   -where "ref = 'U8'" "$FGB" \
+                 | sed -n 's/.*colour (String) = //p' | sort -u | tr '\n' ' ')"
+          case " $got " in
+            *"#224F86"*) printf '   ok   %-22s colour(s): %s\n' "Berlin U8" "$got" ;;
+            *) printf '   FAIL %-22s expected #224F86, got: %s\n' \
+                 "Berlin U8" "${got:-(nothing)}"; FAIL=1 ;;
+          esac
+
+          # The stops column carries the whole timetable-shaped payload; an empty
+          # or unparseable one degrades the fallback tier to nothing, silently.
+          #
+          # Two probes with two different quantifiers, on purpose. `-spat` is an
+          # ENVELOPE test: on a planet build the window returns every relation
+          # whose bounding box crosses central Berlin, including continent-spanning
+          # route=train services whose geometry never enters the city — a
+          # population no tuning run against an extract can see. Over that
+          # unbounded population only the emitter's actual contract is asserted:
+          # every stops value parses as a list of 5-field entries (which is what a
+          # shifted column cannot survive). Single-stop lists are the emitter's
+          # documented output (build-transit.py drops only ZERO-stop relations), so
+          # they are a reported statistic, not a failure. The >= 2 cardinality is
+          # asserted only over the pinned fixture — the Berlin U8 relations, scoped
+          # by `-where` like the colour probe — whose drift a human should review.
+          python3 - "$FGB" <<'PY' || FAIL=1
+          import json, re, subprocess, sys
+
+          def stops_rows(*extra):
+              text = subprocess.run(
+                  ["ogrinfo", "-ro", "-q", "-al", "-geom=NO", "-spat",
+                   "13.40", "52.50", "13.44", "52.54", *extra, sys.argv[1]],
+                  check=True, capture_output=True, text=True).stdout
+              return re.findall(r"^  stops \(String\) = (.*)$", text, re.MULTILINE)
+
+          rows = stops_rows()
+          if not rows:
+              print("   FAIL no stops column in the Berlin probe window")
+              raise SystemExit(1)
+          malformed = 0
+          short = 0
+          for row in rows:
+              try:
+                  stops = json.loads(row)
+              except ValueError:
+                  malformed += 1
+                  continue
+              if not isinstance(stops, list) or any(
+                      not isinstance(stop, list) or len(stop) != 5 for stop in stops):
+                  malformed += 1
+              elif len(stops) < 2:
+                  short += 1
+          if malformed:
+              print(f"   FAIL {malformed}/{len(rows)} probed routes have a "
+                    "malformed stops list")
+              raise SystemExit(1)
+          print(f"   ok   {'stops JSON':22s} {len(rows)} routes parse as 5-field "
+                f"stop lists ({short} with a single stop)")
+
+          u8 = [json.loads(row) for row in stops_rows("-where", "ref = 'U8'")]
+          if not u8 or any(len(stops) < 2 for stops in u8):
+              print(f"   FAIL Berlin U8: expected >= 2 stops per relation "
+                    f"(24 each on 2026-08-24), got {[len(s) for s in u8] or 'nothing'}")
+              raise SystemExit(1)
+          print(f"   ok   {'Berlin U8 stops':22s} {[len(s) for s in u8]} per relation")
+          PY
+
+          printf '   %s features, %s\n' "$FEATURES" \
+            "$(du -h "$FGB" | cut -f1)"
+          cat "$RUNNER_TEMP/transit-build/transit_route.meta.json"
+          [ "$FAIL" = "0" ] || { echo "::error::probes FAILED — not publishing"; exit 1; }
+
+      - name: upload to the stable handoff prefix (fgb, then sidecar, then meta)
+        if: ${{ inputs.upload }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          OUT="$RUNNER_TEMP/transit-build"
+          # Order matters, and it is world-admin.yml's rule: fgb, THEN the sha
+          # sidecar, THEN the meta. An upload torn between the first two leaves a
+          # new fgb with the old sidecar, and world-merge.yml's finalize runs
+          # `sha256sum -c` — so the tear fails loudly there instead of merging a
+          # half-replaced file.
+          for name in transit_route.fgb transit_route.fgb.sha256 transit_route.meta.json; do
+            aws s3 cp "$OUT/$name" "s3://$R2_BUCKET/$TRANSIT_PREFIX/$name" \
+              --endpoint-url "$EP" --no-progress
+          done
+
+      - name: step summary
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/transit-build"
+          {
+            echo "### world-transit"
+            if [ -f "$OUT/transit_route.meta.json" ]; then
+              if [ "${{ inputs.upload }}" = "true" ]; then
+                echo "- published to \`$TRANSIT_PREFIX/transit_route.fgb\`"
+              else
+                echo "- built, NOT published (upload unchecked)"
+              fi
+              echo '```'
+              cat "$OUT/transit_route.meta.json"
+              echo '```'
+            else
+              echo "- no layer was produced; see the failing step above"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

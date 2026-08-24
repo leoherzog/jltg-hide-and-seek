@@ -23,7 +23,7 @@ multi-gigabyte planet file usable from a browser.
 Two Python packages, not 723:
 
 ```
-osmium   (pyosmium)   the density pass
+osmium   (pyosmium)   the density pass, and the transit relation assembly
 boto3                 the R2 upload
 ```
 
@@ -172,7 +172,7 @@ wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
 | bucket | `jltg-hide-and-seek` (R2) |
 | public origin | `https://map.jltg.herzog.tech` — custom domain bound to the bucket |
 | client constant | `DEFAULT_WORLD_BASE_URL` in `osm/worldfile.js`, `https://map.jltg.herzog.tech/world` |
-| prefix | `world/` for the published world; `shards/{density,feature}/<id>/` for shard output |
+| prefix | `world/` for the published world; `shards/{density,feature}/<id>/` for shard output; `admin/` and `transit/` for the two out-of-band handoffs the merge reads |
 | site | GitHub Pages, `https://leoherzog.github.io/jltg-hide-and-seek/` — so the browser origin CORS must admit is `https://leoherzog.github.io` |
 
 The **repo is public**, and that is a build requirement rather than a preference: a
@@ -203,15 +203,18 @@ length of those uploads the published manifest pointed at objects that did not e
 
 ## What ships, and what does not
 
-**Feature layers** (30) — real geometry, exact counts, usable for distance and
+**Feature layers** (31) — real geometry, exact counts, usable for distance and
 containment. One `.fgb` each. Plus five count-only layers — three `curse_*` for the
 curse predicates whose selector deliberately differs from the same-named category, and
 `green_recreation_ground` + `animal_delta`, which exist only to reconstruct a sixth
-count as an identity (below). With the density grid, **36 layers in all**, which is
-what a full build logs. The **37th layer of a published world** — `admin`, replacing
-Overpass `is_in` — is not built here at all: it joins at merge time from the Overture
-build (`merge.py --admin`, §below), because a per-extract OSM admin layer is broken by
-construction and was discarded unread.
+count as an identity (below). With the density grid, **37 layers in all**, which is
+what a full build logs. The **38th and 39th layers of a published world** are not built
+here at all: `admin`, replacing Overpass `is_in`, and `transit_route`, the assembled
+route relations the OSM fallback tier synthesizes a feed from. Both join at merge time
+(`merge.py --admin --transit`, §below) and for the same reason — a relation only
+assembles when it fits entirely inside the extract being read, so neither can come from
+a shard. The per-shard `admin` layer was discarded unread; per-shard route relations
+were never built at all.
 
 **The density grid** — `building`, `street`, `car_street`, `footpath`, `bridge`, `tree`.
 These are tallies, not icons: nothing draws them, everything counts them, and their
@@ -253,7 +256,7 @@ midpoint. Three classes:
   **unclosed** way carrying an area tag is a mapping error and is dropped.
 - **`point,linestring,polygon` + `dedup: true`** — genuinely mixed layers, where the
   linestring reading must survive: `water` (lakes are polygons, rivers are linestrings),
-  `coastline`, `platform`, `high_speed_rail`, `advertising`, `green`.
+  `coastline`, `platform`, `high_speed_rail`, `rail_line`, `advertising`, `green`.
 
 `point,polygon` is a *claim about OSM tagging*, and getting it wrong loses features with
 no error anywhere — so every layer in that class was measured on two extracts with
@@ -332,8 +335,8 @@ instead of silently treating it as zero.
 
 ### `runtime_columns` — what actually ships on a feature
 
-`include_tags` pins 35 columns so the GeoJSONSeq has a stable schema. The client reads
-**12 of them** at runtime, plus `osm_type`/`osm_id`; the other 23 exist only so a `where`
+`include_tags` pins 36 columns so the GeoJSONSeq has a stable schema. The client reads
+**12 of them** at runtime, plus `osm_type`/`osm_id`; the other 24 exist only so a `where`
 clause can see them, and `ogr2ogr -select` projects them away per layer — intersected
 with the columns that layer's features actually carry, because `-select` hard-fails on a
 missing field. `osm_type`/`osm_id` are never stripped even on layers that never read
@@ -412,6 +415,128 @@ Overture prunes releases — at time of writing only `2026-06-17.0` and `2026-07
 still exist on S3 — so `build-admin.sh` checks the live listing and dies printing the
 survivors when the pinned `REL` has aged out.
 
+## `transit_route` — the layer a city with no feed is played from
+
+Every other layer in this build answers *what is near here*. This one answers *what
+rides here*: one feature per urban-rail route relation, carrying the assembled line and
+the ordered list of stops the relation names. `osm/synth.js` reads it over the ring a
+player drew and synthesizes a GTFS feed from it. The geometry and the stop order are
+real; OSM has no timetable of any kind, so the schedule that comes out is invented and
+the report says so. Nothing else reads the layer — it is not a `GEO_CATEGORIES` member
+and `collectGeodata` never touches it — so a run whose sources are all real feeds pays
+nothing for it.
+
+It has its own script, `build-transit.py`, for two independent reasons and either one
+alone would be enough. **`osmium export` cannot produce it**: the engine behind every
+category layer emits relations as multipolygons only and drops `type=route` entirely
+(verified on osmium-tool 1.19.1 — a `type=route,route=subway` relation exports as its
+member ways carrying their own `railway=subway` tags and none of the relation's), so no
+`where` clause recovers a route from the category chain. And **a relation only
+assembles inside the extract that holds it whole**, the same law that moved `admin` to
+Overture: a metro line crossing a Geofabrik boundary would assemble half in each of two
+shards, and the merge's `MIN(fid)` dedup would keep whichever shard sorts first, half
+line and all.
+
+```sh
+uv run tools/osm-world/build-transit.py --out ~/osm-builds/transit
+uv run tools/osm-world/build-transit.py --planet berlin-latest.osm.pbf \
+                                        --out ~/osm-builds/transit-berlin
+```
+
+`--planet`, `--planet-url`, `--no-fetch`, `--skip-md5`, `--no-update` and `--force`
+are `build.py`'s — literally, since the fetch and update stages are imported rather
+than copied — so pointing it at a Geofabrik extract is the development loop, exactly as
+it is there. It writes `transit_route.fgb`, a `transit_route.fgb.sha256` sidecar in
+`sha256sum -c` format (like `build-admin.sh`'s), and a `transit_route.meta.json` of
+counts, modes and the planet timestamp. Those are pipeline intermediates handed to the
+merge, not published world objects; the upload is `world-transit.yml`'s job.
+
+The pipeline is one `osmium tags-filter <planet>
+r/route=subway,train,light_rail,tram,monorail,funicular` — which pulls the matched
+relations' member ways and nodes along with them, so the intermediate is
+self-contained — then **two** pyosmium passes over that intermediate (relations first,
+so the second pass keeps only the member ids the first one asked for; a single pass
+would have to cache every way and node in the file, which is the RAM wall that killed
+the monolith build), then a GeoJSONSeq sorted by relation id, then `ogr2ogr`. Urban
+rail is a small universe — ~27,000 relations worldwide across the six modes, of which
+~9,000 are the non-`train` ones — so everything after the planet pass is minutes.
+
+**The assembly is where the work is**, and every rule in it is a measured property of
+the data rather than a reading of the PTv2 spec:
+
+- **Member order is unreliable, topology is sound.** Chaining members in stored order
+  hits at least one endpoint mismatch in 52/162 Seoul relations, 50/131 NYC, 27/148
+  Berlin, while union-find over way endpoints says 97.7% of relations are a single
+  connected component. So members are re-chained by shared endpoint *node id* (never by
+  coordinate — two nodes at the same position are a crossing, not a connection), with
+  per-segment reversal, since member ways are frequently traversed against their own
+  node order.
+- **Path members are role ∈ {`""`, `forward`, `backward`}.** PTv2 deprecated the last
+  two in 2011 and Seoul alone still carries 957; filtering on the empty role leaves 8
+  Seoul relations with no geometry at all and fakes gaps in 54 more.
+- **Platform ways are members of the same relation** (NYC 3,309, Berlin 2,609) and must
+  never reach the geometry.
+- **Stops are read by role, never by position** — a handful of relations interleave them
+  after the ways — and every `stop`-role member in the corpus is a node, 0 exceptions in
+  19,400+ slots.
+- **Loops, branches and honest gaps all exist**: 22 relations have no degree-1 endpoint
+  (circle lines), 3 have a junction, and 17 are genuinely disconnected into 2–4 pieces.
+  Those ship as a MultiLineString, parts ordered longest-first. Nothing fabricates a
+  joining segment — an invented straight line across a gap would be a line the trains
+  do not run on.
+- **Stop order comes from the geometry; direction comes from the member list.** Sorting
+  stops by their projection onto the chained line reproduces the member order for 95.9%
+  of relations and fixes the 4.1% that disagree (the Tokyo/Berlin through-services). But
+  the chainer seeds its walk on a node id and has no idea which way the trains run, so
+  the projection alone would hand back both of a line's direction relations pointing the
+  same way — a feed with two northbound services and nothing going south. The member
+  list breaks that tie by majority vote.
+- **A relation with no stop members is dropped** (17 in the corpus): a line nobody can
+  board is not a route.
+
+Determinism is the same contract as `build.py`'s: relations emitted in id order, every
+tie in the chainer broken by the smallest node id then the smallest way id, coordinates
+rounded to 7 decimals before writing, fixed JSON key order, no clock — so `fgb-equal.sh`
+tier 1 (sha256 of the whole file) is the reproducibility test.
+
+The layer is **self-contained by design**: it is not built through `export_layer`, so
+`include_tags` and `runtime_columns` do not apply to it and its columns are pinned in
+`build-transit.py` instead. Every column ships on every feature, with the empty string
+for an absent tag — a GeoJSONSeq column that is null on every feature has no type for
+OGR to infer.
+
+| column | |
+| --- | --- |
+| `osm_type`, `osm_id` | always `relation` + the relation id; one feature per relation |
+| `name`, `name_en`, `ref` | 99.5% / 97.8% of subway routes carry name / ref |
+| `colour` | British spelling only — `colour` 1.6M uses planet-wide, `color` 74 |
+| `operator`, `network`, `route` | `route` is the mode the converter maps to a GTFS `route_type` |
+| `interval`, `duration` | raw and unparsed; the converter owns the grammar and the fallback |
+| `stops` | JSON `[[nodeId, name, nameEn, lat, lon], …]` **in travel order** |
+
+`stops` is one JSON string rather than parallel columns because a FlatGeobuf column is a
+scalar — there is no repeated field to put a stop list in — and `"names;lats;lons"` is
+the same idea with a worse escaping story for a station called `Champs-Élysées ;
+Clemenceau`.
+
+**Measured** (2026-08-24, `berlin-latest.osm.pbf`, planet snapshot 2026-08-23T20:21:36Z,
+16 cores): 237 route relations in, **237 features / 2,678,856 bytes out in 15.5 s**
+including the tags-filter pass, 27 of them multi-part, 4,712 platform members excluded,
+0 stops further than 500 m from their line. Three runs from the same extract are
+byte-identical (`088224f4…`). Read back through the app's own reader over a central
+Berlin bbox: 165 routes in 278 range requests, and U8's two direction relations come
+back with 24 stops each **running opposite ways**, which is the property the direction
+rule exists for. A city extract also demonstrates the extract law from the other side —
+74,850 member ways of Berlin's regional `route=train` relations lie outside it, which is
+exactly what a shard would suffer and a planet run does not.
+
+`rail_line` is a different thing and worth not confusing with this: it is an ordinary
+category layer (`railway IN (rail, subway, light_rail, tram, monorail, funicular) AND
+service IS NULL`) carrying the *track*, which is what makes "is there a rail line in
+your zone" answerable. The `service IS NULL` clause is the whole entry — 59.5% of
+`railway=subway` ways are yards and sidings, and rail 49.9% — and it is the reason
+`service` is in `include_tags`.
+
 ## Sharding, and putting the shards back together
 
 The planet cannot be built as a monolith: `stage_density` holds every populated cell in
@@ -422,7 +547,8 @@ one base URL.
 ```sh
 uv run tools/osm-world/cover.py [--cap-gb 8] [--no-sizes]
 uv run tools/osm-world/merge.py --shards <dir of per-shard build dirs> \
-                                --admin <admin.fgb> --out <dir> [--no-assert]
+                                --admin <admin.fgb> --transit <transit_route.fgb> \
+                                --out <dir> [--no-assert]
 ```
 
 `cover.py` downloads Geofabrik's `index-v1.json` and writes **`shards.json`**, which is
@@ -547,7 +673,10 @@ Two details are not incidental:
 `count_only` layers carry no property columns, so they dedup on exact geometry bytes.
 Density is summed by `(row, col)` through an external sort that reproduces
 `stage_density`'s exact output shape. Admin is brought in from `--admin` and stamps
-`admin_source: "overture"`.
+`admin_source: "overture"`; `transit_route` is brought in from `--transit` the same way
+— content-addressed, hardlinked when the filesystem allows — and both are **required**
+on any run that places them, because a world silently missing either looks exactly like
+a world that has them.
 
 The global manifest is the per-build manifest plus: explicit **`features: 0`** for
 legitimately-empty FEATURE layers rather than omission (michigan really has no
@@ -583,9 +712,10 @@ CDN caches stay warm. `manifest.json` is the only mutable object.
 density-only shard does, since density-only selection is exactly what `--only density`
 means), but `merge.py` deliberately ignores the shard-level flag and computes the
 merged manifest's `partial` from the merged layer table alone: a full merge of
-partial shards still comes out with all 37 keys and no `partial` flag.
+partial shards still comes out with all 39 keys and no `partial` flag.
 
-A three-shard merge (bremen + hamburg + berlin + global admin) produces 37 layers /
+A three-shard merge (bremen + hamburg + berlin + global admin, measured before
+`rail_line` and `transit_route` joined the table) produces 37 layers /
 2.36 GB in half a minute and passes 304 verification checks; the real client reader opens
 the result, Overture admin and all. **A later retest re-verified all of this on real
 inputs**: recursive discovery through a three-level-deep R2-sync-shaped tree, the loud
@@ -599,21 +729,25 @@ otherwise, with byte-identical outputs to a control run. See `tools/osm-world/DE
 
 ## CI
 
-Six workflows. The two shard workflows are **proven at full scale** (2026-08-22:
+Seven workflows. The two shard workflows are **proven at full scale** (2026-08-22:
 87/87 and 113/113 jobs, zero failures — `DESIGN.md` §Phase 4 Result). `world-admin.yml`
 and `world-merge.yml` have both been dispatched for real: admin on run 32591161893
 (which failed on a GDAL driver gap and drove the fix now in `build-admin.sh`), and
 merge on run 32599689118, which published the live world. Only `world-rebuild.yml`,
-the orchestrator, has never been run as a unit.
-`world-canary.yml` remains the cheap way to re-measure a runner.
+the orchestrator, and `world-transit.yml`, the newest, have never been dispatched —
+`build-transit.py` itself has been run for real, but only against a city extract, so
+the planet-scale disk and wall-clock numbers in that workflow's header are arithmetic
+rather than measurement. `world-canary.yml` remains the cheap way to re-measure a
+runner.
 
 | workflow | what | matrix | timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
 | `world-density-shards.yml` | fine shards (514) | batch ≤5 / ≤2 GB → 113 matrix jobs | 350 min | `shards/density/<id>/` |
 | `world-feature-shards.yml` | coarse shards (87) | batch 1 → 87 matrix jobs | 240 min | `shards/feature/<id>/` |
 | `world-admin.yml` | Overture admin build + probes | 1 job | 120 min | `admin/` (handoff) |
-| `world-merge.yml` | shards + admin → the world | 35 layers + N bands + 3 | 350 min max | `world/` |
-| `world-rebuild.yml` | shards → admin → merge | calls the other four | — | — |
+| `world-transit.yml` | global route-relation build + probes | 1 job | 350 min | `transit/` (handoff) |
+| `world-merge.yml` | shards + admin + transit → the world | 36 layers + N bands + 3 | 350 min max | `world/` |
+| `world-rebuild.yml` | shards → admin, transit → merge | calls the other five | — | — |
 
 All are `workflow_dispatch` (the shard schedules stay commented out), `max-parallel`
 20, `fail-fast: false`, and fail loudly rather than quietly skipping when
@@ -725,11 +859,16 @@ with-file empty `foreign_consulate` — and covers the legacy-manifest path wher
 an old `curse_animal_habitat` layer is present and must be read directly instead of
 through the identity.
 
-`test-update.py` runs seven checks and reaches the parts of `build.py` no other harness
+`test-update.py` runs eight checks and reaches the parts of `build.py` no other harness
 can: the stage 0b replication-diff loop, the `where` rewriter (fold cases from the real
-table, plus the invariant that all 41 clauses in the build table round-trip
+table, plus the invariant that all 42 clauses in the build table round-trip
 byte-identical, plus the prefix-`NOT` refusal), and the geometry classes (the mixed +
-dedup layers are pinned so the `advertising` decision cannot be silently reverted).
+dedup layers are pinned so the `advertising` decision cannot be silently reverted). It
+also drives `build-transit.py`'s relation assembly on fixtures shaped like the corpus
+pathologies — scrambled and reversed member ways, a circle line, a disconnected
+relation, a junction, legacy and platform roles, a stop out of sequence, both
+directions of one line, and byte-identical output under a reordered member list — which
+is code no PBF-free harness would otherwise reach.
 
 The diff loop is worth its own harness: it replaces `pyosmium-up-to-date` with a stub
 whose exit codes are scripted, because the case worth testing is not the updater but the

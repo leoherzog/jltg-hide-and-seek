@@ -1,14 +1,15 @@
 # .github/workflows/world-merge.yml — Phase 6 (see tools/osm-world/DESIGN.md §Phase 6).
 # Merges the per-shard outputs in R2 (shards/feature/<id>/, shards/density/<id>/ —
 # written by world-feature-shards.yml and world-density-shards.yml) plus the Overture
-# admin build (admin/ — written by world-admin.yml) into THE world the client reads:
+# admin build (admin/ — written by world-admin.yml) and the global transit build
+# (transit/ — written by world-transit.yml) into THE world the client reads:
 # content-addressed layer files under world/, and world/manifest.json as the one
 # mutable object, uploaded strictly last.
 #
 # Shape (DESIGN.md §Phase 6 — the 14-agent investigation's design, sized against the
 # 2026-08-22 measured shard totals):
 #
-#   plan ──► merge-layer (one job per layer, 35 jobs, pooled-bytes-descending so
+#   plan ──► merge-layer (one job per layer, 36 jobs, pooled-bytes-descending so
 #        │    green's ~1.7 h merge starts in the first wave)
 #        └─► merge-density-band (N jobs, N = ceil(cells / 30M) computed AT RUNTIME
 #             by ci/merge-plan.py from the fine manifests — 119,473,135 measured
@@ -112,6 +113,10 @@ on:
         description: "R2 prefix world-admin.yml uploaded admin.fgb under (default: admin)"
         required: false
         default: "admin"
+      transit_prefix:
+        description: "R2 prefix world-transit.yml uploaded transit_route.fgb under (default: transit)"
+        required: false
+        default: "transit"
       cells_per_band:
         description: "Density cells per merge band (default 30M ≈ 3 GB RSS/band)"
         required: false
@@ -147,6 +152,10 @@ on:
         required: false
         type: string
         default: "admin"
+      transit_prefix:
+        required: false
+        type: string
+        default: "transit"
       cells_per_band:
         required: false
         type: string
@@ -176,6 +185,7 @@ env:
   WORLD_PREFIX: ${{ inputs.world_prefix || 'world' }}
   SHARDS_PREFIX: ${{ inputs.shards_prefix || 'shards' }}
   ADMIN_PREFIX: ${{ inputs.admin_prefix || 'admin' }}
+  TRANSIT_PREFIX: ${{ inputs.transit_prefix || 'transit' }}
   CELLS_PER_BAND: ${{ inputs.cells_per_band || '30000000' }}
   SKIP_COVER_CHECK: ${{ inputs.skip_cover_check || 'false' }}
   ONLY_LAYERS: ${{ inputs.only_layers || '' }}
@@ -731,9 +741,10 @@ jobs:
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           STAGED="$RUNNER_TEMP/staged-manifests"
           ADMIN_DIR="$RUNNER_TEMP/admin"
+          TRANSIT_DIR="$RUNNER_TEMP/transit"
           OUT="$RUNNER_TEMP/final-out"
-          rm -rf "$STAGED" "$ADMIN_DIR" "$OUT"
-          mkdir -p "$STAGED" "$ADMIN_DIR"
+          rm -rf "$STAGED" "$ADMIN_DIR" "$TRANSIT_DIR" "$OUT"
+          mkdir -p "$STAGED" "$ADMIN_DIR" "$TRANSIT_DIR"
 
           aws s3 sync "s3://$R2_BUCKET/$STAGING/manifests/" "$STAGED/" \
             --endpoint-url "$EP" --no-progress
@@ -749,12 +760,26 @@ jobs:
             "$ADMIN_DIR/admin.fgb.sha256" --endpoint-url "$EP" --no-progress
           (cd "$ADMIN_DIR" && sha256sum -c admin.fgb.sha256)
 
+          # The global transit_route build (world-transit.yml's stable prefix),
+          # verified the same way. merge.py requires --transit on exactly the
+          # runs it requires --admin, so a world without it cannot be published
+          # by accident — a missing build fails here, by name.
+          if ! aws s3 cp "s3://$R2_BUCKET/$TRANSIT_PREFIX/transit_route.fgb" \
+              "$TRANSIT_DIR/transit_route.fgb" --endpoint-url "$EP" --no-progress; then
+            echo "::error::no transit build at s3://\$R2_BUCKET/$TRANSIT_PREFIX/transit_route.fgb — dispatch world-transit.yml first"
+            exit 1
+          fi
+          aws s3 cp "s3://$R2_BUCKET/$TRANSIT_PREFIX/transit_route.fgb.sha256" \
+            "$TRANSIT_DIR/transit_route.fgb.sha256" --endpoint-url "$EP" --no-progress
+          (cd "$TRANSIT_DIR" && sha256sum -c transit_route.fgb.sha256)
+
           # merge.py refuses an incomplete layer table, HeadObject-verifies
-          # every staged layer's object (name AND bytes) in R2, uploads admin,
-          # then — strictly last — the live manifest.
+          # every staged layer's object (name AND bytes) in R2, uploads admin
+          # and transit, then — strictly last — the live manifest.
           uv run tools/osm-world/merge.py \
             --assemble-manifests "$STAGED" \
             --admin "$ADMIN_DIR/admin.fgb" \
+            --transit "$TRANSIT_DIR/transit_route.fgb" \
             --out "$OUT" \
             --upload \
             --prefix "$WORLD_PREFIX"

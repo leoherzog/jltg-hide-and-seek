@@ -8,14 +8,15 @@ tools/osm-world/test-update.py — build.py/merge.py internals no other harness 
 
     uv run tools/osm-world/test-update.py
 
-Seven checks, all about code that runs in the middle of an eight-hour job where a
+Eight checks, all about code that runs in the middle of an eight-hour job where a
 wrong answer is invisible: the replication-diff loop (stage 0b), the `where` rewriter
 that keeps `ogr2ogr` from silently discarding an attribute filter, the per-layer
 geometry classes that decide whether an open way is exported at all, the density
-`--clip-region` exactness rule and its skip-if-exists cache, merge.py's shard
-discovery (symlink/duplicate hardening, root-as-shard), and merge.py's manifest
-rules (the density features:0 refusal, `--only` merge-into stale keys, timestamps
-and cell_deg).
+`--clip-region` exactness rule and its skip-if-exists cache, build-transit.py's
+relation assembly (member re-chaining, role filtering, stop order, determinism),
+merge.py's shard discovery (symlink/duplicate hardening, root-as-shard), and
+merge.py's manifest rules (the density features:0 refusal, `--only` merge-into
+stale keys, timestamps and cell_deg).
 
 WHY A STUB AND NOT THE REAL UPDATER. Exercising `pyosmium-up-to-date` for real means
 pulling days of diffs off OSM's replication servers and rewriting the PBF — minutes to
@@ -173,7 +174,8 @@ def check_geometry_classes(build, failures: list[str]) -> None:
     """
     print("\n=== geometry classes ===")
     table = build.load_table(build.TABLE_PATH)
-    must_be_mixed = {"advertising", "platform", "coastline", "water", "high_speed_rail"}
+    must_be_mixed = {"advertising", "platform", "coastline", "water",
+                     "high_speed_rail", "rail_line"}
     for layer in table.feature_layers:
         if layer.key not in must_be_mixed:
             continue
@@ -410,6 +412,242 @@ def check_density_cache(build, failures: list[str]) -> None:
             build.run = real_run
 
 
+def check_route_assembly(transit, failures: list[str]) -> None:
+    """
+    build-transit.py's relation assembly — the part of the transit_route stage that
+    no other harness can see and that fails silently when it fails.
+
+    Every fixture here is a shape the 14-city corpus actually contains, reduced to
+    the smallest thing that still has the pathology:
+
+      * member ways stored out of order, one of them against its own direction
+        (52/162 Seoul relations, 50/131 NYC) — the re-chain must recover one
+        continuous line, and it must start at the smallest degree-1 node id rather
+        than at whichever member happened to be listed first;
+      * a circle line with no degree-1 endpoint at all (22 corpus relations) —
+        seeded from the smallest way id instead, and still one part;
+      * a relation disconnected into two pieces (17 corpus relations, Berlin 11) —
+        a MultiLineString, longest part first, and NEVER a fabricated segment
+        joining them;
+      * a junction (3 corpus relations) — the branch spills into its own part
+        rather than being dropped or spliced onto the trunk;
+      * legacy `forward` / `backward` path roles (Seoul carries 957; filtering on
+        the empty role alone empties 8 relations outright), platform WAY members
+        that must stay out of the geometry (Berlin 2,609), stops interleaved after
+        the ways (Beijing 2, Tokyo 2), and junk roles — `inactive`, a `"station "`
+        with a trailing space — that must be ignored without crashing;
+      * one stop out of sequence (Berlin 10/148, Tokyo 10/94 — the through
+        services), which must come back in travel order because the projection
+        onto the line says so, not because the relation did;
+      * a relation whose stops run the other way, which must come back running the
+        other way: the chainer seeds on a node id and has no idea which direction
+        the trains go, so if the projection alone decided, a line's two direction
+        relations would both list their stops southbound and a feed built from
+        them would have no northbound service at all;
+      * and determinism: reordering the WAY members must produce byte-identical
+        output, since member order is exactly the thing the assembly is not
+        allowed to depend on.
+    """
+    print("\n=== transit route assembly ===")
+
+    def segment(way_id, nodes, coords):
+        return transit.Segment(way_id, nodes[0], nodes[-1], tuple(coords))
+
+    def straight(lon0, lon1, steps=1, lat=52.5):
+        span = (lon1 - lon0) / steps
+        return [(round(lon0 + span * i, 7), lat) for i in range(steps + 1)]
+
+    # ── 1. out-of-order members, one reversed ──────────────────────────────
+    # Four consecutive 0.01° pieces of one line, listed 3, 1, 4, 2 with piece 4
+    # stored backwards. Node ids ascend along the line, so the walk must start at
+    # node 1 and finish at node 5.
+    pieces = [
+        segment(203, [3, 4], straight(13.02, 13.03)),
+        segment(201, [1, 2], straight(13.00, 13.01)),
+        segment(204, [5, 4], straight(13.04, 13.03)),
+        segment(202, [2, 3], straight(13.01, 13.02)),
+    ]
+    parts = transit.chain_segments(pieces)
+    if len(parts) != 1:
+        failures.append(f"scrambled member ways chained into {len(parts)} parts, "
+                        "expected one continuous line")
+    elif parts[0][0] != (13.0, 52.5) or parts[0][-1] != (13.04, 52.5):
+        failures.append(
+            f"re-chained line runs {parts[0][0]} → {parts[0][-1]}, expected "
+            "13.00 → 13.04 (seeded at the smallest degree-1 node)")
+    elif len(parts[0]) != 5:
+        failures.append(f"re-chained line has {len(parts[0])} coordinates, "
+                        "expected 5 — a shared node was duplicated or dropped")
+    else:
+        print("  ok  scrambled and reversed member ways re-chain into one line")
+
+    # ── 2. a circle line ───────────────────────────────────────────────────
+    ring = [
+        segment(301, [11, 12], [(13.0, 52.5), (13.01, 52.5)]),
+        segment(302, [12, 13], [(13.01, 52.5), (13.01, 52.51)]),
+        segment(303, [13, 14], [(13.01, 52.51), (13.0, 52.51)]),
+        segment(304, [14, 11], [(13.0, 52.51), (13.0, 52.5)]),
+    ]
+    parts = transit.chain_segments(ring)
+    if len(parts) != 1 or parts[0][0] != parts[0][-1]:
+        failures.append(
+            f"a circle line came back as {len(parts)} part(s), closed="
+            f"{bool(parts) and parts[0][0] == parts[0][-1]} — a loop has no "
+            "degree-1 endpoint and must be seeded from the smallest way id")
+    else:
+        print("  ok  a circle line with no endpoints closes into one part")
+
+    # ── 3. genuinely disconnected, longest part first ──────────────────────
+    split = [
+        segment(402, [21, 22], straight(13.30, 13.31)),          # ~0.01°
+        segment(401, [31, 32], straight(13.00, 13.05, steps=5)),  # ~0.05°
+    ]
+    parts = transit.chain_segments(split)
+    if len(parts) != 2:
+        failures.append(f"a disconnected relation gave {len(parts)} part(s), "
+                        "expected 2 — a gap must never be bridged")
+    elif parts[0][0] != (13.0, 52.5):
+        failures.append("MultiLineString parts must come back longest-first; "
+                        f"part 0 starts at {parts[0][0]}")
+    else:
+        print("  ok  a disconnected relation is a MultiLineString, longest first")
+
+    # ── 4. a junction spills a branch ──────────────────────────────────────
+    fork = [
+        segment(501, [41, 42], straight(13.00, 13.01)),
+        segment(502, [42, 43], straight(13.01, 13.02)),
+        segment(503, [42, 44], [(13.01, 52.5), (13.01, 52.52)]),
+    ]
+    parts = transit.chain_segments(fork)
+    if len(parts) != 2 or sum(len(part) for part in parts) < 5:
+        failures.append(f"a junction gave {len(parts)} part(s) totalling "
+                        f"{sum(len(part) for part in parts)} coordinates — the "
+                        "branch must survive as its own part")
+    else:
+        print("  ok  a junction spills its branch into a second part")
+
+    # ── 5. roles, stop order, and determinism, through assemble() ──────────
+    ways = {piece.way_id: piece for piece in pieces}
+    nodes = {
+        node_id: {"id": node_id, "name": name, "name_en": name_en,
+                  "lat": 52.5, "lon": lon}
+        for node_id, name, name_en, lon in (
+            (101, "Alpha", "Alpha", 13.005),
+            (102, "Beta", None, 13.015),
+            (103, "Gamma", "Gamma", 13.025),
+            (104, "Delta", None, 13.035),
+        )
+    }
+    members = [
+        ("n", 101, "stop"),
+        ("n", 102, "stop"),
+        ("n", 104, "stop"),                                  # one out of sequence
+        ("w", 203, ""),
+        ("w", 999, "platform"),                              # a platform WAY
+        ("w", 201, "forward"),                               # legacy path roles
+        ("n", 902, "inactive"),                              # junk, ignored
+        ("w", 204, "backward"),
+        ("w", 202, ""),
+        ("n", 103, "stop_exit_only"),                        # interleaved, after ways
+        ("n", 901, transit.normalise_role("station ")),      # trailing space
+    ]
+    relation = {
+        "id": 4242,
+        "tags": {"name": "U-Fixture", "ref": "UF", "colour": "#009FDF",
+                 "route": "subway", "interval": "10"},
+        "members": members,
+    }
+
+    counts = transit.Counts()
+    feature = transit.assemble(relation, ways, nodes, counts)
+    if feature is None:
+        failures.append("assemble() dropped a relation with four stops and a "
+                        "resolvable line")
+    else:
+        stops = json.loads(feature["properties"]["stops"])
+        if [stop[0] for stop in stops] != [101, 102, 103, 104]:
+            failures.append(
+                f"stops must come back in travel order by projection, got "
+                f"{[stop[0] for stop in stops]}")
+        else:
+            print("  ok  a displaced, interleaved stop is put back in travel order")
+        if stops[1][2] is not None:
+            failures.append("a missing name:en must be null inside the stops JSON, "
+                            f"got {stops[1][2]!r}")
+        if len(feature["geometry"]["coordinates"]) != 1:
+            failures.append(
+                "the platform way must not reach the geometry — expected one "
+                f"part, got {len(feature['geometry']['coordinates'])}")
+        elif len(feature["geometry"]["coordinates"][0]) != 5:
+            failures.append(
+                "forward/backward members must count as path ways — expected a "
+                f"5-point line, got "
+                f"{len(feature['geometry']['coordinates'][0])}")
+        else:
+            print("  ok  platform members are excluded and legacy roles are not")
+        if counts.platform_members != 1 or counts.other_roles != 2:
+            failures.append(
+                f"role accounting is off: {counts.platform_members} platform "
+                f"member(s), {counts.other_roles} in other roles, expected 1 and 2")
+        else:
+            print("  ok  platform and junk roles are counted, not crashed on")
+        absent = [key for key, _ in transit.TAG_COLUMNS
+                  if key not in feature["properties"]]
+        if absent:
+            failures.append(
+                f"every column must ship on every feature (a GeoJSONSeq column "
+                f"that is null everywhere has no type to infer): missing {absent}")
+        elif feature["properties"]["duration"] != transit.ABSENT:
+            failures.append("an absent tag must ship as the empty string, got "
+                            f"{feature['properties']['duration']!r}")
+        else:
+            print("  ok  absent tags ship as empty strings, schema pinned")
+
+        # The same relation walked the other way. Its stops are the same four
+        # nodes on the same track; only the member sequence says southbound.
+        opposite = dict(relation, id=4243, members=[
+            member for member in members if member[0] != "n"
+        ] + [("n", node_id, "stop") for node_id in (104, 103, 102, 101)])
+        against = transit.assemble(opposite, ways, nodes, transit.Counts())
+        order = [stop[0] for stop in json.loads(against["properties"]["stops"])]
+        if order != [104, 103, 102, 101]:
+            failures.append(
+                "the member list decides which end is the start — a relation "
+                f"listing its stops southbound must stay southbound, got {order}")
+        else:
+            print("  ok  the opposite direction relation stays the opposite way")
+
+        shuffled = dict(relation, members=(
+            [member for member in members if member[0] == "n"]
+            + list(reversed([member for member in members if member[0] == "w"]))))
+        again = transit.assemble(shuffled, ways, nodes, transit.Counts())
+        if json.dumps(again, sort_keys=True) != json.dumps(feature, sort_keys=True):
+            failures.append("assemble() is not independent of way-member order — "
+                            "the one thing the corpus says cannot be trusted")
+        else:
+            print("  ok  reordering the way members changes nothing")
+
+    # ── 6. the two rejections ──────────────────────────────────────────────
+    counts = transit.Counts()
+    stopless = {"id": 7, "tags": {}, "members": [("w", 201, "")]}
+    if transit.assemble(stopless, ways, nodes, counts) is not None \
+            or counts.no_stops != 1:
+        failures.append("a relation with no stop members must be dropped and "
+                        "counted — it is a line nobody can board")
+    else:
+        print("  ok  a stopless relation is dropped")
+
+    counts = transit.Counts()
+    lineless = {"id": 8, "tags": {},
+                "members": [("n", 101, "stop"), ("w", 8888, "")]}
+    if transit.assemble(lineless, ways, nodes, counts) is not None \
+            or counts.no_geometry != 1 or counts.unresolved_ways != 1:
+        failures.append("a relation whose member ways are all outside the extract "
+                        "must be dropped, with the unresolved members counted")
+    else:
+        print("  ok  a relation with no resolvable geometry is dropped")
+
+
 def check_merge_discovery(merge, failures: list[str]) -> None:
     """
     find_shards hardening: symlinked directories ARE followed (out-of-tree shard
@@ -574,9 +812,15 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
     cell = table["cell_deg"]
     shard_ts = "2026-03-01T00:00:00Z"
 
+    # Both out-of-band layers are stubbed: they are hardlink-and-ogrinfo, and this
+    # check is about the manifest rules around them, not about GDAL.
     real_place_admin = merge.place_admin
+    real_place_transit = merge.place_transit
     merge.place_admin = lambda src, out: {
         "path": "admin.stub.fgb", "bytes": 1, "sha256": "0" * 64, "features": 1}
+    merge.place_transit = lambda src, out: {
+        "path": "transit_route.stub.fgb", "bytes": 1, "sha256": "1" * 64,
+        "features": 1}
     try:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -589,8 +833,10 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
             }), encoding="utf-8")
             admin = tmp / "admin.fgb"
             admin.write_bytes(b"stub")
+            transit = tmp / "transit_route.fgb"
+            transit.write_bytes(b"stub")
             base = ["--shards", str(shards), "--admin", str(admin),
-                    "--work", str(tmp / "work")]
+                    "--transit", str(transit), "--work", str(tmp / "work")]
 
             # Zero density contributions: refused, pointing at the escape hatch.
             out1 = tmp / "out-refused"
@@ -687,8 +933,39 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
             else:
                 failures.append(
                     "--only merged into a manifest with a DIFFERENT cell_deg")
+            # --transit is required on exactly the runs --admin is, and for the
+            # same reason: a route relation is no more shardable than an admin
+            # boundary, so a full merge that omits it would publish a world in
+            # which the OSM fallback tier silently does not exist.
+            out6 = tmp / "out-no-transit"
+            try:
+                merge.main(["--shards", str(shards), "--admin", str(admin),
+                            "--work", str(tmp / "work6"), "--out", str(out6),
+                            "--allow-missing-density"])
+            except SystemExit as exc:
+                if "--transit" in str(exc):
+                    print("  ok  a full merge without --transit is refused by name")
+                else:
+                    failures.append(f"missing --transit: wrong error: {exc}")
+            else:
+                failures.append("a full merge published without a transit_route "
+                                "layer")
+
+            # And when it IS placed it reaches the manifest as a real entry with
+            # a path, beside admin — layer presence is the whole capability
+            # signal the client reads for the OSM fallback tier.
+            out7 = tmp / "out-with-transit"
+            merge.main([*base, "--out", str(out7), "--allow-missing-density"])
+            written = json.loads((out7 / "manifest.json").read_text())
+            entry = written["layers"].get("transit_route")
+            if not isinstance(entry, dict) or "path" not in entry:
+                failures.append(
+                    f"a full merge must list transit_route with a path, got {entry}")
+            else:
+                print("  ok  transit_route is placed and listed with a path")
     finally:
         merge.place_admin = real_place_admin
+        merge.place_transit = real_place_transit
 
 
 def check_cover(cover, failures: list[str]) -> None:
@@ -919,6 +1196,10 @@ def main() -> int:
     check_density_clip(build, failures)
     check_density_cache(build, failures)
 
+    # build-transit.py imports build.py and defers osmium to the function bodies,
+    # so its assembly is plain data in, plain data out — no PBF, no GDAL, no I/O.
+    check_route_assembly(load_module("build-transit"), failures)
+
     merge = load_module("merge")
     check_merge_discovery(merge, failures)
     check_merge_manifest(merge, failures)
@@ -932,7 +1213,8 @@ def main() -> int:
         print(f"{len(failures)} failed")
         return 1
     print("update loop, where-rewriter, geometry classes, density clip + cache, "
-          "merge discovery/manifest rules, and the fine cover behaved as intended")
+          "transit route assembly, merge discovery/manifest rules, and the fine "
+          "cover behaved as intended")
     return 0
 
 

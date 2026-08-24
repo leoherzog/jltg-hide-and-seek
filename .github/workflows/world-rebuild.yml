@@ -4,9 +4,10 @@
 #
 #   world-feature-shards ─┐
 #   world-density-shards ─┼──► world-merge
-#   world-admin ──────────┘
+#   world-admin ──────────┤
+#   world-transit ────────┘
 #
-# All four are reusable workflows (`workflow_call`) called on this ref with
+# All five are reusable workflows (`workflow_call`) called on this ref with
 # `secrets: inherit`; each keeps its own matrix, timeouts, retries and loud
 # preflights — this file adds ONLY the ordering. The ordering is not cosmetic:
 # the merge must see a COMPLETE, CONSISTENT shard set (its plan job hard-checks
@@ -16,17 +17,28 @@
 # skip_cover_check.
 #
 # Scale (2026-08-22 measured constants): 88 feature jobs (longest canada,
-# 220.9 min) + 114 density jobs (longest 47 min) + 1 admin + ~42 merge jobs
-# (35 layers + 4 density bands at the measured 119.47M cells + plan/assemble/
-# finalize) ≈ 245 jobs. The two shard workflows run 20-parallel each — 40
-# concurrent at the account ceiling — so expect ~4 h of shard phase (canada is
-# the long pole), then the merge phase's ~2 h (green's merge is its long pole).
-# Job-level 6 h caps apply per job; a workflow RUN may take much longer.
+# 220.9 min) + 114 density jobs (longest 47 min) + 1 admin + 1 transit + ~43
+# merge jobs (36 layers + 4 density bands at the measured 119.47M cells +
+# plan/assemble/finalize) ≈ 247 jobs. The two shard workflows run 20-parallel
+# each — 40 concurrent at the account ceiling — so expect ~4 h of shard phase
+# (canada is the long pole), then the merge phase's ~2 h (green's merge is its
+# long pole). Job-level 6 h caps apply per job; a workflow RUN may take much
+# longer.
 #
 # The admin build runs every rebuild even though boundaries move on a timescale
 # of years — it is minutes of work, and rebuilding it beats merging against a
 # stale prefix nobody remembers refreshing. Its Overture release stays PINNED in
 # world-admin.yml; a pruned release fails loudly there, naming what still exists.
+#
+# The transit build is the opposite case and joins here for the opposite reason:
+# route relations are re-tagged constantly, so `transit_route` goes stale between
+# rebuilds in a way admin does not. It costs a planet download of its own — the
+# shard workflows never hold one, so there is nothing to share — but it starts
+# with the shard wave and finishes long inside it, so it adds to the bill and not
+# to the critical path. It is chained rather than left to a memory because a
+# world merged against a months-old transit prefix looks exactly like a fresh
+# one: the OSM fallback tier would simply be missing whichever lines opened
+# since.
 #
 # Each calling job carries a job-level `concurrency` group matching the called
 # workflow's own group, so a rebuild queues behind (never races) a standalone
@@ -79,8 +91,15 @@ jobs:
       group: world-admin
       cancel-in-progress: false
 
+  transit:
+    uses: ./.github/workflows/world-transit.yml
+    secrets: inherit
+    concurrency:
+      group: world-transit
+      cancel-in-progress: false
+
   merge:
-    needs: [feature-shards, density-shards, admin]
+    needs: [feature-shards, density-shards, admin, transit]
     uses: ./.github/workflows/world-merge.yml
     secrets: inherit
     concurrency:

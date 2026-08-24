@@ -1121,6 +1121,132 @@ the first world-merge run.
   `planet-latest.osm.pbf` (94.4 GB — less than one month of our pulls) into R2 and
   cutting extracts ourselves. Not this week.
 
+## Phase 7 — `transit_route` and `rail_line`, the OSM fallback tier's build side — **built; measured on a city extract, not yet on the planet** (2026-08-24)
+
+The fallback tier lets a map with **no GTFS feed at all** be played: the player draws a
+ring, `osm/synth.js` synthesizes a feed from OSM route relations, and the report labels
+the invented timetable as invented. That costs the build two things — one ordinary
+category layer and one that cannot be one.
+
+**`transit_route` cannot be a `categories.json` entry, for two independent reasons.**
+Either alone would settle it:
+
+- **`osmium export` drops `type=route` entirely.** It emits relations as multipolygons
+  only. Verified against osmium-tool 1.19.1: a `type=route,route=subway` relation over
+  two member ways exported as the two ways' linestrings carrying their own
+  `railway=subway` tags and **none of the relation's**. No `where` clause recovers a
+  route from that, so the category chain cannot produce this layer at any setting.
+- **The Phase 2 law, restated.** A relation only assembles when it fits entirely inside
+  the extract being read — the same fact that moved `admin` to Overture. A metro line
+  crossing a Geofabrik boundary assembles half, or not at all, in each of the two shards
+  that touch it, and `merge.py` keeps `MIN(fid)` over shards in sorted order, so the
+  surviving copy would be whichever shard sorts first, half line and all.
+
+So it is a **global out-of-band pass joined at merge time, exactly as admin is**:
+`build-transit.py` (PEP-723 uv script, importing `build.py`'s planet stages rather than
+copying them) → `merge.py --transit` (`place_prebuilt`, which `place_admin` now shares)
+→ `world-transit.yml` (world-admin.yml's shape, plus a mandatory disk gate because this
+one reads the planet) → chained in `world-rebuild.yml` beside admin. The pipeline is one
+`osmium tags-filter r/route=<six modes>` pass over the planet, then **two** pyosmium
+passes over the resulting few-hundred-MB intermediate — relations first, so the second
+pass keeps only the member ids the first asked for. A single pass would have to cache
+every way and node in the file against the chance a later relation names it, which is
+`stage_density`'s RSS law and the reason the monolith build died.
+
+**Every assembly rule is a measurement, not a reading of the spec.** Corpus: 992
+relations across 14 cities (Seoul, NYC, Berlin, Tokyo, Shanghai, Beijing, Guangzhou,
+Shenzhen, Chengdu, Wuhan, Osaka, Nagoya, Taipei, Busan).
+
+| the naive thing | what the corpus says | the rule |
+| --- | --- | --- |
+| chain members in stored order | ≥1 endpoint mismatch in Seoul 52/162, NYC 50/131, Berlin 27/148; union-find says 97.7% are one component | re-chain by shared endpoint **node id**, reversing segments; ties on the smallest id |
+| path members are role `""` | Seoul carries 413 `forward` + 544 `backward`; the empty role alone empties 8 Seoul relations and fakes gaps in 54 | path roles are {`""`, `forward`, `backward`} |
+| the relation's ways are the line | NYC 3,309 way-`platform` members, Berlin 2,609 | platform roles never reach geometry; unknown roles ignored and counted |
+| stops come first (PTv2) | Beijing 2, Tokyo 2, Shenzhen 2, Chengdu 1, Osaka 1 interleave them after the ways | read stops **by role**, never by position |
+| a route is one line | 22 relations have no degree-1 endpoint (circle lines), 3 have a junction, 17 are disconnected into 2–4 pieces | seed loops from the smallest way id; emit MultiLineString, longest part first; **never bridge a gap** |
+| stop order = member order | projection onto the chained line reproduces member order for 95.9%; the 4.1% that differ are the Tokyo/Berlin through-services | sort by projected distance… |
+| …so the projection decides everything | the chainer seeds on a node id and cannot know which way trains run — both direction relations would come back identical | …but the **member list** decides which end is the start, by majority vote |
+| ship every relation | 17 corpus relations have no stop members (Taipei 6/32) | drop them: a line nobody can board is not a route |
+
+**The schema is self-contained and that is load-bearing.** The layer is not built
+through `export_layer`, so `include_tags`/`runtime_columns` do not apply and the twelve
+columns are pinned in `build-transit.py`: `osm_type`, `osm_id`, `name`, `name_en`,
+`ref`, `colour`, `operator`, `network`, `route`, `interval`, `duration`, `stops` (JSON
+`[[nodeId, name, nameEn, lat, lon], …]` in travel order). Writing it through the global
+`-select` projection instead would hand the client a layer whose tag columns are all
+empty — the projection lists the twelve columns the *category* layers ship. Absent tags
+are written as the empty string rather than JSON null, because OGR infers a GeoJSONSeq
+field's type from the values it sees and a column null on every feature has no type to
+infer.
+
+### Result — measured on Berlin, reproducible, and read back through the client
+
+`berlin-latest.osm.pbf` (94.5 MB, planet snapshot 2026-08-23T20:21:36Z), 16 cores:
+
+| quantity | measured |
+| --- | ---: |
+| route relations found | 237 |
+| features emitted | **237** (0 dropped for no stops, 0 for no geometry) |
+| output | **2,678,856 bytes**, `sha256 088224f4…` |
+| wall clock | **15.5 s**, of which ~7 s is the tags-filter pass |
+| peak RSS | **1.85 GB** — almost all of it pyosmium's fixed cost, not this extract's |
+| multi-part (honest gaps) | 27 |
+| platform members excluded | 4,712 |
+| stops > 500 m from their line | 0 |
+| member ways outside the extract | 74,850 |
+
+Three runs from the same extract are **byte-identical**, so `fgb-equal.sh` tier 1 is the
+reproducibility test for this stage as it is for `build.py`'s. That last row is the
+extract law seen from the inside: Berlin's regional `route=train` relations run to
+Hamburg, and 74,850 of their member ways are simply not in the file — exactly what a
+shard would suffer and a planet run does not.
+
+Read back through **the app's own reader** (`worldTransitRoutes` over a file-backed
+Range implementation, central-Berlin bbox): 165 routes in 278 range requests, tags and
+`stops` intact, and U8's two direction relations returning 24 stops each **running
+opposite ways** — the one property the direction rule exists for, and the one a
+projection-only sort silently gets wrong. `test-update.py`'s eighth check pins all of
+it on fixtures: scrambled and reversed members, a circle line, a disconnected relation,
+a junction, legacy and platform roles, an out-of-sequence stop, both directions, and
+byte-identical output under a reordered member list.
+
+**`rail_line`** is the ordinary half, and it is one `categories.json` entry:
+`railway IN (rail, subway, light_rail, tram, monorail, funicular) AND service IS NULL`,
+mixed geometry with `dedup` (a balloon loop is a closed way and exports as a polygon
+too). The `service IS NULL` clause is the entry: non-passenger track is not a rounding
+error — **59.5% of `railway=subway` ways carry `service=*`** (47.3% of them
+`service=yard`), rail 49.9%, light_rail 30.6%, tram 27.4% — and without it the layer is
+mostly depots and sidings. It is why `service` joins `include_tags` (and **only**
+`include_tags`: no client reads it). Lifecycle values are excluded by listing the live
+ones rather than negating the dead ones, because `railway=abandoned` alone is 434,320
+ways and a negation would silently admit whatever value gets invented next.
+
+### What is NOT measured yet
+
+- **The planet run.** Everything above is a city extract. `world-transit.yml`'s disk and
+  wall-clock numbers are arithmetic on measurements taken elsewhere: the canary's
+  `86.2 GB free of 144.3 GB` plus `jlumbroso/free-disk-space`'s +31 GB against a ~94 GB
+  planet, which is why that action is **mandatory** here and why the job refuses by name
+  below 100 GB free rather than discovering ENOSPC an hour into a download. The workflow
+  has never been dispatched.
+- **The handoff is wired but unexercised.** `world-merge.yml`'s finalize job now
+  fetches `$TRANSIT_PREFIX/transit_route.fgb`, verifies its sha256 sidecar, and passes
+  `--transit` to `--assemble-manifests` — mirroring the `--admin` handling, which
+  `merge.py` requires on exactly the same runs. But no CI merge has run with it:
+  `world-transit.yml` has never been dispatched, so no transit build exists in R2 yet,
+  and a finalize run today fails loudly by name at the fetch ("dispatch
+  world-transit.yml first") until one does.
+- **RAM at planet scale.** Berlin's 1.85 GB is dominated by a fixed pyosmium cost and
+  says almost nothing about the planet, where pass B holds every path way's coordinates
+  in memory at once. Order of magnitude: ~1.5 M distinct path ways at ~20 nodes each is
+  a few GB of Python tuples against a 16 GB runner — probably fine, unmeasured, and the
+  first thing to look at if the job is OOM-killed rather than timed out. The cheap fix
+  if it bites is to hold the coordinates in an `array('d')` per way rather than a tuple
+  of tuples; the expensive one is to shard by mode.
+- **The client budget.** The measured OSM budget on the reference border (~33 s, ~290
+  range requests, ~14.6 MB) predates `rail_line`. It must be **re-measured**, not
+  adjusted by arithmetic, before this ships.
+
 ## Baselines (kadro, `~/osm-builds/` — outside the Syncthing-synced tree; keep)
 
 - `michigan-mono/` — byte-identical to the VM build; the reproducibility reference.

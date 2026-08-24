@@ -8,7 +8,8 @@
 """
 tools/osm-world/merge.py — merge per-shard build.py outputs into one global world.
 
-    uv run tools/osm-world/merge.py --shards <dir> --admin <admin.fgb> --out <dir>
+    uv run tools/osm-world/merge.py --shards <dir> --admin <admin.fgb> \
+                                    --transit <transit_route.fgb> --out <dir>
 
 `--shards` holds ONE DIRECTORY PER SHARD BUILD, each being a `build.py --out`
 directory (its `manifest.json` plus `<layer>.fgb` files), AT ANY NESTING DEPTH —
@@ -19,7 +20,7 @@ NO `manifest.json` is a failed/interrupted build's leavings and is a HARD ERROR
 (`--allow-incomplete` opts out) — a merge that quietly skips it publishes counts that
 are silently short. The merge produces the one world the client sees: a single
 FlatGeobuf per layer with one Hilbert R-tree, a global density grid, the Overture
-admin layer, and one `manifest.json`.
+admin layer, the global transit_route layer, and one `manifest.json`.
 
 WHY THE MECHANICS LOOK THE WAY THEY DO (all measured, spike S1 on kadro):
 
@@ -74,6 +75,16 @@ WHAT GETS MERGED HOW:
     so a single-shard merge round-trips. Aggregation is external-sort based
     (`sort`), not a dict, because a planet grid is 90–196M cells and a Python dict
     at that size is the exact RAM wall that killed the monolith build.
+
+  * transit_route: NOT merged from shards either, and for the SAME reason in a
+    different costume. A route relation only assembles when it fits entirely
+    inside the extract, so a metro line crossing a shard boundary would arrive as
+    two half lines and the dedup — MIN(fid) over shards in sorted order — would
+    keep whichever half sorts first. It is built globally by
+    `build-transit.py` and taken verbatim from `--transit`, hardlinked or copied
+    into the output under its content-addressed name. Layer presence is the whole
+    capability signal: a world without it is a world where the OSM fallback tier
+    simply does not offer itself.
 
   * admin: NOT merged from shards (per-shard admin is broken by construction —
     boundary relations only assemble inside their extract). It is taken verbatim from
@@ -151,14 +162,14 @@ changes the serial `--shards … --admin … --out …` behaviour above):
     fits under the MEASURED law; at the investigation's pessimistic 162 B/feature
     it would not, and the durable fix would be client-side multi-band density.
 
-  * `--assemble-manifests DIR --admin admin.fgb` is the finalize job: it reads the
-    per-layer partial manifests staged by the matrix jobs, places the Overture
-    admin layer (`place_admin`), refuses loudly if any layer of the full table is
-    missing (a failed or unstaged matrix job must never publish a partial world;
-    `--allow-missing-density` is the one documented exception), and with
-    `--upload` verifies EVERY referenced layer object already exists in R2 at the
-    right byte size (HeadObject) before uploading admin and then — strictly last —
-    the manifest.
+  * `--assemble-manifests DIR --admin admin.fgb --transit transit_route.fgb` is the
+    finalize job: it reads the per-layer partial manifests staged by the matrix jobs,
+    places the two out-of-band layers (`place_admin`, `place_transit`), refuses loudly
+    if any layer of the full table is missing (a failed or unstaged matrix job must
+    never publish a partial world; `--allow-missing-density` is the one documented
+    exception), and with `--upload` verifies EVERY referenced layer object already
+    exists in R2 at the right byte size (HeadObject) before uploading those two and
+    then — strictly last — the manifest.
 """
 
 from __future__ import annotations
@@ -717,15 +728,24 @@ def publish_layer(temp: Path, key: str, out_dir: Path) -> dict:
     return entry
 
 
-def place_admin(admin_src: Path, out_dir: Path) -> dict:
-    """Hardlink (or copy) the Overture admin build into the output, content-addressed."""
-    digest = sha256_file(admin_src)
-    final = out_dir / f"admin.{digest[:SHA_PREFIX]}.fgb"
+def place_prebuilt(source: Path, key: str, out_dir: Path) -> dict:
+    """Hardlink (or copy) an out-of-band layer build into the output, content-addressed.
+
+    Two layers arrive this way rather than through a shard merge, both because a
+    relation only assembles inside the extract that holds it whole: `admin` from
+    Overture (`build-admin.sh`) and `transit_route` from the global route pass
+    (`build-transit.py`). The mechanics are identical to `publish_layer`'s, minus
+    the rename — the source belongs to whoever handed it over and must survive
+    this call untouched, which is why the link comes first and the copy is the
+    fallback for a cross-filesystem handoff.
+    """
+    digest = sha256_file(source)
+    final = out_dir / f"{key}.{digest[:SHA_PREFIX]}.fgb"
     if not final.exists():
         try:
-            os.link(admin_src, final)
+            os.link(source, final)
         except OSError:
-            shutil.copyfile(admin_src, final)
+            shutil.copyfile(source, final)
     entry = {
         "path": final.name,
         "bytes": final.stat().st_size,
@@ -736,6 +756,16 @@ def place_admin(admin_src: Path, out_dir: Path) -> dict:
     if bbox is not None:
         entry["bbox"] = bbox
     return entry
+
+
+def place_admin(admin_src: Path, out_dir: Path) -> dict:
+    """Hardlink (or copy) the Overture admin build into the output, content-addressed."""
+    return place_prebuilt(admin_src, "admin", out_dir)
+
+
+def place_transit(transit_src: Path, out_dir: Path) -> dict:
+    """Hardlink (or copy) the global transit_route build into the output."""
+    return place_prebuilt(transit_src, "transit_route", out_dir)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -974,6 +1004,12 @@ def main(argv: list[str] | None = None) -> int:
                              "Required whenever this run places admin — the "
                              "default full merge, an --only set containing admin, "
                              "or --assemble-manifests")
+    parser.add_argument("--transit", type=Path, default=None,
+                        help="the global transit_route.fgb (build-transit.py "
+                             "output). Required on exactly the runs --admin is: "
+                             "a route relation is no more shardable than an "
+                             "admin boundary, so this layer joins the world here "
+                             "or not at all")
     parser.add_argument("--out", required=True, type=Path,
                         help="output directory for the merged world")
     parser.add_argument("--work", default=None, type=Path,
@@ -1060,6 +1096,8 @@ def main(argv: list[str] | None = None) -> int:
         build.check_upload_env()
     if args.admin is not None and not args.admin.exists():
         raise SystemExit(f"--admin file not found: {args.admin}")
+    if args.transit is not None and not args.transit.exists():
+        raise SystemExit(f"--transit file not found: {args.transit}")
 
     out_dir: Path = args.out
     work: Path = args.work or (out_dir / "work")
@@ -1069,7 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── --assemble-density-bands: band files → the one global density layer ──
     if args.assemble_density_bands is not None:
         for flag, value in (("--shards", args.shards), ("--admin", args.admin),
-                            ("--only", args.only)):
+                            ("--transit", args.transit), ("--only", args.only)):
             if value is not None:
                 raise SystemExit(f"{flag} has no role in --assemble-density-bands")
         merged, meta = assemble_density_bands(args.assemble_density_bands,
@@ -1097,14 +1135,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.admin is None:
             raise SystemExit("--assemble-manifests places the admin layer and "
                              "needs --admin (build-admin.sh's admin.fgb)")
+        if args.transit is None:
+            raise SystemExit("--assemble-manifests places the transit_route layer "
+                             "and needs --transit (build-transit.py's "
+                             "transit_route.fgb, published by world-transit.yml)")
         staged, cell_deg, planet_timestamp = assemble_manifests(
             args.assemble_manifests)
         all_layers = dict(staged)
         log("── admin (from --admin, not merged) ─────")
         all_layers["admin"] = place_admin(args.admin, out_dir)
+        log("── transit_route (from --transit, not merged) ─────")
+        all_layers["transit_route"] = place_transit(args.transit, out_dir)
 
         full_table = set(table["identity"]) | set(table["count_only"]) | \
-            {"density", "admin"}
+            {"density", "admin", "transit_route"}
         unknown = sorted(set(all_layers) - full_table)
         if unknown:
             raise SystemExit(
@@ -1142,8 +1186,11 @@ def main(argv: list[str] | None = None) -> int:
             # Everything except admin was uploaded by its matrix job — verify it
             # is actually there at the right size before the manifest can point
             # at it. Admin is THIS job's to upload, before the manifest.
-            verify_layers_in_r2(client, all_layers, args.prefix, skip={"admin"})
-            upload_published(out_dir, {"admin": all_layers["admin"]},
+            verify_layers_in_r2(client, all_layers, args.prefix,
+                                skip={"admin", "transit_route"})
+            upload_published(out_dir,
+                             {key: all_layers[key]
+                              for key in ("admin", "transit_route")},
                              args.prefix, args.manifest_dest)
         return 0
 
@@ -1174,6 +1221,8 @@ def main(argv: list[str] | None = None) -> int:
                              "partition GRID ROWS, and only density is a grid)")
         if args.admin is not None:
             raise SystemExit("--admin has no role in a --density-band run")
+        if args.transit is not None:
+            raise SystemExit("--transit has no role in a --density-band run")
         k, n = parse_band(args.density_band)
         density_inputs = [shard / p for shard, m in manifests.items()
                           if (p := listed_path(m, "density"))]
@@ -1221,11 +1270,18 @@ def main(argv: list[str] | None = None) -> int:
     if (wanted is None or "admin" in wanted) and args.admin is None:
         raise SystemExit("--admin is required (this run places the admin layer; "
                          "only an --only set that excludes admin may omit it)")
+    if (wanted is None or "transit_route" in wanted) and args.transit is None:
+        raise SystemExit("--transit is required (this run places the "
+                         "transit_route layer; only an --only set that excludes "
+                         "transit_route may omit it). Build it with "
+                         "tools/osm-world/build-transit.py, or fetch the one "
+                         "world-transit.yml published to the handoff prefix.")
 
     # The full layer table — used both for the `partial` stamp and to drop stale
-    # manifest keys on an --only merge-into run.
+    # manifest keys on an --only merge-into run. The two out-of-band layers are in
+    # it: they are not merged here, but a world missing either of them is partial.
     full_table = set(table["identity"]) | set(table["count_only"]) | \
-        {"density", "admin"}
+        {"density", "admin", "transit_route"}
 
     # An --only run merges INTO an existing manifest. Read it UP FRONT so its
     # invariants gate the run before any heavy work:
@@ -1330,6 +1386,10 @@ def main(argv: list[str] | None = None) -> int:
         log("── admin (from --admin, not merged) ─────")
         layers["admin"] = place_admin(args.admin, out_dir)
 
+    if wanted is None or "transit_route" in wanted:
+        log("── transit_route (from --transit, not merged) ─────")
+        layers["transit_route"] = place_transit(args.transit, out_dir)
+
     # An --only run updates an existing manifest IN PLACE rather than clobbering the
     # layers it did not touch — otherwise re-merging one layer would silently unlist
     # every other published layer of the world. Keys the current layer table no
@@ -1362,11 +1422,12 @@ def main(argv: list[str] | None = None) -> int:
         "layers": {key: all_layers[key] for key in sorted(all_layers)},
     }
     # The pinned client rule: a manifest whose layer table is not the FULL table —
-    # every category + count_only layer, density, and admin — carries a top-level
-    # `"partial": true`. A full merge normally lists every key (legitimately-empty
-    # FEATURE layers get explicit `features: 0`), so a manifest can only be partial
-    # via an --only run or via --allow-missing-density omitting the density layer;
-    # an --only run that completes a previously-partial manifest clears the flag.
+    # every category + count_only layer, density, admin and transit_route — carries
+    # a top-level `"partial": true`. A full merge normally lists every key
+    # (legitimately-empty FEATURE layers get explicit `features: 0`), so a manifest
+    # can only be partial via an --only run, or via --allow-missing-density omitting
+    # the density layer; an --only run that completes a previously-partial manifest
+    # clears the flag.
     if not full_table <= set(all_layers):
         manifest["partial"] = True
     target.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
