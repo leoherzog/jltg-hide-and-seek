@@ -17,7 +17,9 @@
  * can re-run one, and `tools/osm-world/categories.json` is a mechanical translation of
  * them that has to be checkable against something.
  *
- * Budget on the reference map: ~290 range requests, ~14.6 MB, measured 2026-08-22.
+ * Budget on the reference map: ~290 range requests, ~14.6 MB, measured 2026-08-22 —
+ * before `rail_line` existed. Re-measure against a world that ships it; never adjust
+ * the figure by arithmetic.
  * Nothing here caches; the files are immutable and served `max-age=31536000`, so the
  * browser's own HTTP cache is what makes a second run cheap. Every round-trip is
  * announced through `onProgress(done, total, label)` because the user is watching a bar.
@@ -129,6 +131,19 @@ export const GEO_CATEGORIES = Object.freeze([
     'way["railway"="rail"]["highspeed"="yes"]({{bbox}});', {
       note: "Fallback: parse maxspeed ≥ 200 km/h, accepting '200', '200 km/h' and '125 mph'.",
     }),  // 0
+  cat('rail_line', 'Rail line',
+    'way["railway"~"^(rail|subway|light_rail|tram|monorail|funicular)$"][!"service"]'
+    + '({{bbox}});', {
+      note: 'The [!service] clause is the whole category: 59.5% of railway=subway ways carry '
+        + 'service=* (47.3% yard) and railway=rail 49.9%, so without it a depot behind a '
+        + 'maintenance shed counts as much line as the route through the middle of town. '
+        + 'Naming the live railway values instead of matching ["railway"] is what leaves out '
+        + 'construction, disused and abandoned track for the same reason. The assembled route '
+        + 'RELATIONS are a separate world layer, transit_route, and deliberately NOT a category '
+        + 'here: nothing on the page asks a question about a route relation, and their only '
+        + 'reader is the OSM fallback converter — a category would buy every run a fetch to '
+        + 'answer a question nobody asked.',
+    }),
   cat('water', 'Body of water',
     'nwr["natural"="water"]["name"]["water"!~"^(pool|reflecting_pool)$"]'
     + '["leisure"!="swimming_pool"]({{bbox}});'

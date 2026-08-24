@@ -669,6 +669,190 @@ export async function worldPois(world, layerKey, category, bbox, proj, opts = {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Transit routes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @typedef {Object} TransitRouteStop
+ * @property {number} nodeId OSM node id of the relation's `stop` member
+ * @property {string|null} name
+ * @property {string|null} nameEn `name:en` where the build carried it
+ * @property {number} lat
+ * @property {number} lon
+ */
+
+/**
+ * @typedef {Object} TransitRoute
+ * @property {number} osmId the route relation's OSM id
+ * @property {{name: string|null, nameEn: string|null, ref: string|null,
+ *   colour: string|null, operator: string|null, network: string|null,
+ *   route: string|null, interval: string|null, duration: string|null}} tags
+ * @property {Array<Array<[number, number]>>} lines the chained parts, `[lat, lon]`
+ * @property {Array<TransitRouteStop>} stops in travel order
+ */
+
+/**
+ * The nine tag columns `tools/osm-world/build-transit.py` promises for this layer, and
+ * the key each lands under. A fixed table rather than `featuresToPois`'s "every
+ * property that is not identity" sweep, because these nine are read BY NAME downstream:
+ * a tenth column would arrive as a tag nothing reads, and a renamed one would arrive as
+ * an absent tag nothing notices. Pinning the set is what makes the second failure loud.
+ */
+const TRANSIT_ROUTE_TAG_COLUMNS = Object.freeze([
+  Object.freeze(['name', 'name']),
+  Object.freeze(['name_en', 'nameEn']),
+  Object.freeze(['ref', 'ref']),
+  Object.freeze(['colour', 'colour']),
+  Object.freeze(['operator', 'operator']),
+  Object.freeze(['network', 'network']),
+  Object.freeze(['route', 'route']),
+  Object.freeze(['interval', 'interval']),
+  Object.freeze(['duration', 'duration']),
+]);
+
+/** The property carrying the ordered stop list, as JSON. See `parseTransitStops`. */
+const STOPS_PROPERTY = 'stops';
+
+/**
+ * A decoded property → a tag string, or null when the build carried nothing there.
+ *
+ * The empty string collapses to null on purpose. `ref=""` is not a route number and
+ * `interval=""` is not a headway; every consumer of these tags asks "is there a value"
+ * rather than "is the key present", and giving it one answer for both spellings of
+ * absence is what keeps it from having to ask twice.
+ */
+function tagOrNull(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value);
+  return text === '' ? null : text;
+}
+
+/**
+ * The `stops` column: a JSON array of `[nodeId, name, nameEn, lat, lon]` rows, in
+ * TRAVEL ORDER — the order the build recovered by projecting each stop node onto the
+ * chained line, because OSM's member order is not a sequence and cannot be trusted as
+ * one.
+ *
+ * One JSON string rather than a parallel set of delimited columns because a FlatGeobuf
+ * column is a scalar: there is no repeated field to put a stop list in, and encoding it
+ * as `"names;lats;lons"` is the same idea with a worse escaping story for a stop called
+ * `Champs-Élysées ; Clemenceau`.
+ *
+ * @returns {Array<TransitRouteStop>|null} null when the column is missing or will not
+ *   parse. The caller then drops the whole feature: a route with no stops and a route
+ *   whose stop list was mangled are different facts, and only the first is safe to hand
+ *   on as one.
+ */
+function parseTransitStops(raw) {
+  if (raw === undefined || raw === null) return null;
+  let rows;
+  try {
+    rows = JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(rows)) return null;
+
+  /** @type {Array<TransitRouteStop>} */
+  const stops = [];
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 5) continue;
+    const [rawId, rawName, rawNameEn, rawLat, rawLon] = row;
+    const nodeId = Number.parseInt(String(rawId), 10);
+    const lat = Number(rawLat);
+    const lon = Number(rawLon);
+    // A stop the reader cannot place is skipped and the rest of the line kept, the same
+    // judgement `featuresToPois` makes about a feature with no usable identity. Losing
+    // one stop shortens a line; refusing the line loses the whole system.
+    if (!Number.isFinite(nodeId) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    stops.push({
+      nodeId,
+      name: tagOrNull(rawName),
+      nameEn: tagOrNull(rawNameEn),
+      lat,
+      lon,
+    });
+  }
+  return stops;
+}
+
+/**
+ * Read the `transit_route` layer — assembled route relations, with their stop lists.
+ *
+ * The one read in this file that does not end in a `Poi`, and the reason is the shape
+ * of a `Poi` rather than a preference. A `Poi` carries a representative point and, for
+ * two categories, polygon outers; it has no field for linework and none for an ordered
+ * list of stops. A metro line reduced to the midpoint of its longest chain is a fine
+ * answer to "how far is the nearest rail line" — it is not an answer to "what would
+ * this line's timetable look like", which is the only question this layer exists to
+ * answer. Growing `Poi` a line field to carry it would put every existing category's
+ * measured representative point through `representativeFromGeometry` again for the sake
+ * of one consumer, so the route records go around `featuresToPois` instead.
+ *
+ * That one consumer is the OSM fallback converter, which is also why `transit_route` is
+ * not a `GEO_CATEGORIES` member and is never touched by `collectGeodata`: a run whose
+ * sources are all real GTFS feeds pays not one byte for it.
+ *
+ * ABSENT, EMPTY AND ZERO REMAIN THREE DIFFERENT ANSWERS, as everywhere else here. `null`
+ * says the build did not produce the layer at all, which is the caller's signal to
+ * refuse the source rather than to report a city with no railway; `[]` says the layer
+ * shipped and has nothing to say about this map. Neither is a count of zero routes that
+ * anything downstream may publish.
+ *
+ * @param {World} world
+ * @param {[number, number, number, number]} bbox
+ * @param {{fetchImpl?: typeof fetch}} [opts]
+ * @returns {Promise<Array<TransitRoute>|null>} null when the layer is not in the
+ *   manifest; `[]` when the manifest lists it as a path-less empty layer
+ */
+export async function worldTransitRoutes(world, bbox, opts = {}) {
+  const info = worldLayerInfo(world, 'transit_route');
+  if (info === null) return null;
+  if (layerEmpty(info)) return [];
+  const reader = worldReader(world, 'transit_route', opts);
+  if (reader === null) return null;
+  const features = await reader.query(rectOf(bbox));
+
+  /** @type {Array<TransitRoute>} */
+  const routes = [];
+  for (const feature of features) {
+    // The R-tree answered with bounding boxes, and a route relation is exactly the
+    // shape that needs narrowing back down: a commuter line's envelope covers every
+    // town between its termini, including the ones it passes without a rail in them.
+    // The segment test in stage 2 is also what keeps a through-running line that clips
+    // the corner of the map without a vertex inside it.
+    if (!intersectsBbox(feature, bbox)) continue;
+
+    const identity = osmIdentity(feature.properties);
+    if (identity === null) continue;
+
+    const stops = parseTransitStops(feature.properties[STOPS_PROPERTY]);
+    if (stops === null) continue;
+
+    /** @type {Object<string, string|null>} */
+    const tags = {};
+    for (const [column, key] of TRANSIT_ROUTE_TAG_COLUMNS) {
+      tags[key] = tagOrNull(feature.properties[column]);
+    }
+
+    routes.push({
+      osmId: identity[1],
+      tags,
+      // MultiLineString parts, flipped to geographic order like every other geometry
+      // that leaves this file. The parts are the build's chaining result: more than one
+      // means the relation's ways do not form a single connected run, which is a real
+      // property of the route and not an error to paper over here.
+      lines: feature.lines.map(toLatLon),
+      stops,
+    });
+  }
+  // The build writes one feature per relation, so the relation id alone is already a
+  // total order — no `cmpTypeId` needed, since every row here is a relation.
+  routes.sort((a, b) => a.osmId - b.osmId);
+  return routes;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // The density grid
 // ═══════════════════════════════════════════════════════════════════════════════
 
