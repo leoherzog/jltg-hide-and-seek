@@ -28,7 +28,7 @@ import {
   QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
   MAX_MAP_SPOKES, MAP_SPOKE_RDP_M, hmsToS, coord, rhu,
 } from './lib/core.js';
-import { Projection } from './lib/geo.js';
+import { Projection, bboxOf } from './lib/geo.js';
 import { openCache } from './lib/cache.js';
 
 import {
@@ -48,7 +48,9 @@ import {
   setInferLogger,
 } from './gtfs/infer.js';
 import { collectGeodata, emptyGeoData } from './osm/geodata.js';
-import { openWorld, worldStatsLine, DEFAULT_WORLD_BASE_URL } from './osm/worldfile.js';
+import {
+  openWorld, worldStatsLine, worldTransitRoutes, DEFAULT_WORLD_BASE_URL,
+} from './osm/worldfile.js';
 import { catalogueFor } from './rules/catalogue.js';
 import {
   answerSignature, survivalFractions, globalQuestionOrder, auditQuestions,
@@ -185,8 +187,11 @@ class Progress {
 
 // ── the pipeline ─────────────────────────────────────────────────────────────
 
+/** The `SourceRef.kind` values this worker knows how to read. CONTRACT.md §(d). */
+const SOURCE_KINDS = Object.freeze(['file', 'osm', 'url']);
+
 /**
- * The run's sources as a list of `{ arg, label, mdbId }`.
+ * The run's sources as a list of `{ arg, ring, id, label, mdbId }`.
  *
  * CONTRACT.md §(d)'s `run` message carries `sources: SourceRef[]` and nothing else —
  * the older `file` / `url` pair is gone, because two ways to say the same thing is
@@ -195,27 +200,57 @@ class Progress {
  * with a single `File`, which is exactly what `tools/smoke.mjs` does and the path
  * the golden numbers are measured on.
  *
+ * A `kind:'osm'` ref carries no loadable input at all: `ring` is the input, and the
+ * GTFS zip it becomes is synthesized inside the load loop, so a synthesis failure
+ * lands in the same per-source catch a dead mirror does. `arg` stays null until then.
+ *
+ * A ref-shaped object whose `kind` is not one of the three is REFUSED BY NAME. Before
+ * this, an unknown kind failed the `isRef` test, was treated as a bare input, and was
+ * handed to `loadFeed` as a raw object — which surfaced four stages later as an
+ * unreadable source rather than as the one sentence that says a newer page is talking
+ * to an older worker.
+ *
  * @param {SourceRef[]|Array<File|Blob|string>|File|Blob|ArrayBuffer|Uint8Array|string} source
- * @returns {Array<{arg: (File|Blob|ArrayBuffer|Uint8Array|string), label: string, mdbId: number|null}>}
+ * @returns {Array<{arg: (File|Blob|ArrayBuffer|Uint8Array|string|null),
+ *   ring: Array<[number, number]>|null, id: string, label: string,
+ *   mdbId: number|null}>}
  */
 function normaliseSources(source) {
   const list = Array.isArray(source) ? source : [source];
   const out = [];
   for (const item of list) {
     if (item === null || item === undefined) continue;
-    const isRef = typeof item === 'object' && !Array.isArray(item)
-      && (item.kind === 'file' || item.kind === 'url');
-    const arg = isRef ? (item.file ?? item.url) : item;
-    if (arg === null || arg === undefined) continue;
+    // A `File` and a `Blob` are objects with no `kind`, which is what keeps the bare
+    // input path — and the golden numbers that run on it — untouched by all of this.
+    const kind = (typeof item === 'object' && !Array.isArray(item)
+      && typeof item.kind === 'string') ? item.kind : '';
+    if (kind && !SOURCE_KINDS.includes(kind)) {
+      throw new Error(`The run named a source of kind ${JSON.stringify(kind)}, which this `
+        + 'analysis does not know how to read. Reload the page and try again.');
+    }
+    const isRef = kind !== '';
+    const ring = kind === 'osm' && Array.isArray(item.ring) ? item.ring : null;
+    const arg = isRef ? (kind === 'osm' ? null : (item.file ?? item.url)) : item;
+    if (kind === 'osm') {
+      if (ring === null || ring.length < 3) {
+        throw new Error('An OpenStreetMap area was named as a source without the shape it '
+          + 'is meant to cover, so there is nothing to read.');
+      }
+    } else if (arg === null || arg === undefined) continue;
     let label = isRef ? String(item.label || '') : '';
     if (!label) {
-      label = typeof arg === 'string'
-        ? arg
-        : (arg && typeof arg.name === 'string' ? arg.name : 'the feed');
+      if (kind === 'osm') label = 'the OpenStreetMap area';
+      else {
+        label = typeof arg === 'string'
+          ? arg
+          : (arg && typeof arg.name === 'string' ? arg.name : 'the feed');
+      }
     }
     const mdbId = isRef && item.mdbId !== undefined && item.mdbId !== null
       ? Number(item.mdbId) : null;
-    out.push({ arg, label, mdbId });
+    // `id` is carried only so a synthesized feed can be NAMED after the area it was
+    // built from; nothing here sorts on it. The main thread already sorted the list.
+    out.push({ arg, ring, id: isRef ? String(item.id || '') : '', label, mdbId });
   }
   if (!out.length) throw new Error('The run message carried no feed to read.');
   // CONTRACT.md §(d) bounds the list at both ends. The page refuses the seventh feed
@@ -227,6 +262,53 @@ function normaliseSources(source) {
       + `this run asked for ${out.length}.`);
   }
   return out;
+}
+
+
+/**
+ * A drawn area as GTFS zip bytes, built from OpenStreetMap's own route relations.
+ *
+ * `osm/synth.js` is imported DYNAMICALLY, the same way `rules/score.js` is and for a
+ * weaker version of the same reason: a run whose sources are all published feeds must
+ * not parse the converter, and — since the module is only reachable from a source kind
+ * the page has to offer first — its absence should degrade one source rather than
+ * refuse to start the worker.
+ *
+ * `worldTransitRoutes` answers three different ways and they are three different
+ * sentences: `null` says the build shipped no `transit_route` layer at all, which is a
+ * stale bucket rather than a city with no railway; `[]` says the layer is there and has
+ * nothing inside this shape; anything else is the relations to convert. None of the
+ * three is a report about the city until the last one.
+ *
+ * The bytes come back wrapped in a `File` where there is one to wrap them in, purely
+ * so `loadFeed` has a name to put in `Feed.source`: unwrapped, every synthesized feed
+ * is called `uploaded.zip` in §09, which is the one place a report must not be vague
+ * about what it read. The hash is unaffected — `sha256` is still the digest of exactly
+ * these bytes.
+ *
+ * @param {{ring: Array<[number,number]>, label: string, id?: string}} src
+ * @param {Object} world an open `World` (`osm/worldfile.js`)
+ * @param {string|null} asOf the effective analysis date for the synthesized
+ *        calendar — the run's own `asOf`, or the caller's alignment date on a
+ *        mixed run (see the load loop), or null for the fixed 2030 fallback
+ * @returns {Promise<{arg: (File|Uint8Array), notes: string[]}>}
+ */
+async function synthesizeArea(src, world, asOf) {
+  const { synthesizeFeedZip } = await import('./osm/synth.js');
+  const routes = await worldTransitRoutes(world, bboxOf(src.ring));
+  if (routes === null) {
+    throw new Error('these map files carry no OpenStreetMap route relations, so an area '
+      + 'cannot be built from them; the published build is the one to point at');
+  }
+  if (!routes.length) {
+    throw new Error('OpenStreetMap maps no rail, metro or tram line inside that shape');
+  }
+  const { zip, notes } = synthesizeFeedZip({ routes, ring: src.ring, asOf });
+  const name = `openstreetmap-${String(src.id || '').replace(/^osm:/, '') || 'area'}.zip`;
+  const arg = typeof File === 'function'
+    ? new File([zip], name, { type: 'application/zip' })
+    : zip;
+  return { arg, notes };
 }
 
 
@@ -295,6 +377,18 @@ export async function runPipeline(options, source, emit) {
     refresh: Boolean(opts.refresh),
   });
 
+  // The world files, opened at most once and only when something asks. Two phases can
+  // need them now — an OpenStreetMap area source at S1, and the geo layer at S2 — and
+  // they must share one handle: `world.stats()` is what the run reports as its map-file
+  // budget, and two handles would each report half of it.
+  let world = null;
+  const openWorldOnce = async () => {
+    if (world === null) world = await openWorld(opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL);
+    return world;
+  };
+  /** True when any source was built from OpenStreetMap rather than published. */
+  let assumedSchedule = false;
+
   // ── S1 load feed ──────────────────────────────────────────────────────────
   let feed;
   let start;
@@ -314,20 +408,76 @@ export async function runPipeline(options, source, emit) {
     // index into one is not an index into the other. §09 exists so a merged report
     // cannot lie about what it read, so this pairing is load-bearing, not tidiness.
     const loadedSrcs = [];
-    for (let i = 0; i < srcs.length; i++) {
+    // Published sources load FIRST and drawn areas synthesize after them — not for
+    // tidiness: a synthesized calendar pinned to the fixed 2030 fallback can never
+    // intersect a live feed's window, so a default mixed run would take merge's
+    // no-dates-in-common union and the OSM system would run on zero representative
+    // days. With the published feeds already loaded, a ring source with no explicit
+    // `asOf` anchors its 14-day calendar to their latest start date instead — still
+    // deterministic, a pure function of the run's own feed bytes, and an OSM-only
+    // run keeps the fixed fallback untouched. The reorder is free: `mergeOrder`
+    // sorts by content hash, and `loaded`/`loadedSrcs` travel as a pair.
+    const loadOrder = [];
+    for (let i = 0; i < srcs.length; i++) if (!srcs[i].ring) loadOrder.push(i);
+    for (let i = 0; i < srcs.length; i++) if (srcs[i].ring) loadOrder.push(i);
+    for (let k = 0; k < loadOrder.length; k++) {
+      const i = loadOrder[k];
       const many = srcs.length > 1;
-      const label = many ? `Reading feed ${i + 1} of ${srcs.length}` : 'Reading the feed';
+      const label = many ? `Reading feed ${k + 1} of ${srcs.length}` : 'Reading the feed';
       // A download is one silent block — `loadFeed`'s own `onProgress` fires per
       // table, not per byte — so the bar is nudged between sources as well, which is
       // also what keeps app.js's 120-second silence watchdog fed on a multi-feed run.
-      progress.report(i / srcs.length, label);
+      progress.report(k / srcs.length, label);
       try {
+        // An OpenStreetMap area becomes a real GTFS zip HERE, before anything else in
+        // the pipeline sees it, and then falls into the untouched `loadFeed` below.
+        // That is the whole trick: the fatal guards, the content-addressed `sha256`,
+        // the merge order, the `f0:` namespacing and `mergeFeeds([f]) === f` all hold
+        // by construction rather than by a second Feed constructor re-earning each of
+        // them. A failure in here is a per-source failure like any other — the catch
+        // below is fatal on a single-source run and degrades on a merged one.
+        if (srcs[i].ring) {
+          progress.report(k / srcs.length, 'Building the area from OpenStreetMap');
+          // The effective analysis date: the run's own `asOf` when given, else the
+          // latest feed_start_date among the feeds already loaded — the merged
+          // window's intersection starts there, and the synthesizer's windowMonday
+          // steps back at most six days, so its 14-day calendar covers it — else
+          // null, and the synthesizer's fixed 2030 fallback (the OSM-only path,
+          // unchanged).
+          let synthAsOf = opts.asOf;
+          if (!String(synthAsOf ?? '').trim()) {
+            synthAsOf = null;
+            for (const f of loaded) {
+              if (f.feedStart && (synthAsOf === null || f.feedStart > synthAsOf)) {
+                synthAsOf = f.feedStart;
+              }
+            }
+          }
+          const built = await synthesizeArea(srcs[i], await openWorldOnce(), synthAsOf);
+          srcs[i].arg = built.arg;
+          // The assumptions go to the log channel, one line each, rather than into the
+          // degradation list: they are what the feed ASSUMED, not what the report is
+          // missing, and the callout they would land in is titled the other thing. The
+          // one sentence that IS a limit of the source is degraded below.
+          for (const note of built.notes) log('info', `osm feed: ${note}`);
+        }
         loaded.push(await loadFeed(srcs[i].arg, cache, {
           onProgress: ({ done, total }) => {
-            if (total) progress.report((i + done / total) / srcs.length, label);
+            if (total) progress.report((k + done / total) / srcs.length, label);
           },
         }));
         loadedSrcs.push(srcs[i]);
+        // Said only once the feed is actually IN the run. Synthesis can succeed and the
+        // load still fail, and on a merged run that source is then dropped — a report
+        // that announced an assumed timetable it did not end up reading would be
+        // apologising for the wrong thing.
+        if (srcs[i].ring) {
+          assumedSchedule = true;
+          degrade(`${srcs[i].label} was built from OpenStreetMap's rail, metro and tram `
+            + 'lines rather than read from a published timetable. Where the lines run is '
+            + 'measured; how often they run is assumed, so every score that rests on the '
+            + 'timetable is dropped rather than guessed at.');
+        }
       } catch (err) {
         // One dead mirror out of four must not kill the run. With a single source,
         // one failure IS zero loaded, so this falls through to the fatal below and
@@ -475,6 +625,13 @@ export async function runPipeline(options, source, emit) {
     zones = buildZones(feed, best, centres, size.zoneRadiusM, proj);
     progress.report(0.5, 'Re-measuring at the resolved zone radius');
     metrics = networkMetrics(feed, days, proj, hub, size.zoneRadiusM);
+    // The honesty boundary, carried as one clone-safe boolean on the object that
+    // already reaches every scoring entry point — `auditQuestions`, `scoreFitness`,
+    // `fitnessCaps`, `scoreZones`, `deriveRecommendations` — so nothing downstream
+    // grows a parameter for it. The rule is run-level and deliberately conservative:
+    // ONE invented timetable in the merge makes every schedule-derived number in the
+    // run assumed, because after `mergeFeeds` nothing can tell the two apart.
+    metrics.assumedSchedule = assumedSchedule;
     headways = routeHeadways(feed, days);
     gtfsFacts = gtfsQuestionFacts(feed, days, zones, stations);
     progress.finish();
@@ -535,12 +692,15 @@ export async function runPipeline(options, source, emit) {
       // base URL" field sets it, and null means "the published bucket".
       const baseUrl = opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL;
       if (opts.worldBaseUrl) log('info', `reading the map files from ${baseUrl}`);
-      const world = await openWorld(baseUrl);
-      geo = await collectGeodata(world, opts, border, zones, proj, size.zoneRadiusM, {
+      // `openWorldOnce`, not a second `openWorld`: an area source has usually opened
+      // this bucket already, and one handle is what keeps `worldStatsLine` a report of
+      // the whole run's map-file budget instead of the geo phase's share of it.
+      const handle = await openWorldOnce();
+      geo = await collectGeodata(handle, opts, border, zones, proj, size.zoneRadiusM, {
         onProgress: progress.sink(),
         onLog: (level, message) => log(level === 'warning' ? 'warn' : level, message),
       });
-      log('info', worldStatsLine(world));
+      log('info', worldStatsLine(handle));
     } catch (err) {
       const name = (err && err.name) ? err.name : 'Error';
       log('warn', `OSM layer unavailable: ${err && err.message ? err.message : err}`);
@@ -574,7 +734,7 @@ export async function runPipeline(options, source, emit) {
     questions = auditQuestions(size, geo, gtfsFacts, zones, metrics, border, {
       onProgress: progress.sink(),
     });
-    curses = auditCurses(size, geo, gtfsFacts, geo.admin.countryCode);
+    curses = auditCurses(size, geo, gtfsFacts, geo.admin.countryCode, metrics);
     progress.finish();
 
     progress.begin(9, 'Measuring information resistance');

@@ -38,7 +38,7 @@ import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, num } from '../lib/core.js';
 import { bboxOf } from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
-  labelOf, placeOf, spanKmOf, sourceRefFor,
+  labelOf, placeOf, spanKmOf, sourceRefFor, osmSourceRef,
 } from '../lib/catalog.js';
 import { esc } from './html.js';
 import {
@@ -102,6 +102,12 @@ export function initPicker(root, handlers = {}) {
   // to the reader — so the note has to read its live state or it ends up instructing
   // someone to do what they have already done.
   const osmSkipped = handlers.osmSkipped || (() => false);
+  // Whether the drawn shape is ALSO the game border right now. Same posture as
+  // `osmSkipped`, for the same reason: `#opt-use-drawn-border` lives in the form's
+  // Advanced panel and belongs to the reader after the one auto-tick, so the note
+  // must read its live state or keep calling the shape the border after they have
+  // said otherwise.
+  const drawnBorderUsed = handlers.drawnBorderUsed || (() => false);
 
   const $ = (id) => root.querySelector(`#${id}`);
   const search = $('catalog-search');
@@ -143,6 +149,14 @@ export function initPicker(root, handlers = {}) {
     /** true once the reader has typed something, so "no matches" can be said */
     searching: false,
     ringEmpty: false,
+    /**
+     * The drawn shape swept up nothing from the catalogue. Distinct from `ringEmpty`,
+     * which is the NOTE's sentence and is reset by every search — a reader who draws
+     * an empty shape and then types a word has not made the shape less empty, and the
+     * offer to build it from OpenStreetMap must not evaporate under them. Cleared only
+     * when the shape itself goes.
+     */
+    ringVacant: false,
     blocked: [],
     map: null,
     maplibregl: null,
@@ -169,6 +183,19 @@ export function initPicker(root, handlers = {}) {
    */
   function slotsUsed() {
     return st.selected.size + (st.byo ? 1 : 0);
+  }
+
+  /**
+   * The drawn area picked as an OpenStreetMap source, or null.
+   *
+   * It lives in `st.selected` beside the catalogue picks rather than in a slot of its
+   * own — which is what makes it count against the cap at every door without a second
+   * rule, exactly the way `readSources` and the worker count it. There is at most one:
+   * there is at most one ring, and `clearRing` takes the pick with it.
+   */
+  function osmPick() {
+    for (const ref of st.selected.values()) if (ref && ref.kind === 'osm') return ref;
+    return null;
   }
 
   /** The one funnel. Nothing else writes `st.selected`. */
@@ -205,6 +232,49 @@ export function initPicker(root, handlers = {}) {
     commit();
   }
 
+  /**
+   * Take the drawn shape itself as a source, to be built from OpenStreetMap.
+   *
+   * The ring goes into the ref, not into an option: it is the input being read, and
+   * `sources` is the only thing that crosses to the worker. Everything downstream —
+   * the cap, `#picks`, the run label, `readSources`' sort — treats it as one more
+   * feed, which is the whole point of putting it in `st.selected`.
+   *
+   * Focus lands on the pick count rather than on the button that was pressed, because
+   * the button is gone by the time this returns: the note re-renders without the offer
+   * so it cannot be taken twice, and the count is the live region that has just been
+   * told there is one more feed.
+   */
+  function addOsmArea() {
+    if (!st.ring || osmPick() || slotsUsed() >= PICK_CAP) { renderPicksAndNote(); return; }
+    // The offer's premise, re-checked at the moment it is taken: a button left
+    // standing by a stale render must not commit an assumed timetable while a
+    // published feed overlapping the same shape is one switch away and visible.
+    if (rowsIntersectingRing(st.rows, st.ring).length > 0) {
+      st.ringVacant = false;
+      st.ringEmpty = false;
+      renderPicksAndNote();
+      return;
+    }
+    const ref = osmSourceRef(st.ring);
+    if (!ref) return;
+    st.selected.set(ref.id, ref);
+    commit();
+    if (picksCount && typeof picksCount.focus === 'function') safeFocus(picksCount);
+  }
+
+  // `#picker-note` had no listener before this: it is a `role="status"` region that
+  // only ever printed sentences. The one control it now prints is delegated from the
+  // box, so the note can be rebuilt as often as it likes without rebinding anything.
+  if (noteBox) {
+    on(noteBox, 'click', (event) => {
+      const btn = event.target.closest ? event.target.closest('[data-osm-build]') : null;
+      if (!btn) return;
+      event.preventDefault();
+      addOsmArea();
+    });
+  }
+
   // ── rendering ─────────────────────────────────────────────────────────────
 
   /** `[{id, label, where, badge, icon}]` — map picks first, then bring-your-own. */
@@ -214,6 +284,20 @@ export function initPicker(root, handlers = {}) {
     for (const id of ids) {
       const ref = st.selected.get(id);
       const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
+      if (ref.kind === 'osm') {
+        // Its own badge and its own icon, because this row is the one thing in the
+        // list that is not a published timetable: the network is drawn from
+        // OpenStreetMap and the schedule on top of it is invented. A reader scanning
+        // "what is about to run" has to be able to see that without reading §09.
+        out.push({
+          id,
+          label: ref.label,
+          where: '',
+          badge: 'estimated from OpenStreetMap',
+          icon: 'map-location-dot',
+        });
+        continue;
+      }
       out.push({
         id,
         label: ref.label,
@@ -251,6 +335,7 @@ export function initPicker(root, handlers = {}) {
     picksCount.textContent = views.length === 1
       ? '1 feed selected'
       : `${num(views.length)} feeds selected`;
+    const osm = osmPick();
     noteBox.innerHTML = renderPickerNote({
       count: views.length,
       capped: slotsUsed() >= PICK_CAP,
@@ -258,7 +343,16 @@ export function initPicker(root, handlers = {}) {
       blocked: st.blocked,
       tzSpread: tzSpread(),
       ringEmpty: st.ringEmpty,
-      estMb: views.length * EST_MB_PER_FEED,
+      // The OpenStreetMap area downloads no feed — it is read out of map files the
+      // run would open anyway — so it is not counted into the "this is a lot of
+      // bytes" estimate. Counting it would make the sentence wrong rather than
+      // merely rough, which is the line this note does not cross.
+      estMb: (views.length - (osm ? 1 : 0)) * EST_MB_PER_FEED,
+      // Offered only in the moment it answers: a shape is drawn, the catalogue had
+      // nothing inside it, there is a slot free, and it has not been taken yet.
+      osmOffer: Boolean(st.ring) && st.ringVacant && !osm && slotsUsed() < PICK_CAP,
+      osmPicked: Boolean(osm),
+      drawnBorderUsed: drawnBorderUsed(),
     });
   }
 
@@ -405,6 +499,24 @@ export function initPicker(root, handlers = {}) {
       inactive: Boolean(swInactive && swInactive.checked),
     });
     syncFeedSource();
+    // A switch flip changes the catalogue's answer for a standing shape. The
+    // vacancy note's own advice is "turn on the regional feeds above", so following
+    // it must retire the note — and the OpenStreetMap offer whose premise it was —
+    // rather than leave both standing over rows that now overlap the shape. The
+    // sweep is re-run without auto-adding (flipping a switch twice must not edit
+    // the picks), the results list follows unless a typed search owns it, and the
+    // note's own sentence stays search-owned the way `runSearch` left it.
+    if (st.ring) {
+      const hits = rowsIntersectingRing(st.rows, st.ring);
+      st.ringVacant = hits.length === 0;
+      if (!st.searching) {
+        st.ringEmpty = hits.length === 0;
+        st.results = hits.slice(0, 20);
+        st.resultsTotal = hits.length;
+        renderResultsBox();
+      }
+      renderPicksAndNote();
+    }
   }
   if (swRegional) on(swRegional, 'change', onSwitch);
   if (swInactive) on(swInactive, 'change', onSwitch);
@@ -442,12 +554,22 @@ export function initPicker(root, handlers = {}) {
   function clearRing() {
     st.ring = null;
     st.ringEmpty = false;
+    st.ringVacant = false;
     st.blocked = [];
+    // The shape and the OpenStreetMap source are one gesture, so they end together.
+    // A catalogue pick outlives its ring on purpose — it names a real operator that
+    // exists whether or not a shape is on the map — but an area source IS the ring,
+    // and leaving it behind would send the worker a border the reader has erased.
+    const osm = osmPick();
+    if (osm) st.selected.delete(osm.id);
     // The results list was the shape's own list of what it swept up. The shape is
     // gone, so the list goes with it rather than outliving the thing it described.
     if (!st.searching) st.results = [];
     if (clearBtn) clearBtn.hidden = true;
     onRing(null);
+    // `st.selected` may have just lost a member, and `onChange` is the only way the
+    // main thread hears about that — the re-renders below are this card's own copy.
+    if (osm) onChange(new Map(st.selected));
     syncDrawSource();
     renderPicksAndNote();
     renderResultsBox();
@@ -480,6 +602,7 @@ export function initPicker(root, handlers = {}) {
     st.blocked = [];
     const hits = rowsIntersectingRing(st.rows, st.ring);
     st.ringEmpty = hits.length === 0;
+    st.ringVacant = hits.length === 0;
     st.searching = false;
     st.results = hits.slice(0, 20);
     st.resultsTotal = hits.length;

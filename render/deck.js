@@ -1155,6 +1155,11 @@ export function renderProvenance(payload) {
   // this section has always had.
   const feeds = p.feeds || [];
   const merged = feeds.length > 1;
+  // Set by the worker when any source was built from OpenStreetMap instead of read
+  // from a published timetable, and true for the WHOLE run once one source is: after
+  // the merge nothing downstream can tell an invented departure from a published one,
+  // so the run says so about all of them rather than about some of them.
+  const assumedSchedule = Boolean(report.metrics && report.metrics.assumedSchedule);
 
   /** @type {Array<[string,string,string]>} */
   const fingerprintRows = [
@@ -1196,6 +1201,14 @@ export function renderProvenance(payload) {
         (f.feedStart && f.feedEnd)
           ? `${prettyDate(String(f.feedStart))} – ${prettyDate(String(f.feedEnd))}` : '',
         String(f.source || '')].filter((x) => x).join(' · ')]) : []),
+    // A blank value drops the row, so this says nothing at all on an ordinary run —
+    // and on a run that has one, it sits directly under the file it is qualifying,
+    // where a reader looking for "what did this read" cannot walk past it.
+    ['', 'Timetable', assumedSchedule
+      ? 'Assumed, not published. The lines come from OpenStreetMap: where they run is '
+        + 'measured, how often they run is modelled from the assumptions listed below, '
+        + 'and every score that rests on the timetable is dropped rather than estimated.'
+      : ''],
     ['', 'Feed version / publisher',
       [String(p.feedVersion || ''), String(p.publisher || '')].filter((x) => x).join(' · ')],
     ['', 'Feed validity', (p.feedStart && p.feedEnd)

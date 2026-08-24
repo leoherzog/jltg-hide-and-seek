@@ -306,10 +306,23 @@ export function renderPicks(picks) {
  * no timezone column, so the worker — which reads `agency.txt` — is the authority and
  * says so again in the report if it disagrees.
  *
+ * THE ONE INTERACTIVE CONTROL IN HERE is the OpenStreetMap offer, and it is here
+ * rather than in the toolbar because the offer only makes sense attached to the
+ * sentence that provoked it: a shape was drawn, the catalogue had nothing inside it,
+ * and this is the moment the reader learns the run is off unless something else
+ * supplies the network. The host is `role="status"`, so the button is re-announced
+ * whenever the note is rebuilt; it is spelled with a stable id and it DISAPPEARS the
+ * instant the area is picked, so it cannot be pressed twice and `render/picker.js`
+ * has somewhere deterministic to put focus afterwards.
+ *
  * @param {Object} s
  * @param {number} s.count @param {boolean} s.capped @param {boolean} s.osmSkipped
  * @param {string[]} s.blocked @param {boolean} s.tzSpread @param {boolean} s.ringEmpty
  * @param {number} [s.estMb] a rough total download, for the "this is a lot" line
+ * @param {boolean} [s.osmOffer] the drawn area can still be built from OpenStreetMap
+ * @param {boolean} [s.osmPicked] it already has been, and is in the list below
+ * @param {boolean} [s.drawnBorderUsed] the shape is the game border right now —
+ *        `#opt-use-drawn-border`'s live state, read the way `osmSkipped` is
  * @returns {string}
  */
 export function renderPickerNote(s) {
@@ -338,17 +351,56 @@ export function renderPickerNote(s) {
       + 'longitude — the analysis reads each feed’s own zone and will say so plainly if '
       + 'it agrees.');
   }
-  if (s.ringEmpty) {
+  // Not while the area is a source: "try a bigger one" is advice about a shape
+  // that has since become the run's input, and the two sentences in one status
+  // region would tell the reader to redraw the thing that is about to be built.
+  if (s.ringEmpty && !s.osmPicked) {
     lines.push('Nothing in the catalogue overlaps that shape. Try a bigger one, or turn '
       + 'on the regional feeds above.');
+  }
+  if (s.osmOffer) {
+    // Written to stand on its own. The sentence above it is reset by the next search
+    // while this offer is not, so the two are not guaranteed to appear together.
+    lines.push('OpenStreetMap maps the rail, metro and tram lines inside the shape you '
+      + 'drew, in plenty of places where no timetable is published. The area can be built '
+      + 'from those instead: where the lines run would be measured, how often they run '
+      + 'would be assumed, and the report says which is which on every number.');
+  }
+  if (s.osmPicked) {
+    // The border sentence tracks the box that actually governs it: unticked, the
+    // run infers its border from the network instead, and a status region must not
+    // keep asserting the state the reader has just changed.
+    lines.push('This area will be built from OpenStreetMap’s own rail, metro and tram '
+      + 'lines. Where they run is measured; how often they run is assumed, so every '
+      + 'score that rests on the timetable is dropped rather than guessed at. '
+      + (s.drawnBorderUsed
+        ? 'The shape you drew is the game border as well as the area read.'
+        : 'The shape you drew is only the area read — the game border will be inferred '
+          + 'from the network it produces. Ticking “Use the shape I drew as the game '
+          + 'border” in Advanced makes the shape the border again.'));
   }
   for (const label of s.blocked || []) {
     lines.push(`${label} needs an API key, so this page cannot fetch it. Download the zip `
       + 'yourself and drop it in below.');
   }
   if (!lines.length) return '';
+  // `type="button"`, like every other button this file prints: the card lives inside
+  // `<form id="landing-form">` and a submitting button here would start the analysis
+  // from the note.
+  const offer = s.osmOffer
+    ? waButton('Build this area from OpenStreetMap', {
+      id: 'osm-build',
+      type: 'button',
+      icon: 'map-location-dot',
+      variant: 'brand',
+      dataOsmBuild: '',
+    })
+    : '';
   return waCallout(
-    join(...lines.map((line) => el('p', esc(line), { className: 'wa-body-s' }))),
+    join(
+      ...lines.map((line) => el('p', esc(line), { className: 'wa-body-s' })),
+      offer,
+    ),
     { variant: 'neutral', icon: 'circle-info' },
   );
 }

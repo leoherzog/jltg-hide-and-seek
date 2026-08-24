@@ -343,6 +343,10 @@ const state = {
     /** Has `#opt-no-osm` already been ticked on the reader's behalf? Ticked once, on
      *  the first move past one feed, and never unticked: after that the box is theirs. */
     osmAutoTicked: false,
+    /** The same one-shot for `#opt-use-drawn-border`, ticked when the drawn area is
+     *  taken as an OpenStreetMap source. Reset when the ring goes, because the next
+     *  ring is a new gesture and deserves the same offer. */
+    osmBorderTicked: false,
   },
 };
 
@@ -478,6 +482,19 @@ function isOsmSkipped() {
   return Boolean(sw && sw.checked);
 }
 
+/** The use-drawn-border box, wherever the markup put it. */
+function borderBox() {
+  return document.querySelector('[data-opt="useDrawnBorder"]') || $id('opt-use-drawn-border');
+}
+
+/** Whether the drawn shape is the game border RIGHT NOW, for the picker's note —
+ *  the box is the reader's after the one auto-tick, and a note that kept calling
+ *  the shape the border after they unticked it would be lying in a live region. */
+function isDrawnBorderUsed() {
+  const box = borderBox();
+  return Boolean(box && box.checked && state.landing.drawnRing);
+}
+
 function syncAnalyse() {
   const form = pick('#runform', 'form[data-role="runform"]', 'form');
   const byo = readByoSource(form);
@@ -495,12 +512,35 @@ function syncAnalyse() {
     if (label) label.textContent = count > 1 ? `Analyse ${num(count)} feeds` : 'Analyse';
   }
 
+  const osmArea = osmAreaRef();
+
+  // The area IS the border: one drawn shape, read once as the extent to build from
+  // and once as the map to play on. Leaving the box for the reader would give a run
+  // two different extents for one gesture — the shape they drew, and a border
+  // inferred from the network that shape produced. Ticked once, said in words by
+  // `#picker-note`, and armed again by the next ring.
+  if (osmArea && !state.landing.osmBorderTicked) {
+    state.landing.osmBorderTicked = true;
+    const box = borderBox();
+    if (box && !box.checked) {
+      box.checked = true;
+      // Setting `.checked` fires no event, and the picker note reads this box.
+      if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
+    }
+  }
+
   // PLAN D24. Two or more feeds means a border spanning two metros, and OSM-layer
   // scale guards for a border that big are explicitly out of scope this round — so
   // the default is "skip the map files", ticked ONCE and said in words by
   // `#picker-note`. Never unticked afterwards: past the first tick the box is the
   // reader's, and silently re-ticking it would be the page arguing with them.
-  if (count > 1 && !state.landing.osmAutoTicked) {
+  //
+  // Never while an OpenStreetMap area is picked. The switch only gates the S2 geo
+  // layer (worker.js) — the area's feed is synthesized from the same map files
+  // either way — but a run built FROM OpenStreetMap whose own default turned the
+  // OpenStreetMap layer off would be the page contradicting itself, so the default
+  // stays on and the switch stays the reader's.
+  if (count > 1 && !state.landing.osmAutoTicked && !osmArea) {
     state.landing.osmAutoTicked = true;
     const sw = osmSwitch();
     if (sw && !sw.checked) sw.checked = true;
@@ -546,10 +586,27 @@ function onPickerChange(next) {
  *  in the shipped markup precisely because there is no shape on a cold landing. */
 function onPickerRing(ring) {
   state.landing.drawnRing = ring;
-  const box = document.querySelector('[data-opt="useDrawnBorder"]') || $id('opt-use-drawn-border');
+  // A cleared ring is the end of that gesture, so the one-shot below is armed again.
+  if (!ring) state.landing.osmBorderTicked = false;
+  const box = borderBox();
   if (!box) return;
   box.disabled = !ring;
   if (!ring) box.checked = false;
+}
+
+/**
+ * The drawn area taken as an OpenStreetMap source, or null.
+ *
+ * `readSources` deliberately never inspects `ref.kind` — it reads `id` and `label` and
+ * nothing else, which is what lets a third kind travel through it unchanged. This
+ * lookup exists for the two form defaults an area pick has to change, and for nothing
+ * else.
+ */
+function osmAreaRef() {
+  for (const ref of state.landing.selected.values()) {
+    if (ref && ref.kind === 'osm') return ref;
+  }
+  return null;
 }
 
 /**
@@ -602,12 +659,21 @@ function initLanding() {
       onRing: onPickerRing,
       onRemoveByo: onPickerRemoveByo,
       osmSkipped: isOsmSkipped,
+      drawnBorderUsed: isDrawnBorderUsed,
     });
     // The note tells the reader they can untick Skip OpenStreetMap. When they do, it
     // has to stop saying so — the switch is theirs from the first tick onwards.
     const sw = osmSwitch();
     if (sw) {
       sw.addEventListener('change', () => {
+        if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
+      });
+    }
+    // Same rule for the drawn-border box: the note says whether the shape is the
+    // game border, so flipping the box has to make it say so again.
+    const border = borderBox();
+    if (border) {
+      border.addEventListener('change', () => {
         if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
       });
     }
@@ -1101,7 +1167,9 @@ function enterRunningState(src) {
     stage: 'feed',
     label: (src.sources && src.sources.length > 1)
       ? `Reading ${num(src.sources.length)} feeds`
-      : (first && first.kind === 'file' ? `Reading ${first.label}` : 'Fetching the feed'),
+      : (first && first.kind === 'osm'
+        ? 'Building the area from OpenStreetMap'
+        : (first && first.kind === 'file' ? `Reading ${first.label}` : 'Fetching the feed')),
     done: 0,
     total: 100,
   });
