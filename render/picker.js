@@ -308,10 +308,30 @@ export function initPicker(root, handlers = {}) {
     const order = rows.slice(here + 1).concat(rows.slice(0, here + 1).reverse());
     for (const row of order) {
       const btn = row.querySelector(sel);
-      if (btn && typeof btn.focus === 'function') { btn.focus(); return; }
+      if (btn && typeof btn.focus === 'function') { safeFocus(btn); return; }
     }
     const fallback = hint.list === 'picks' ? picksCount : search;
-    if (fallback && typeof fallback.focus === 'function') fallback.focus();
+    if (fallback && typeof fallback.focus === 'function') safeFocus(fallback);
+  }
+
+  /**
+   * Focus that tolerates Web Awesome's timing. A `<wa-button>` created by the
+   * innerHTML rebuild one line ago is upgraded but not yet rendered, and its
+   * `focus()` delegates to a shadow part that does not exist until the first
+   * update — so the synchronous call throws. Left unguarded, that throw unwinds
+   * `commit()` before `onChange` has run, which is how an added feed could sit in
+   * the picks list while the Analyse button stayed dead. Try, and on the
+   * pre-render throw, finish the job after the element's own `updateComplete`;
+   * a second failure means the element is gone, and focus falls where it falls.
+   */
+  function safeFocus(el) {
+    try {
+      el.focus();
+    } catch {
+      if (el.updateComplete) {
+        el.updateComplete.then(() => { try { el.focus(); } catch { /* detached since */ } });
+      }
+    }
   }
 
   function runSearch() {
