@@ -130,10 +130,14 @@ feed is a pure function of the feed bytes. `gtfs/merge.js`'s header is the full 
 ## The OSM layer
 
 OpenStreetMap features come from prebuilt **FlatGeobuf** files in Cloudflare R2
-(`https://map.jltg.herzog.tech/world`, 37 layers), read with HTTP Range requests against the packed
-Hilbert R-tree in each file's header. There is **no Overpass call and no Nominatim call at
-runtime** — the modules' headers record what replaced what, and the measured budget on the
-reference border is ~33 s, ~290 range requests, ~14.6 MB.
+(`https://map.jltg.herzog.tech/world`, 39 layers as of the `rail_line` + `transit_route` build —
+the live bucket has 37 until the next full rebuild publishes, and until then every run marks
+`rail_line` partial with a warning, which is the correct degradation, not a bug), read with HTTP
+Range requests against the packed Hilbert R-tree in each file's header. There is **no Overpass call
+and no Nominatim call at runtime** — the modules' headers record what replaced what, and the
+measured budget on the reference border is ~33 s, ~290 range requests, ~14.6 MB. That measurement
+**predates `rail_line`** and must be re-measured against a world that ships it — never adjusted by
+arithmetic — before the number is quoted as current.
 
 Three modules, strictly layered:
 
@@ -170,6 +174,20 @@ Things in there that look wrong but aren't:
 FlatGeobuf → R2), `merge.py`, `cover.py`, `build-admin.sh`, with `categories.json` as the build
 table. `.github/workflows/world-*.yml` run it in CI. `tools/osm-world/README.md` is the reference
 for all of it: format choice, costs, sharding, CI, and what the migration from Overpass lost.
+
+The world files also carry the **OSM fallback tier**: a city with no published GTFS feed can be
+played from a drawn shape. `transit_route` is a global out-of-band layer (assembled route
+relations, built by `build-transit.py` and handed to `merge.py --transit` exactly the way the
+admin layer is — it is deliberately NOT a `categories.json` entry and `collectGeodata` never
+fetches it), `osm/worldfile.js`'s `worldTransitRoutes` reads it only when a run names a
+`kind:'osm'` source, and `osm/synth.js` turns the relations into a real, byte-deterministic GTFS
+zip that the untouched `loadFeed` reads — so the merge rules, golden numbers and content-addressed
+`sha256` all hold by construction. The honesty boundary is one run-level flag,
+`metrics.assumedSchedule`: geometry is measured, the timetable is assumed, and every score that is
+a pure function of the assumed timetable is dropped and renormalised, never imputed.
+`CONTRACT.md` §(b) OSM layer, §(d) `SourceRef` and §(f) rule 7 are the full statement; `rail_line`
+(track, an ordinary category for the questions) and `transit_route` (routes, for the synthesizer)
+are different layers on purpose.
 
 ## Scoring
 
@@ -215,6 +233,10 @@ development, carried forward as a record of what was checked.
 - `node tools/mdb-snapshot.mjs --check`: every invariant of the committed feed catalogue — sorted
   unique ids, four-finite-number boxes inside the sane ranges, the regional flag agreeing with the
   250 km cut, no duplicate `(provider, box)` pair. Network-free, so CI can run it.
+- `node tools/test-synth.mjs`: the OSM-to-GTFS converter, network-free — byte-identical
+  determinism, acceptance by the untouched `loadFeed`, ring clipping, stop clustering, the
+  frequency-expansion landmines, and the failure paths. Shape assertions only, never golden
+  numbers: a synthesized feed is not a stable reference and must never grow one.
 - The OSM layer has its own harnesses in `tools/osm-world/`: `test-reader.mjs` checks
   `osm/flatgeobuf.js` against a file GDAL wrote, `test-pipeline.mjs` runs `collectGeodata` end to
   end over real HTTP Range requests, `probe-admin.mjs` validates an admin layer through the app's
@@ -222,6 +244,8 @@ development, carried forward as a record of what was checked.
   internals no other harness reaches, `make-fixture.py` / `make-test-world.py` write the fixtures
   the first two read, and `fgb-equal.sh` decides whether two FlatGeobufs are equivalent.
 - Measured OSM budget on the reference border (2026-08-22): ~33 s, ~290 range requests, ~14.6 MB.
+  Taken before `rail_line` existed — one more count and one more feature read per run once a world
+  ships it. Re-measure; do not adjust by arithmetic.
 - Escaping: a feed rebuilt with hostile stop names (`</script><script>alert(1)</script>`,
   `<img src=x onerror=...>`, quotes, ampersands, emoji) produces well-formed pages with every
   payload inert inside JSON blocks and no premature `</script>`.

@@ -581,6 +581,40 @@ export const INTERPRETATIONS = Object.freeze([
     text: 'OpenStreetMap does not know whether a plaza is locked at night, so the rulebook\'s ' +
           '“publicly accessible during all game hours” test cannot be automated. Endgame spot ' +
           'counts are a shortlist for a human to check, never a verdict.' },
+  // ── the OSM fallback tier ─────────────────────────────────────────────────
+  // Three rows for one decision: where no GTFS feed exists, a source can be
+  // synthesized from OpenStreetMap route relations (osm/synth.js). The synthesis is
+  // a stack of assumptions, and each constant below is quoted from that module so a
+  // player can check the call against the code that made it. Like every other row
+  // here, these are phrased to be true on any run: on a run with no synthesized
+  // source, nothing they describe happened and nothing they affect was touched.
+  { id: 'osm_synth_feed',
+    affects: Object.freeze(['matching.transit_line', 'tentacle.metro_line',
+      'photo.train_platform', 'u_turn', 'C2', 'X3']),
+    text: 'Where a source is built from OpenStreetMap instead of a published feed, routes, ' +
+          'stations and rail modes are read from OSM route relations and a timetable is ' +
+          'synthesized. Route sets and geometry are real mapped data; every time-derived ' +
+          'number is an assumption. So on such a run the metrics that would only measure ' +
+          'the assumed timetable are dropped and the score renormalised — never imputed — ' +
+          'the two normally feed-measured metrics that survive on geometry (C2, X3) are ' +
+          'relabelled as our call, and the U-Turn curse becomes a conversation rather than ' +
+          'a measurement.' },
+  { id: 'osm_synth_timetable',
+    affects: Object.freeze(['C1', 'C3', 'D1', 'D2', 'D3', 'E1', 'E2', 'S3']),
+    text: 'A synthesized timetable assumes service 06:00–22:00 on every day of a 14-day ' +
+          'calendar; a headway from the relation\'s interval tag when it parses to a sane ' +
+          '2–120 minutes, otherwise a per-mode default (subway and monorail every 6 minutes, ' +
+          'light rail and tram 8, train 12, funicular 15); and travel times from distance ' +
+          'along the relation\'s own line at a per-mode commercial speed (subway 32 km/h, ' +
+          'light rail and tram 22, train 45, monorail 30, funicular 10) plus 30 seconds of ' +
+          'dwell per stop. Every metric that is a pure function of these constants is ' +
+          'dropped on such a run, because it would grade the assumption, not the city.' },
+  { id: 'osm_synth_stations',
+    affects: Object.freeze(['A1', 'every stop and zone count on a synthesized source']),
+    text: 'OpenStreetMap maps one stop_position node per line per platform, so a synthesized ' +
+          'station is a cluster of those nodes: nodes sharing a normalised name merge within ' +
+          '500 m, and any two nodes merge within 100 m regardless of name. Stop and zone ' +
+          'counts on a synthesized source count those clusters, not the raw nodes.' },
 ].map(Object.freeze));
 
 /**

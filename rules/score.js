@@ -112,6 +112,35 @@ export const S3_BANDS = Object.freeze([
 export const S3_GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
+ * The fitness metrics that are a pure function of a synthesized timetable.
+ *
+ * On a run with a source built from OpenStreetMap (`metrics.assumedSchedule`),
+ * the departures behind these seven are invented — assumed headways over an
+ * assumed 06:00–22:00 window on a uniform 14-day calendar — so scoring them
+ * would grade the assumption, not the city, and in both directions at once:
+ * the uniform calendar fabricates perfection on D3 and E1 while a
+ * weekday-shaped assumption would fabricate a penalty on E2. They are dropped
+ * (`available: false`, out of the denominator — the same rule an unavailable
+ * OSM layer already follows, CONTRACT.md's degradation ladder), never imputed
+ * and never scored at a discount. Metrics that ride real geometry through an
+ * assumed wait — C2, the RAPTOR-derived zone axes — stay, relabelled or
+ * covered by the `osm_synth_*` interpretation rows: an assumed wait on real
+ * track is a model, and models are what `interp` means here.
+ *
+ * The zone-score twin of this list is the single S3 departure-gap row in
+ * `scoreZones`. Together they leave `availablePoints` at 75 — C keeps its
+ * block weight on C2 alone while D and E leave whole — comfortably above the
+ * 60-point floor below which the headline honestly refuses to print.
+ */
+const S3_ASSUMED_TIMETABLE_METRICS = Object.freeze(['C1', 'C3', 'D1', 'D2', 'D3', 'E1', 'E2']);
+
+/** The sentence a dropped-for-assumed-schedule metric carries instead of its note. */
+const S3_ASSUMED_DROP_NOTE = 'Not measured on this run: the timetable behind this number was '
+  + 'synthesized from OpenStreetMap — assumed headways over an assumed 06:00–22:00 window on a '
+  + 'uniform calendar — so the number would only restate that assumption. Dropped and the '
+  + 'denominator renormalised, never imputed.';
+
+/**
  * One scored row. `frac` is the ramp output; points are integer tenths from here on.
  * (generate.py `_s3_metric`)
  *
@@ -278,6 +307,10 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
   questionsAvailable) {
   const hidingH = size.hidingPeriodMin / 60.0;
   const required = size.requiredHours;
+  // `s3View` copies the whole metrics table onto every view, so the run-level
+  // flag rides along without a signature change — the per-day recomputation in
+  // `scoreFitness` gets exactly the same honesty boundary as the head table.
+  const assumed = Boolean(get(view, 'assumedSchedule'));
 
   const nZones = get(view, 'nZones');
   const reachShare = get(view, 'reachableZoneShare');
@@ -349,9 +382,13 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       + 'purpose: Tokyo and London are the rulebook\'s own showcase maps, so frequency '
       + 'is never the flaw.',
       nullish(headway) !== null),
+    // C2 is normally one of the two `feed` (Measured) rows on the page. On an
+    // assumed-schedule run T90 is RAPTOR over real track distances but invented
+    // waits — a model, not a measurement — so the chip honestly reads "Our call"
+    // instead. The closed three-value basis enum is not widened.
     s3Metric('C2', 'Traverse ratio (T90 ÷ hiding period)', traverse, 'ratio',
       traverse === null ? null : plateau(traverse, 0.40, 0.80, 2.50, 4.50), 7,
-      'plateau', [0.40, 0.80, 2.50, 4.50], 'feed',
+      'plateau', [0.40, 0.80, 2.50, 4.50], assumed ? 'interp' : 'feed',
       `Crossing this network costs ${num(traverse || 0, 2)} hiding periods. Below `
       + `0.40 the map collapses — every radar is yes and “far away” stops existing. `
       + `Above 4.50 the map is bigger than the game.`,
@@ -446,6 +483,23 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       + 'the U-Turn has an escape hatch.',
       nullish(multi) !== null),
   ];
+
+  // The honesty boundary of the OSM fallback tier. Applied after the rows are
+  // built rather than woven into each call site, so the drop list reads as one
+  // rule in one place — and so it wins over E1's no-weekend-collapse full-marks
+  // path, which on a synthesized feed's uniform calendar would otherwise turn
+  // the assumption itself into a perfect score. The computed values never reach
+  // a denominator; the trace still prints every dropped row with this reason.
+  if (assumed) {
+    for (const rows of [c, d, e]) {
+      for (const m of rows) {
+        if (!S3_ASSUMED_TIMETABLE_METRICS.includes(m.id)) continue;
+        m.available = false;
+        m.pointsTenths = 0;
+        m.note = S3_ASSUMED_DROP_NOTE;
+      }
+    }
+  }
 
   const blocks = [
     ['A', 'Zone supply', a, 200],
@@ -881,6 +935,9 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
   const hidingMin = Number(size.hidingPeriodMin);
   const radiusM = Number(size.zoneRadiusM);
   const t90 = Number(get(metrics, 't90Min') || 0.0);
+  // The zone-score arm of the assumed-schedule honesty boundary — see
+  // `S3_ASSUMED_TIMETABLE_METRICS` for the rule and the reasoning.
+  const assumed = Boolean(get(metrics, 'assumedSchedule'));
   const borderBbox = (geo.bbox && geo.bbox.length)
     ? geo.bbox : bboxOf(zones.map((z) => [z.lat, z.lon]));
   const neighbourRadius = (size.name === 'small' ? 0.5 : 1.0) * M_PER_MILE;
@@ -1014,14 +1071,22 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       + 'mean something.',
       exitMargin !== null,
     ));
+    // The one zone metric that is a pure function of the timetable: on an
+    // assumed-schedule run the gap between departures IS the assumed headway
+    // read back, so it is dropped exactly like C1 on the city table. S2 stays —
+    // the last ride home rides RAPTOR over real geometry, which the
+    // `osm_synth_timetable` interpretation row covers as a model.
     const onward = s3ZoneHeadwayMin(zone, day, hwLo, hwHi);
     metricsRows.push(s3Metric(
       'S3', 'Median gap between departures from the zone', onward, 'min',
-      onward === null ? null : rramp(onward, 10, 60), 4, 'rramp', [10, 60], 'rulebook',
-      `The Move powerup grants ${num(size.moveGrantMin)} minutes to establish a brand-new `
-      + `zone; a 60-minute headway makes that unplayable from here. Scored out of 4 rather `
-      + `than 5 so the three service metrics sum to the axis\'s 15 points.`,
-      onward !== null,
+      (assumed || onward === null) ? null : rramp(onward, 10, 60), 4, 'rramp', [10, 60],
+      'rulebook',
+      assumed
+        ? S3_ASSUMED_DROP_NOTE
+        : `The Move powerup grants ${num(size.moveGrantMin)} minutes to establish a brand-new `
+          + `zone; a 60-minute headway makes that unplayable from here. Scored out of 4 rather `
+          + `than 5 so the three service metrics sum to the axis\'s 15 points.`,
+      !assumed && onward !== null,
     ));
 
     // ── E · endgame spots ────────────────────────────────────────────────
@@ -1112,10 +1177,12 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       true,
     ));
     const seekerFrac = (travelMin === null || t90 <= 0) ? null : travelMin / t90;
+    // X3 is C2's zone-level twin and the other normally-Measured row; the same
+    // relabel applies for the same reason — assumed waits make T90 a model.
     metricsRows.push(s3Metric(
       'X3', 'Seeker travel cost to reach you, ÷ T90', seekerFrac, 'ratio',
       seekerFrac === null ? null : ramp(seekerFrac, 0.20, 0.80), 3, 'ramp', [0.20, 0.80],
-      'feed',
+      assumed ? 'interp' : 'feed',
       'Measured on the same run as R1, from the round-start location. R1 and X3 pull in '
       + 'opposite directions on purpose: you travel here with certainty on the first bus, the '
       + 'seekers travel here later under uncertainty and often back through the hub.',
@@ -1474,6 +1541,10 @@ export function deriveRecommendations(reportParts) {
   const perDay = get(metrics, 'perDay') || {};
   const bestKey = get(metrics, 'bestDay') || '';
   const bestLabel = get(get(perDay, bestKey) || {}, 'dayLabel') || bestKey || 'the busiest day';
+  // A house rule that quotes a departure time or a headway is quoting the
+  // synthesized timetable on an assumed-schedule run, so the rules below either
+  // say so or stand down — the same boundary the metric table draws.
+  const assumed = Boolean(get(metrics, 'assumedSchedule'));
   const out = [];
 
   const add = (rid, priority, text, evidence, required = false) => {
@@ -1481,8 +1552,13 @@ export function deriveRecommendations(reportParts) {
   };
 
   // 1 · which day
+  // Gated on the honesty flag exactly as check_timetable is: E1 is on the
+  // assumed-run drop list — the fitness table prints it as "Not measured on this
+  // run" — and a recommendation quoting it would smuggle the dropped,
+  // partly-invented ratio back in as a house rule. The else branch quotes no
+  // schedule judgement, so an assumed run falls through to it.
   const weekend = nullish(get(metrics, 'weekendRatio'));
-  if (weekend !== null && Number(weekend) < 0.60) {
+  if (!assumed && weekend !== null && Number(weekend) < 0.60) {
     add('play_day', 10,
       `Play on ${bestLabel}. Service on the quieter weekend day drops to `
       + `${pct(Number(weekend))} of a weekday\'s trips, and every question that depends on `
@@ -1570,7 +1646,12 @@ export function deriveRecommendations(reportParts) {
       + 'removed by the rulebook.',
       'Curse deck audit, tiers 1 and 2', true);
   }
-  const choices = curses.filter((c) => c.action === 'player-choice');
+  // Only the two spending curses count as this rule's trigger: the text below is
+  // exclusively about paying for things, and `u_turn` carries the same
+  // 'player-choice' action on an assumed-schedule run — a timetable caveat that
+  // must not switch a spending rule on for curses the audit may just have removed.
+  const choices = curses.filter((c) => c.action === 'player-choice'
+    && (c.id === 'egg_partner' || c.id === 'impressionable_consumer'));
   if (choices.length) {
     add('no_spending_toggle', 46,
       'Decide as a group whether anyone has to spend money during the game. Egg Partner, '
@@ -1586,7 +1667,14 @@ export function deriveRecommendations(reportParts) {
     add('end_timer', 50,
       `Set an end-of-game timer at ${hhmm(Number(medianLast) - 1800)}. That is 30 minutes `
       + 'before the median last departure, which is the point after which a hider in an '
-      + 'average zone can no longer get anywhere — including home.',
+      + 'average zone can no longer get anywhere — including home.'
+      // Still worth having — a round needs an end — but on an assumed schedule the
+      // quoted time is the synthesizer's service window read back, and saying a
+      // clock time without saying so would be the one lie this tier must not tell.
+      + (assumed
+        ? ' On this run the timetable is assumed from OpenStreetMap, so treat this time as '
+          + 'a default to agree on, not a measurement — and check the real last departures.'
+        : ''),
       `median last departure ${hhmm(Number(medianLast))}`);
   }
 
@@ -1630,8 +1718,11 @@ export function deriveRecommendations(reportParts) {
     'rulebook, hider deck');
 
   // 11 · frequency and reachability warnings
+  // Gated off entirely on an assumed schedule: C1 is dropped from the score for
+  // being the assumption read back, and a house rule quoting the same number
+  // would smuggle it in through the side door.
   const headway = nullish(get(metrics, 'medianHeadwayMin'));
-  if (headway !== null && Number(headway) > 30) {
+  if (!assumed && headway !== null && Number(headway) > 30) {
     add('check_timetable', 62,
       `Agree that either side may check live departures at any time. The median stop here `
       + `sees a bus every ${mins(Number(headway))}; without the timetable the game becomes a `
@@ -1675,7 +1766,14 @@ export function deriveRecommendations(reportParts) {
       `There is no rail mode in this feed, so ${names} are dead. Brief the seekers: that is `
       + `${num(railDead.length)} question${railDead.length !== 1 ? 's' : ''} that pay the `
       + 'hider a card and teach nothing.',
-      'GTFS route types: no route_type in the rail-like set');
+      // On an assumed-schedule run part of the mode set was read off OSM route
+      // relations rather than a published feed, and the evidence line is where a
+      // reader goes to check the claim — so it names the real source. (A purely
+      // synthesized source is all rail by construction and never lands here;
+      // this arm is for a merged real-plus-OSM run.)
+      assumed
+        ? 'Route types, partly synthesized from OSM route tags: none in the rail-like set'
+        : 'GTFS route types: no route_type in the rail-like set');
   }
 
   // 14 · long games need rest

@@ -28,7 +28,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
 | External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
-| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. |
+| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) has never been in this list even though every `useOsm` run fetches from it, and a `kind:'osm'` source now depends on it with no feed zip in the run at all. Folding it into the row is an explicit amendment someone must make deliberately — do not do it as a side effect of another change, and do not cite this note as having done it. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. Use a plain `a < b ? -1 : a > b ? 1 : 0` comparator, never `localeCompare` (locale-dependent = non-deterministic). |
@@ -55,7 +55,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
-| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `labelOf`, `placeOf`, `sourceRefFor`, `CATALOG_VERSION`. Reads `data/feeds.json` — a **same-origin repo asset**, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff, NOT a sixth external asset. No DOM, no MapLibre; importable from Node. |
+| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `labelOf`, `placeOf`, `sourceRefFor`, `osmSourceRef`, `CATALOG_VERSION`. Reads `data/feeds.json` — a **same-origin repo asset**, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff, NOT a sixth external asset. No DOM, no MapLibre; importable from Node. |
 | `lib/cache.js` | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
 | `lib/http.js` | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
 | `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow`, `StopTimes`, `attachStopTimes`, `stopTimesOf` (the last three exist for `gtfs/merge.js`; `StopTimes.appendFrom` is how a merge copies a columnar store) |
@@ -65,8 +65,9 @@ embedded JSON block; it is built from `state.report` in memory.
 | `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
 | `gtfs/infer.js` | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
 | `osm/flatgeobuf.js` | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
-| `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
+| `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `worldTransitRoutes`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
 | `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
+| `osm/synth.js` | worker | `synthesizeFeedZip` plus the frozen `SYNTH_*` assumption constants (`SYNTH_MODE_ROUTE_TYPE`, `SYNTH_MODE_SPEED_KMH`, `SYNTH_MODE_HEADWAY_S`, `SYNTH_DWELL_S`, `SYNTH_SERVICE_WINDOW_S`, `SYNTH_TEMPLATE_ANCHOR_S`, `SYNTH_CALENDAR_DAYS`, `SYNTH_FALLBACK_ASOF`, `SYNTH_CLUSTER_NAME_M`, `SYNTH_CLUSTER_ANY_M`, `SYNTH_HEADWAY_MIN_S`, `SYNTH_HEADWAY_MAX_S`), which `rules/catalogue.js`'s three `osm_synth_*` INTERPRETATIONS rows quote — a constant moved here without re-syncing that prose is a page lying about the code. Pure and synchronous: `worldTransitRoutes` output + the drawn ring + `asOf` → a byte-deterministic GTFS zip (`Uint8Array`) the **untouched** `loadFeed` accepts, plus prose notes. Imported DYNAMICALLY by `worker.js` only when a run names a `kind:'osm'` source; a run of published feeds never parses it. Harness: `node tools/test-synth.mjs`, network-free. |
 | `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
 | `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
 | `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
@@ -82,7 +83,7 @@ SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN
 MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES`
 
 Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
-dowOf dateRange lowerMedian quantile normalise jdump sha256Bytes sha256Text`
+dowOf dateRange lowerMedian quantile normalise jdump sha256Bytes sha256Text stableHash`
 
 Notes:
 * `num(x, dp = 0, {comma = true})`. Python keyword args are a trailing options object.
@@ -91,6 +92,7 @@ Notes:
 * `MAX_FEEDS_PER_RUN` is the run's feed cap (6). It lives in `lib/core.js` because three modules have to agree on it and none may own it: the picker refuses the seventh pick, `readSources` refuses a seventh that arrived by the other door (six map picks plus a dropped zip), and `normaliseSources` refuses one the worker was handed anyway.
 * `IMPERIAL_COUNTRIES` is a frozen **sorted Array** (`['gb','lr','mm','us']`), not a Set, so it is clone-safe. Use `.includes()`.
 * **`sha256Text` and `sha256Bytes` are `async`** — `crypto.subtle.digest` returns a Promise. Every caller must `await`. This is the one signature that differs from the Python.
+* `stableHash(text)` is **synchronous** and returns 16 hex characters. It exists because a click handler building a `SourceRef` id cannot await `crypto.subtle` (and must not require a secure context). It is a **stable identity, never a content address** — collision-resistant enough to key a pick list, not to verify bytes. `sha256` fields stay `sha256Text`/`sha256Bytes`; do not "unify" the two.
 * `rhu` is round-**half-up** implemented on the shortest round-trip decimal string. Verified equal to `Decimal(repr(x)).quantize(…, ROUND_HALF_UP)` on the boundary cases (`2.675→2.68`, `1.005→1.01`, `0.145→0.15`, `-0.5→-1`). Do not "simplify" it to `toFixed`.
 * `num(-0.4)` returns `'-0'`. Python does too. Kept deliberately.
 * `hhmm`/`hhmmss` never modulo 86400. `hhmm(87360) === '24:16'`.
@@ -564,6 +566,59 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
   curseCounts: {}, cuisines: {}, legalSpots: {}, queries: [], notes: [note] }
 ```
 
+The manifest also lists **`transit_route`** — assembled OSM route relations
+(subway/train/light_rail/tram/monorail/funicular), one MultiLineString feature per
+relation, built by a global out-of-band pass (`tools/osm-world/build-transit.py` →
+`merge.py --transit`) exactly the way `admin` is, because a route relation is no more
+shardable than an admin boundary. It is **not** a `GEO_CATEGORIES` member and
+`collectGeodata` never fetches it: the only reader is the converter below, so a run
+with no `kind:'osm'` source pays nothing for it. `merge.py` requires `--transit` on
+exactly the runs it requires `--admin`, so a published world cannot silently lack the
+layer; a **path-less** manifest entry is present-but-empty, same as any other layer.
+
+```js
+/**
+ * @typedef {Object} TransitRouteStop
+ * @property {number} nodeId         // OSM node id of the relation's `stop` member
+ * @property {string|null} name @property {string|null} nameEn
+ * @property {number} lat @property {number} lon
+ */
+
+/**
+ * @typedef {Object} TransitRoute    // one route relation, from worldTransitRoutes()
+ * @property {number} osmId          // the relation id — every row is a relation
+ * @property {{name, nameEn, ref, colour, operator, network, route, interval,
+ *   duration}} tags                 // each string|null. A FIXED nine-key table read
+ *                                   //   by column name, never a property sweep; the
+ *                                   //   build's empty-string absents arrive as null
+ * @property {Array<Array<[number,number]>>} lines // MultiLineString parts, [lat, lon]
+ * @property {Array<TransitRouteStop>} stops       // travel order
+ */
+```
+
+`worldTransitRoutes(world, bbox, opts = {}) → Promise<Array<TransitRoute>|null>` answers
+three different ways and they are three different sentences: **`null`** — the manifest
+has no `transit_route` layer (a stale bucket, not a city without rail; the caller must
+refuse the source, never report "no rail here"); **`[]`** — the layer shipped and has
+nothing inside this bbox; otherwise the relations, sorted by `osmId`. A relation whose
+`stops` JSON is missing or unparseable is dropped whole; an individual stop row that is
+short or unplaceable is skipped and the rest of the line kept — a route with no stops
+and a route whose stop list was mangled are different facts, and only the first is safe
+to hand on. Deliberately does NOT go through `featuresToPois`; `Poi` grows no line field.
+
+`osm/synth.js` turns that output into a real GTFS zip: `synthesizeFeedZip({routes, ring,
+asOf}) → {zip: Uint8Array, notes: string[]}`. Stops are clipped to the drawn ring itself
+(`pointInRing`, not the bbox — the bbox was only the read layer's coarse filter);
+relations left with <2 in-ring stops are dropped; stop nodes cluster into stations
+(same normalised name within 500 m, any pair within 100 m); one route + template trip +
+`frequencies.txt` row per relation, times from distance-along-line at per-mode speeds —
+the `SYNTH_*` constants in §(a) are the authority. The calendar is 14 days starting on
+the **Monday of the week containing `asOf`**; the no-`asOf` fallback constant is
+`2030-06-01`, which is a **Saturday**, so the fallback window starts Monday
+**2030-05-27** — the design memo that called that date a Monday was wrong, the rule
+("Monday-aligned in both paths") is what holds. Nothing surviving clipping is an error,
+not an empty zip, routed through the worker's ordinary per-source catch.
+
 ### Rules layer
 
 ```js
@@ -758,6 +813,12 @@ The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note
  * @property {Object<string,number>} radarHitRate            // radius in METRES (string key) → hit rate
  * @property {string[]} dayKeys @property {string} bestDay
  * @property {[string,string]} feedWindow @property {number} feedWindowDays
+ * @property {boolean} assumedSchedule // set by worker.js, ALWAYS present — false on an
+ *                                     //   ordinary run. True iff any loaded source was
+ *                                     //   built from OpenStreetMap (kind:'osm'), and
+ *                                     //   RUN-LEVEL on purpose: after mergeFeeds
+ *                                     //   nothing can tell an invented timetable's
+ *                                     //   trips from a published one's. See §(f) 7.
  * @property {Object<string, DayMetrics>} perDay             // dayKey → DayMetrics
  */
 
@@ -927,7 +988,10 @@ clone-safe, but keeping the two apart makes the protocol readable). On a multi-f
 
 The landing map's drawn shape is a **page** control, not an `Options` field: it produces a
 `borderBbox` (and leaves `borderShape` at `'bbox'`), which `inferBorder` already honours
-as an override. Do not add a shape or ring field to the wire.
+as an override. Do not add a shape or ring field to **`Options`**. The one place a ring
+does cross the wire is *inside a `kind:'osm'` `SourceRef`* (§(d)) — there the ring IS the
+source, the same category as a `File`'s bytes, not a run setting; that is a reading of
+this rule, not a violation of it.
 
 ---
 
@@ -942,15 +1006,30 @@ as an override. Do not add a shape or ring field to the wire.
 
 /**
  * @typedef {Object} SourceRef       // main → worker. A `File` is clone-safe; a string is.
- * @property {'file'|'url'} kind
- * @property {File|null} file        // kind === 'file'
- * @property {string|null} url       // kind === 'url' — http(s) only
+ * @property {'file'|'url'|'osm'} kind
+ * @property {File|null} file        // kind === 'file'; null for 'osm'
+ * @property {string|null} url       // kind === 'url' — http(s) only; null for 'osm'
  * @property {string} id             // STABLE IDENTITY, and what the list is sorted on:
  *                                   //   'mdb:<id>' | 'url:<the url>' | 'file:<name>:<size>'
- * @property {string} label          // 'The Rapid' | 'mbta.zip'
+ *                                   //   | 'osm:<stableHash of the ring>'
+ * @property {string} label          // 'The Rapid' | 'mbta.zip' | 'OpenStreetMap rail near …'
  * @property {number|null} mdbId     // Mobility Database source id, or null
+ * @property {Array<[number,number]>} [ring] // kind === 'osm' ONLY: the drawn shape,
+ *                                   //   [lat, lon] vertices quantised to 6 dp (so the
+ *                                   //   same shape is the same id across sessions).
+ *                                   //   The ring IS the input — there is no file and
+ *                                   //   no url; the worker reads `transit_route` over
+ *                                   //   its bbox and synthesizes the feed (§(b) OSM
+ *                                   //   layer). Built by `lib/catalog.js`'s
+ *                                   //   `osmSourceRef(ring)`.
  */
 ```
+
+A `kind:'osm'` ref counts against `MAX_FEEDS_PER_RUN` like any other source, and
+`normaliseSources` refuses a ref-shaped object with an unrecognised `kind` **by name**
+rather than letting it fall through to `loadFeed` — a stale page's third kind must fail
+in the first stage, not four stages later. An osm ref with no usable ring (absent, or
+fewer than 3 vertices) is refused the same way.
 
 `sources` is the only carrier — the older `file` / `url` pair is **gone**, because two
 ways to say the same thing is how a stale main thread half-works silently. The main
@@ -1310,6 +1389,24 @@ Rules that follow from it, and that every module must obey:
 6. A fatal error (`{ type:'error', fatal:true }`) is only for the cases where there is no
    report at all: the source could not be fetched, the zip could not be opened, or the feed
    has no `stops.txt` / no `stop_times.txt`. Everything else degrades.
+7. **The assumed-timetable drop — a second application of rule 2's drop-and-renormalise,
+   keyed on `metrics.assumedSchedule` (§(b)) instead of `geo.available`.** When any loaded
+   source was synthesized from OpenStreetMap, every metric that is a pure function of the
+   invented timetable — the fitness rows C1, C3, D1, D2, D3, E1, E2
+   (`S3_ASSUMED_TIMETABLE_METRICS`, `rules/score.js`) and the zone S3 departure-gap row —
+   gets `available: false`, zero points, and a note saying why; the denominator
+   renormalises, **never imputes**. C2 and X3 survive on geometry and are relabelled
+   `source: 'interp'` — a **conditional basis**, not a new one: the §(b) `Metric.source`
+   enum is unchanged and stays closed. `auditCurses` grew ONE trailing optional parameter
+   for this (`metrics = null`; the four-argument call is byte-identical to before) —
+   under the flag `u_turn`, the one schedule-decided curse, becomes `action:
+   'player-choice'` with `count: null` beside rule 2's existing degraded-GeoData curse
+   vocabulary, while its route-share geometry is still quoted. `check_timetable` stands
+   down (it would quote dropped C1) and `end_timer` keeps firing with an assumed-timetable
+   disclosure. No question verdict reads the timetable, so unknown-never-dead holds
+   structurally. §09 prints a `Timetable` row (`render/deck.js`) only when the flag is
+   true, and each assumption is a standing `osm_synth_*` INTERPRETATIONS row
+   (`rules/catalogue.js`) quoting the `SYNTH_*` constants.
 
 ---
 
