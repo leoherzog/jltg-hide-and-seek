@@ -17,17 +17,22 @@
  * can re-run one, and `tools/osm-world/categories.json` is a mechanical translation of
  * them that has to be checkable against something.
  *
- * Budget on the reference map: ~303 range requests, ~14.7 MB, ~34 s, measured
- * 2026-08-25 against the live world that ships `rail_line` — one more count and one
- * more feature read than the 290/14.6 MB the Overpass migration left behind. Requests
- * and bytes are stable to the request across runs; the seconds are the network's, and
- * a cold connection measured 59. Never adjust the figure by arithmetic.
+ * Budget on the reference map: ~303 range requests, ~14.7 MB, ~18 s, measured
+ * 2026-08-25 against the live world that ships `rail_line`. The requests and the bytes
+ * are exactly what they were when the categories ran one at a time — the same 303 and
+ * the same 14.7 MB — because running them concurrently changes WHEN a request is made
+ * and nothing about which ones are made. Only the seconds moved, from ~36-42 to
+ * ~17-20, and they are the network's number: this link varies about a fifth either way
+ * and a cold connection measured 59. Never adjust any of it by arithmetic.
  * Nothing here caches; the files are immutable and served `max-age=31536000`, so the
  * browser's own HTTP cache is what makes a second run cheap. Every round-trip is
  * announced through `onProgress(done, total, label)` because the user is watching a bar.
  *
  * Everything below is deterministic: no wall clock reaches a return value, every
  * dict/set is iterated through a sort, and every tie-break ends in a stable OSM id.
+ * The feature categories are READ concurrently and their results APPLIED in catalogue
+ * order, which is what keeps that true of a loop whose completion order is now the
+ * network's — see `GEO_CATEGORY_CONCURRENCY` and the category loop in `collectGeodata`.
  *
  * DEGRADATION IS A FIRST-CLASS PATH, NOT AN ERROR PATH, and there are two of them.
  * They are different states and must be reported separately, never conflated:
@@ -647,8 +652,44 @@ function maxOf(values) {
 
 /**
  * Progress bookkeeping around every world-file read. `total` is an estimate; the
- * worker protocol allows it to grow, and `finish` raises it if the run overruns, but
- * nothing plans for growth any more — a world-file run's shape is known up front.
+ * worker protocol allows it to grow, and finishing a task raises it if the run
+ * overruns, but nothing plans for growth any more — a world-file run's shape is
+ * known up front.
+ *
+ * ONE COUNTER, SEVERAL READS IN FLIGHT. This used to be a single-current-label
+ * model — `start` stored the label in a field and `finish` read it back out — which
+ * is honest exactly as long as the reads are strictly sequential. The category loop
+ * in `collectGeodata` no longer is, and under the old model `finish` would have
+ * reported whichever label was dispatched LAST rather than the one that actually
+ * completed, so the bar's caption would routinely name a category still waiting on
+ * the network. So `start` now hands back a TASK and a task is the thing that
+ * completes: the counter can move once per task and cannot be moved by the wrong
+ * one, so `done` counts completions and nothing else.
+ *
+ * TWO RULES KEEP THE BAR HONEST UNDER CONCURRENCY, and both are here rather than in
+ * the callers because a bar that stalls or rewinds reads as a hung app:
+ *
+ *   1. An emission that would repeat the previous one exactly — same `done`, same
+ *      `total`, same caption — is DROPPED. Sixteen lanes opening at once otherwise
+ *      post sixteen identical messages across the worker boundary, and the reader
+ *      watches the bar sit still sixteen times over. This never fires on a
+ *      sequential caller, whose `start` and `finish` always differ in one or the
+ *      other, so it costs those callers nothing.
+ *
+ *   2. The caption is THE OLDEST READ STILL WAITING — the one actually holding the
+ *      run up — falling back to the last completed label when nothing is open, so
+ *      it never blanks between phases. Naming the most recent arrival instead would
+ *      flicker through a dozen names inside one tick and describe none of the wait.
+ *
+ * A CONCURRENT CALLER MUST PASS THE SAME LABEL FOR EVERY TASK IN ITS BATCH. This is
+ * the part that is easy to get wrong and expensive to notice: the completion order
+ * of a batch is the network's, so a caption that identifies the individual task is a
+ * caption that differs between two runs of the same input, and this module's whole
+ * contract is that it does not do that (see the determinism note in the header).
+ * `done` stays stable regardless — it only ever counts — but the label does not, so
+ * the concurrent caller names its PHASE and lets the counter carry the detail. On a
+ * caller that keeps one task open at a time none of this applies, and the class
+ * reduces to exactly the old behaviour, emission for emission and label for label.
  */
 class Progress {
   constructor(cb, total) {
@@ -656,22 +697,119 @@ class Progress {
     this.done = 0;
     this.total = total;
     this._label = '';
+    // Insertion-ordered, so the first value is the oldest task still open. Keyed by
+    // a serial rather than by label because two reads may legitimately carry the
+    // same caption, and a task has to complete by identity.
+    this._open = new Map();
+    this._seq = 0;
+    // The last triple actually handed to `cb`, for rule 1. Starts as null rather
+    // than as the zero state so the very first emission always goes out, even on a
+    // caller whose first task opens at `done === 0` with an empty caption.
+    this._last = null;
   }
 
-  start(label) { this._label = label; this._cb(this.done, this.total, label); }
-
-  finish() {
-    this.done += 1;
-    if (this.done > this.total) this.total = this.done;
-    this._cb(this.done, this.total, this._label);
+  /**
+   * Open one unit of work and return its handle. `finish` is idempotent: every
+   * caller here closes its task from a `finally` that an early `return` also
+   * reaches, and a unit counted twice would push `done` past `total` — at which
+   * point the bar is no longer describing the run.
+   */
+  start(label) {
+    const id = (this._seq += 1);
+    this._open.set(id, label);
+    this._emit();
+    return {
+      finish: () => {
+        if (!this._open.delete(id)) return;
+        this.done += 1;
+        if (this.done > this.total) this.total = this.done;
+        this._label = label;
+        this._emit();
+      },
+    };
   }
 
   /** Retire the estimate: whatever was skipped never happens, so the bar completes. */
   settle(label) {
     this.total = this.done;
     this._label = label !== undefined ? label : this._label;
-    this._cb(this.done, this.total, this._label);
+    this._emit();
   }
+
+  /** Rule 1: say nothing when there is nothing new to say. */
+  _emit() {
+    const caption = this._caption();
+    const last = this._last;
+    if (last !== null
+      && last[0] === this.done && last[1] === this.total && last[2] === caption) return;
+    this._last = [this.done, this.total, caption];
+    this._cb(this.done, this.total, caption);
+  }
+
+  /** Rule 2: the oldest read still waiting, or the last one that finished. */
+  _caption() {
+    for (const label of this._open.values()) return label;
+    return this._label;
+  }
+}
+
+// How many feature categories `collectGeodata` reads at once.
+//
+// THIS IS NOT A REQUEST LIMIT, and deliberately does not try to be one. The socket
+// budget is bounded a layer down, by `MAX_CONCURRENT_RANGES` in `./flatgeobuf.js`:
+// every range read in the app funnels through `RangeReader._fetchRange`, so one gate
+// there bounds the whole OSM layer however many categories are open up here. That
+// gate is a GUARD RAIL — it exists so that a handful of layers times a dozen index
+// reads each cannot ask the browser for seventy sockets — and this number is not
+// chosen to press against it. Sizing a lane count so the gate binds does not buy
+// throughput; it just moves the queueing from here into there. Measured both ways
+// on the reference border, forcing the gate to 16 and to 64 moved the run by less
+// than the network's own run-to-run spread.
+//
+// So this number is chosen for the things it actually controls. One category at a
+// time left the connection idle for most of the layer's wall clock, because a
+// category is a mostly serial chain — read the R-tree root, then the nodes it points
+// at, then the feature runs those point at — and can only offer the network a batch
+// at a time before it has to stop and decode. Eight lanes is enough overlap to cover
+// those decode pauses — the category phase went from 19.4 s to ~2.9 s, peaking at
+// ~20 requests in flight, comfortably under the gate — while bounding how many
+// layers' worth of undecoded bytes and half-built feature arrays are resident at
+// once. Sixteen measured ~0.3 s faster and 24 no faster than 16, both inside the
+// run-to-run noise, which is not worth doubling the working set or turning the guard
+// rail into the throttle.
+const GEO_CATEGORY_CONCURRENCY = 8;
+
+// The one caption every category read in the batch reports under. Shaped like the
+// three sequential phases' labels (`geo:world admin areas`, `geo:world density grid`,
+// `geo:world curse predicates`) because it is the same kind of thing: the name of a
+// phase the run is in, not of a file it is waiting on.
+const GEO_FEATURE_PHASE_LABEL = 'geo:world features';
+
+/**
+ * Run `worker` over `items` with at most `limit` of them in flight, and return the
+ * results in INPUT order however they finished. That the order is the input's is the
+ * whole point: it is what lets a caller apply the results in the catalogue's order,
+ * so nothing downstream can tell which read came back first.
+ *
+ * `worker` must not reject — a rejection here abandons the lanes still running
+ * rather than unwinding them. Every caller wraps its own body in try/catch because
+ * it has a degradation story to tell anyway.
+ */
+async function mapConcurrent(items, limit, worker) {
+  const out = new Array(items.length);
+  let next = 0;
+  const lane = async () => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i]);
+    }
+  };
+  const lanes = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) lanes.push(lane());
+  await Promise.all(lanes);
+  return out;
 }
 
 function noopLog() {}
@@ -853,7 +991,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   // tested against them locally, so the number of zones stops costing anything at all.
   /** @type {Array<Object>} */
   let areas = [];
-  progress.start('geo:world admin areas');
+  const adminTask = progress.start('geo:world admin areas');
   try {
     areas = (await worldAdminAreas(world, bbox)) || [];
   } catch (exc) {
@@ -861,7 +999,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     log('warn', `admin containment lookup failed: ${exc}`);
     areas = [];
   } finally {
-    progress.finish();
+    adminTask.finish();
   }
 
   // The containing areas per zone, kept as AREA objects too: the country census below
@@ -1279,7 +1417,7 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
   /** @type {Object<string, number>} */
   const raw = {};
 
-  progress.start('geo:world curse predicates');
+  const curseTask = progress.start('geo:world curse predicates');
   try {
     for (const [predicate, layer, terms] of CURSE_WORLD_LAYERS) {
       // An upper bound is the right tool here: these are removal tests of the form
@@ -1294,7 +1432,7 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
     // The curse audit degrades, it never aborts.
     log('warn', `curse predicate audit failed: ${exc}`);
   } finally {
-    progress.finish();
+    curseTask.finish();
   }
 
   // Predicates that are exactly a category already fetched — no extra read at all.
@@ -1848,40 +1986,89 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   /** Distinct per-category failure reasons, kept so the throw below can name a cause. */
   const layerFailures = new Set();
 
-  for (const category of GEO_CATEGORIES) {
-    const key = category.key;
+  // THE CATEGORIES ARE READ CONCURRENTLY, AND THE RESULTS ARE APPLIED IN CATALOGUE
+  // ORDER. Those are two separate statements and both are load-bearing.
+  //
+  // Concurrently, because the layer was doing almost nothing but waiting: measured on
+  // the reference border, its 303 range requests summed to ~32 s of network time
+  // inside a geo stage of ~30 s. A category is a mostly serial chain of dependent
+  // reads, so waiting out `density` (4.8 s of request time) before even asking about
+  // `water` (3.3 s) spent the whole run's latency in series for no reason — reading
+  // the categories one at a time was 19.4 s of that 30.4 s stage, and reading them
+  // together is 2.0 s. The bodies were already independent — each writes only its own
+  // `pois[key]` and `counts[key]` — so nothing had to be untangled to let them
+  // overlap.
+  //
+  // In catalogue order, because concurrency's one real hazard here is not a data race
+  // (there are none: the reads share nothing) but the completion order leaking into
+  // the output. `pois` and `counts` are plain objects and their KEY ORDER is
+  // observable — it survives the structured clone to the main thread — and
+  // `layersRead`, `partialCategories` and `layerFailures` would all otherwise record
+  // whichever layer the network happened to answer first. So the concurrent phase
+  // computes nothing but per-category outcomes, and this loop's every mutation, log
+  // line included, happens afterwards in `GEO_CATEGORIES` order. The result is
+  // byte-identical to reading them one at a time; only the waiting changed.
+  //
+  // THE PROGRESS CAPTION IS THE PHASE, NOT THE CATEGORY, and that is the same rule
+  // wearing different clothes. The bar's label is output too — `app.js` puts it
+  // straight into the progress caption — so a per-category caption would be the
+  // network's answer order rendered on screen, differing between two runs of one
+  // border. While a category was read at a time it was both honest and stable to
+  // name the one being read; with eight in flight there is no such category, and
+  // naming any of them would be picking one. So every task in the batch carries the
+  // same label and the counter carries the detail: the bar still advances once per
+  // category, 31 times on the reference border, and the sequence is a function of the
+  // manifest alone. See the rules on `Progress`.
+  const featureCategories = GEO_CATEGORIES
     // The tallies are answered by the density grid in step 2, not by a feature layer.
-    if (GEO_DENSITY_GRID_CATEGORIES.includes(key)) continue;
-    if (worldLayerInfo(world, key) === null) {
-      // A layer the build did not produce degrades that category and nothing else.
+    .filter((c) => !GEO_DENSITY_GRID_CATEGORIES.includes(c.key));
+  const outcomes = await mapConcurrent(
+    featureCategories, GEO_CATEGORY_CONCURRENCY, async (category) => {
+      const key = category.key;
+      // A layer the build did not produce degrades that category and nothing else —
+      // and costs no round-trip, so it takes no progress task either. That is why
+      // `progress` is started with an estimate the run underruns and `settle` exists.
+      if (worldLayerInfo(world, key) === null) return { key, kind: 'absent' };
+      const task = progress.start(GEO_FEATURE_PHASE_LABEL);
+      try {
+        const upperBound = await worldCount(world, key, bbox);
+        if (upperBound !== null && upperBound > CATEGORY_FEATURE_BUDGET) {
+          // An upper bound, not a count — say so by marking the category partial.
+          return { key, kind: 'counted', upperBound };
+        }
+        const features = (await worldPois(world, key, key, bbox, proj, {
+          keepRings: keepRingsFor(key),
+          keepTags: keepTagsFor(key),
+        })) || [];
+        return { key, kind: 'read', features };
+      } catch (exc) {
+        // One dead layer is a caveat; all of them dead is the next check.
+        return { key, kind: 'failed', exc };
+      } finally {
+        task.finish();
+      }
+    },
+  );
+
+  for (const outcome of outcomes) {
+    const { key } = outcome;
+    if (outcome.kind === 'absent') {
       partialCategories.add(key);
       log('warn', `category ${key}: no world-file layer in the manifest`);
-      continue;
-    }
-    progress.start(`geo:world ${key}`);
-    try {
-      const upperBound = await worldCount(world, key, bbox);
-      if (upperBound !== null && upperBound > CATEGORY_FEATURE_BUDGET) {
-        // An upper bound, not a count — say so by marking the category partial.
-        counts[key] = upperBound;
-        partialCategories.add(key);
-        log('warn', `category ${key} has ~${upperBound} features `
-          + `(> ${CATEGORY_FEATURE_BUDGET}): counted, not fetched`);
-        continue;
-      }
-      pois[key] = (await worldPois(world, key, key, bbox, proj, {
-        keepRings: keepRingsFor(key),
-        keepTags: keepTagsFor(key),
-      })) || [];
-      counts[key] = pois[key].length;
+    } else if (outcome.kind === 'counted') {
+      counts[key] = outcome.upperBound;
+      partialCategories.add(key);
+      log('warn', `category ${key} has ~${outcome.upperBound} features `
+        + `(> ${CATEGORY_FEATURE_BUDGET}): counted, not fetched`);
+    } else if (outcome.kind === 'read') {
+      pois[key] = outcome.features;
+      counts[key] = outcome.features.length;
       layersRead += 1;
-    } catch (exc) {
-        // One dead layer is a caveat; all of them dead is the next check.
+    } else {
+      const { exc } = outcome;
       partialCategories.add(key);
       layerFailures.add(String((exc && exc.message) ? exc.message : exc));
       log('warn', `category ${key} unavailable: ${exc}`);
-    } finally {
-      progress.finish();
     }
   }
 
@@ -1898,12 +2085,19 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     // throws on every feature — read to the player as "the map files were unreachable",
     // which is the exact confusion this module's header warns about. Carry the real
     // reasons out instead; they were previously visible only in the console.
+    //
+    // The `sort` is not decoration and must not be dropped: this message is output,
+    // and `layerFailures` is a Set, so without it the three reasons a player is shown
+    // would be whichever three distinct failures the loop above happened to record
+    // first — and the loop applies its outcomes in catalogue order precisely so that
+    // is not the network's answer order. Sorted, the same broken world always says
+    // the same thing.
     const why = Array.from(layerFailures).sort(cmpStr).slice(0, 3).join('; ');
     throw new Error(`world files: no layer could be read${why ? `: ${why}` : ''}`);
   }
 
   // ── 2. the density grid: the categories that are tallies, not icons ───────
-  progress.start('geo:world density grid');
+  const densityTask = progress.start('geo:world density grid');
   /** @type {null|{counts: Object<string, number>, cells: Array<Object>, cellDeg: number}} */
   let density = null;
   try {
@@ -1911,7 +2105,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   } catch (exc) {
     log('warn', `density grid unavailable: ${exc}`);
   } finally {
-    progress.finish();
+    densityTask.finish();
   }
   for (const key of GEO_DENSITY_GRID_CATEGORIES) {
     // ABSENT, NOT ZERO, when the grid could not be read. §(f) rule 3 is the whole
