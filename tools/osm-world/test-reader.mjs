@@ -232,6 +232,75 @@ check('reader used Range requests, not a full download',
     order.join('|'));
 }
 
+// ── the range gate ───────────────────────────────────────────────────────────
+
+// The module-global gate in `osm/flatgeobuf.js` bounds how many Range requests are in
+// flight across every reader at once, and `geodata.js` runs its categories in parallel
+// on the strength of that promise. Its failure mode is the reason it is tested here
+// rather than trusted: a permit that is taken and never given back does not throw and
+// does not corrupt anything — it silently shrinks the ceiling, and enough of them hang
+// the OSM layer with no error anywhere. Nothing else in this repo executes the error
+// paths under contention, so this drives them deliberately: a third of the requests
+// fail, half of those by throwing and half by answering 500, which are the two shapes
+// that leak a permit if the `finally` is ever moved or dropped.
+{
+  const SIZE = 1 << 20;
+  let live = 0;
+  let peak = 0;
+  let served = 0;
+  const failingFetch = async (url, init) => {
+    served += 1;
+    const mine = served;
+    live += 1;
+    peak = Math.max(peak, live);
+    try {
+      await new Promise((resolve) => { setTimeout(resolve, 1); });
+      if (mine % 3 === 0) {
+        if (mine % 2 === 0) throw new Error('synthetic transport failure');
+        return new Response('nope', { status: 500 });
+      }
+      const span = /bytes=(\d+)-(\d+)/.exec(init.headers.Range);
+      const from = Number(span[1]);
+      const to = Number(span[2]) + 1;
+      return new Response(new Uint8Array(to - from), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${from}-${to - 1}/${SIZE}` },
+      });
+    } finally {
+      live -= 1;
+    }
+  };
+
+  const gated = new FlatGeobufReader('https://example.invalid/gate.fgb', {
+    fetchImpl: failingFetch,
+  });
+  // Set the size directly: this fixture is never opened, so there is no header read to
+  // learn it from, and `read` clamps against it.
+  gated.reader.size = SIZE;
+
+  const spans = Array.from({ length: 200 }, (_, i) => [i * 512, i * 512 + 256]);
+  const settled = await Promise.allSettled(spans.map(([from, to]) => gated.reader.read(from, to)));
+  const fulfilled = settled.filter((one) => one.status === 'fulfilled').length;
+
+  check('the gate is never exceeded', peak <= 32, `peak ${peak} in flight`);
+  check('it is actually reached under 200 concurrent reads', peak === 32, `peak ${peak}`);
+  check('the failing third really failed', fulfilled > 0 && fulfilled < spans.length,
+    `${fulfilled}/${spans.length} fulfilled`);
+
+  // The leak check. A permit lost on an error path shows up as a read that never
+  // settles at all, so the timeout — not a rejection — is the failure being caught.
+  const outcome = await Promise.race([
+    gated.reader.read(900000, 900100).then(() => 'settled', () => 'settled'),
+    new Promise((resolve) => { setTimeout(() => resolve('never settled'), 5000); }),
+  ]);
+  check('a read after 66 failures still settles', outcome === 'settled', outcome);
+
+  // A rejected span must not be remembered: the in-flight map is keyed by span, and a
+  // rejection left in it would hand the same stale error to every later read forever.
+  const again = await gated.reader.read(1024, 1280).then(() => true, () => true);
+  check('a span that failed is still retryable', again);
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
