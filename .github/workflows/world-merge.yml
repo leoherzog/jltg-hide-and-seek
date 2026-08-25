@@ -810,7 +810,11 @@ jobs:
             || echo "::warning::staging cleanup failed — orphaned intermediates remain under $STAGING/ in R2; delete them by hand"
           # Verify rather than trust the exit code: a cleanup that silently
           # removes nothing and returns 0 is the failure we would not notice.
-          left=$(aws s3 ls "s3://$R2_BUCKET/$STAGING/" --recursive \
-                   --endpoint-url "$EP" | wc -l)
+          # The `|| true` is not optional: `aws s3 ls` exits 1 on an EMPTY
+          # listing, so verifying a successful cleanup is exactly the case
+          # where it "fails" — under pipefail that marked run 32783767219 red
+          # AFTER the world was live. An empty listing is the success case.
+          left=$( (aws s3 ls "s3://$R2_BUCKET/$STAGING/" --recursive \
+                   --endpoint-url "$EP" || true) | wc -l)
           [ "$left" -eq 0 ] \
             || echo "::warning::$left object(s) still under $STAGING/ in R2 after cleanup; delete them by hand"
