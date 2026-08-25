@@ -130,14 +130,14 @@ feed is a pure function of the feed bytes. `gtfs/merge.js`'s header is the full 
 ## The OSM layer
 
 OpenStreetMap features come from prebuilt **FlatGeobuf** files in Cloudflare R2
-(`https://map.jltg.herzog.tech/world`, 39 layers as of the `rail_line` + `transit_route` build —
-the live bucket has 37 until the next full rebuild publishes, and until then every run marks
-`rail_line` partial with a warning, which is the correct degradation, not a bug), read with HTTP
+(`https://map.jltg.herzog.tech/world`, 39 layers — the `rail_line` + `transit_route` rebuild
+published 2026-08-25, so the bucket and this sentence agree; `rail_line` ships 1,572,952 ways and
+`transit_route` 25,045 assembled route relations), read with HTTP
 Range requests against the packed Hilbert R-tree in each file's header. There is **no Overpass call
 and no Nominatim call at runtime** — the modules' headers record what replaced what, and the
-measured budget on the reference border is ~33 s, ~290 range requests, ~14.6 MB. That measurement
-**predates `rail_line`** and must be re-measured against a world that ships it — never adjusted by
-arithmetic — before the number is quoted as current.
+measured budget on the reference border is ~34 s, ~303 range requests, ~14.7 MB, measured
+2026-08-25 against the live world. Never adjust that figure by arithmetic — re-measure it, the way
+adding `rail_line` required.
 
 Three modules, strictly layered:
 
@@ -243,9 +243,9 @@ development, carried forward as a record of what was checked.
   own reader (Grand Rapids must not be in Canada), `test-update.py` covers `build.py`/`merge.py`
   internals no other harness reaches, `make-fixture.py` / `make-test-world.py` write the fixtures
   the first two read, and `fgb-equal.sh` decides whether two FlatGeobufs are equivalent.
-- Measured OSM budget on the reference border (2026-08-22): ~33 s, ~290 range requests, ~14.6 MB.
-  Taken before `rail_line` existed — one more count and one more feature read per run once a world
-  ships it. Re-measure; do not adjust by arithmetic.
+- Measured OSM budget on the reference border (2026-08-25, live world, `rail_line` included):
+  ~34 s, ~303 range requests, ~14.7 MB. Requests and bytes repeat exactly across runs; the seconds
+  are the network's, and a cold connection measured 59. Do not adjust by arithmetic.
 - Escaping: a feed rebuilt with hostile stop names (`</script><script>alert(1)</script>`,
   `<img src=x onerror=...>`, quotes, ampersands, emoji) produces well-formed pages with every
   payload inert inside JSON blocks and no premature `</script>`.

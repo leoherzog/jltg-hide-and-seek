@@ -17,9 +17,11 @@
  * can re-run one, and `tools/osm-world/categories.json` is a mechanical translation of
  * them that has to be checkable against something.
  *
- * Budget on the reference map: ~290 range requests, ~14.6 MB, measured 2026-08-22 —
- * before `rail_line` existed. Re-measure against a world that ships it; never adjust
- * the figure by arithmetic.
+ * Budget on the reference map: ~303 range requests, ~14.7 MB, ~34 s, measured
+ * 2026-08-25 against the live world that ships `rail_line` — one more count and one
+ * more feature read than the 290/14.6 MB the Overpass migration left behind. Requests
+ * and bytes are stable to the request across runs; the seconds are the network's, and
+ * a cold connection measured 59. Never adjust the figure by arithmetic.
  * Nothing here caches; the files are immutable and served `max-age=31536000`, so the
  * browser's own HTTP cache is what makes a second run cheap. Every round-trip is
  * announced through `onProgress(done, total, label)` because the user is watching a bar.
@@ -143,7 +145,7 @@ export const GEO_CATEGORIES = Object.freeze([
         + 'here: nothing on the page asks a question about a route relation, and their only '
         + 'reader is the OSM fallback converter — a category would buy every run a fetch to '
         + 'answer a question nobody asked.',
-    }),
+    }),  // 136
   cat('water', 'Body of water',
     'nwr["natural"="water"]["name"]["water"!~"^(pool|reflecting_pool)$"]'
     + '["leisure"!="swimming_pool"]({{bbox}});'
@@ -1788,7 +1790,7 @@ export function emptyGeoData(bbox, note) {
  * one layer can be read, the CALLER returns `emptyGeoData(...)`; every downstream
  * consumer must degrade rather than crash.
  *
- * Budget on the reference map: ~290 range requests, ~14.6 MB.
+ * Budget on the reference map: ~303 range requests, ~14.7 MB.
  *
  * @param {Object} opts Options
  * @param {Object} border Border
