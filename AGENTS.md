@@ -135,9 +135,18 @@ published 2026-08-25, so the bucket and this sentence agree; `rail_line` ships 1
 `transit_route` 25,045 assembled route relations), read with HTTP
 Range requests against the packed Hilbert R-tree in each file's header. There is **no Overpass call
 and no Nominatim call at runtime** — the modules' headers record what replaced what, and the
-measured budget on the reference border is ~34 s, ~303 range requests, ~14.7 MB, measured
+measured budget on the reference border is ~18 s, ~303 range requests, ~14.7 MB, measured
 2026-08-25 against the live world. Never adjust that figure by arithmetic — re-measure it, the way
 adding `rail_line` required.
+
+The requests run **concurrently**, and in two places that have to be read together: `osm/geodata.js`
+fetches its categories in parallel lanes, and every range request in the module — those, the R-tree
+walks under them, and the feature runs under those — funnels through one module-global FIFO gate in
+`osm/flatgeobuf.js`. The gate is the reason the lanes are safe to add: it bounds what reaches the
+browser's connection pool no matter how much concurrency is stacked above it, so tuning a lane count
+can never turn into a socket storm. Parallelism moved the seconds (~36-42 → ~17-20) and NOTHING else
+— same 303 requests, same 14.7 MB, byte-identical report — and `tools/osm-world/test-reader.mjs`
+holds the gate to it, including that a permit is returned on the error paths.
 
 Three modules, strictly layered:
 
@@ -244,8 +253,16 @@ development, carried forward as a record of what was checked.
   internals no other harness reaches, `make-fixture.py` / `make-test-world.py` write the fixtures
   the first two read, and `fgb-equal.sh` decides whether two FlatGeobufs are equivalent.
 - Measured OSM budget on the reference border (2026-08-25, live world, `rail_line` included):
-  ~34 s, ~303 range requests, ~14.7 MB. Requests and bytes repeat exactly across runs; the seconds
-  are the network's, and a cold connection measured 59. Do not adjust by arithmetic.
+  ~18 s, ~303 range requests, ~14.7 MB, at a peak of ~20 requests in flight. Requests and bytes
+  repeat exactly across runs; the seconds are the network's, and this link varies about a fifth
+  either way. Do not adjust by arithmetic.
+- Parallel-range equivalence (2026-08-25): the report payload hashes identically before and after
+  the change (`6eec4a3f…` over the full non-progress stage stream, stable across runs on both
+  trees), on the same 303 requests and 14.71 MB, while wall clock went ~36-42 s → ~17-20 s and peak
+  concurrency 7 → ~20. The progress bar also stalls LESS, not more: repeated `done` values fell 53
+  → 23. One pre-existing wobble is worth knowing about and is NOT from this change — the scoring
+  stage's own progress labels differ run to run on HEAD exactly as they do now (the stream diverges
+  at `question order: measuring.admin_2_border`), so a whole-stream digest is not a stable check.
 - Escaping: a feed rebuilt with hostile stop names (`</script><script>alert(1)</script>`,
   `<img src=x onerror=...>`, quotes, ampersands, emoji) produces well-formed pages with every
   payload inert inside JSON blocks and no premature `</script>`.
