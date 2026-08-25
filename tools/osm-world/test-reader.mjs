@@ -297,8 +297,14 @@ check('reader used Range requests, not a full download',
 
   // A rejected span must not be remembered: the in-flight map is keyed by span, and a
   // rejection left in it would hand the same stale error to every later read forever.
-  const again = await gated.reader.read(1024, 1280).then(() => true, () => true);
-  check('a span that failed is still retryable', again);
+  // Whether the retry SUCCEEDS is not the point and cannot be asserted — this fake
+  // origin fails by a counter, so the retry's fate is arithmetic. What must be true is
+  // that the retry reaches the origin at all: a remembered rejection would be handed
+  // back from the map without a request, and the count below is what catches that.
+  const before = served;
+  await gated.reader.read(1024, 1280).then(() => {}, () => {});
+  check('a span that failed is retried, not remembered', served > before,
+    `${served - before} requests issued on retry`);
 }
 
 // ── report ───────────────────────────────────────────────────────────────────
