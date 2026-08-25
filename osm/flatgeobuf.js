@@ -68,12 +68,96 @@ const RANGE_COALESCE_BYTES = 8192;
 const MAX_RANGE_BYTES = 8 << 20;
 
 /**
- * How many index reads to have in flight at once during a level of the R-tree walk.
+ * How many index reads to hand to the network at once during a level of the R-tree walk.
  * The origin is nowhere near the constraint — R2 answered 1,200 concurrent range
- * requests against one object in 2.9 s with no failures — so this is set for the
- * browser's own per-host connection limit rather than for the server.
+ * requests against one object in 2.9 s with no failures.
+ *
+ * This is a BATCH-SHAPING number, not a ceiling — it stopped being the ceiling the day
+ * more than one layer could be in flight at once. `MAX_CONCURRENT_RANGES` below is the
+ * ceiling, and it is enforced a layer down where nothing can route around it. What this
+ * number decides is only how much of one level the walk offers the gate before it stops
+ * to read what came back.
  */
 const INDEX_READ_CONCURRENCY = 12;
+
+/**
+ * How many coalesced feature runs to read at once in `query`.
+ *
+ * Smaller than `INDEX_READ_CONCURRENCY` on purpose, and for memory rather than for the
+ * network: an index block is 640 bytes and a feature run is up to `MAX_RANGE_BYTES`, so
+ * a batch is bounded by the batch size times 8 MB, and the whole batch is resident until
+ * the last of it has been decoded. Eight covers the shape the runs actually come in —
+ * on the reference border the busiest layer, `admin`, reads 7.5 MB across 26 requests —
+ * without letting one pathological run set (a coastline layer over an archipelago) hold
+ * a hundred megabytes of undecoded bytes at once.
+ */
+const FEATURE_READ_CONCURRENCY = 8;
+
+/**
+ * How many Range requests this module will have in flight at once, across EVERY reader.
+ *
+ * The two numbers above shape batches; this one is the ceiling, and it is the load-
+ * bearing one. Every range request in the app funnels through `RangeReader._readOne`, so
+ * a semaphore there bounds the whole OSM layer no matter how much concurrency the callers
+ * stack above it. That is what lets `osm/geodata.js` run its 31-category loop several
+ * categories at a time without six layers times twelve index reads asking the browser for
+ * 72 sockets at once.
+ *
+ * The origin is not what the number is set for: R2 answers 1,200 concurrent ranges
+ * against one object in 2.9 s. The browser is. A browser gives one host 6 connections
+ * over HTTP/1.1, or a single connection carrying ~100 concurrent streams over HTTP/2 —
+ * which is what R2 actually speaks — and the pipeline runs in a Worker that shares that
+ * pool with the page. 32 sits well inside the HTTP/2 stream budget with room left for the
+ * page's own traffic, and costs nothing if the connection ever falls back to HTTP/1.1:
+ * there the browser's own 6-per-host limit becomes the real ceiling and this degrades
+ * into a bound on how much work is queued behind it.
+ *
+ * Measured on the reference border against the live world, 2026-08-25: the app peaks at
+ * 22 requests in flight — UNDER this ceiling, not at it — so today the gate is a guard
+ * rail on what the callers are allowed to ask for rather than a throttle on what they
+ * do ask for. Forcing it to 16 made it bind (peak 16) and cost nothing measurable;
+ * raising it to 64 changed nothing at all, because nothing asked for more. It becomes
+ * the binding constraint the moment either batch number above it, or `geodata.js`'s
+ * category concurrency, grows — which is exactly the day it needs to already be here.
+ */
+const MAX_CONCURRENT_RANGES = 32;
+
+/**
+ * The gate itself: a counting semaphore with a FIFO queue, shared by every reader in the
+ * module because readers are per-layer and the connection pool is not.
+ *
+ * FIFO matters more than it looks. The R-tree walk reads a level, decodes it and reads
+ * the next, so a read that loses its slot to a newer arrival does not just finish late —
+ * it holds up the level behind it, and a LIFO gate under a full queue can starve one
+ * layer for as long as any other layer keeps arriving.
+ */
+let rangeSlotsInUse = 0;
+/** @type {Array<() => void>} Resolvers of the reads waiting for a slot, oldest first. */
+const rangeSlotQueue = [];
+
+/**
+ * Take a slot. Returns null when one was free — the caller then does not await at all,
+ * which keeps the uncontended path free of a microtask hop.
+ * @returns {Promise<void>|null}
+ */
+function acquireRangeSlot() {
+  if (rangeSlotsInUse < MAX_CONCURRENT_RANGES) {
+    rangeSlotsInUse += 1;
+    return null;
+  }
+  return new Promise((resolve) => { rangeSlotQueue.push(resolve); });
+}
+
+/**
+ * Give a slot back — to the longest waiter if there is one, to the pool otherwise.
+ * Handing it straight over rather than decrementing and re-incrementing is what makes
+ * the queue FIFO instead of a race between everyone who was waiting.
+ */
+function releaseRangeSlot() {
+  const next = rangeSlotQueue.shift();
+  if (next) next();
+  else rangeSlotsInUse -= 1;
+}
 
 /** Cap the resident chunk cache by BYTES, not by entry count: one walk of a busy
  *  layer touches ~150 KB across a couple of hundred small blocks, so a 64-entry cap
@@ -220,6 +304,11 @@ class RangeReader {
     /** @type {Array<{start: number, end: number, bytes: Uint8Array}>} */
     this._chunks = [];
     this._cachedBytes = 0;
+    // Reads that have been issued but have not come back yet, keyed by byte span. The
+    // chunk cache above only ever holds COMPLETED reads, so two concurrent asks for the
+    // same span would both miss it and both go to the network. See `_readOne`.
+    /** @type {Map<string, Promise<Uint8Array>>} */
+    this._pending = new Map();
     this.bytesFetched = 0;
     this.requests = 0;
     // Learned from the first 206's `Content-Range`. Until then reads are unclamped,
@@ -278,6 +367,18 @@ class RangeReader {
    * One Range request, at most `MAX_RANGE_BYTES` wide. `read` is the entry point;
    * this is where the ceiling is enforced, and the throw is now unreachable from
    * outside — it survives only as an assertion that `read` did its own arithmetic right.
+   *
+   * This is also the chokepoint every byte in the app passes through, which is why the
+   * two things that have to be true GLOBALLY live here and nowhere else: the fetch gate
+   * (in `_fetchRange`) and in-flight dedup.
+   *
+   * Dedup exists because `_cached` sees completed reads only. While the reads were
+   * serial that was the same thing; once a level of the index walk and a batch of feature
+   * runs are in the air together, two asks for one span both miss the cache and both pay
+   * for it — and the second one also holds a gate slot it did not need. Sharing the
+   * promise costs one map entry, and awaiters share the returned view: every caller here
+   * treats a read result as read-only, and the cache path has always handed out views
+   * over one shared buffer anyway.
    * @returns {Promise<Uint8Array>}
    */
   async _readOne(start, end) {
@@ -289,6 +390,57 @@ class RangeReader {
     const hit = this._cached(start, end);
     if (hit) return hit;
 
+    const key = `${start}-${end}`;
+    const already = this._pending.get(key);
+    if (already) return already;
+
+    const pending = this._fetchRange(start, end);
+    this._pending.set(key, pending);
+    // Forget it on failure as well as on success — a span that threw must be retryable,
+    // and a rejected promise left in the map would hand the same error to every later
+    // read of those bytes forever. Two handlers rather than `finally` so the settled
+    // promise is handled and a rejection is not reported as unhandled here; the original
+    // `pending` is what the caller awaits, so the error still reaches them.
+    const forget = () => {
+      if (this._pending.get(key) === pending) this._pending.delete(key);
+    };
+    pending.then(forget, forget);
+    return pending;
+  }
+
+  /**
+   * The half of `_readOne` that goes to the network: acquire a slot, make one request,
+   * cache what came back, release the slot.
+   *
+   * The gate is held across the fetch AND the body read, because a response whose body is
+   * still arriving is still occupying a connection. The `finally` is the whole point:
+   * a timeout, a non-206, a torn connection and a happy path all give the slot back, and
+   * a slot leaked on an error path would deadlock every remaining read in the layer.
+   * @private
+   * @returns {Promise<Uint8Array>}
+   */
+  async _fetchRange(start, end) {
+    const slot = acquireRangeSlot();
+    if (slot) await slot;
+    try {
+      // Ask the cache once more. A read can sit in the queue behind dozens of others,
+      // and a wider read of an overlapping span may have landed while it waited — the
+      // span-keyed dedup above cannot see that, because the spans are not equal.
+      const late = this._cached(start, end);
+      if (late) return late;
+
+      return await this._request(start, end);
+    } finally {
+      releaseRangeSlot();
+    }
+  }
+
+  /**
+   * The request itself, with no gate and no cache lookup: `_fetchRange` owns both.
+   * @private
+   * @returns {Promise<Uint8Array>}
+   */
+  async _request(start, end) {
     const controller = new AbortController();
     const timer = setTimeout(() => { controller.abort(); }, RANGE_TIMEOUT_S * 1000);
     let response;
@@ -773,6 +925,19 @@ export class FlatGeobufReader {
    * them is small: a bbox query usually lands on a run of Hilbert-adjacent features, so
    * fetching the gap is cheaper than a second round-trip.
    *
+   * The runs are then read a batch at a time rather than one at a time, for the same
+   * reason `search` reads a level at a time: the runs are independent of one another —
+   * the only dependency, the short-tail re-read, is WITHIN a run — so awaiting each in
+   * turn spent the whole query on round trips that could have overlapped. On the
+   * reference border ~92% of the OSM layer's wall time was waiting on requests, at a peak
+   * observed concurrency of 7.
+   *
+   * OUTPUT ORDER IS PART OF THE CONTRACT and is unchanged: batches go in offset order,
+   * runs within a batch in offset order, features within a run in offset order, so
+   * `features` comes back exactly as ascending-offset as it always did. `worldPois` and
+   * everything downstream of it sort and tie-break on that. Decoding is done per batch
+   * rather than at the end so a batch's bytes are droppable as soon as it is read.
+   *
    * @param {{minX: number, minY: number, maxX: number, maxY: number}} rect
    * @returns {Promise<Array<FgbFeature>>}
    */
@@ -784,7 +949,11 @@ export class FlatGeobufReader {
     /** @type {Array<FgbFeature>} */
     const features = [];
 
-    // Group the offsets into runs that will be fetched together.
+    // Group the offsets into runs that will be fetched together. The grouping rule is
+    // untouched; all that changed is that the runs are now collected before any of them
+    // is read, so a batch of them can be asked for at once.
+    /** @type {Array<{from: number, to: number}>} indices into `offsets`, half-open */
+    const runs = [];
     let runStart = 0;
     while (runStart < offsets.length) {
       let runEnd = runStart + 1;
@@ -795,54 +964,73 @@ export class FlatGeobufReader {
       ) {
         runEnd += 1;
       }
+      runs.push({ from: runStart, to: runEnd });
+      runStart = runEnd;
+    }
 
-      const first = offsets[runStart];
-      const last = offsets[runEnd - 1];
+    /**
+     * One run's bytes, tail included. The two reads here stay sequential because the
+     * second one's length is a function of what the first returned.
+     * @param {{from: number, to: number}} run
+     * @returns {Promise<Uint8Array>}
+     */
+    const readRun = async (run) => {
+      const first = offsets[run.from];
+      const last = offsets[run.to - 1];
       // The last feature's own length is unknown until its size prefix is read, so
       // pull a conservative tail. When that turns out to be short, fetch ONLY the
       // missing bytes and splice them on — re-reading the whole run was the old
       // behavior, and the RangeReader cache cannot absorb a request wider than any
       // chunk it holds, so a run ending in a country-sized polygon (~1 MB) paid for
       // the entire run twice on every admin query.
-      let bytes = await this.reader.read(
+      const bytes = await this.reader.read(
         head.dataStart + first,
         head.dataStart + last + RANGE_COALESCE_BYTES,
       );
-      let view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
       const lastSize = view.getUint32(last - first, true);
       const need = (last - first) + 4 + lastSize;
-      if (need > bytes.length) {
-        const rest = await this.reader.read(
-          head.dataStart + first + bytes.length,
-          head.dataStart + first + need,
-        );
-        const joined = new Uint8Array(bytes.length + rest.length);
-        joined.set(bytes, 0);
-        joined.set(rest, bytes.length);
-        bytes = joined;
-        view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      }
+      if (need <= bytes.length) return bytes;
 
-      for (let k = runStart; k < runEnd; k++) {
-        const at = offsets[k] - first;
-        const feature = root(view, at + 4);
-        const geometry = feature.table(0);
-        const decoded = geometry
-          ? decodeGeometry(geometry, head.geometryType)
-          : { type: GEOMETRY_TYPE.UNKNOWN, points: [], lines: [], polygons: [] };
-        const [propsStart, propsLength] = feature.vector(1);
-        features.push({
-          properties: propsLength
-            ? decodeProperties(view, propsStart, propsLength, head.columns)
-            : {},
-          type: decoded.type,
-          points: decoded.points,
-          lines: decoded.lines,
-          polygons: decoded.polygons,
-        });
-      }
-      runStart = runEnd;
+      const rest = await this.reader.read(
+        head.dataStart + first + bytes.length,
+        head.dataStart + first + need,
+      );
+      const joined = new Uint8Array(bytes.length + rest.length);
+      joined.set(bytes, 0);
+      joined.set(rest, bytes.length);
+      return joined;
+    };
+
+    for (let at = 0; at < runs.length; at += FEATURE_READ_CONCURRENCY) {
+      const batch = runs.slice(at, at + FEATURE_READ_CONCURRENCY);
+      /* eslint-disable-next-line no-await-in-loop */
+      const parts = await Promise.all(batch.map(readRun));
+
+      batch.forEach((run, b) => {
+        const bytes = parts[b];
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const first = offsets[run.from];
+        for (let k = run.from; k < run.to; k++) {
+          const offsetInRun = offsets[k] - first;
+          const feature = root(view, offsetInRun + 4);
+          const geometry = feature.table(0);
+          const decoded = geometry
+            ? decodeGeometry(geometry, head.geometryType)
+            : { type: GEOMETRY_TYPE.UNKNOWN, points: [], lines: [], polygons: [] };
+          const [propsStart, propsLength] = feature.vector(1);
+          features.push({
+            properties: propsLength
+              ? decodeProperties(view, propsStart, propsLength, head.columns)
+              : {},
+            type: decoded.type,
+            points: decoded.points,
+            lines: decoded.lines,
+            polygons: decoded.polygons,
+          });
+        }
+      });
     }
     return features;
   }
