@@ -3485,9 +3485,12 @@ async function buildMap() {
       paint: {
         'line-color': ['case', ['>', ['get', 'hub'], 0], RAMP.spokeHub, RAMP.spoke],
         'line-opacity': ['case', ['>', ['get', 'hub'], 0], .5, .35],
-        'line-width': ['case', ['>', ['get', 'hub'], 0],
-          ['interpolate', ['linear'], ['zoom'], 9, 1.3, 13, 1.8, 16, 2.6],
-          ['interpolate', ['linear'], ['zoom'], 9, .7, 13, 1.2, 16, 2]],
+        /* One zoom curve, branching per feature at each stop: a style may hold only
+           one zoom-based interpolate per expression, so the case goes inside. */
+        'line-width': ['interpolate', ['linear'], ['zoom'],
+          9, ['case', ['>', ['get', 'hub'], 0], 1.3, .7],
+          13, ['case', ['>', ['get', 'hub'], 0], 1.8, 1.2],
+          16, ['case', ['>', ['get', 'hub'], 0], 2.6, 2]],
       } });
 
     map.addSource('border', { type: 'geojson', data: {
