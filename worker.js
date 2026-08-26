@@ -26,7 +26,7 @@
 
 import {
   QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
-  MAX_MAP_SPOKES, MAP_SPOKE_RDP_M, hmsToS, coord, rhu,
+  MAX_MAP_SPOKES, MAP_SPOKE_RDP_M, cmpStr, hmsToS, coord, rhu,
 } from './lib/core.js';
 import { Projection, bboxOf } from './lib/geo.js';
 import { openCache } from './lib/cache.js';
@@ -36,7 +36,7 @@ import {
 } from './gtfs/feed.js';
 import { mergeFeeds, mergeOrder, feedSourceRows } from './gtfs/merge.js';
 import {
-  dayTypes, buildServiceDay, clusterStations, invalidateDerived,
+  dayTypes, buildServiceDay, busiestDay, clusterStations,
 } from './gtfs/service.js';
 import { raptor, raptorReverse } from './gtfs/raptor.js';
 import {
@@ -63,9 +63,6 @@ import {
 // nine sections that do not depend on scoring still reach the page. See `loadScore`.
 let SCORE = null;
 let SCORE_ERROR = null;
-
-/** Code-point comparator. Never `localeCompare` — that is locale-dependent. */
-function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
 /** The greedy-question depth `k`, generate.py. */
 const GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
@@ -141,13 +138,17 @@ class Progress {
     this.scale = PROGRESS_TOTAL / sum;
   }
 
-  /** Enter phase `i`, retiring every earlier phase's weight. */
-  begin(i, label) {
+  /**
+   * Enter phase `i`, retiring every earlier phase's weight. The first message
+   * carries no label of its own, so `report` falls through to `PHASES[i]`'s name —
+   * which is the only phase-opening label there has ever been.
+   */
+  begin(i) {
     this.index = i;
     let base = 0;
     for (let j = 0; j < i; j++) base += PHASES[j][2];
     this.base = base * this.scale;
-    this.report(0, label);
+    this.report(0, undefined);
   }
 
   /** Advance within the current phase. `frac` is 0..1 and is clamped. */
@@ -398,7 +399,7 @@ export async function runPipeline(options, source, emit) {
   let srcs;
   try {
     srcs = normaliseSources(source);
-    progress.begin(0, 'Reading the feed');
+    progress.begin(0);
     // One `loadFeed` per source, then a table-level merge. The per-source download
     // cache is what makes a repeated pick cheap; there is no merged-artifact cache,
     // because a `Feed` holds typed arrays and a Proxy and is not serialisable.
@@ -503,9 +504,8 @@ export async function runPipeline(options, source, emit) {
     feed.sources = feedSourceRows(order, loadedSrcs);
     progress.finish();
 
-    progress.begin(1, 'Normalising times');
+    progress.begin(1);
     normaliseTimes(feed);
-    invalidateDerived(feed);
     progress.finish();
 
     [start, end, asOf] = feedWindow(feed, opts.asOf);
@@ -555,19 +555,13 @@ export async function runPipeline(options, source, emit) {
   let best;
   let stations;
   try {
-    progress.begin(2, 'Building service days');
+    progress.begin(2);
     days = [];
     for (let i = 0; i < types.length; i++) {
       days.push(buildServiceDay(feed, types[i], proj, { boardSlackS: opts.boardSlackS }));
       progress.report((i + 1) / types.length, `Building service days (${i + 1}/${types.length})`);
     }
-    // `max(days, key=(trips, day_type.key))` — the Python's tuple order, so a tie
-    // on trips is broken by the LARGER day key.
-    best = days[0];
-    for (const d of days) {
-      if (d.trips > best.trips
-        || (d.trips === best.trips && cmpStr(d.dayType.key, best.dayType.key) > 0)) best = d;
-    }
+    best = busiestDay(days);
     stations = clusterStations(orderedStops, proj);
     progress.finish();
   } catch (err) {
@@ -599,11 +593,11 @@ export async function runPipeline(options, source, emit) {
   let origin;
   let depS;
   try {
-    progress.begin(3, 'Finding the round-start station');
+    progress.begin(3);
     hub = inferHub(feed, best, proj);
     progress.finish();
 
-    progress.begin(4, 'Measuring the network');
+    progress.begin(4);
     // First pass at the rulebook's default zone radius: the size vote reads
     // `nZones`, and `nZones` depends on the radius, so the radius the size
     // resolves to cannot be used to compute the vote. The CLI does the same and
@@ -614,7 +608,7 @@ export async function runPipeline(options, source, emit) {
     [size, sizeInference] = inferGameSize(metrics, opts);
     border = inferBorder(feed, best, hub, size, proj, opts);
 
-    progress.begin(5, 'Covering the map with hiding zones');
+    progress.begin(5);
     const events = Object.create(null);
     const pos = Object.create(null);
     for (const sid of best.servedStopIds) {
@@ -641,7 +635,7 @@ export async function runPipeline(options, source, emit) {
     origin = opts.startStopId || hub.stopId;
     depS = hmsToS(opts.departure || DEFAULT_DEPARTURE) || hmsToS(DEFAULT_DEPARTURE);
 
-    progress.begin(6, 'Sampling ride times');
+    progress.begin(6);
     // The CLI computes this last; CONTRACT.md §(d) needs it in the `'network'`
     // payload and every input already exists. Pure function, same value.
     //
@@ -649,7 +643,7 @@ export async function runPipeline(options, source, emit) {
     // per-zone reach the map colours by are two readings of the same runs, so the
     // reach layer costs no extra pass. (2026-08-23.)
     const runs = dayRaptorRuns(days, origin, depS);
-    travelSamples = travelTimeSamples(feed, days, zones, origin, depS, proj, 14, runs);
+    travelSamples = travelTimeSamples(days, zones, origin, depS, 14, runs);
     zoneReach = zoneReachMinutes(days, zones, runs, origin, depS, size.hidingPeriodMin);
     spokes = routeSpokes(feed, days, hub, MAX_MAP_SPOKES, MAP_SPOKE_RDP_M);
     progress.finish();
@@ -683,7 +677,7 @@ export async function runPipeline(options, source, emit) {
   // CONTRACT.md §(f)1: a failed map-file read is not fatal. `--no-osm` is the same
   // path with a different note.
   let geo;
-  progress.begin(7, 'Reading the map files');
+  progress.begin(7);
   if (opts.useOsm) {
     try {
       // One manifest fetch, then every category is a Range request against an
@@ -730,14 +724,14 @@ export async function runPipeline(options, source, emit) {
   let order = [];
   let funnel = [];
   try {
-    progress.begin(8, 'Auditing the question deck');
+    progress.begin(8);
     questions = auditQuestions(size, geo, gtfsFacts, zones, metrics, border, {
       onProgress: progress.sink(),
     });
     curses = auditCurses(size, geo, gtfsFacts, geo.admin.countryCode, metrics);
     progress.finish();
 
-    progress.begin(9, 'Measuring information resistance');
+    progress.begin(9);
     // Signatures and surv are computed only for questions that are still alive:
     // a dead question partitions nothing, and evaluating it would just be noise.
     const defs = Object.create(null);
@@ -794,7 +788,7 @@ export async function runPipeline(options, source, emit) {
   let recommendations = [];
 
   const score = await loadScore();
-  progress.begin(10, 'Scoring the city');
+  progress.begin(10);
   if (!score) {
     degrade(`The scoring layer could not be loaded (${SCORE_ERROR}), so the verdict, `
       + 'the score trace and the house rules are missing.');
@@ -851,7 +845,7 @@ export async function runPipeline(options, source, emit) {
   });
 
   // ── provenance ────────────────────────────────────────────────────────────
-  progress.begin(11, 'Writing the receipts');
+  progress.begin(11);
   let provenance = null;
   if (score && score.buildProvenance) {
     try {
@@ -1129,5 +1123,3 @@ if (IN_WORKER) {
     });
   };
 }
-
-export default runPipeline;

@@ -11,7 +11,7 @@
  *   inferGameSize(metrics, options)               → [GameSize, SizeInference]
  *   inferBorder(feed, day, hub, size, proj, opts) → Border
  *   gtfsQuestionFacts(feed, days, zones, stations)→ the GTFS-only question inputs
- *   travelTimeSamples(feed, days, zones, …)       → TravelSampleRow[]  (runs LAST;
+ *   travelTimeSamples(days, zones, …)             → TravelSampleRow[]  (runs LAST;
  *                                                    see worker.js's reordering note)
  *
  * Plus two helpers the map's reach layer added on 2026-08-23, which share the RAPTOR
@@ -30,12 +30,13 @@ import {
   HUB_SNAP_M, HUB_RADIAL_MIN, HUB_SEMI_RADIAL_MIN,
   QUARTER_MILE_M, HALF_MILE_M, SQM_PER_SQMI, M_PER_MILE,
   DEFAULT_DEPARTURE, HEADWAY_WINDOW, SERVICE_DAY_SECONDS,
-  coord, rhu, num, hmsToS, lowerMedian,
+  cmpStr, coord, rhu, num, hmsToS, lowerMedian,
 } from '../lib/core.js';
 import {
   Projection, bboxOf, bboxExpand, minEnclosingCircle,
 } from '../lib/geo.js';
-import { s1Positions, s1Extras } from './service.js';
+import { s1Median, s1Share } from './feed.js';
+import { busiestDay, s1Positions, s1Extras } from './service.js';
 import { raptor, raptorReverse, buildJourney } from './raptor.js';
 // `S1_SIZE_PARAMS` / `S1_SIZE_ORDER` / `s1AxisScores` live in `network.js` because
 // `_s1_provisional_size` (which network_metrics needs) uses the same thresholds.
@@ -62,32 +63,10 @@ export function setInferLogger(sink) {
 
 // ── private constants ─────────────────────────────────────────────────────────
 
-/** Code-point string order — Python's. Never `localeCompare` (locale = non-determinism). */
-const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-
 /** `route_type`s the rulebook would call "rail-ish". `_S1_RAIL_TYPES`. */
 export const S1_RAIL_TYPES = Object.freeze([0, 1, 2, 5, 7, 11, 12]);
 
 // ── small private helpers ─────────────────────────────────────────────────────
-
-/** `n / d`, or 0.0 when the denominator is empty. Keeps every share finite. */
-function s1Share(numerator, denominator) {
-  return denominator ? (numerator / denominator) : 0.0;
-}
-
-/**
- * Median of a *measured distribution* — `statistics.median`, the mean of the two
- * middle values for even n. Deliberately **not** `lowerMedian`: that one is
- * reserved for the two places where a tie must resolve down to the quieter
- * option (representative-day choice and the game-size vote).
- */
-function s1Median(values) {
-  const s = Array.from(values).sort((a, b) => a - b);
-  const n = s.length;
-  if (!n) throw new RangeError('median of an empty sequence');
-  const half = n >> 1;
-  return (n % 2) ? s[half] : (s[half - 1] + s[half]) / 2;
-}
 
 /** Euclidean distance between two planar `[x, y]` points — Python's `math.dist`. */
 function dist(a, b) {
@@ -103,20 +82,6 @@ function dist(a, b) {
  */
 function nameLen(name) {
   return Array.from(String(name === null || name === undefined ? '' : name)).length;
-}
-
-/**
- * Python's `max(seq, key=…)` — first maximal element wins, tuple keys compared
- * left to right. `keyFn` must return an array of comparable scalars.
- */
-function maxBy(items, keyFn) {
-  let best = null;
-  let bestKey = null;
-  for (const item of items) {
-    const key = keyFn(item);
-    if (best === null || cmpKey(key, bestKey) > 0) { best = item; bestKey = key; }
-  }
-  return best;
 }
 
 /** Lexicographic comparison of two tuple keys of scalars. */
@@ -640,16 +605,14 @@ export function zoneReachMinutes(days, zones, runs, originStopId, departureS, hi
  * no service that day carries `minutes: null`, which the chart draws hollow-dashed
  * rather than omitting.
  *
- * @param {object} feed @param {object[]} days @param {object[]} zones
+ * @param {object[]} days @param {object[]} zones
  * @param {string} originStopId @param {number} departureS
- * @param {Projection|{lat0:number,lon0:number}} proj  (unused; kept for call-site parity)
- * @param {number} [count=14]
- * @param {Map<string, object|null>} [precomputedRuns] `dayRaptorRuns` output, shared
- *   with `zoneReachMinutes` so the RAPTOR passes happen once per run
+ * @param {number} count how many destinations to chart
+ * @param {Map<string, object|null>} runs `dayRaptorRuns` output, shared with
+ *   `zoneReachMinutes` so the RAPTOR passes happen once per run
  * @returns {object[]} `TravelSampleRow[]`
  */
-export function travelTimeSamples(feed, days, zones, originStopId, departureS, proj, count = 14,
-  precomputedRuns = null) {
+export function travelTimeSamples(days, zones, originStopId, departureS, count, runs) {
   if (!zones || !zones.length || !days || !days.length) return [];
   const radius = s1ZoneRadius(zones);
   /** @type {Map<string, object>} */ const byId = new Map();
@@ -684,10 +647,7 @@ export function travelTimeSamples(feed, days, zones, originStopId, departureS, p
     }
   }
 
-  const bestKey = maxBy(days, (d) => [d.trips, d.dayType.key]).dayType.key;
-  // The runs are the caller's when it has them (the worker shares one set with
-  // `zoneReachMinutes`), and built here when it does not — a bare call is unchanged.
-  const runs = precomputedRuns || dayRaptorRuns(days, originStopId, departureS);
+  const bestKey = busiestDay(days).dayType.key;
 
   const rows = [];
   for (const zid of picks.slice().sort(cmpStr)) {
@@ -746,7 +706,7 @@ export function travelTimeSamples(feed, days, zones, originStopId, departureS, p
  * @returns {Object<string, *>}
  */
 export function gtfsQuestionFacts(feed, days, zones, stations) {
-  const best = (days && days.length) ? maxBy(days, (d) => [d.trips, d.dayType.key]) : null;
+  const best = (days && days.length) ? busiestDay(days) : null;
   const routeIdsSorted = Object.keys(feed.routes).sort(cmpStr);
 
   const railIds = routeIdsSorted.filter((rid) => S1_RAIL_TYPES.includes(feed.routes[rid].routeType));

@@ -48,7 +48,7 @@
 // @module render/deck
 
 import {
-  GENERATOR, VERSION, SEEKER_SAMPLE_CAP, num, pct, prettyDate,
+  GENERATOR, VERSION, SEEKER_SAMPLE_CAP, cmpStr, num, pct, prettyDate,
 } from '../lib/core.js';
 
 import {
@@ -58,7 +58,7 @@ import {
 
 import {
   S4_ORDINAL, s4Dist, s4JoinWords, s4Plural, s4NaturalCmp, s4LiveQuestions,
-  s4CardHeader,
+  s4CardHeader, sortedBy, fnum,
 } from './verdict.js';
 
 // The catalogue is pure frozen data — it imports nothing but `lib/core.js` and touches
@@ -183,33 +183,6 @@ const PAGE_SIZES = Object.freeze(['all', '25', '50']);
 // Tiny deterministic primitives
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Plain code-point string comparison. Never `localeCompare` — that is locale-bound. */
-function cmpStr(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-/** Compare two Python-style sort keys element by element; a shorter prefix sorts first. */
-function cmpKey(a, b) {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i += 1) {
-    const x = a[i];
-    const y = b[i];
-    if (typeof x === 'number' && typeof y === 'number') {
-      if (x < y) return -1;
-      if (x > y) return 1;
-    } else {
-      const c = cmpStr(String(x), String(y));
-      if (c !== 0) return c;
-    }
-  }
-  return a.length - b.length;
-}
-
-/** `sorted(items, key=…)` — a stable sort on a Python-style tuple key. */
-function sortedBy(items, keyFn) {
-  return Array.from(items).sort((a, b) => cmpKey(keyFn(a), keyFn(b)));
-}
-
 /**
  * `collections.Counter(…)` as a plain object with a zero default.
  * Read it through `count(c, k)`; never iterate it without sorting the keys.
@@ -228,11 +201,6 @@ function counter(items, keyFn) {
 function count(c, k) {
   const v = c[k];
   return typeof v === 'number' ? v : 0;
-}
-
-/** A finite number, or `null`. Guards every raw value before a formatter. */
-function fnum(x) {
-  return typeof x === 'number' && Number.isFinite(x) ? x : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -31,7 +31,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) has never been in this list even though every `useOsm` run fetches from it, and a `kind:'osm'` source now depends on it with no feed zip in the run at all. Folding it into the row is an explicit amendment someone must make deliberately — do not do it as a side effect of another change, and do not cite this note as having done it. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
-| Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. Use a plain `a < b ? -1 : a > b ? 1 : 0` comparator, never `localeCompare` (locale-dependent = non-deterministic). |
+| Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. The semantics are exactly `a < b ? -1 : a > b ? 1 : 0`, never `localeCompare` (locale-dependent = non-deterministic). That body now has exactly **one** implementation — `cmpStr`, exported from `lib/core.js` and imported by every module that sorts strings; do not spell a new local copy. Two deliberate hold-outs, so a future reader does not "finish the job": `tools/mdb-snapshot.mjs` keeps a private copy because it is a standalone Node tool that imports nothing from the app, and `lib/geo.js`'s `GridIndex.nearKeys` keeps a local arrow on its hot path. |
 | Sorting numbers | `Array.prototype.sort()` is lexicographic by default. Always pass `(a, b) => a - b`. |
 | Object key order | JS objects hoist integer-like keys (`'1','2','12'`) ahead of lexicographic order (`'1','12','2'`). Zone ids and stop ids are numeric strings on most feeds. **Never** rely on `Object.keys()` order — always `Object.keys(o).sort(cmp)`. `jdump()` already does this internally. |
 
@@ -45,32 +45,39 @@ embedded JSON block; it is built from `state.report` in memory.
 | `styles.css` | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
 | `app.js` | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | main | see §(e) |
-| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame` |
-| `render/map.js` | main | `renderGlanceRail`, `renderNetworkMap`, `renderTransitReality`, `s4TilesHtml` |
+| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame`. Also the page's **single implementation** of the `s4*` day and unit helpers — `s4Imperial`, `s4Signed`, `s4JoinWords`, `s4DayView`, `s4DayOrder`, `s4DayLabel`, `s4BestDay`, `s4WorstDay` — imported by `app.js`, `render/map.js` and `render/strategy.js` rather than re-copied (`app.js` aliases them to bare names at the import); and the deterministic primitives `sortedBy(items, keyFn)` and `fnum(x)`, consumed by `render/deck.js` and `render/map.js`. `cmpKey` stays module-private: it is reached only through `sortedBy`, and a second copy of it is the divergence hazard this consolidation removed. |
+| `render/map.js` | main | `renderGlanceRail`, `renderNetworkMap`, `renderTransitReality`, `s4TilesHtml`, plus `s4MapCaption`, `s4Legend`, `S4_HEADWAY_BINS` and `s4DayByKey` (`app.js` takes the last one for day switching). It **re-exports nothing**: the verdict.js day helpers it used to pass through were a pure re-export block with no importer, deleted 2026-08-26, and every consumer now takes them from `render/verdict.js` directly. |
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
 | `render/landing.js` | main | `renderPickerCard`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`; the constants `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`), `PICK_WARN`, `BIG_DOWNLOAD_MB`. Pure `data → string`, no DOM — the landing feed picker's markup. |
-| `render/picker.js` | main | `initPicker(root, handlers) → {setSelection, setByo, refresh, resize, destroy}` (`handlers.osmSkipped()` reports the live state of the Advanced panel's Skip OpenStreetMap switch, which lives outside this card) — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, refresh, resize, destroy}` (`handlers.osmSkipped()` reports the live state of the Advanced panel's Skip OpenStreetMap switch, which lives outside this card) — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. **Selection is one-way, outward only** — `commit()` → `handlers.onChange`, and the handle's write-side `setSelection` was deleted 2026-08-26 with no caller in the repo. Do not add one back to push a selection in; `app.js` owns the pick list. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
 | `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `labelOf`, `placeOf`, `sourceRefFor`, `osmSourceRef`, `CATALOG_VERSION`. Reads `data/feeds.json` — a **same-origin repo asset**, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff, NOT a sixth external asset. No DOM, no MapLibre; importable from Node. |
 | `lib/cache.js` | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
 | `lib/http.js` | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
-| `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow`, `StopTimes`, `attachStopTimes`, `stopTimesOf` (the last three exist for `gtfs/merge.js`; `StopTimes.appendFrom` is how a merge copies a columnar store) |
+| `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow`, `StopTimes`, `attachStopTimes`, `stopTimesOf` (`StopTimes` and `attachStopTimes` exist for `gtfs/merge.js`, where `StopTimes.appendFrom` is how a merge copies a columnar store; `stopTimesOf` serves the merge **and** `gtfs/service.js`'s `buildServiceDay`, which walks the columnar store directly). Also `tripRows(feed)` — trip_id → `Int32Array` of stop_time row indices, sorted by `int(stop_sequence)` — and `s1Cache` / `s1Invalidate`, the **one** per-feed memo mechanism worker-side (a non-enumerable own property on the `Feed`, keyed by name). `gtfs/service.js` and `gtfs/network.js` memoise through `s1Cache` imported from here; `s1Invalidate` is called by `normaliseTimes` itself whenever the columnar store is rebuilt, which is why nothing outside this file invalidates any more. There was a second mechanism (a `DERIVED` WeakMap in `gtfs/service.js`) until 2026-08-26 — one store, one meaning per key, or two callers start disagreeing about the same name. The shared numeric helpers `s1Median`, `s1Share`, `s1Int`, `s1Float` live here too, so `gtfs/service.js`, `gtfs/network.js` and `gtfs/infer.js` share one body each. |
 | `gtfs/merge.js` | worker | `mergeFeeds`, `mergeOrder`, `feedSourceRows`, `MERGE_TABLES`, `NAMESPACED_COLUMNS` — table-level merge of several feeds into one `Feed` |
-| `gtfs/service.js` | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates` |
+| `gtfs/service.js` | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates`, `busiestDay` (the one implementation of "the day this report is about" — see the service-day layer), `s1BestDirGaps` (best route-direction median headway per stop, read by `gtfs/network.js`'s `s1DayMetrics` as well as by `buildServiceDay`) |
 | `gtfs/raptor.js` | worker | `raptor`, `raptorReverse`, `buildJourney` |
 | `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
 | `gtfs/infer.js` | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
 | `osm/flatgeobuf.js` | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
 | `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `worldTransitRoutes`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
-| `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData` |
+| `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData`. Only `GEO_CATEGORIES` and `LOW_STREETVIEW_COUNTRIES` actually cross into `rules/audit.js`; `CAR_STREET_SELECTOR` is now the `car_street` entry's own `selector` (it is declared above the table so it can be), so audit reads it through `GEO_CATEGORIES` like every other category and imports it no more. |
 | `osm/synth.js` | worker | `synthesizeFeedZip` plus the frozen `SYNTH_*` assumption constants (`SYNTH_MODE_ROUTE_TYPE`, `SYNTH_MODE_SPEED_KMH`, `SYNTH_MODE_HEADWAY_S`, `SYNTH_DWELL_S`, `SYNTH_SERVICE_WINDOW_S`, `SYNTH_TEMPLATE_ANCHOR_S`, `SYNTH_CALENDAR_DAYS`, `SYNTH_FALLBACK_ASOF`, `SYNTH_CLUSTER_NAME_M`, `SYNTH_CLUSTER_ANY_M`, `SYNTH_HEADWAY_MIN_S`, `SYNTH_HEADWAY_MAX_S`), which `rules/catalogue.js`'s three `osm_synth_*` INTERPRETATIONS rows quote — a constant moved here without re-syncing that prose is a page lying about the code. Pure and synchronous: `worldTransitRoutes` output + the drawn ring + `asOf` → a byte-deterministic GTFS zip (`Uint8Array`) the **untouched** `loadFeed` accepts, plus prose notes. Imported DYNAMICALLY by `worker.js` only when a run names a `kind:'osm'` source; a run of published feeds never parses it. Harness: `node tools/test-synth.mjs`, network-free. |
 | `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
 | `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
 | `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
+
+**Import edges added deliberately, so a reader does not take them for accidents.**
+`rules/score.js` imports `busiestDay` from `gtfs/service.js` — the **first** `rules/` →
+`gtfs/` edge. Both sides are worker-side, `worker.js` already loads both (score.js
+dynamically, service.js statically) and the graph stays acyclic: `gtfs/` imports nothing
+from `rules/`. `gtfs/infer.js` likewise now imports `s1Median` / `s1Share` from
+`gtfs/feed.js`, which imports only `lib/`.
 
 ### `lib/core.js` — exported symbols (already written)
 
@@ -83,13 +90,14 @@ SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN
 MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES`
 
 Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
-dowOf dateRange lowerMedian quantile normalise jdump sha256Bytes sha256Text stableHash`
+dowOf dateRange lowerMedian quantile cmpStr jdump sha256Bytes sha256Text stableHash`
 
 Notes:
 * `num(x, dp = 0, {comma = true})`. Python keyword args are a trailing options object.
-* `jdump(obj, {floatDp = 6})`.
+* `jdump(obj, {floatDp = 6})`. It is the **only** deterministic-serialisation entry point: the `normalise(obj, floatDp)` twin that once sat beside it carried the same rule table for nobody — no importer — and was deleted 2026-08-26. `jdump`'s private `emit()` still holds every rule it held (non-finite → null, `rhu` quantise, sorted `Set`/`Map`/object keys, `TypeError` on anything else).
 * `HEADWAY_WINDOW`/`MIDDAY_WINDOW`/`EVENING_WINDOW` are frozen 2-element arrays of `'HH:MM:SS'`.
 * `MAX_FEEDS_PER_RUN` is the run's feed cap (6). It lives in `lib/core.js` because three modules have to agree on it and none may own it: the picker refuses the seventh pick, `readSources` refuses a seventh that arrived by the other door (six map picks plus a dropped zip), and `normaliseSources` refuses one the worker was handed anyway.
+* `cmpStr(a, b)` is the shared code-point string comparator — see §0's *Sorting strings* row for the two hold-outs that keep a private copy on purpose. `byString` and `jdump` use it too, so `lib/core.js` has one body, not one per section.
 * `IMPERIAL_COUNTRIES` is a frozen **sorted Array** (`['gb','lr','mm','us']`), not a Set, so it is clone-safe. Use `.includes()`.
 * **`sha256Text` and `sha256Bytes` are `async`** — `crypto.subtle.digest` returns a Promise. Every caller must `await`. This is the one signature that differs from the Python.
 * `stableHash(text)` is **synchronous** and returns 16 hex characters. It exists because a click handler building a `SourceRef` id cannot await `crypto.subtle` (and must not require a secure context). It is a **stable identity, never a content address** — collision-resistant enough to key a pick list, not to verify bytes. `sha256` fields stay `sha256Text`/`sha256Bytes`; do not "unify" the two.
@@ -106,7 +114,7 @@ segPointDist ringWithin minEnclosingCircle GridIndex`
 
 Conventions:
 * Geographic point = `[lat, lon]` degrees. Planar point = `[x, y]` metres. Bbox = `[S, W, N, E]` (**Overpass order, not GeoJSON**). Ring = array of planar points, first point NOT repeated.
-* `Projection` is a class: `new Projection(lat0, lon0)`, `Projection.about(points)`, `Projection.from({lat0, lon0})`. Methods `xy(lat, lon) → [x, y]`, `lonlat(x, y) → [lon, lat]` (note the order — mirrors Python), `latlon(x, y) → [lat, lon]` (JS-only convenience), getters `mPerDegLat` / `mPerDegLon`, `toJSON() → {lat0, lon0}`. **Projection instances are class instances and cannot cross `postMessage`** — send `{lat0, lon0}` and rebuild with `Projection.from()`.
+* `Projection` is a class: `new Projection(lat0, lon0)`, `Projection.about(points)`, `Projection.from({lat0, lon0})`. Methods `xy(lat, lon) → [x, y]`, `lonlat(x, y) → [lon, lat]` (note the order — mirrors Python) — the sole planar→geographic method, the JS-only `latlon` convenience having been deleted 2026-08-26 with no caller anywhere — getters `mPerDegLat` / `mPerDegLon`, `toJSON() → {lat0, lon0}`. **Projection instances are class instances and cannot cross `postMessage`** — send `{lat0, lon0}` and rebuild with `Projection.from()`.
 * `segIntersects(a, b, c, d) → boolean` is the planar orientation test, collinear overlap included. `bboxIntersectsRing(bbox, ring) → boolean` answers "does this `[S,W,N,E]` box overlap this ring at all", and checks **all three** cases — a box corner inside the ring, a ring vertex inside the box, and a box edge crossing a ring edge — because any one alone is quietly wrong. Both are used by the landing picker to decide which feeds a drawn shape sweeps up.
 * `GridIndex(cell)`: `.add(key, x, y)`, `.addBbox(key, minx, miny, maxx, maxy, {cap = 400}) → boolean`, `.near(x, y, radius) → [[key, x, y], …]` sorted by `String(key)`, `.nearKeys(x, y, radius) → [key, …]` deduped + sorted. `radius` may be `Infinity`; the 3×3 neighbourhood restriction still applies (that is intentional and load-bearing for the area-index callers). Holds a `Map` — **not clone-safe**, build inside the worker.
 * `minEnclosingCircle` returns `[cx, cy, r]`. It uses a fixed-seed `mulberry32(0)` Fisher–Yates over the sorted+deduped point list. **This is the one intentional divergence from the CLI**, which uses `random.Random(0)` (Mersenne Twister). Fixed permutation, not entropy; the circle is permutation-invariant up to fp noise well inside the existing `1e-7` slack.
@@ -170,6 +178,12 @@ by string; **iteration order is never significant** — sort the keys.
  * @typedef {Object} Feed            // class Feed. Parsed, normalised GTFS feed.
  * `tables` holds every *.txt as an array of plain objects exactly as read (optional
  * columns accessed with `?? ''`). The typed fields are the normalised views.
+ * `tables.stop_times` is the exception: a lazy `Proxy` over the columnar `StopTimes`
+ * store that materialises a row dict per index access. As of 2026-08-26 the repo has
+ * **zero readers** of that view — `gtfs/service.js`'s `buildServiceDay` was the last
+ * one and now walks `stopTimesOf(feed)` / `tripRows(feed)` directly, and
+ * `gtfs/merge.js` refuses it explicitly. Recorded because it is the precondition for
+ * ever deleting the view; nothing has, so the shape below is unchanged.
  * @property {string} source                       // source — the URL, or the File name
  * @property {string} sha256                       // sha256 — lowercase hex of the zip bytes
  * @property {Object<string, Object<string,string>[]>} tables  // tables — keyed by table name WITHOUT '.txt'
@@ -334,6 +348,25 @@ the difference.
 > `_S1Pattern {stops:number[], dep:number[][], arr:number[][], tripIds:string[], tripRoutes:string[], routeId:string, directionId:string, sortedCols:boolean}` — column-major so the board lookup is a bisect; `sortedCols === false` ⇒ this pattern overtakes itself, scan linearly;
 > `_S1DayExtras {tripRoute, dedup, routeDirStop, stopRoutes, stopName, routeLabel}`.
 
+**Which day the report is about is ONE function.** `busiestDay(days)` (`gtfs/service.js`)
+is the whole rule: maximum `trips`, ties to the larger `dayType.key` by code point. It was
+six hand-written copies of that `max` until 2026-08-26 — in `worker.js`, twice in
+`gtfs/network.js`, once in `rules/score.js` and twice in `gtfs/infer.js` — and is now
+imported by all four modules, so `Report.selectedDay`, `Metrics.bestDay`, the route-headway
+table, the travel samples and S3's one-route share cannot pick different days. The
+agreement is structural, not maintained by hand. `busiestDay` **requires a non-empty
+list**; each caller keeps its own empty-days answer (throw / `[]` / `null` / `0.0`),
+because those differ and belong to the caller.
+
+Its neighbour `s1BestDirGaps(routeDirStop)` is the same consolidation one level down: one
+implementation of the `stop_id → best route-direction median headway` map over
+`HEADWAY_WINDOW`, called by `buildServiceDay` (on its cleaned route-direction table) and by
+`gtfs/network.js`'s `s1DayMetrics` (on `day.extras.routeDirStop`), each of which used to
+compute the window bounds and the medians itself. The two callers still cut the result at
+**different** thresholds on purpose — `frequent` at `FREQUENT_HEADWAY_MIN` (15 min),
+`within30` at 30 — which is two measurements of one map, not a drifted constant. Do not
+reconcile them; the goldens move if you do.
+
 ### Routing layer
 
 ```js
@@ -450,7 +483,12 @@ the difference.
  * One rulebook feature category and the exact Overpass selector that realises it.
  * @property {string} key            // key
  * @property {string} label          // label
- * @property {string} selector       // selector — Overpass QL with `{{bbox}}` UNSUBSTITUTED; printed verbatim on the page
+ * @property {string} selector       // selector — Overpass QL with `{{bbox}}` UNSUBSTITUTED; printed verbatim on the page.
+ *                                   //   NEVER empty: `car_street` used to carry `''` plus a note pointing
+ *                                   //   at `CAR_STREET_SELECTOR`, resolved by a helper at every read site;
+ *                                   //   since 2026-08-26 it carries that shared constant as its own
+ *                                   //   selector, so the provenance record and `rules/audit.js` both just
+ *                                   //   read `.selector`.
  * @property {string} note           // note
  */
 
@@ -1115,9 +1153,14 @@ Notes on the stage payloads:
   10:00–14:00** one. They legitimately differ and the map's frequency legend must name
   its window, or the map contradicts the grid two cards down.
 * **`ZoneReach`** — per-zone travel minutes from the round-start station, per day. Computed
-  from the SAME RAPTOR runs `travelTimeSamples` makes (`dayRaptorRuns`), so
-  `perDay[bestDay].minutes[z]` and `ZoneScore.metrics.R1.raw × hidingPeriodMin` are two
-  roundings of one number — same day, same origin, same departure — and the map can never
+  from the SAME RAPTOR runs `travelTimeSamples` makes (`dayRaptorRuns`) — and required to
+  be, since 2026-08-26: the signature is
+  `travelTimeSamples(days, zones, originStopId, departureS, count, runs)`, with `runs`
+  mandatory. The `runs = null` default and its `|| dayRaptorRuns(…)` recompute went with
+  the unused `feed` and `proj` parameters, so a caller cannot quietly build a second set —
+  the sharing is enforced by the signature rather than by convention. Because the runs are
+  shared, `perDay[bestDay].minutes[z]` and `ZoneScore.metrics.R1.raw × hidingPeriodMin` are
+  two roundings of one number — same day, same origin, same departure — and the map can never
   disagree with the hider's dossier. The counts are computed worker-side because a renderer
   may count, filter and sort but may not do arithmetic on a measured quantity:
   `reachableZones` is a subtraction and `unreachableZoneIds` a comparison.
@@ -1139,14 +1182,20 @@ Notes on the stage payloads:
   ```
 * **`RouteSpoke`** — one drawn route-direction for the map's spoke layer. `coords` come from
   the longest shape per `(routeId, directionId)` — the SAME selection `s1RouteKm` makes for
-  `routeKmOneDir`, so the drawn network and the published kilometres cannot disagree —
+  `routeKmOneDir`, so the drawn network and the published kilometres cannot disagree. That
+  now holds **by construction**: since 2026-08-26 both read one memoised `s1Shapes(feed)`
+  (`gtfs/network.js`, `s1Cache` key `'shapes'`), which parses `shapes.txt` once and makes
+  the longest-per-(route, direction) selection once; it used to be two hand-copied parses
+  asserted by a comment to agree. The coords are then
   decimated by iterative Ramer-Douglas-Peucker at `MAP_SPOKE_RDP_M` (20 m). `source` is
   `'stops'` when the feed ships no `shapes.txt` and the geometry is the longest ordered stop
   sequence per route-direction instead, which is a chord diagram rather than a road
   alignment. The list is ranked by `(-maxTrips, shortName, routeId, directionId)` and capped
   at `MAX_MAP_SPOKES` (60) **worker-side**, where the polylines are built, so the bytes never
   cross `postMessage`; `spokeCap.shown < spokeCap.total` must be said on the page, never
-  silently.
+  silently. `lib/core.js` owning both numbers is enforced rather than asserted:
+  `routeSpokes` imports `MAX_MAP_SPOKES` and `MAP_SPOKE_RDP_M` as its two parameter
+  defaults instead of re-spelling `60` and `20.0`.
   ```js
   /**
    * @typedef {Object} RouteSpoke
@@ -1472,13 +1521,27 @@ only ever visible to someone already inside it.
    progress bar. `ZoneView.max` is fixed at 100 here, which is identical on the OSM path
    and correct on the other. **File it.**
 
-Three other divergences this work surfaced, all repaired in `styles.css` rather than left:
+`render/simulator.js`'s local `cmp` is **not** a stale `cmpStr` copy left behind by the
+2026-08-26 consolidation: it compares the zone table's `sortKey`, which is a **number** for
+every column except Name (rank, score, an axis, a flag count, `Infinity` for a missing
+travel time). Same body, different contract — do not fold it into `lib/core.js`'s
+`cmpStr`.
+
+Four other divergences this work surfaced, all repaired in `styles.css` rather than left:
 §6's `.dark-map` selector is now keyed on the class alone rather than on the one map id
 `generate.py` names (the class is set by the map builders and by nothing else, and
 the shared sheet must not name a map the report does not have — see below); the sticky
-control-bar rule of `generate.py` had lost `#zcontrols` (now `#s-controls`); and
+control-bar rule of `generate.py` had lost `#zcontrols` (now `#s-controls`);
 `[data-band='fair']` had been collapsed onto `good`'s colour, rendering a five-band scale
-in three colours — it gets `--warn` back, as `generate.py` gives it.
+in three colours — it gets `--warn` back, as `generate.py` gives it; and four of
+`SHARED_CSS`'s custom properties are **deliberately not ported** — `--warn-text`,
+`--serif`, `--serious` and `--serious-text` — because nothing on the page reads them. The
+port's JS reads tokens by literal name only; the sole concatenated name,
+`render/html.js:484`'s `var(--wa-color-${variants[i]}-fill-loud)`, stays inside the
+reserved `--wa-color-*` namespace and can never construct one of the four. `styles.css`
+carries a note to that effect under its `legacy aliases` header, because `--warn` now has
+no `-text` twin beside `--good-text`/`--crit-text` and `--sans`/`--mono` survive without
+`--serif`.
 
 ### The stylesheet is partitioned
 

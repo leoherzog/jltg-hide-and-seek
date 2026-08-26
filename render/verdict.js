@@ -9,9 +9,11 @@
 //   index_your_game    + _s4_findings_half,
 //                        _s4_house_rules_half               → §03 `#yourgame`
 //
-// This file also owns the shared S4 formatting helpers and the per-day view helpers.
+// This file also owns the shared S4 formatting helpers, the per-day view helpers and
+// the tiny deterministic primitives (`sortedBy` over `cmpKey`, `fnum`).
 // `render/map.js` and `render/deck.js` import them from here rather than duplicating
-// them.
+// them — `cmpKey`'s nested-array branch is the reason a second copy is a divergence
+// waiting to happen.
 //
 // PROGRESSIVE HYDRATION. The CLI has one `Report`; the browser has a partial one that
 // grows as the worker's stages land. Every function here takes that partial report and
@@ -25,7 +27,7 @@
 // literal anywhere below.
 
 import {
-  IMPERIAL_COUNTRIES, num, pct, mins, miles, km, sqmi, rhu, prettyDate,
+  IMPERIAL_COUNTRIES, cmpStr, num, pct, mins, miles, km, sqmi, rhu, prettyDate,
 } from '../lib/core.js';
 import {
   esc, el, join, waIcon, waCard, waCallout, waTag, waButton, waProgressBar,
@@ -124,11 +126,6 @@ export const S4_ORDINAL = '--';
 
 // ── tiny deterministic primitives ────────────────────────────────────────────
 
-/** Plain code-point string comparison. Never `localeCompare` — that is locale-bound. */
-function cmpStr(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /**
  * Compare two Python-style sort keys: arrays whose elements are numbers or strings,
  * compared element by element, a shorter prefix sorting first.
@@ -153,7 +150,7 @@ function cmpKey(a, b) {
 }
 
 /** `sorted(items, key=…)` — a stable sort on a Python-style tuple key. */
-function sortedBy(items, keyFn) {
+export function sortedBy(items, keyFn) {
   return Array.from(items).sort((a, b) => cmpKey(keyFn(a), keyFn(b)));
 }
 
@@ -192,7 +189,7 @@ function cap(text) {
 }
 
 /** A finite number, or `null`. Guards every raw metric value before a formatter. */
-function fnum(x) {
+export function fnum(x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : null;
 }
 

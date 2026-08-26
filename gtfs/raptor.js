@@ -27,7 +27,7 @@
  * @module gtfs/raptor.js
  */
 
-import { MAX_TRANSFERS } from '../lib/core.js';
+import { MAX_TRANSFERS, cmpStr } from '../lib/core.js';
 
 /** `_S1_INF` / `_S1_NEG_INF`, generate.py. Both fit an Int32Array. */
 const S1_INF = 1000000000;
@@ -56,9 +56,6 @@ function bisectRight(col, value) {
   }
   return lo;
 }
-
-/** Code-point string comparator. */
-function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
 /** `sorted(set(ids))` — Python's normalisation of the origin/target list. */
 function uniqueSorted(ids) {

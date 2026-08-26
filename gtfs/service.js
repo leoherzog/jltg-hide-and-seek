@@ -38,12 +38,14 @@ import {
   WALK_CIRCUITY,
   WALK_RADIUS_M,
   WALK_SPEED_MPS,
+  cmpStr,
   dateRange,
   dowOf,
   hmsToS,
   lowerMedian,
 } from '../lib/core.js';
 import { GridIndex, Projection } from '../lib/geo.js';
+import { s1Cache, s1Int, s1Median, stopTimesOf, tripRows } from './feed.js';
 
 // ── private constants (generate.py) ──────────────────────────
 
@@ -59,9 +61,6 @@ const S1_DOW_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
  */
 const SEP = '\u0000';
 
-/** Code-point string comparator. Never `localeCompare` — that is locale-dependent. */
-function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
-
 /** Lexicographic comparator over two arrays of strings (Python's `sorted(list_of_lists)`). */
 function cmpStrList(a, b) {
   const k = Math.min(a.length, b.length);
@@ -71,26 +70,6 @@ function cmpStrList(a, b) {
   return a.length - b.length;
 }
 
-/**
- * Memoised `hmsToS`. A feed has at most ~108,000 distinct 'HH:MM:SS' strings but
- * hundreds of thousands of stop_times rows, so the hit rate is very high and this
- * removes ~30% of `buildServiceDay`'s runtime. Pure memo — `hmsToS` is a pure
- * function of its argument, so behaviour is unchanged. Errors are not cached; a
- * malformed value throws on every call, exactly as it would without the memo.
- * @type {Map<string, number|null>}
- */
-const HMS_MEMO = new Map();
-
-function hms(value) {
-  if (value === null || value === undefined) return null;
-  const key = String(value);
-  const hit = HMS_MEMO.get(key);
-  if (hit !== undefined) return hit;
-  const out = hmsToS(key);
-  HMS_MEMO.set(key, out);
-  return out;
-}
-
 function pushTo(map, key, value) {
   const bucket = map.get(key);
   if (bucket === undefined) map.set(key, [value]);
@@ -98,29 +77,6 @@ function pushTo(map, key, value) {
 }
 
 // ── small private helpers (generate.py) ──────────────────────
-
-/**
- * Median of a *measured distribution* — headways, gaps, travel times.
- *
- * This is the ordinary median (Python's `statistics.median`: the mean of the two
- * middle values for even n), and it is deliberately **not** `lowerMedian`. The
- * contract reserves `lowerMedian` for the two places where a tie must resolve
- * *down* to the quieter option — representative-day choice and the game-size vote —
- * because there the two middle values are alternative realities and averaging them
- * would invent a day the feed does not have. A headway distribution is not like
- * that: the middle of an even sample is genuinely between the two, and the
- * lower-median variant shifts the reference feed's frequent-stop count from 186 to
- * 191 and its ≤30-minute share from 57% to 60% against the measured values.
- * @param {number[]} values
- * @returns {number}
- */
-export function s1Median(values) {
-  const s = Array.from(values).sort((a, b) => a - b);
-  const n = s.length;
-  if (!n) throw new RangeError('s1Median of an empty sequence');
-  const mid = n >> 1;
-  return n % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-}
 
 /**
  * Consecutive differences of an already-sorted, de-duplicated departure vector.
@@ -151,61 +107,33 @@ export function s1Dedupe(pairs) {
 }
 
 /**
- * Tolerant int(): GTFS fields are text and optional columns arrive blank.
- * @param {*} value @param {number} [dflt]
- * @returns {number}
- */
-export function s1Int(value, dflt = 0) {
-  if (value === null || value === undefined) return dflt;
-  const s = String(value).trim();
-  if (!/^[+-]?\d+$/.test(s)) return dflt;
-  const v = Number(s);
-  return Number.isFinite(v) ? v : dflt;
-}
-
-// ── per-feed derived caches (attached to the Feed, never serialised) ─────────
-
-/** @type {WeakMap<object, Map<string, *>>} */
-const DERIVED = new WeakMap();
-
-/**
- * Memoise a derived structure on the Feed. Pure, so this cannot affect output.
- * @param {object} feed @param {string} key @param {() => *} build
- * @returns {*}
- */
-export function s1Cache(feed, key, build) {
-  let store = DERIVED.get(feed);
-  if (store === undefined) { store = new Map(); DERIVED.set(feed, store); }
-  if (!store.has(key)) store.set(key, build());
-  return store.get(key);
-}
-
-/** Drop every memoised structure for `feed`. Call after mutating `feed.tables`. */
-export function invalidateDerived(feed) { DERIVED.delete(feed); }
-
-/**
- * `trip_id → stop_times rows, sorted by int(stop_sequence)`.
+ * The busiest day of a run — `max(days, key=(trips, day_type.key))`, the Python's
+ * tuple order, so a tie on trips is broken by the LARGER day key.
  *
- * `stop_sequence` is non-contiguous in **every** trip of the reference feed and
- * starts at 0, so it is a sort key and never an index.
- * @param {object} feed
- * @returns {Map<string, object[]>}
+ * This rule decides which day every headline number describes — the metric table's
+ * `best`, the route-headway column, the one-route cap, the travel-time chart's sort
+ * — so it is written once. `days` must be non-empty: what an empty run means is the
+ * caller's to say and the callers genuinely disagree (throw, `[]`, `null`), so each
+ * guards before it asks.
+ *
+ * @param {object[]} days non-empty `ServiceDay`s; only `trips` and `dayType.key` are read
+ * @returns {object} the winning element of `days`
  */
-export function s1TripRows(feed) {
-  return s1Cache(feed, 'trip_rows', () => {
-    const byTrip = new Map();
-    for (const row of feed.tables.stop_times || []) {
-      // NOTE: no `.strip()` here, exactly as the Python. build_service_day looks
-      // rows up by a stripped trip_id; on a feed with padded ids that mismatch is
-      // real and is preserved rather than papered over.
-      pushTo(byTrip, row.trip_id === undefined ? '' : row.trip_id, row);
-    }
-    for (const rows of byTrip.values()) {
-      rows.sort((a, b) => s1Int(a.stop_sequence) - s1Int(b.stop_sequence));
-    }
-    return byTrip;
-  });
+export function busiestDay(days) {
+  let best = days[0];
+  for (const d of days) {
+    if (d.trips > best.trips
+      || (d.trips === best.trips && cmpStr(d.dayType.key, best.dayType.key) > 0)) best = d;
+  }
+  return best;
 }
+
+// ── per-feed derived caches ─────────────────────────────────────────────────
+// There is exactly one memo mechanism on the worker side and it lives in
+// `gtfs/feed.js`: `s1Cache(feed, key, build)`, held in a non-enumerable own
+// property so it never reaches `structuredClone`, and dropped wholesale by
+// `s1Invalidate` whenever the columnar store is rebuilt. Everything this module
+// derives from a Feed goes through it, so a key can only ever mean one thing.
 
 /**
  * `service_id → trips rows`.
@@ -602,6 +530,37 @@ export function s1Footpaths(feed, projLike) {
 }
 
 /**
+ * `stop_id → the shortest median headway any single route-direction achieves there`,
+ * over the `HEADWAY_WINDOW` slice of `routeDirStop`.
+ *
+ * One route-direction at a time, exactly as gtfs.md §1.9 requires: a stop served by
+ * two unrelated half-hourly routes is not a 15-minute stop. Fewer than two
+ * departures inside the window is not a headway at all, so the entry is skipped and
+ * the stop stays absent from the map rather than present with a fake value.
+ *
+ * The two readers cut the same measurement at different thresholds on purpose —
+ * `buildServiceDay`'s `frequent` at `FREQUENT_HEADWAY_MIN` (15 min), `s1DayMetrics`'
+ * `within30` at 30. Do not reconcile them.
+ *
+ * @param {Array<[[string, string, string], number[]]>} routeDirStop `day.extras.routeDirStop`
+ * @returns {Map<string, number>} seconds
+ */
+export function s1BestDirGaps(routeDirStop) {
+  const lo = hmsToS(HEADWAY_WINDOW[0]) || 0;
+  const hi = hmsToS(HEADWAY_WINDOW[1]) || SERVICE_DAY_SECONDS;
+  /** @type {Map<string, number>} */
+  const best = new Map();
+  for (const [[, , sid], values] of routeDirStop) {
+    const inside = values.filter((v) => lo <= v && v <= hi);
+    if (inside.length < 2) continue;
+    const gap = s1Median(s1Gaps(inside));
+    const prev = best.get(sid);
+    if (prev === undefined || gap < prev) best.set(sid, gap);
+  }
+  return best;
+}
+
+/**
  * Materialise one service day, including the RAPTOR structures.
  *
  * Builds: per-stop departure vectors, routes, headways and the frequent flag;
@@ -624,7 +583,8 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
   const boardSlackS = opts.boardSlackS === undefined ? BOARD_SLACK_S : opts.boardSlackS;
   const proj = Projection.from(projLike);
   const index = s1StopIndex(feed);
-  const tripRows = s1TripRows(feed);
+  const st = stopTimesOf(feed);
+  const byTrip = tripRows(feed);
   const services = new Set(day.serviceIds);
 
   /** @type {Map<string, [string, string]>} */
@@ -637,6 +597,11 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
   }
 
   // ── one ordered pass over the day's stop_times ────────────────────────────
+  // Straight off the columnar store: `tripRows` hands back row indices already
+  // sorted by int(stop_sequence), and `st.arrival/.departure` are the stored
+  // integer seconds, so there is no row dict to allocate and no 'H:MM:SS' to
+  // re-parse. `stopId` still gets the `.trim()` the row-dict version did — a feed
+  // with padded stop ids matches its `stops` table only after it.
   /** @type {Map<string, number[]>} */          const departures = new Map();
   /** @type {Map<string, Array<[string, number]>>} */ const tripDeps = new Map();
   /** @type {Map<string, Set<string>>} */       const stopRoutes = new Map();
@@ -647,21 +612,19 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
 
   const orderedTripIds = Array.from(tripRoute.keys()).sort(cmpStr);
   for (const tripId of orderedTripIds) {
-    const rows = tripRows.get(tripId);
+    const rows = byTrip.get(tripId);
     if (!rows || !rows.length) continue;
     const [routeId, direction] = tripRoute.get(tripId);
     const seqStops = [];
     const seqTimes = [];
-    for (const row of rows) {
-      const sid = (row.stop_id || '').trim();
+    for (const r of rows) {
+      const sid = (st.stopId(r) || '').trim();
       if (!index.byId.has(sid)) continue;
-      let arr = hms(row.arrival_time);
-      let dep = hms(row.departure_time);
+      let arr = st.arrival(r);
+      let dep = st.departure(r);
       if (arr === null && dep === null) continue;
       if (arr === null) arr = dep;
       if (dep === null) dep = arr;
-      arr = Math.trunc(arr);
-      dep = Math.trunc(dep);
       seqStops.push(sid);
       seqTimes.push([arr, dep]);
       stopEvents++;
@@ -696,15 +659,7 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
   const loW = hmsToS(HEADWAY_WINDOW[0]) || 0;
   const hiW = hmsToS(HEADWAY_WINDOW[1]) || SERVICE_DAY_SECONDS;
 
-  /** @type {Map<string, number>} */
-  const bestDirGap = new Map();
-  for (const [[, , sid], values] of rdsClean) {
-    const inside = values.filter((v) => loW <= v && v <= hiW);
-    if (inside.length < 2) continue;
-    const gap = s1Median(s1Gaps(inside));
-    const prev = bestDirGap.get(sid);
-    if (prev === undefined || gap < prev) bestDirGap.set(sid, gap);
-  }
+  const bestDirGap = s1BestDirGaps(rdsClean);
 
   const stopDays = Object.create(null);
   const dedupAll = Object.create(null);
@@ -810,7 +765,7 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
 
   let tripCount = 0;
   for (const t of orderedTripIds) {
-    const rows = tripRows.get(t);
+    const rows = byTrip.get(t);
     if (rows && rows.length) tripCount++;
   }
 

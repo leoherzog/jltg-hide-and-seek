@@ -154,12 +154,6 @@ log "md5 ok ($got_md5)"
 #   script is a FULL re-download + rebuild — the rm -rf above plus --force means
 #   nothing survives between attempts.)
 # MODE_ARGS carries the per-kind flags, computed above the download.
-#
-# NOTE for reviewers: for --kind density, build.py's main() still runs the full
-# stage-1 filter pass unconditionally before checking --only (it is not gated on
-# which layers were requested) — an inefficiency in build.py, not this script, and
-# out of scope for a CI-authoring change. Phase 4's finding that the fine shards (514)
-# measurement in DESIGN.md already reflects build.py as it stands.
 log "building ($KIND)"
 /usr/bin/time -v -o "$SHARD_WORK/time.log" uv run "$REPO_ROOT/tools/osm-world/build.py" \
   --planet "$PBF" \

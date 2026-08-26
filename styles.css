@@ -62,6 +62,8 @@
   --wa-color-danger-on-quiet:   #c73837;   /* brand red darkened to 4.55:1 on the paper */
 
   /* ── legacy aliases: READ BY SVG CHART + MAP JS. Do not rename in JS. ── */
+  /* Four of generate.py's tokens are deliberately not ported, here and in §2: nothing
+     on this page reads --warn-text, --serif, --serious or --serious-text. */
   --paper:      var(--wa-color-surface-default);
   --surface:    var(--wa-color-surface-raised);
   --surface-2:  var(--wa-color-surface-lowered);
@@ -75,13 +77,11 @@
   --good:       var(--wa-color-success-fill-loud);
   --good-text:  var(--wa-color-success-on-quiet);
   --warn:       var(--wa-color-warning-fill-loud);
-  --warn-text:  var(--wa-color-warning-on-quiet);
   --crit:       var(--wa-color-danger-fill-loud);
   --crit-text:  var(--wa-color-danger-on-quiet);
   /* WA has four family roles — body, heading, code, longform — and no UI role, so
      this one is ours and stays out of the reserved --wa-* namespace. */
   --sans:  system-ui, -apple-system, "Segoe UI", sans-serif;
-  --serif: var(--wa-font-family-longform);
   --mono:  var(--wa-font-family-code);
 
   /* ── semantic chart colours WA has no token for ── */
@@ -92,7 +92,6 @@
   /* the sequential ramp is navy let down towards the paper; --seq-650 IS the navy */
   --seq-100:#dbe6f2; --seq-200:#c0ccd9; --seq-300:#a6b2c1;
   --seq-400:#808e9d; --seq-550:#4e5c6d; --seq-650:#202f40;
-  --serious: #f57a3c; --serious-text: #b1511e;
   --q-yes:#2e9d5b; --q-no:#eb3539; --q-edge:#f57a3c; --q-un:#7a8897;
 }
 
@@ -125,7 +124,6 @@
   --baseline: #495a6d;
   --gold-mark: #ffbf40; --gold-deep: #ffbf40;   /* gold on navy is the logo: 8.29:1 */
   --off: #657383;
-  --serious-text: #f57a3c;
   --q-yes:#3db374; --q-no:#f26962; --q-edge:#f57a3c; --q-un:#8b99aa;
   /* the sequential ramp re-anchors on the dark surface (more service = lighter).
      Measured against --wa-color-surface-raised #202f40: 11.13 · 8.65 · 6.58 · 5.10
@@ -425,8 +423,12 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
   #hydration { flex: 1 1 100%; max-inline-size: none; order: 1; }
 }
 
-/* ---- the landing card ---- */
-#landing { max-inline-size: 48rem; margin-inline: auto; }
+/* ---- the landing card ----
+   72rem, not the 48rem a form wants: the card holds the feed picker's map too, and
+   `#landing` renders in no state but `landing`, so there is nothing to gate a wider
+   measure on. The lede keeps its own 60ch; `#landing-fields`' 220px columns just get
+   four across instead of three. */
+#landing { max-inline-size: min(72rem, 100%); margin-inline: auto; }
 #landing-lede { max-inline-size: 60ch; }
 /* `#dropzone` is a <wa-file-input>, so the structure and every behaviour — the
    <label for> that opens the picker, the drag handling, the chosen-file card —
@@ -480,13 +482,7 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 
 /* ---- the landing feed picker ----
    The map, the search results and the selected list. Everything here is scoped to
-   the picker's own ids so nothing can reach §05's map, which is skinned above.
-
-   `#landing` is 48rem, which is right for a form and far too narrow for a map — so
-   the widening is GATED on the landing state rather than changed at the source, and
-   the lede keeps its 60ch measure regardless. `#landing-fields`' 220px columns still
-   read at 72rem; they simply get four across instead of three. */
-body[data-state='landing'] #landing { max-inline-size: min(72rem, 100%); }
+   the picker's own ids so nothing can reach §05's map, which is skinned above. */
 
 /* What keeps the card off the horizontal scrollbar at 360px. A flex item's
    `min-inline-size` defaults to `auto`, which is the item's content width — so one

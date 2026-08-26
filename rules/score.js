@@ -17,17 +17,15 @@
 
 import {
   GENERATOR, VERSION, M_PER_MILE, SEEKER_SAMPLE_CAP,
-  rhu, num, pct, mins, miles, hhmm, quantile,
+  cmpStr, rhu, num, pct, mins, miles, hhmm, quantile,
 } from '../lib/core.js';
 import { bboxOf, bboxContains, Projection } from '../lib/geo.js';
 import { cacheBackend } from '../lib/cache.js';
+import { busiestDay } from '../gtfs/service.js';
 import { QUESTIONS, INTERPRETATIONS } from './catalogue.js';
 import {
   globalQuestionOrder, s3JointBlockShare, s3ReferenceSeeker, s3Answer, s3Join,
 } from './audit.js';
-
-/** Code-point string order — Python's. Never `localeCompare` (locale = non-determinism). */
-function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
 /** `sorted(dict)` — a plain object's keys in code-point order. */
 function sortedKeys(obj) {
@@ -272,11 +270,7 @@ function s3View(metrics, dayKey, size) {
  */
 function s3OneRouteShare(days) {
   if (!days || !days.length) return 0.0;
-  let best = days[0];
-  for (const d of days) {
-    if (d.trips > best.trips
-      || (d.trips === best.trips && cmpStr(d.dayType.key, best.dayType.key) > 0)) best = d;
-  }
+  const best = busiestDay(days);
   const served = best.servedStopIds;
   if (!served.length) return 0.0;
   /** @type {Map<string, number>} */

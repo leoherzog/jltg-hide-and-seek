@@ -64,7 +64,7 @@
  * target engine, which is relied on exactly where CPython's stable `list.sort` is.
  */
 
-import { hhmmss, hmsToS, sha256Bytes } from '../lib/core.js';
+import { cmpStr, hhmmss, hmsToS, sha256Bytes } from '../lib/core.js';
 import { httpFetch } from '../lib/http.js';
 
 // ── logging ───────────────────────────────────────────────────────────────────
@@ -90,9 +90,6 @@ const _S1_RAIL_TYPES = [0, 1, 2, 5, 7, 11, 12];
 
 /** Sentinel for "this time field was blank". Outside any legal GTFS time. */
 const MISSING = -2147483648;
-
-/** Code-point string order — Python's. Never `localeCompare` (locale = non-determinism). */
-const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ── small private helpers (generate.py) ─────────────────────────────
 
@@ -1140,8 +1137,14 @@ export function normaliseTimes(feed) {
   if (feed._s1Normalised) return;
 
   _s1ExpandFrequencies(feed);
-  _s1FillBlankTimes(feed);
-  _s1CheckMonotone(feed);
+  // Both passes walk the same trips in the same order, so the index and the sorted
+  // id list are built once here and handed to both. They stay two passes on purpose:
+  // the fill loop's two early `continue`s would swallow the monotone check on
+  // exactly the well-formed trips, which are most of them.
+  const byTrip = tripRows(feed);
+  const tids = Array.from(byTrip.keys()).sort(cmpStr);
+  _s1FillBlankTimes(feed, byTrip, tids);
+  _s1CheckMonotone(feed, byTrip, tids);
 
   Object.defineProperty(feed, '_s1Normalised', {
     value: true, writable: true, enumerable: false, configurable: true,
@@ -1242,12 +1245,11 @@ function _s1ExpandFrequencies(feed) {
  * post-sort position otherwise. Rows outside the first/last timepoint of a trip
  * (which is malformed GTFS) are filled by copying the nearest known time.
  */
-function _s1FillBlankTimes(feed) {
+function _s1FillBlankTimes(feed, byTrip, tids) {
   const st = stopTimesOf(feed);
-  const byTrip = tripRows(feed);
   let filled = 0;
 
-  for (const tid of Array.from(byTrip.keys()).sort(cmpStr)) {
+  for (const tid of tids) {
     const rows = byTrip.get(tid);
     const n = rows.length;
     // `departure or arrival` — a departure of exactly 0 is falsy in Python too and
@@ -1303,11 +1305,10 @@ function _s1FillBlankTimes(feed) {
 }
 
 /** Warn (never crash) when a trip's times go backwards. Real feeds do this. */
-function _s1CheckMonotone(feed) {
+function _s1CheckMonotone(feed, byTrip, tids) {
   const st = stopTimesOf(feed);
-  const byTrip = tripRows(feed);
   let bad = 0;
-  for (const tid of Array.from(byTrip.keys()).sort(cmpStr)) {
+  for (const tid of tids) {
     const rows = byTrip.get(tid);
     let prev = null;
     for (let i = 0; i < rows.length; i++) {

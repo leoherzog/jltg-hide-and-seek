@@ -7,9 +7,9 @@
  * `network_metrics` and `route_headways`.
  *
  * `routeSpokes` is not a port: it is new (2026-08-23) and exists so the map can draw
- * the network's shape. It reuses `_s1_route_km`'s longest-shape-per-(route, direction)
- * selection deliberately, so the drawn network and the published kilometres are the
- * same set of lines.
+ * the network's shape. It and `s1RouteKm` read one `s1Shapes(feed)` — one parse of
+ * `shapes.txt`, one longest-shape-per-(route, direction) selection — so the drawn
+ * network and the published kilometres are the same set of lines by construction.
  *
  * `cluster_stations` lives in `./service.js` in this port — it is a
  * property of the feed, not of the metric table — and is re-exported here so the
@@ -40,6 +40,8 @@ import {
   DEFAULT_DEPARTURE,
   HALF_MILE_M,
   HEADWAY_WINDOW,
+  MAP_SPOKE_RDP_M,
+  MAX_MAP_SPOKES,
   M_PER_KM,
   M_PER_MILE,
   MIDDAY_WINDOW,
@@ -48,6 +50,7 @@ import {
   SERVICE_DAY_SECONDS,
   SQM_PER_SQMI,
   T90_ORIGIN_STRIDE,
+  cmpStr,
   coord,
   dateRange,
   dowOf,
@@ -65,14 +68,14 @@ import {
   minEnclosingCircle,
   polygonArea,
 } from '../lib/geo.js';
-import { s1Float, s1Int, s1Share } from './feed.js';
+import { s1Cache, s1Float, s1Int, s1Median, s1Share } from './feed.js';
 import {
+  busiestDay,
   clusterStations,
   noServiceDates,
-  s1Cache,
+  s1BestDirGaps,
   s1Extras,
   s1Gaps,
-  s1Median,
   s1Positions,
 } from './service.js';
 import { raptor } from './raptor.js';
@@ -85,9 +88,6 @@ import { raptor } from './raptor.js';
  * tuple ordering exactly.
  */
 const SEP = '\u0000';
-
-/** Code-point string order. Never `localeCompare` — that is locale-dependent. */
-function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
 /** Ascending numeric order. `Array.prototype.sort` is lexicographic by default. */
 function cmpNum(a, b) { return a - b; }
@@ -379,22 +379,31 @@ export function s1HullAndShape(points) {
 }
 
 /**
- * `[bothDirectionsKm, oneDirectionKm]` from the **longest shape per
- * (routeId, directionId)**.
+ * `shapes.txt`, parsed once per feed: each shape's metric length and its ordered
+ * `[lat, lon]` points, plus the **longest shape per (routeId, directionId)**.
  *
- * Summing every shape overstates the reference network 6.5× (5,220 km against
- * 809 km) because every short-turn and detour variant is its own shape.
+ * `s1RouteKm` sums the lengths and `routeSpokes` draws the points, so this is the
+ * one place the selection is made — the published kilometres and the drawn network
+ * cannot disagree, and the file is read once rather than once per caller.
  *
- * @param {object} feed @returns {[number, number]}
+ * A route-direction whose every shape measures zero is still a key here, carrying
+ * `len: 0`: it adds nothing to a sum and draws nothing.
+ *
+ * Only the **selected** shapes' points survive into the cached value. A big feed's
+ * `shapes.txt` is mostly short-turn and detour variants that no route-direction wins
+ * with (MBTA: ~1.4 M points), and this is memoised on the feed for the whole run —
+ * so the point arrays are built, measured, and then dropped for every shape
+ * `longest` does not name.
+ *
+ * @param {object} feed
+ * @returns {{seq: Map<string, Array<[number, number]>>,
+ *            longest: Map<string, {len: number, id: string}>}}
  */
-export function s1RouteKm(feed) {
-  return s1Cache(feed, 'route_km', () => {
-    const shapes = feed.tables.shapes || [];
-    if (!shapes.length) return [0.0, 0.0];
-
+function s1Shapes(feed) {
+  return s1Cache(feed, 'shapes', () => {
     /** @type {Map<string, Array<[number, number, number]>>} shape_id → (seq, lat, lon) */
     const pts = new Map();
-    for (const row of shapes) {
+    for (const row of (feed.tables && feed.tables.shapes) || []) {
       const lat = s1Float(row.shape_pt_lat);
       const lon = s1Float(row.shape_pt_lon);
       if (lat === null || lon === null) continue;
@@ -404,37 +413,69 @@ export function s1RouteKm(feed) {
       bucket.push([s1Int(row.shape_pt_sequence), lat, lon]);
     }
 
-    /** @type {Map<string, number>} */
-    const length = new Map();
+    /** @type {Map<string, number>} shape_id → metric length */
+    const len = new Map();
+    /** @type {Map<string, Array<[number, number]>>} shape_id → points, pruned below */
+    const points = new Map();
     for (const shapeId of Array.from(pts.keys()).sort(cmpStr)) {
-      const seq = pts.get(shapeId).slice()
+      const ordered = pts.get(shapeId).slice()
         .sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]));
       let total = 0.0;
-      for (let i = 1; i < seq.length; i++) {
-        total += haversineM(seq[i - 1][1], seq[i - 1][2], seq[i][1], seq[i][2]);
+      for (let i = 1; i < ordered.length; i++) {
+        total += haversineM(ordered[i - 1][1], ordered[i - 1][2], ordered[i][1], ordered[i][2]);
       }
-      length.set(shapeId, total);
+      len.set(shapeId, total);
+      points.set(shapeId, ordered.map((r) => [r[1], r[2]]));
     }
 
-    /** @type {Map<string, number>} `(routeId, directionId)` → longest shape metres */
-    const longestDir = new Map();
-    /** @type {Map<string, number>} routeId → longest shape metres */
-    const longestRoute = new Map();
-    const trips = (feed.tables.trips || []).slice()
+    /** @type {Map<string, {len: number, id: string}>} `(routeId, directionId)` → longest */
+    const longest = new Map();
+    const trips = ((feed.tables && feed.tables.trips) || []).slice()
       .sort((a, b) => cmpStr((a.trip_id || ''), (b.trip_id || '')));
     for (const trip of trips) {
       const shapeId = (trip.shape_id || '').trim();
-      if (!length.has(shapeId)) continue;
-      const routeId = (trip.route_id || '').trim();
-      const direction = (trip.direction_id || '').trim();
-      const value = length.get(shapeId);
-      const key = routeId + SEP + direction;
-      if (value > (longestDir.get(key) || 0.0)) longestDir.set(key, value);
-      if (value > (longestRoute.get(routeId) || 0.0)) longestRoute.set(routeId, value);
+      if (!len.has(shapeId)) continue;
+      const k = (trip.route_id || '').trim() + SEP + (trip.direction_id || '').trim();
+      const value = len.get(shapeId);
+      const best = longest.get(k);
+      if (best === undefined || value > best.len) longest.set(k, { len: value, id: shapeId });
     }
 
+    /** @type {Map<string, Array<[number, number]>>} only the shapes `longest` names */
+    const seq = new Map();
+    for (const k of Array.from(longest.keys()).sort(cmpStr)) {
+      const id = longest.get(k).id;
+      if (!seq.has(id)) seq.set(id, points.get(id));
+    }
+    return { seq, longest };
+  });
+}
+
+/**
+ * `[bothDirectionsKm, oneDirectionKm]` from the **longest shape per
+ * (routeId, directionId)**.
+ *
+ * Summing every shape overstates the reference network 6.5× (5,220 km against
+ * 809 km) because every short-turn and detour variant is its own shape.
+ *
+ * The one-direction figure folds out of the same map: a route's longest shape is
+ * the longest of its directions' longest shapes.
+ *
+ * @param {object} feed @returns {[number, number]}
+ */
+export function s1RouteKm(feed) {
+  return s1Cache(feed, 'route_km', () => {
+    const { longest } = s1Shapes(feed);
+
+    /** @type {Map<string, number>} routeId → longest shape metres */
+    const longestRoute = new Map();
     let both = 0.0;
-    for (const k of Array.from(longestDir.keys()).sort(cmpStr)) both += longestDir.get(k);
+    for (const k of Array.from(longest.keys()).sort(cmpStr)) {
+      const value = longest.get(k).len;
+      both += value;
+      const routeId = k.slice(0, k.indexOf(SEP));
+      if (value > (longestRoute.get(routeId) || 0.0)) longestRoute.set(routeId, value);
+    }
     let one = 0.0;
     for (const k of Array.from(longestRoute.keys()).sort(cmpStr)) one += longestRoute.get(k);
     return [both / M_PER_KM, one / M_PER_KM];
@@ -505,8 +546,8 @@ function rdp(points, toleranceM) {
 /**
  * Drawable geometry for the map's route-spoke layer, one entry per route-direction.
  *
- * The geometry is the **longest shape per (routeId, directionId)** — the same
- * selection `s1RouteKm` makes for `routeKmOneDir`, so the drawn network and the
+ * The geometry is `s1Shapes`' **longest shape per (routeId, directionId)** — the
+ * very selection `s1RouteKm` sums for `routeKmOneDir`, so the drawn network and the
  * published kilometres cannot disagree — decimated by RDP at `toleranceM`. A feed
  * with no `shapes.txt` falls back to the longest ordered stop sequence per
  * route-direction (`source: 'stops'`), which is a chord diagram rather than a road
@@ -517,10 +558,11 @@ function rdp(points, toleranceM) {
  * is the page's cue to say so; a silent cap is the one thing this must not be.
  *
  * @param {object} feed @param {object[]} days @param {object|null} hub
- * @param {number} [cap=60] @param {number} [toleranceM=20]
+ * @param {number} [cap=MAX_MAP_SPOKES] @param {number} [toleranceM=MAP_SPOKE_RDP_M]
  * @returns {{spokes: object[], cap: {shown: number, total: number, source: string}}}
  */
-export function routeSpokes(feed, days, hub, cap = 60, toleranceM = 20.0) {
+export function routeSpokes(feed, days, hub, cap = MAX_MAP_SPOKES,
+  toleranceM = MAP_SPOKE_RDP_M) {
   const tripsPerDay = new Map();          // routeId\0directionId → dayKey → trips
   const dayKeys = Array.from(days || [], (d) => d.dayType.key).sort(cmpStr);
   for (const day of days || []) {
@@ -538,45 +580,9 @@ export function routeSpokes(feed, days, hub, cap = 60, toleranceM = 20.0) {
   const geometry = new Map();
   let source = 'shapes';
 
-  const shapes = (feed.tables && feed.tables.shapes) || [];
-  if (shapes.length) {
-    /** @type {Map<string, Array<[number, number, number]>>} shape_id → (seq, lat, lon) */
-    const pts = new Map();
-    for (const row of shapes) {
-      const lat = s1Float(row.shape_pt_lat);
-      const lon = s1Float(row.shape_pt_lon);
-      if (lat === null || lon === null) continue;
-      const key = (row.shape_id || '').trim();
-      let bucket = pts.get(key);
-      if (bucket === undefined) { bucket = []; pts.set(key, bucket); }
-      bucket.push([s1Int(row.shape_pt_sequence), lat, lon]);
-    }
-    /** @type {Map<string, {len: number, seq: Array<[number, number]>}>} */
-    const shape = new Map();
-    for (const shapeId of Array.from(pts.keys()).sort(cmpStr)) {
-      const ordered = pts.get(shapeId).slice()
-        .sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]));
-      let total = 0.0;
-      for (let i = 1; i < ordered.length; i++) {
-        total += haversineM(ordered[i - 1][1], ordered[i - 1][2], ordered[i][1], ordered[i][2]);
-      }
-      shape.set(shapeId, { len: total, seq: ordered.map((r) => [r[1], r[2]]) });
-    }
-    /** @type {Map<string, {len: number, id: string}>} */
-    const longest = new Map();
-    const trips = (feed.tables.trips || []).slice()
-      .sort((a, b) => cmpStr((a.trip_id || ''), (b.trip_id || '')));
-    for (const trip of trips) {
-      const shapeId = (trip.shape_id || '').trim();
-      if (!shape.has(shapeId)) continue;
-      const k = (trip.route_id || '').trim() + SEP + (trip.direction_id || '').trim();
-      const value = shape.get(shapeId).len;
-      const best = longest.get(k);
-      if (best === undefined || value > best.len) longest.set(k, { len: value, id: shapeId });
-    }
-    for (const k of Array.from(longest.keys()).sort(cmpStr)) {
-      geometry.set(k, shape.get(longest.get(k).id).seq);
-    }
+  const { seq, longest } = s1Shapes(feed);
+  for (const k of Array.from(longest.keys()).sort(cmpStr)) {
+    geometry.set(k, seq.get(longest.get(k).id));
   }
 
   if (!geometry.size) {
@@ -781,18 +787,9 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
 
   const midday = windowed(MIDDAY_WINDOW);
 
-  // a stop counts as "30-minute" when a single route-direction beats 30 min
-  const loW = hmsToS(HEADWAY_WINDOW[0]) || 0;
-  const hiW = hmsToS(HEADWAY_WINDOW[1]) || SERVICE_DAY_SECONDS;
-  /** @type {Map<string, number>} */
-  const bestDir = new Map();
-  for (const [[, , sid], values] of extras.routeDirStop) {
-    const inside = values.filter((v) => loW <= v && v <= hiW);
-    if (inside.length < 2) continue;
-    const gap = s1Median(s1Gaps(inside));
-    const prev = bestDir.get(sid);
-    if (prev === undefined || gap < prev) bestDir.set(sid, gap);
-  }
+  // a stop counts as "30-minute" when a single route-direction beats 30 min — the
+  // same measurement `buildServiceDay` cuts at FREQUENT_HEADWAY_MIN for `frequent`
+  const bestDir = s1BestDirGaps(extras.routeDirStop);
   const within30 = base.filter((sid) => {
     const g = bestDir.get(sid);
     return (g === undefined ? Infinity : g) <= 1800;
@@ -1010,11 +1007,7 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
   const memo = s1Cache(feed, 'metrics_memo', () => new Map());
   if (memo.has(key)) return memo.get(key);
 
-  let best = ordered[0];
-  for (const d of ordered) {
-    if (d.trips > best.trips
-      || (d.trips === best.trips && cmpStr(d.dayType.key, best.dayType.key) > 0)) best = d;
-  }
+  const best = busiestDay(ordered);
   const hubStop = hub.stopId;
 
   /** @type {Object<string, object>} */
@@ -1145,12 +1138,7 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
  */
 export function routeHeadways(feed, days) {
   if (!days.length) return [];
-  let best = days[0];
-  for (const d of days) {
-    if (d.trips > best.trips
-      || (d.trips === best.trips && cmpStr(d.dayType.key, best.dayType.key) > 0)) best = d;
-  }
-  const bestKey = best.dayType.key;
+  const bestKey = busiestDay(days).dayType.key;
 
   // Midday is the honest window for "how often does this line run", but a peak-only
   // route has no midday service at all and would otherwise be indistinguishable from

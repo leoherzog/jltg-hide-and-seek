@@ -404,27 +404,41 @@ function buildInstance(root, report) {
   }
 
   /**
-   * The nearest feature of a category to a point, and by how much it wins.
+   * The nearest of a list of features to a point, and by how much it wins.
    *
    * `margin` is second-nearest minus nearest: when it is inside two zone radii, a
    * different feature could win from elsewhere in the same circle, which is what
-   * turns a matching or tentacle answer into an `edge`. Ports `nearestIn`,
-   * generate.py. Features are `[lon, lat, name]` — lon first.
+   * turns a matching or tentacle answer into an `edge`. Features are
+   * `[lon, lat, name]` — lon first.
+   *
+   * The list is a parameter rather than a category because the tentacle branch scans
+   * a *subset* — only the features inside the seekers' reach — and its `edge` rule is
+   * the same `margin` rule, so both must come from one scan.
+   *
+   * @param {Array[]|null|undefined} features @param {number} lat @param {number} lon
+   * @returns {{feature: Array, d: number, margin: number}|null}
+   */
+  function nearestOf(features, lat, lon) {
+    if (!features || !features.length) return null;
+    let best = null;
+    let bd = Infinity;
+    let second = Infinity;
+    for (const f of features) {
+      const d = haversineM(lat, lon, f[1], f[0]);
+      if (d < bd) { second = bd; bd = d; best = f; } else if (d < second) { second = d; }
+    }
+    return { feature: best, d: bd, margin: second - bd };
+  }
+
+  /**
+   * The same scan over a whole category. Ports `nearestIn`, generate.py.
    *
    * @param {string} cat @param {number} lat @param {number} lon
    * @returns {{feature: Array, d: number, margin: number}|null}
    */
   function nearestIn(cat, lat, lon) {
     const c = poi.categories && poi.categories[cat];
-    if (!c || !c.features || !c.features.length) return null;
-    let best = null;
-    let bd = Infinity;
-    let second = Infinity;
-    for (const f of c.features) {
-      const d = haversineM(lat, lon, f[1], f[0]);
-      if (d < bd) { second = bd; bd = d; best = f; } else if (d < second) { second = d; }
-    }
-    return { feature: best, d: bd, margin: second - bd };
+    return nearestOf(c && c.features, lat, lon);
   }
 
   /**
@@ -522,19 +536,14 @@ function buildInstance(root, report) {
       /* in reach of the seekers, but the seekers named a category with nothing inside
          their own circle — there is no name to give (the engine's class `-2`) */
       if (!inReach.length) return 'un';
-      let best = null;
-      let bd = Infinity;
-      let second = Infinity;
-      for (const f of inReach) {
-        const d = haversineM(view.lat, view.lon, f[1], f[0]);
-        if (d < bd) { second = bd; bd = d; best = f; } else if (d < second) { second = d; }
-      }
-      tentacleNames.set(view.id, best ? best[2] : null);
-      tentacleFeatures.set(view.id, best ? `${best[0]},${best[1]}` : '');
+      /* `inReach` is non-empty, so the scan always names a feature */
+      const near = nearestOf(inReach, view.lat, view.lon);
+      tentacleNames.set(view.id, near.feature[2]);
+      tentacleFeatures.set(view.id, `${near.feature[0]},${near.feature[1]}`);
       if (reachBand === 'edge') return 'edge';
       /* two names within a circle's width of each other ⇒ which one is nearest depends
          on where in the circle the hider stands */
-      return second - bd <= 2 * RAD ? 'edge' : 'yes';
+      return near.margin <= 2 * RAD ? 'edge' : 'yes';
     }
   }
 
@@ -1576,14 +1585,18 @@ function buildInstance(root, report) {
    * survival percentage; the rail and the table show the same zones in the same order
    * whatever question is loaded, because the rulebook eliminates zones from a
    * *seeker's* map, not from the hider's options.
+   *
+   * Which is why neither is rebuilt here. `renderList` and `renderTable` read only
+   * `views`, `selected` and the table's own filter/sort/page state — never an answer,
+   * a mode, the seekers or the option — and every mutation of those re-renders them
+   * itself. Rebuilding forty listbox cards and a page of rows, listeners and all, on
+   * each arrow-key nudge of the seekers only reprinted the same bytes.
    */
   function paint() {
     computeAnswers();
     repaintMarkers();
     updateCircle();
     renderReadout();
-    renderList();
-    renderTable();
   }
 
   /** The one way the selection ever changes — the rail, the table and the map agree. */

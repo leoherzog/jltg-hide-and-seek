@@ -37,7 +37,7 @@
  *      the provenance rows rather than being replaced with the wall clock.
  */
 
-import { num } from '../lib/core.js';
+import { cmpStr, num } from '../lib/core.js';
 import {
   bboxContains, polygonArea, pointInRing, ringCentroid, representativePoint,
   polylineMidpoint,
@@ -69,9 +69,6 @@ const ID_PROPERTY = 'osm_id';
 
 /** Property keys that are identity or bookkeeping, never OSM tags. */
 const NON_TAG_PROPERTIES = Object.freeze([TYPE_PROPERTY, ID_PROPERTY]);
-
-/** Code-point-ordered string comparison. Never `localeCompare`. */
-function cmpStr(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
 
 /** Python tuple comparison for `(osmType, osmId)` — string then NUMBER. */
 function cmpTypeId(a, b) {
@@ -528,12 +525,11 @@ function toLatLon(run) {
  * @param {string} category
  * @param {import('../lib/geo.js').Projection} proj
  * @param {[number, number, number, number]} bbox
- * @param {{keepRings: boolean, keepTags?: boolean}} opts
+ * @param {{keepRings: boolean}} opts
  * @returns {Array<Object>} Poi records
  */
 export function featuresToPois(features, category, proj, bbox, opts) {
   const keepRings = Boolean(opts && opts.keepRings);
-  const keepTags = !opts || opts.keepTags === undefined ? true : Boolean(opts.keepTags);
 
   /** @type {Array<{poi: Object, rings: Array<Array<[number, number]>>, area: number}>} */
   const records = [];
@@ -561,15 +557,13 @@ export function featuresToPois(features, category, proj, bbox, opts) {
 
     /** @type {Object<string, string>} */
     const tags = {};
-    if (keepTags) {
-      const keys = Object.keys(feature.properties)
-        .filter((k) => !NON_TAG_PROPERTIES.includes(k))
-        .sort(cmpStr);
-      for (const k of keys) {
-        const value = feature.properties[k];
-        if (value === null || value === undefined) continue;
-        tags[k] = String(value);
-      }
+    const keys = Object.keys(feature.properties)
+      .filter((k) => !NON_TAG_PROPERTIES.includes(k))
+      .sort(cmpStr);
+    for (const k of keys) {
+      const value = feature.properties[k];
+      if (value === null || value === undefined) continue;
+      tags[k] = String(value);
     }
 
     const planarOuters = outers.map((ring) => ring.map(([lat, lon]) => proj.xy(lat, lon)));
@@ -651,7 +645,7 @@ export function featuresToPois(features, category, proj, bbox, opts) {
  * @param {string} category the category the `Poi` records are labelled with
  * @param {[number, number, number, number]} bbox
  * @param {import('../lib/geo.js').Projection} proj
- * @param {{keepRings?: boolean, keepTags?: boolean, fetchImpl?: typeof fetch}} [opts]
+ * @param {{keepRings?: boolean, fetchImpl?: typeof fetch}} [opts]
  * @returns {Promise<Array<Object>|null>} null when the layer is not in the manifest;
  *   `[]` when the manifest lists it as a path-less empty layer
  */
@@ -662,10 +656,7 @@ export async function worldPois(world, layerKey, category, bbox, proj, opts = {}
   const reader = worldReader(world, layerKey, opts);
   if (reader === null) return null;
   const features = await reader.query(rectOf(bbox));
-  return featuresToPois(features, category, proj, bbox, {
-    keepRings: Boolean(opts.keepRings),
-    keepTags: opts.keepTags === undefined ? true : Boolean(opts.keepTags),
-  });
+  return featuresToPois(features, category, proj, bbox, { keepRings: Boolean(opts.keepRings) });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

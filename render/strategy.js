@@ -39,13 +39,14 @@
 //
 // @module render/strategy
 
-import { num, pct, mins, rhu, coord, prettyDate } from '../lib/core.js';
+import { cmpStr, num, pct, mins, rhu, coord, prettyDate } from '../lib/core.js';
 import {
   esc, el, join, waIcon, waCard, waCallout, waButton, waBadge, waDetails,
   waScroller, waAccordion, chip, meter, searchInput, pullQuote, section, subhead,
   dataTable,
 } from './html.js';
 import {
+  fnum,
   s4Dist, s4Val, s4Plural, s4NaturalCmp, s4JoinWords, s4DayLabel, s4BestDay, s4WorstDay,
   s4LiveQuestions, s4MetricLookup, s4Swatch, s4CardHeader, s4SourceTag,
 } from './verdict.js';
@@ -64,8 +65,9 @@ import { QUESTIONS } from '../rules/catalogue.js';
 
 /**
  * The six zone axes: `(id, name, what it measures, the rulebook clause behind it)`.
- * (generate.py `_S5_AXES`.) `simulator.js` reads this for the dossier's
- * score block, so it is exported rather than kept private.
+ * (generate.py `_S5_AXES`.) Read only inside this file: the dossier's score block in
+ * `simulator.js` reads `AXIS_IDS` (derived from it, just below) and `AXIS_PLAIN`,
+ * never this. Exported because CONTRACT.md §(a) names it.
  * @type {ReadonlyArray<readonly [string, string, string, string]>}
  */
 export const AXES = Object.freeze([
@@ -225,8 +227,10 @@ export const SCORE_MAX = 100;
 
 // ── the shared numeric helpers ───────────────────────────────────────────────
 //
-// Exported so `simulator.js` rounds identically. Two files printing the same score
-// through two roundings is the failure this prevents.
+// Rounding happens exactly ONCE, inside `zoneViews`: every score on either page is a
+// `ZoneView` field these produced there, and `simulator.js` prints those fields rather
+// than calling these again. That is why no number can be rounded twice. They are
+// exported because CONTRACT.md §(a) names them.
 
 /**
  * Integer tenths of a point → the number the page prints. (`_s5_pts`, 13912.)
@@ -273,19 +277,9 @@ export function band(overall, best) {
 
 // ── tiny deterministic primitives ────────────────────────────────────────────
 
-/** Plain code-point comparison. Never `localeCompare` — that is locale-bound. */
-function cmpStr(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /** Sorted keys of a plain object. Nothing here ever iterates one unsorted. */
 function keysOf(obj) {
   return Object.keys(obj || {}).sort(cmpStr);
-}
-
-/** A finite number, or `null`. Guards every raw metric value before a formatter. */
-function fnum(x) {
-  return typeof x === 'number' && Number.isFinite(x) ? x : null;
 }
 
 /** `{metricId: Metric}` for one zone score. (`_s5_metric_by_id`, 13984.) */

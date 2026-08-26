@@ -535,7 +535,7 @@ invisible — both are now designed against in `merge.py`:
 ### Result — `merge.py`, `cover.py`, `shards.json`
 
 `uv run tools/osm-world/merge.py --shards <dir of per-shard build dirs> --admin
-<admin.fgb> --out <dir> [--no-assert] [--work] [--only] [--strategy]
+<admin.fgb> --out <dir> [--no-assert] [--work] [--only]
 [--allow-incomplete] [--allow-missing-density]`. Shard discovery is **recursive** (an
 R2 sync of
 `shards/feature/` nests `us/michigan/` a level deeper than a flat scan looks) and
@@ -692,6 +692,15 @@ and the three-layers-only caveat.
 x64, ≈ 45 GB arm64):**
 
 - Density shards: all 500 fit easily (≤ ~5 GB RSS, ~1.2 GB disk, minutes each).
+  **These figures, and every density-shard wall clock and peak-disk number below, PREDATE
+  the stage-1 gating (2026-08-26) and are therefore pessimistic.** They were measured with
+  `build.py` running the full planet `osmium tags-filter` pass unconditionally before it
+  looked at `--only`, so every density shard paid for an `interesting.osm.pbf` no stage
+  read. `main()` now computes `source = stage_filter(...) if layers else None`, and
+  `--only density` leaves `layers == []`. Do not adjust the published numbers by
+  arithmetic — **re-measure them**, the way the fine cover itself was measured. (This is
+  the inefficiency `ci/build-shard.sh` carried a reviewer NOTE about; the NOTE is gone with
+  the cause.)
 - Feature shards: RAM flat ~2.4 GB; **disk is the constraint**. Peak ≈ 2.6× source when
   the source is deleted after stage 1 (safe: feature shards never run stage 4, which is
   the only later reader of the raw extract). The deletion is **`build.py
@@ -974,7 +983,12 @@ artifacts — and are cleaned up by finalize.
 `merge.py --upload --prefix [--manifest-dest]` reuses build.py's boto3 uploader
 (`r2_client`/`r2_upload`, extracted from `stage_upload` behaviour-identically):
 layer files first, manifest strictly last, same ContentType/CacheControl rules, no
-second aws-cli path for published objects. aws-cli is used only for the
+second aws-cli path for published objects. **The same reuse now covers the four
+primitives merge.py used to re-implement verbatim** — `log`, `run`, `sha256_file`,
+`feature_count` — as plain module-level rebindings (`log = build.log`, …) under that
+`import build` comment. Rebindings, not wrappers, on purpose: a wrapper resolves
+`build.run` at call time and would newly pick up `test-update.py`'s stub of it, silently
+changing what that harness exercises. aws-cli is used only for the
 intermediate handoffs (manifest syncs, staging, the admin.fgb handoff), always via
 the S3 API — never the public CDN domain, whose immutable-cached copies of the
 non-content-addressed shard files can be stale. Two extra guards, because a wrong

@@ -1978,16 +1978,26 @@ def main(argv: list[str] | None = None) -> int:
             "(the cached intermediates are from the previous snapshot)")
         force = True
 
-    source = stage_filter(planet, work, table, force)
+    # Stage 1 is "the stage that decides whether the build takes three hours or a
+    # day", and the per-layer loop below is its ONLY reader. A selection that leaves
+    # no feature layers (`--only density`, every density shard in CI) would otherwise
+    # pay for a whole planet tags-filter pass and write an interesting.osm.pbf that
+    # nothing ever opens.
+    source = stage_filter(planet, work, table, force) if layers else None
 
     # The timestamp must be read while the planet file still exists — stage 5 wants
     # it, and --unlink-source deletes the file two lines down.
     planet_ts = planet_timestamp(planet)
 
     if args.unlink_source and planet.exists():
+        # Reachable with no stage 1 output: --only density --skip-density, or an
+        # --only that names nothing in the table. The gate above has already proved
+        # stage 4 will not run, so the extract is unread either way.
+        why = (f"{source.name} exists and no remaining stage reads the raw extract"
+               if source is not None
+               else "no selected stage reads the raw extract")
         log(f"--unlink-source: deleting {planet} "
-            f"({human_bytes(planet.stat().st_size)}) — {source.name} exists and no "
-            "remaining stage reads the raw extract")
+            f"({human_bytes(planet.stat().st_size)}) — {why}")
         planet.unlink()
 
     built: dict[str, Path] = {}

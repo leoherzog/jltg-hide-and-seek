@@ -91,7 +91,7 @@ uv run tools/osm-world/build.py --planet michigan-latest.osm.pbf --out build/wor
 | `--no-update` | do not apply replication diffs to an existing planet |
 | `--planet-url` | download from a specific URL instead of the built-in mirror list |
 | `--skip-md5` | skip verification of a fresh download |
-| `--only park,water` | build a subset of layers (`--only density` builds the grid alone) |
+| `--only park,water` | build a subset of layers (`--only density` builds the grid alone, and skips stage 1 outright — below) |
 | `--skip-density` | skip the second planet pass |
 | `--force` | rebuild stages whose output already exists |
 | `--upload` / `--prefix` | publish to R2 under a prefix (default `world`) |
@@ -100,6 +100,12 @@ Every stage skips when its output exists, so an interrupted build resumes. Stage
 skip is additionally keyed on the `--clip-region` **state** (sha256 of the region
 file, or `none`), recorded in a `density.clip-state` sidecar in the work dir — a
 cached grid built under a different clip is rebuilt, not silently reused.
+
+**Stage 1 is skipped entirely when the selection leaves no feature layer** — `--only
+density`, which is every CI density shard. The per-layer loop is stage 1's only reader,
+so with `layers == []` there is nothing to read the `interesting.osm.pbf` it would write,
+and the whole planet `tags-filter` pass is not paid for. Density itself reads the raw
+extract in stage 4, so it is unaffected.
 
 **Costs.** The planet is 94.3 GB (measured 2026-08-16; older notes in this repo say
 87.6). Stage 1 makes one pass over it and everything after works on a ~4 GB
@@ -768,7 +774,12 @@ the geometry file is missing, **resolved before the download** so a bad `--id` c
 transfer — up to 1.16 GB for quebec) and `--unlink-source` for feature builds (deletes the
 raw extract once stage 1's intermediate exists — what keeps africa's 7.90 GB under runner
 disk; build.py refuses the flag when density would run, since stage 4 reads the raw
-extract). Retries wrap the whole per-shard call and are a full re-download + rebuild,
+extract). Since the stage-1 gating the flag also applies when **no** stage-1 intermediate
+was produced at all — an `--only` selection naming no feature layer, with density skipped
+or absent, e.g. `--only density --skip-density --unlink-source` — where the deletion log
+says `no selected stage reads the raw extract` instead of naming the intermediate. Same
+gate, same guarantee: it deletes only what nothing left to run will open.
+Retries wrap the whole per-shard call and are a full re-download + rebuild,
 not a resume — build-shard.sh clears its work dir and passes `--force` — which is fine
 for the transient failures they exist for.
 

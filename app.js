@@ -28,8 +28,8 @@
 
 import {
   MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
-  IMPERIAL_COUNTRIES, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
-  num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
+  DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
+  cmpStr, num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
 } from './lib/core.js';
 
 import { bboxOf } from './lib/geo.js';
@@ -38,12 +38,18 @@ import {
   esc, el, join, waIcon, waCard, waDetails, jsonBlock, chip,
 } from './render/html.js';
 
+// The S4 formatting and day-view helpers are aliased back to their bare CLI names on
+// import. `verdict.js` defines them for the whole page — one implementation, exactly
+// as its own header claims — and every call site below reads as it always did.
 import {
   renderHero, renderVerdict, renderScoreTrace, renderYourGame, bandVariant,
+  s4Imperial as imperial, s4Signed as signed, s4JoinWords as joinWords,
+  s4DayView as dayView, s4DayOrder as dayOrder, s4DayLabel as dayLabel,
+  s4BestDay as bestDay,
 } from './render/verdict.js';
 import {
   renderGlanceRail, renderNetworkMap, renderTransitReality, s4TilesHtml, s4MapCaption,
-  S4_HEADWAY_BINS,
+  S4_HEADWAY_BINS, s4DayByKey as dayByKey,
 } from './render/map.js';
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
@@ -318,7 +324,7 @@ const state = {
   running: false,
   finished: false,
   fatal: false,
-  progress: { pct: 0, done: 0, total: 0, stage: '', label: '' },
+  progress: { pct: 0, stage: '', label: '' },
   /** @type {number|null} */ heartbeat: null,
   /** Seconds since the last `progress` message. Chrome only — never a report value. */
   waitedS: 0,
@@ -332,13 +338,11 @@ const state = {
    * the picker existed: `readSources` falls through to the bring-your-own card.
    */
   landing: {
-    /** @type {Object|null} */ catalog: null,
     /** @type {Map<string, Object>} */ selected: new Map(),
     /** @type {Array<[number,number]>|null} */ drawnRing: null,
-    includeRegional: false,
-    includeInactive: false,
-    /** The picker's handle — `{ setSelection, setByo, resize, destroy }` — or null
-     *  when the catalogue never loaded and the bring-your-own card is the whole page. */
+    /** The picker's handle — `{ setByo, refresh, resize, destroy }` — or
+     *  null when the catalogue never loaded and the bring-your-own card is the whole
+     *  page. Everything that redraws the note goes through `refreshPicker`. */
     /** @type {Object|null} */ picker: null,
     /** Has `#opt-no-osm` already been ticked on the reader's behalf? Ticked once, on
      *  the first move past one feed, and never unticked: after that the box is theirs. */
@@ -356,13 +360,14 @@ const state = {
 
 const $id = (id) => document.getElementById(id);
 
-/** First match for any of `selectors`, or null. Lets the shell name things its way. */
-function pick(...selectors) {
-  for (const sel of selectors) {
-    const found = document.querySelector(sel);
-    if (found) return found;
-  }
-  return null;
+/**
+ * The run form. `index.html` is the one shell (AGENTS.md), so the form is addressed
+ * exactly once, by the `data-role` its own comment calls app.js's only selector for
+ * these nodes — dropping the attribute stops the form loudly rather than degrading
+ * to whichever `<form>` happens to be first in the document.
+ */
+function runForm() {
+  return document.querySelector('form[data-role="runform"]');
 }
 
 /** `prefers-reduced-motion` — honoured for every transition this file animates. */
@@ -394,7 +399,7 @@ export function boot() {
   if (state.booted) return;
   state.booted = true;
   ensureTooltipHost();
-  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const form = runForm();
   if (form) {
     form.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -473,7 +478,7 @@ const CATALOG_URL = new URL('./data/feeds.json', import.meta.url);
  */
 /** The Advanced panel's "Skip OpenStreetMap" switch, wherever it is on the page. */
 function osmSwitch() {
-  return document.querySelector('[data-opt="noOsm"]') || $id('opt-no-osm');
+  return document.querySelector('[data-opt="noOsm"]');
 }
 
 /** Its live state, for the picker's note. */
@@ -484,7 +489,7 @@ function isOsmSkipped() {
 
 /** The use-drawn-border box, wherever the markup put it. */
 function borderBox() {
-  return document.querySelector('[data-opt="useDrawnBorder"]') || $id('opt-use-drawn-border');
+  return document.querySelector('[data-opt="useDrawnBorder"]');
 }
 
 /** Whether the drawn shape is the game border RIGHT NOW, for the picker's note —
@@ -496,7 +501,7 @@ function isDrawnBorderUsed() {
 }
 
 function syncAnalyse() {
-  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const form = runForm();
   const byo = readByoSource(form);
   const ref = byo.error ? null : byo.ref;
   if (state.landing.picker) state.landing.picker.setByo(ref);
@@ -524,8 +529,7 @@ function syncAnalyse() {
     const box = borderBox();
     if (box && !box.checked) {
       box.checked = true;
-      // Setting `.checked` fires no event, and the picker note reads this box.
-      if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
+      refreshPicker();
     }
   }
 
@@ -545,9 +549,9 @@ function syncAnalyse() {
     const sw = osmSwitch();
     if (sw && !sw.checked) sw.checked = true;
     // The picker drew its note BEFORE this tick — it is called from the selection
-    // change that caused it — and setting `.checked` fires no event, so the note is
-    // asked to re-read the switch it now disagrees with.
-    if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
+    // change that caused it — so the note is asked to re-read the switch it now
+    // disagrees with.
+    refreshPicker();
   }
 }
 
@@ -556,7 +560,7 @@ function syncAnalyse() {
  * control the picker does not own, so the clearing happens here.
  */
 function onPickerRemoveByo() {
-  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const form = runForm();
   const fileInput = findFileInput(form);
   if (fileInput) {
     // `<wa-file-input>.files` is a reactive `File[]`, so assigning re-renders the card;
@@ -610,6 +614,18 @@ function osmAreaRef() {
 }
 
 /**
+ * Re-draw `#picker-note`.
+ *
+ * Every box this file ticks on the reader's behalf is set through `.checked`, which
+ * fires no event, and the note reads those very switches — so it has to be asked to
+ * look again. `CONTRACT.md` §(a) pins `refresh` on the handle; the only question
+ * here is whether there is a picker at all.
+ */
+function refreshPicker() {
+  if (state.landing.picker) state.landing.picker.refresh();
+}
+
+/**
  * Wire the landing card, then try to build the picker on top of it.
  *
  * ORDER IS THE POINT. Everything the bring-your-own path needs is wired
@@ -624,7 +640,7 @@ function osmAreaRef() {
  * they never show.
  */
 function initLanding() {
-  const form = pick('#runform', 'form[data-role="runform"]', 'form');
+  const form = runForm();
   const urlInput = findUrlInput(form);
   if (urlInput) {
     urlInput.addEventListener('input', () => { clearFormError(); syncAnalyse(); });
@@ -650,7 +666,6 @@ function initLanding() {
       import('./render/picker.js'),
     ]);
     const doc = await catalog.loadCatalog(CATALOG_URL);
-    state.landing.catalog = doc;
     body.innerHTML = landing.renderPickerCard();
     host.hidden = false;
     state.landing.picker = picker.initPicker(host, {
@@ -664,19 +679,11 @@ function initLanding() {
     // The note tells the reader they can untick Skip OpenStreetMap. When they do, it
     // has to stop saying so — the switch is theirs from the first tick onwards.
     const sw = osmSwitch();
-    if (sw) {
-      sw.addEventListener('change', () => {
-        if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
-      });
-    }
+    if (sw) sw.addEventListener('change', refreshPicker);
     // Same rule for the drawn-border box: the note says whether the shape is the
     // game border, so flipping the box has to make it say so again.
     const border = borderBox();
-    if (border) {
-      border.addEventListener('change', () => {
-        if (state.landing.picker && state.landing.picker.refresh) state.landing.picker.refresh();
-      });
-    }
+    if (border) border.addEventListener('change', refreshPicker);
     syncAnalyse();
   })().catch((err) => {
     host.hidden = true;
@@ -704,17 +711,12 @@ function ensureTooltipHost() {
  */
 function findFileInput(form) {
   const scope = form || document;
-  return scope.querySelector('wa-file-input')
-    || scope.querySelector('input[type="file"][data-opt="file"]')
-    || scope.querySelector('#feedfile')
-    || scope.querySelector('input[type="file"]');
+  return scope.querySelector('wa-file-input');
 }
 
 function findUrlInput(form) {
   const scope = form || document;
-  return scope.querySelector('[data-opt="url"]')
-    || scope.querySelector('#feedurl')
-    || scope.querySelector('input[type="url"]');
+  return scope.querySelector('[data-opt="url"]');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -724,13 +726,15 @@ function findUrlInput(form) {
 /**
  * Read one control's value in the shape `key` wants.
  *
- * Every control is found by `[data-opt="<key>"]` first and `#opt-<key>` second, so
- * the shell can tag its inputs either way and neither of us has to guess the other's
- * ids.
+ * `[data-opt="<key>"]` is the whole of the addressing scheme — see `index.html`'s
+ * note that these attributes are app.js's ONLY selector for the controls. The
+ * `id="opt-…"` attributes are documentation anchors for the prose around them, NOT a
+ * second address: they are kebab-case where the keys are camelCase, so a `#opt-${key}`
+ * lookup names ids (`#opt-zoneRadiusM`) that no element carries.
  */
 function readControl(form, key) {
   const scope = form || document;
-  const node = scope.querySelector(`[data-opt="${key}"]`) || scope.querySelector(`#opt-${key}`);
+  const node = scope.querySelector(`[data-opt="${key}"]`);
   if (!node) return undefined;
   const tag = node.localName;
   if (tag === 'wa-switch' || tag === 'wa-checkbox' || node.type === 'checkbox') {
@@ -767,7 +771,7 @@ function idList(value) {
     const t = part.trim();
     if (t) seen.add(t);
   }
-  return [...seen].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...seen].sort(cmpStr);
 }
 
 /**
@@ -981,7 +985,7 @@ function readSources(form) {
   if (byo.ref) byId.set(byo.ref.id, byo.ref);
 
   const sources = Array.from(byId.keys())
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(cmpStr)
     .map((id) => byId.get(id));
   if (!sources.length) {
     return {
@@ -1018,7 +1022,7 @@ function readSources(form) {
  * found inside the box, never document-wide, so it cannot bind to anything else.
  */
 function formErrorBox() {
-  const box = pick('#landing-error', '[data-role="formerror"]');
+  const box = document.querySelector('#landing-error');
   return { box, text: box && box.querySelector('[data-role="formerrortext"]') };
 }
 
@@ -1158,9 +1162,9 @@ function enterRunningState(src) {
     try { state.landing.picker.destroy(); } catch { /* nothing to do about it */ }
     state.landing.picker = null;
   }
-  const landing = pick('#landing', '[data-role="landing"]');
+  const landing = document.querySelector('#landing');
   if (landing) landing.hidden = true;
-  const report = pick('#report', '[data-role="report"]', 'main');
+  const report = document.querySelector('main');
   if (report) report.hidden = false;
   const first = (src.sources && src.sources[0]) || null;
   setProgress({
@@ -1192,12 +1196,12 @@ function startHeartbeat() {
     if (state.finished || state.fatal) {
       clearInterval(state.heartbeat);
       state.heartbeat = null;
-      const out = pick('[data-role="progresswait"]');
+      const out = document.querySelector('[data-role="progresswait"]');
       if (out) out.textContent = '';
       return;
     }
     state.waitedS += 5;
-    const out = pick('[data-role="progresswait"]');
+    const out = document.querySelector('[data-role="progresswait"]');
     if (!out) return;
     if (state.waitedS < 30) {
       out.textContent = '';
@@ -1382,12 +1386,7 @@ function finish(report) {
   // Nothing is going to fill these now. A hidden husk in the DOM is still a nav link
   // that goes nowhere, so the last word on "no empty cards" is said here.
   for (const husk of [...document.querySelectorAll('[data-state="empty"]')]) {
-    const id = husk.getAttribute('data-section');
-    husk.remove();
-    if (id) {
-      state.dropped.add(id);
-      for (const a of document.querySelectorAll(`nav[slot="navigation"] a[href="#${id}"]`)) a.remove();
-    }
+    dropSectionHost(husk, husk.getAttribute('data-section'));
   }
   renumberSections();
   pruneNav();
@@ -1424,7 +1423,7 @@ function finish(report) {
  */
 function setProgress(msg) {
   state.waitedS = 0;
-  const waited = pick('[data-role="progresswait"]');
+  const waited = document.querySelector('[data-role="progresswait"]');
   if (waited) waited.textContent = '';
   const done = Number(msg.done) || 0;
   const total = Number(msg.total) || 0;
@@ -1432,24 +1431,22 @@ function setProgress(msg) {
   const value = Math.max(state.progress.pct, raw);
   state.progress = {
     pct: value,
-    done,
-    total,
     stage: msg.stage || state.progress.stage,
     label: msg.label || state.progress.label,
   };
 
-  const bar = pick('[data-role="progressbar"]');
+  const bar = document.querySelector('[data-role="progressbar"]');
   if (bar) {
     bar.value = rhu(value, 1);
     bar.setAttribute('value', String(rhu(value, 1)));
   }
-  const label = pick('[data-role="progresslabel"]');
+  const label = document.querySelector('[data-role="progresslabel"]');
   if (label) label.textContent = state.progress.label || '';
 
   const root = state.progress.stage.split(':')[0];
-  const note = pick('[data-role="progressnote"]');
+  const note = document.querySelector('[data-role="progressnote"]');
   if (note) note.textContent = STAGE_NOTE[root] || '';
-  const host = pick('[data-role="progress"]');
+  const host = document.querySelector('[data-role="progress"]');
   if (host) host.setAttribute('data-stage', root);
 }
 
@@ -1502,6 +1499,37 @@ function hydrate(stage) {
 /** The live element for a section id, whatever wrapper the shell chose. */
 function sectionHost(id) {
   return document.querySelector(`[data-section="${id}"]`) || $id(id);
+}
+
+/**
+ * Take a section host off the page, and its nav link with it.
+ *
+ * Three sweeps end here: `dropSection` when a card rendered nothing and no stage is
+ * still owed it, `finish` when the run is over, and `fatalError` when it is not. A
+ * host carrying no `data-section` is removed and nothing else — `state.dropped` and
+ * the rail are both keyed on the id — so the sweeps stay safe to run over whatever
+ * their selector caught.
+ */
+function dropSectionHost(host, id) {
+  if (host) host.remove();
+  if (!id) return;
+  state.dropped.add(id);
+  for (const a of document.querySelectorAll(`nav[slot="navigation"] a[href="#${id}"]`)) a.remove();
+}
+
+/**
+ * Evict the cached markup of every section host nested inside this one (§05's
+ * `#glance`), because a host that is replaced or blanked takes its children with it.
+ * Left in the cache, a nested section whose string had not changed would be skipped
+ * as "unchanged" on the next `hydrate()` pass and would never come back.
+ * (2026-08-23, with the §04→§05 merge.)
+ */
+function evictNested(host, id) {
+  if (!host.querySelectorAll) return;
+  for (const nested of host.querySelectorAll('[data-section]')) {
+    const nid = nested.getAttribute('data-section');
+    if (nid && nid !== id) state.rendered.delete(nid);
+  }
 }
 
 /**
@@ -1571,16 +1599,8 @@ function mountSection(id, html) {
     }
   }
 
-  // Nested section hosts (§05's `#glance`) go out with their parent's markup. Their
-  // cached string would otherwise still match on the next `hydrate()` pass, the child
-  // would be skipped as "unchanged", and the parent's freshly written skeleton host
-  // would stay on the page for good. (Added 2026-08-23 with the §04→§05 merge.)
-  if (host.querySelectorAll) {
-    for (const nested of host.querySelectorAll('[data-section]')) {
-      const nid = nested.getAttribute('data-section');
-      if (nid && nid !== id) state.rendered.delete(nid);
-    }
-  }
+  // The markup about to be replaced takes its nested hosts down with it.
+  evictNested(host, id);
 
   host.replaceWith(root);
 
@@ -1648,25 +1668,13 @@ function dropSection(def) {
     if (host) {
       host.setAttribute('data-state', 'empty');
       host.hidden = true;
-      // Blanking the host destroys any nested host inside it, so evict their cached
-      // strings too — the same hole `mountSection` closes before `replaceWith`. Left
-      // in the cache, a nested section whose string had not changed would be skipped
-      // as "unchanged" on the next pass and would never come back. (2026-08-23.)
-      if (host.querySelectorAll) {
-        for (const nested of host.querySelectorAll('[data-section]')) {
-          const nid = nested.getAttribute('data-section');
-          if (nid && nid !== def.id) state.rendered.delete(nid);
-        }
-      }
+      // Blanking the host destroys any nested host inside it.
+      evictNested(host, def.id);
       host.innerHTML = '';
     }
     return;
   }
-  state.dropped.add(def.id);
-  if (host) host.remove();
-  for (const a of document.querySelectorAll(`nav[slot="navigation"] a[href="#${def.id}"]`)) {
-    a.remove();
-  }
+  dropSectionHost(host, def.id);
 }
 
 /**
@@ -1810,7 +1818,7 @@ function renderDegradations() {
  * viewport, and the component expects one stack per page.
  */
 function degradationHost() {
-  let host = pick('#degradations', '[data-role="degradations"]', 'wa-toast');
+  let host = document.querySelector('#degradations');
   if (host) return host;
   host = document.createElement('wa-toast');
   host.id = 'degradations';
@@ -1850,7 +1858,7 @@ function fatalError(stage, message) {
       esc(STAGE_DOING[stage] ? `Stopped while ${STAGE_DOING[stage]}` : 'The analysis stopped')),
       { className: 'wa-heading-l wa-cluster wa-gap-xs wa-align-items-center' }),
   });
-  const slot = pick('#run-error', '[data-role="runerror"]');
+  const slot = document.querySelector('#run-error');
   if (slot) {
     // The shell has a place for this. Use it, and clear away the skeletons that are
     // never going to fill — a stopped run must not leave eight shimmering cards
@@ -1858,12 +1866,7 @@ function fatalError(stage, message) {
     slot.innerHTML = el('div', card, { className: 'wa-stack wa-gap-l' });
     slot.hidden = false;
     for (const husk of [...document.querySelectorAll('[data-state="skeleton"]')]) {
-      const id = husk.getAttribute('data-section');
-      husk.remove();
-      if (id) {
-        state.dropped.add(id);
-        for (const a of document.querySelectorAll(`nav[slot="navigation"] a[href="#${id}"]`)) a.remove();
-      }
+      dropSectionHost(husk, husk.getAttribute('data-section'));
     }
     // The hero and the footer are `data-state="pending"` so that sweep cannot take
     // them: the hero carries `#top`, which the wordmark and the footer's "Back to
@@ -1876,84 +1879,14 @@ function fatalError(stage, message) {
     }
     pruneNav();
   }
-  const landing = pick('#landing', '[data-role="landing"]');
+  const landing = document.querySelector('#landing');
   if (landing) landing.hidden = true;
   setProgress({ stage, label: `Stopped during ${stage}`, done: 0, total: 0 });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S4 · unit and value formatting
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/** Does this map's country read distances in miles? Metric when unknown. */
-function imperial(report) {
-  const code = String((report.geo && report.geo.admin && report.geo.admin.countryCode) || '').toLowerCase();
-  return IMPERIAL_COUNTRIES.includes(code);
-}
-
-/** A delta with an explicit sign and a real minus glyph: '−10.2', '+3.0', '0'. */
-function signed(value, dp = 1) {
-  const v = rhu(value, dp);
-  if (v === 0) return num(0, dp, { comma: false });
-  return (v > 0 ? '+' : '−') + num(Math.abs(v), dp, { comma: false });
-}
-
-/** 'a', 'a and b', 'a, b and c' — for template sentences that list feed values. */
-function joinWords(items, conjunction = 'and') {
-  const good = items.filter((i) => i);
-  if (!good.length) return '';
-  if (good.length === 1) return good[0];
-  return `${good.slice(0, -1).join(', ')} ${conjunction} ${good[good.length - 1]}`;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // S4 · per-day views
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/** Day-type keys in the feed's own order (weekday, Saturday, Sunday, …). */
-function dayOrder(report) {
-  return (report.days || []).map((d) => d.dayType.key);
-}
-
-function dayLabel(report, dayKey) {
-  for (const d of report.days || []) if (d.dayType.key === dayKey) return d.dayType.label;
-  return dayKey;
-}
-
-function dayByKey(report, dayKey) {
-  for (const d of report.days || []) if (d.dayType.key === dayKey) return d;
-  return null;
-}
-
-/** The day the report opens on. */
-function bestDay(report) {
-  const keys = dayOrder(report);
-  if (keys.includes(report.selectedDay)) return report.selectedDay;
-  return keys.length ? keys[0] : 'weekday';
-}
-
-/**
- * The metric table as it reads on one service day.
- *
- * `networkMetrics` publishes the best day at the top level and every day under
- * `perDay[key]`; the size-dependent quantities exist only in their `…BySize` form
- * inside `perDay`, because S1 computes them before the size is resolved. This merges
- * the two into the flat view the tiles and banner read, and resolves the size once,
- * here, so no caller can pick the wrong band.
- */
-function dayView(report, dayKey) {
-  const view = { ...(report.metrics || {}) };
-  delete view.perDay;
-  const per = (report.metrics && report.metrics.perDay) ? report.metrics.perDay[dayKey] : null;
-  if (per && typeof per === 'object') Object.assign(view, per);
-  const sizeName = report.size ? report.size.name : '';
-  for (const key of ['eveningZoneShare', 'reachableZoneShare',
-    'reachWithinHidingPeriod', 'playableDayWeight']) {
-    const bySize = view[`${key}BySize`];
-    if (bySize && typeof bySize === 'object' && sizeName in bySize) view[key] = bySize[sizeName];
-  }
-  return view;
-}
 
 /** The day strip: four figures, one sentence, one fitness delta. (`_s4_banner`.) */
 function dayBanner(report, dayKey) {
@@ -2026,9 +1959,11 @@ function dayBanner(report, dayKey) {
  * which was in the way of everything under it — is one tap down. Nothing is dropped:
  * the cadence's "midday quartiles" qualifier moves into that paragraph as words, and
  * the paragraph itself is verbatim.
+ *
+ * Takes the banner both callers already hold, rather than the `(report, dayKey)` pair
+ * that would build a second one.
  */
-function dayBannerHtml(report, dayKey) {
-  const b = dayBanner(report, dayKey);
+function dayBannerHtml(b) {
   const figures = [['Routes running', b.routes], ['How often', b.cadence], ['Service window', b.span]];
   if (b.score !== null) {
     figures.push(['Map fitness today',
@@ -2117,7 +2052,7 @@ function chartMax(report) {
   const values = [];
   for (const s of report.travelSamples || []) {
     const per = s.perDay || {};
-    for (const key of Object.keys(per).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    for (const key of Object.keys(per).sort(cmpStr)) {
       const p = per[key];
       if (p && p.minutes !== null && p.minutes !== undefined) values.push(Number(p.minutes));
     }
@@ -2231,7 +2166,7 @@ function dataPayload(report) {
       key,
       label: b.label,
       variant: b.variant,
-      banner_html: dayBannerHtml(report, key),
+      banner_html: dayBannerHtml(b),
       tiles_html: tilesHtmlFor(report, key),
       map_caption_html: mapCaptionFor(report, key),
       score: b.score,
@@ -2323,14 +2258,14 @@ function dataPayload(report) {
 /** A plain object rebuilt in sorted key order — `dict(sorted(x.items()))`. */
 function sortedObject(obj) {
   const out = {};
-  for (const k of Object.keys(obj || {}).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) out[k] = obj[k];
+  for (const k of Object.keys(obj || {}).sort(cmpStr)) out[k] = obj[k];
   return out;
 }
 
 /** The same, with a value transform. Key order is never left to `Object.keys`. */
 function sortedMap(obj, fn) {
   const out = {};
-  for (const k of Object.keys(obj || {}).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) out[k] = fn(obj[k]);
+  for (const k of Object.keys(obj || {}).sort(cmpStr)) out[k] = fn(obj[k]);
   return out;
 }
 
@@ -2528,9 +2463,9 @@ function mountDayChrome() {
   // ── the banner, first child of <main> ──────────────────────────────────────
   const banner = $id('daybanner');
   if (banner && keys.length) {
-    const opening = bestDay(report);
-    banner.setAttribute('variant', dayBanner(report, opening).variant);
-    banner.innerHTML = dayBannerHtml(report, opening);
+    const b = dayBanner(report, bestDay(report));
+    banner.setAttribute('variant', b.variant);
+    banner.innerHTML = dayBannerHtml(b);
     // The shell ships it `hidden` — an empty callout above the verdict is worse than
     // none — so filling it is also what reveals it. Without this the day strip never
     // appears and the day switcher looks like it does nothing.
@@ -2562,7 +2497,7 @@ function mountDayChrome() {
     existing.outerHTML = html;
     return;
   }
-  const slot = pick('#dayselslot', '[data-role="dayselector"]', '[slot="subheader"]');
+  const slot = document.querySelector('[data-role="dayselector"]');
   if (slot) slot.insertAdjacentHTML('afterbegin', html);
 }
 
@@ -2700,7 +2635,7 @@ function leaveStrategy() {
   }
   // The mirror of the focus move in `applyRoute`: whatever had focus is now inside a
   // hidden subtree, so the report has to be handed a focus origin of its own.
-  const back = pick('#top', 'main', '#report');
+  const back = document.querySelector('#top');
   if (back) {
     back.tabIndex = -1;
     requestAnimationFrame(() => requestAnimationFrame(() => {

@@ -11,9 +11,10 @@
  *   the per-day views        (_s4_day_view … _s4_tiles_html)
  *
  * The shared S4 formatting helpers (`_s4_dist`, `_s4_area`, `_s4_val`, `_s4_plural`,
- * `_s4_natural_key`, `_s4_swatch`, `_s4_card_header`) and four of the day-view helpers
- * live in `./verdict.js`; they are imported and re-exported here rather than written a
- * second time, so there is exactly one implementation of each on the page.
+ * `_s4_natural_key`, `_s4_swatch`, `_s4_card_header`), the day-view helpers and the
+ * deterministic `fnum` guard live in `./verdict.js`; they are imported from there
+ * rather than written a second time, so there is exactly one implementation of each
+ * on the page.
  *
  * PROGRESSIVE HYDRATION. The CLI has one finished `Report`; the browser has a partial
  * one that grows as the worker's stages land. Every renderer here takes that partial
@@ -41,7 +42,7 @@
  */
 
 import {
-  num, pct, mins, hhmm, prettyDate, quantile, jdump,
+  cmpStr, num, pct, mins, hhmm, prettyDate, quantile, jdump,
 } from '../lib/core.js';
 
 import {
@@ -50,10 +51,10 @@ import {
 } from './html.js';
 
 import {
-  S4_ORDINAL,
+  S4_ORDINAL, fnum,
   s4Dist, s4Area, s4Plural, s4JoinWords,
   s4Swatch, s4CardHeader,
-  s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4WorstDay, s4LiveQuestions,
+  s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4LiveQuestions,
 } from './verdict.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -121,16 +122,6 @@ const S4_MIN_HEATMAP_ROUTES = 3;
 // ═══════════════════════════════════════════════════════════════════════════════
 // Small local helpers
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/** Plain code-point string comparison. Never `localeCompare` — that is locale-bound. */
-function cmpStr(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-/** A finite number, or `null`. Guards every raw value before a formatter. */
-function fnum(x) {
-  return typeof x === 'number' && Number.isFinite(x) ? x : null;
-}
 
 /**
  * `len(report.feed.routes)`.
@@ -1377,16 +1368,3 @@ export function renderNetworkMap(payload) {
     join(el('div', mapCard, { className: 'wa-stack wa-gap-s' }), glanceHost),
     { kicker: 'The network', lede, answerHtml: answer });
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Re-exports — the day helpers app.js needs for day switching
-// ═══════════════════════════════════════════════════════════════════════════════
-//
-// `s4DayView` / `s4DayOrder` / `s4DayLabel` / `s4BestDay` / `s4WorstDay` are defined in
-// `./verdict.js` (the hero reads all five). They are re-exported here so a caller can
-// take the whole day-switching surface from one module, and there is still exactly one
-// implementation of each.
-
-export {
-  s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4WorstDay,
-};

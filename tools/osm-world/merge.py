@@ -36,8 +36,8 @@ WHY THE MECHANICS LOOK THE WAY THEY DO (all measured, spike S1 on kadro):
     (sorted subdirectory names) makes WHICH duplicate survives deterministic, which is
     what makes re-runs byte-identical and content-addressed filenames stable.
     A single-pass `-dialect SQLITE ... GROUP BY` over the VRT was benchmarked too
-    (`--strategy groupby`); SQLite picks bare columns from an arbitrary row under
-    GROUP BY, so it is not the default — correctness and determinism first.
+    and rejected: SQLite picks bare columns from an arbitrary row under GROUP BY,
+    so which duplicate survives is arbitrary — correctness and determinism first.
 
   * The FlatGeobuf writer's peak RSS is ~166 MB + 100 B/feature (the Hilbert index
     build at close()), so RAM is not the constraint at any plausible layer size. Disk
@@ -175,7 +175,6 @@ changes the serial `--shards … --admin … --out …` behaviour above):
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -192,20 +191,18 @@ sys.path.insert(0, str(HERE))
 import build  # noqa: E402 — build.py, same directory; stdlib-only at import time.
 # The R2 uploader (r2_client / r2_upload / check_upload_env) lives there and is
 # REUSED, never duplicated (DESIGN.md §Phase 6 gap B4): one uploader, one set of
-# ContentType/CacheControl rules, one multipart configuration.
+# ContentType/CacheControl rules, one multipart configuration. The four primitives
+# below come from there the same way, by PLAIN REBINDING rather than by a wrapper:
+# a wrapper would resolve `build.run` at call time and so start picking up
+# test-update.py's stub of it, silently changing what that harness exercises.
+log = build.log
+run = build.run
+sha256_file = build.sha256_file
+feature_count = build.feature_count
 
 TABLE_PATH = HERE / "categories.json"
 
 SHA_PREFIX = 12
-
-
-def log(message: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
-
-
-def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    log("$ " + " ".join(cmd))
-    return subprocess.run(cmd, check=True, **kwargs)
 
 
 def preflight_binaries(needed: tuple[str, ...]) -> None:
@@ -228,14 +225,6 @@ def preflight_binaries(needed: tuple[str, ...]) -> None:
             "  ogrinfo/ogr2ogr → gdal-bin package\n"
             "  sort            → coreutils\n"
             "This run would otherwise crash mid-merge or (worse) mid-publish.")
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -413,15 +402,6 @@ def rows_and_distinct(fgb: Path, layer: str) -> tuple[int, int]:
     return int(n.group(1)), int(d.group(1))
 
 
-def feature_count(fgb: Path) -> int:
-    out = subprocess.run(
-        ["ogrinfo", "-so", "-al", str(fgb)],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    match = re.search(r"^Feature Count:\s*(\d+)", out, re.MULTILINE)
-    return int(match.group(1)) if match else 0
-
-
 def layer_extent(fgb: Path) -> list[float] | None:
     """[minX, minY, maxX, maxY] read off the FlatGeobuf header via ogrinfo -so."""
     out = subprocess.run(
@@ -519,8 +499,7 @@ def dedup_gpkg(gpkg: Path, layer: str, key_sql: str) -> tuple[int, int]:
 
 
 def merge_feature_layer(layer: str, inputs: list[Path], out_dir: Path, work: Path,
-                        count_only: bool, assert_shards: bool,
-                        strategy: str) -> Path:
+                        count_only: bool, assert_shards: bool) -> Path:
     """One layer across all shards → one deduped, indexed FlatGeobuf (temp name)."""
     if assert_shards and not count_only:
         for fgb in inputs:
@@ -536,20 +515,6 @@ def merge_feature_layer(layer: str, inputs: list[Path], out_dir: Path, work: Pat
     merged.unlink(missing_ok=True)
     nlt = "LINESTRING" if count_only else "GEOMETRY"
     vrt = write_union_vrt(layer, inputs, work)
-
-    if strategy == "groupby" and not count_only:
-        # Benchmark path (see module docstring): one pass, but SQLite's bare-column
-        # pick under GROUP BY is documented as arbitrary — not the default.
-        run([
-            "ogr2ogr", "-f", "FlatGeobuf", str(merged), str(vrt),
-            "-dialect", "SQLITE",
-            "-sql", f'SELECT * FROM "{layer}" GROUP BY osm_type, osm_id',
-            "-nln", layer,
-            "-lco", "SPATIAL_INDEX=YES",
-            "-nlt", nlt,
-        ])
-        vrt.unlink(missing_ok=True)
-        return merged
 
     gpkg = work / f"{layer}.merge.gpkg"
     gpkg.unlink(missing_ok=True)
@@ -1035,9 +1000,6 @@ def main(argv: list[str] | None = None) -> int:
                              "without a manifest.json (a failed build's leavings) "
                              "instead of failing loudly; the merge then proceeds "
                              "WITHOUT them and its counts are short for those regions")
-    parser.add_argument("--strategy", choices=("gpkg", "groupby"), default="gpkg",
-                        help="dedup mechanics; groupby is the benchmarked-but-"
-                             "nondeterministic single pass (default: gpkg)")
     parser.add_argument("--density-band", default=None, metavar="K/N",
                         help="merge ONE interleaved row-band of the density grid "
                              "(cells with row %% N == K-1; K is 1-based) into "
@@ -1341,7 +1303,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(inputs)} shard(s)) ─────")
         merged = merge_feature_layer(
             key, inputs, out_dir, work, count_only,
-            assert_shards=not args.no_assert, strategy=args.strategy)
+            assert_shards=not args.no_assert)
         layers[key] = publish_layer(merged, key, out_dir)
 
     # Density is the ONE layer that never gets a features:0 manifest entry. The

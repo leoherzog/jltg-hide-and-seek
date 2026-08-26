@@ -47,7 +47,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { runPipeline } from '../worker.js';
-import { SQM_PER_SQMI } from '../lib/core.js';
+import { SQM_PER_SQMI, cmpStr } from '../lib/core.js';
 import { openCache } from '../lib/cache.js';
 import { loadFeed, stopTimesOf } from '../gtfs/feed.js';
 import { mergeFeeds, mergeOrder, feedSourceRows, MERGE_TABLES } from '../gtfs/merge.js';
@@ -80,6 +80,26 @@ const BIG_FEED = path.join(REPO, 'cache', 'gtfs', '3e729bcf6f763c38.zip');
 // a real server. `.invalid` is reserved by RFC 2606 and can never be registered.
 const DEAD_FEED_URL = 'https://feed.invalid/dead.zip';
 
+// Every `runPipeline` call in this file passes these; only `source` differs (a
+// merged run names 'merged', a single-feed run names the zip). Written once so the
+// goldens and the merge assertions cannot drift onto three different option sets.
+const PIPELINE_OPTS = {
+  useOsm: false,               // --no-osm
+  asOf: null,
+  sizeOverride: null,
+  zoneRadiusM: null,
+  hidingPeriodMin: null,
+  startStopId: null,
+  borderShape: 'bbox',
+  borderBbox: null,
+  excludeStops: [],
+  excludeRoutes: [],
+  departure: '09:00:00',
+  boardSlackS: 0,
+  offline: false,
+  refresh: false,
+};
+
 // ── console helpers ──────────────────────────────────────────────────────────
 
 const GREEN = '[32m';
@@ -109,9 +129,6 @@ function show(value) {
 const STAGES = ['feed', 'days', 'network', 'geo', 'rules', 'score', 'provenance'];
 
 // ── the merge phases ─────────────────────────────────────────────────────────
-
-/** Code-point order. The pipeline's comparator, and never `localeCompare`. */
-const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** A picked-`File` duck type over a zip on disk, or null when it is not cached. */
 async function feedFile(zipPath, name) {
@@ -296,12 +313,7 @@ async function mergePhases() {
     const sink = (msg) => {
       if (msg.type === 'error' && msg.fatal) pipeFatal = `${msg.stage}: ${msg.message}`;
     };
-    const opts = {
-      source: 'merged', useOsm: false, asOf: null, sizeOverride: null, zoneRadiusM: null,
-      hidingPeriodMin: null, startStopId: null, borderShape: 'bbox', borderBbox: null,
-      excludeStops: [], excludeRoutes: [], departure: '09:00:00', boardSlackS: 0,
-      offline: false, refresh: false,
-    };
+    const opts = { source: 'merged', ...PIPELINE_OPTS };
     const rep = await runPipeline(opts, [pipeA, pipeB], sink);
     is('merge.pipe.fatal', pipeFatal, null);
     is('merge.pipe.report', Boolean(rep), true);
@@ -341,12 +353,7 @@ async function mergePhases() {
       if (msg.type === 'degraded') degradations.push(String(msg.message));
       if (msg.type === 'error' && msg.fatal) deadFatal = `${msg.stage}: ${msg.message}`;
     };
-    const opts = {
-      source: 'merged', useOsm: false, asOf: null, sizeOverride: null, zoneRadiusM: null,
-      hidingPeriodMin: null, startStopId: null, borderShape: 'bbox', borderBbox: null,
-      excludeStops: [], excludeRoutes: [], departure: '09:00:00', boardSlackS: 0,
-      offline: false, refresh: false,
-    };
+    const opts = { source: 'merged', ...PIPELINE_OPTS };
     const rep = await runPipeline(opts, [
       { kind: 'url', file: null, url: DEAD_FEED_URL, id: 'url:dead', label: 'Dead Mirror Transit', mdbId: 999 },
       { kind: 'file', file: liveA, url: null, id: 'file:a', label: 'The Rapid', mdbId: 1 },
@@ -413,23 +420,7 @@ async function main() {
     : Object.assign(new Blob([bytes], { type: 'application/zip' }),
       { name: path.basename(FEED_PATH) });
 
-  const options = {
-    source: path.basename(FEED_PATH),
-    useOsm: false,               // --no-osm
-    asOf: null,
-    sizeOverride: null,
-    zoneRadiusM: null,
-    hidingPeriodMin: null,
-    startStopId: null,
-    borderShape: 'bbox',
-    borderBbox: null,
-    excludeStops: [],
-    excludeRoutes: [],
-    departure: '09:00:00',
-    boardSlackS: 0,
-    offline: false,
-    refresh: false,
-  };
+  const options = { source: path.basename(FEED_PATH), ...PIPELINE_OPTS };
 
   const t0 = performance.now();
   let mark = t0;

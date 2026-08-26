@@ -34,7 +34,7 @@
  * @module render/picker
  */
 
-import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, num } from '../lib/core.js';
+import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, num } from '../lib/core.js';
 import { bboxOf } from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
@@ -83,7 +83,7 @@ const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)'
  * @param {(ring: Array<[number, number]>|null) => void} [handlers.onRing]
  * @param {() => void} [handlers.onRemoveByo] clear the form's file/URL — it is not ours
  * @param {Object} handlers.doc the catalogue snapshot
- * @returns {{setSelection: Function, setByo: Function, destroy: Function}}
+ * @returns {{setByo: Function, refresh: Function, resize: Function, destroy: Function}}
  */
 export function initPicker(root, handlers = {}) {
   if (root && root.__picker) {
@@ -159,7 +159,6 @@ export function initPicker(root, handlers = {}) {
     ringVacant: false,
     blocked: [],
     map: null,
-    maplibregl: null,
     mapPending: false,
     mapFailed: false,
     dark: isDark(),
@@ -280,7 +279,7 @@ export function initPicker(root, handlers = {}) {
   /** `[{id, label, where, badge, icon}]` — map picks first, then bring-your-own. */
   function pickViews() {
     const out = [];
-    const ids = Array.from(st.selected.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const ids = Array.from(st.selected.keys()).sort(cmpStr);
     for (const id of ids) {
       const ref = st.selected.get(id);
       const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
@@ -606,14 +605,12 @@ export function initPicker(root, handlers = {}) {
     st.searching = false;
     st.results = hits.slice(0, 20);
     st.resultsTotal = hits.length;
-    let added = 0;
     for (const row of hits) {
       if (slotsUsed() >= PICK_CAP) break;
-      if (addRow(row)) added++;
+      addRow(row);
     }
     renderResultsBox();
     renderPicksAndNote();
-    return added;
   }
 
   if (drawBtn) {
@@ -737,7 +734,7 @@ export function initPicker(root, handlers = {}) {
    */
   function selectedFeatures() {
     const feats = [];
-    const ids = Array.from(st.selected.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const ids = Array.from(st.selected.keys()).sort(cmpStr);
     for (const id of ids) {
       const ref = st.selected.get(id);
       const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
@@ -1082,7 +1079,6 @@ export function initPicker(root, handlers = {}) {
       giveUpOnMap();
       return;
     }
-    st.maplibregl = maplibregl;
     st.dark = isDark();
     mapHost.classList.toggle('dark-map', st.dark);
     try {
@@ -1147,13 +1143,6 @@ export function initPicker(root, handlers = {}) {
   renderPicksAndNote();
 
   const handle = {
-    /** Replace the selection from outside. Does NOT call back — that would loop. */
-    setSelection(next) {
-      st.selected = new Map(next || []);
-      renderPicksAndNote();
-      renderResultsBox();
-      syncSelectedLayer();
-    },
     /** The bring-your-own file or URL, shown in the same list. */
     setByo(ref) {
       const before = st.byo ? st.byo.id : '';

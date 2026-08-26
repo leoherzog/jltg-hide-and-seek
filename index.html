@@ -66,9 +66,12 @@
          discovers work (CONTRACT §(d)), so the label carries the words and the
          bar carries the fraction; neither is allowed to look finished early. -->
     <!-- The `data-role` attributes are now app.js's ONLY selector for these nodes
-         (see `pick()` / `readControl()`); the id-based fallback that used to build a
-         progress block at runtime is gone, so renaming or dropping one of these
-         attributes silently stops the bar rather than degrading to a second copy.
+         (see `runForm()` / `readControl()`); the id-based fallback that used to build a
+         progress block at runtime is gone, and as of 2026-08-26 so is every other
+         id-based fallback selector in app.js — several named ids this document never
+         carried (`#runform`, `#report`, `#dayselslot`), so they could not have fired.
+         Renaming or dropping one of these attributes silently stops the bar rather
+         than degrading to a second copy.
          `progressnote` and `progresswait` are the two readouts — the per-stage note,
          and the "still working, N min on this step" heartbeat that keeps a quiet
          stretch of a cold run from reading as a hang. -->
@@ -290,9 +293,11 @@
           </div>
 
           <!-- `data-opt="url"` is load-bearing here, not decoration. `findUrlInput`
-               (app.js 376) used to reach this field through its third fallback,
+               used to reach this field through a light-DOM fallback,
                `input[type="url"]` — and a <wa-input>'s real input lives in a shadow
-               root, where that selector cannot see it. Without the attribute
+               root, where that selector cannot see it. There is no bare <input> of any
+               kind in this document, so that fallback and its `#feedurl` sibling were
+               deleted 2026-08-26 and the attribute is now the only address. Without it
                `readSource` reads no URL at all and Analyse answers a pasted link by
                claiming nothing was supplied.
 

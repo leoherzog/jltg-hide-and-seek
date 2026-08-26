@@ -95,7 +95,7 @@
  * drew, and the bbox was only ever the read layer's coarse filter.
  */
 
-import { SERVICE_DAY_SECONDS, hhmmss, dowOf } from '../lib/core.js';
+import { SERVICE_DAY_SECONDS, cmpStr, hhmmss, dowOf } from '../lib/core.js';
 import { haversineM, pointInRing, Projection } from '../lib/geo.js';
 
 // ── the assumption constants ──────────────────────────────────────────────────
@@ -158,9 +158,6 @@ const PROJECTION_LEASH_M = 500;
 const UNKNOWN_MODE_SPEED_KMH = 25;
 const UNKNOWN_MODE_ROUTE_TYPE = '0';
 const UNKNOWN_MODE_HEADWAY_S = 600;
-
-/** Code-point string order — the repo's, never `localeCompare`. */
-const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ── date arithmetic ───────────────────────────────────────────────────────────
 // lib/core.js keeps its civil-days kernel private (only `dowOf`/`dateRange`

@@ -59,11 +59,8 @@
  * produces the same bytes.
  */
 
-import { sha256Text } from '../lib/core.js';
+import { cmpStr, sha256Text } from '../lib/core.js';
 import { StopTimes, attachStopTimes, stopTimesOf } from './feed.js';
-
-/** Code-point string order — Python's. Never `localeCompare`. */
-const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** `String(x).trim()`, tolerating null/undefined the way the loader does. */
 const cell = (row, key) => String(row[key] ?? '').trim();
@@ -403,11 +400,11 @@ export async function mergeFeeds(feeds, opts = {}) {
   // ~2.4 M allocations for a big-city pair. Each feed's interning tables are remapped
   // once per DISTINCT id, then the rows are copied in one typed pass.
   //
-  // Padding, and what the merge does NOT change: `s1TripRows` (gtfs/service.js)
-  // deliberately does not `.strip()` `trip_id`, which preserves a real padding
-  // mismatch some feeds ship. The two halves of the merge treat that padding
-  // differently — the concatenated tables go through `nsRow`, which trims via
-  // `cell()` before prefixing (`' XT1'` → `'f1:XT1'`), while the ids interned here
+  // Padding, and what the merge does NOT change: `tripRows` (gtfs/feed.js) keys on
+  // the interned `trip_id` exactly as the file spells it — no `.strip()` — which
+  // preserves a real padding mismatch some feeds ship. The two halves of the merge
+  // treat that padding differently — the concatenated tables go through `nsRow`,
+  // which trims via `cell()` before prefixing (`' XT1'` → `'f1:XT1'`), while the ids interned here
   // are prefixed raw (`' XT1'` → `'f1: XT1'`). So the mismatch is carried through
   // unchanged rather than healed: a trip whose two spellings differed before the
   // merge still differs after it, exactly as on the single-feed path. That is the

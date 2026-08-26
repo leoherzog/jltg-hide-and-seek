@@ -24,7 +24,7 @@
 // `class_` becomes `className`; Python's `void()` is `voidEl()` (`void` is a JS
 // operator).
 
-import { jdump, num } from '../lib/core.js';
+import { cmpStr, jdump, num } from '../lib/core.js';
 
 // ── the primitives ───────────────────────────────────────────────────────────
 
@@ -95,7 +95,7 @@ export function attrs(obj) {
   }
   if (pairs.length === 0) return '';
   // Plain code-point comparison — never localeCompare, which is locale-dependent.
-  pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  pairs.sort((a, b) => cmpStr(a[0], b[0]));
   const parts = pairs.map(([k, v]) => (v === true ? k : `${k}="${esc(v)}"`));
   return ` ${parts.join(' ')}`;
 }

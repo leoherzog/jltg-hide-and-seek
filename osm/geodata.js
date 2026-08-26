@@ -56,7 +56,7 @@
  */
 
 import {
-  num, pct, quantile,
+  cmpStr, num, pct, quantile,
 } from '../lib/core.js';
 import {
   Projection, GridIndex, haversineM, bboxExpand, bboxContains,
@@ -97,6 +97,13 @@ function cat(key, label, selector, opts = {}) {
     note: opts.note !== undefined ? opts.note : '',
   });
 }
+
+// One constant, three consumers (Right Turn, Luxury Car, street density) — so they
+// can never disagree about what a street is.
+export const CAR_STREET_SELECTOR =
+  'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|'
+  + 'living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"]'
+  + '["motor_vehicle"!="no"]["access"!="no"]({{bbox}});';
 
 /** @type {ReadonlyArray<GeoCategory>} */
 export const GEO_CATEGORIES = Object.freeze([
@@ -197,7 +204,7 @@ export const GEO_CATEGORIES = Object.freeze([
         + 'path, road or railway" — so railway bridges are in, and covered bridges are not '
         + 'filtered out. Kept identical to the `bridge` curse predicate.',
     }),  // >1,026 (1,026 was the road-only, uncovered count)
-  cat('car_street', 'Motor-vehicle street', '', { note: 'See CAR_STREET_SELECTOR.' }),  // 54,693
+  cat('car_street', 'Motor-vehicle street', CAR_STREET_SELECTOR),  // 54,693
   cat('shop', 'Shop', 'nwr["shop"]({{bbox}});'),  // 1,220
   cat('advertising', 'Advertising', 'nwr["advertising"]({{bbox}});', {
     note: 'OSM barely maps billboards — a low count is not evidence of scarcity.',
@@ -205,13 +212,6 @@ export const GEO_CATEGORIES = Object.freeze([
   cat('newsagent', 'Print source',
     'nwr["shop"~"^(newsagent|books|kiosk|stationery)$"]({{bbox}});'),  // 23
 ]);
-
-// One constant, three consumers (Right Turn, Luxury Car, street density) — so they
-// can never disagree about what a street is.
-export const CAR_STREET_SELECTOR =
-  'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|'
-  + 'living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"]'
-  + '["motor_vehicle"!="no"]["access"!="no"]({{bbox}});';
 
 // Foot-routable graph for the "within 10 ft of a marked path" legality test.
 export const FOOT_WAY_SELECTOR =
@@ -227,34 +227,25 @@ export const LOW_STREETVIEW_COUNTRIES = Object.freeze(
 
 // ── tuning constants (S2-local) ───────────────────────────────────────────────
 //
-// VESTIGIAL, the Overpass ones. This module now reads the prebuilt world files
-// (`./worldfile.js`) and issues no Overpass query at all, so every constant below that
-// describes a request budget — the QL timeout, the tiling degree, the two legal-path
-// timeouts — no longer governs anything here. They are kept because the selectors and
-// the budgets are still the DEFINITION of each category and each refinement, they are
-// printed in provenance, and `tools/osm-world/categories.json` is a translation of them
-// that has to be checkable against something. Do not tune them expecting an effect.
+// What survived the move off Overpass. The constants that described a REQUEST budget —
+// the QL timeout, the tiling degree, the two legal-path timeouts — went with the
+// service they governed; every one left below still decides something here, with one
+// exception kept on purpose: `LEGAL_PATH_JOIN_WAY_BUDGET` now only names the size the
+// legal-path join would have had to fit into, in the note that explains why that join
+// is not evaluated at all.
 
-          // ≤0.1° squares when a single-shot fetch fails
 export const CATEGORY_FEATURE_BUDGET = 40000;  // above this, a category is counted but not fetched
-                // zone centres per batched is_in request
 export const LEGAL_SPOTS_PER_ZONE = 40;        // cap on the per-zone shortlist (page size guard)
 export const TOILET_WIDE_FACTOR = 1.5;         // A1's "just outside the circle" fallback ring
 export const REDUNDANT_PAIR_FRACTION = 0.05;   // 1/20 of the map diagonal (specs/osm.md §7.4)
-          // OSM analogue of the rulebook's 10 ft
-// …and one attempt per mirror, not two
 // Buffering every walkable way by 5 m is the most expensive thing this program can ask
 // a shared free service to do. Measured on the reference bbox (84,466 non-motorway
 // highway ways) it timed out on all three mirrors, twice, costing 7½ minutes for an
-// optional refinement. So it is only attempted on maps whose walkable network is small
-// enough for the join to be cheap; above the budget the test is skipped and every
-// candidate spot is honestly marked verify-on-the-ground.
+// optional refinement. So it was only attempted where the walkable network was small
+// enough for the join to be cheap; above the budget every candidate spot was honestly
+// marked verify-on-the-ground, which is what step 7 now does on every map.
 export const LEGAL_PATH_JOIN_WAY_BUDGET = 40000;
 export const SPOT_VERIFY_WEIGHT = 0.5;         // restrictive opening_hours ⇒ half weight
-
-// Fetched with `out center qt` — a pure density tally, the one place where the
-// bbox centre is acceptable (specs/osm.md §3.1).
-export const GEO_DENSITY_ONLY = Object.freeze(['building']);
 
 // ── the world-file layer map ─────────────────────────────────────────────────
 //
@@ -573,9 +564,6 @@ export const COAST_MIN_AREA_SQM = 25e6;   // 25 km²: floor, so a tiny map canno
 // Small deterministic helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Plain code-point string comparator. Never `localeCompare` (locale = non-determinism). */
-function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
-
 /** Python tuple comparison for `(osmType, osmId)` — string then NUMBER. */
 function cmpTypeId(a, b) {
   return cmpStr(a.osmType, b.osmType) || (a.osmId - b.osmId);
@@ -611,12 +599,6 @@ function ovSub(selector, bbox) {
   return selector.split('{{bbox}}').join(ovBbox(bbox));
 }
 
-/** The selector for a category, resolving the ones that live in a shared constant. */
-function ovSelector(category) {
-  if (category.key === 'car_street') return CAR_STREET_SELECTOR;
-  return category.selector;
-}
-
 /** `GEO_CATEGORIES` as a key → category map (`_geo_categories`). */
 export function geoCategories() {
   const out = new Map();
@@ -625,7 +607,6 @@ export function geoCategories() {
 }
 
 function keepRingsFor(key) { return RING_CATEGORIES.includes(key); }
-function keepTagsFor(key) { return !GEO_DENSITY_ONLY.includes(key); }
 
 /** Project a geographic ring (`[lat, lon]` pairs) into planar metres. */
 function planarRing(ring, proj) {
@@ -1780,7 +1761,7 @@ function iconOffsetP90(pois, proj) {
  */
 function redundantPairs(pois, proj, diagonalM) {
   const singles = Object.keys(pois)
-    .filter((k) => pois[k].length === 1 && !GEO_DENSITY_ONLY.includes(k))
+    .filter((k) => pois[k].length === 1)
     .sort(cmpStr);
   const out = [];
   const threshold = diagonalM * REDUNDANT_PAIR_FRACTION;
@@ -2038,7 +2019,6 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
         }
         const features = (await worldPois(world, key, key, bbox, proj, {
           keepRings: keepRingsFor(key),
-          keepTags: keepTagsFor(key),
         })) || [];
         return { key, kind: 'read', features };
       } catch (exc) {
@@ -2171,7 +2151,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     const onGrid = GEO_DENSITY_GRID_CATEGORIES.includes(key);
     queries.push({
       key,
-      selector: ovSub(ovSelector(category), bbox),
+      selector: ovSub(category.selector, bbox),
       bbox: Array.from(bbox),
       count: counted,
       cacheKey: '',
@@ -2189,6 +2169,27 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   // and the note pushed in step 2 is what tells the page which is which.
   if (density) mergeDensityIntoInventory(inventory, zones, density, proj, radiusM);
 
+  // ── 5. place, country and the administrative ladder ──────────────────────
+  //
+  // Was: one Nominatim reverse geocode of the mean of the zone centres, with the OSM
+  // `is_in` tags as the free fallback when it was unreachable. Nominatim is gone and
+  // the fallback is now the whole story — see `adminInfo`. That removes the last
+  // shared-free-service dependency in the pipeline, and with it a 1 req/s rate limit
+  // and a mandatory-User-Agent header a browser cannot set.
+  const admin = await adminInfo(world, zones, bbox, { progress, log });
+  if (zones.length) {
+    queries.push({
+      key: 'admin-containment',
+      selector: 'boundary=administrative, admin_level 2–10, tested locally against '
+        + `${num(zones.length)} zone centres`,
+      bbox: Array.from(bbox),
+      count: Object.keys(admin.perZone).length,
+      cacheKey: '',
+      endpoint: worldProvenance(world, 'admin'),
+      partial: Object.keys(admin.perZone).length === 0,
+    });
+  }
+
   /** @type {Object} GeoData */
   const geo = {
     available: true,
@@ -2197,45 +2198,13 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     counts,
     zoneInventory: inventory,
     zonePolygonHits: polygonHits,
-    admin: {
-      countryCode: null,
-      countryName: null,
-      placeName: null,
-      ordinals: { 1: null, 2: null, 3: null, 4: null },
-      perZone: {},
-      borderLevels: {},
-      source: 'unknown',
-      adminSource: 'unknown',
-    },
+    admin,
     curseCounts: {},
     cuisines: {},
     legalSpots: {},
     queries,
     notes,
   };
-
-  // ── 5. place, country and the administrative ladder ──────────────────────
-  //
-  // Was: one Nominatim reverse geocode of the mean of the zone centres, with the OSM
-  // `is_in` tags as the free fallback when it was unreachable. Nominatim is gone and
-  // the fallback is now the whole story — see `adminInfo`. That removes the last
-  // shared-free-service dependency in the pipeline, and with it a 1 req/s rate limit
-  // and a mandatory-User-Agent header a browser cannot set.
-  geo.admin = await adminInfo(world, zones, bbox, { progress, log });
-  if (zones.length) {
-    const orderedPoints = Array.from(zones)
-      .sort((a, b) => cmpStr(a.zoneId, b.zoneId)).map((z) => [z.lat, z.lon]);
-    queries.push({
-      key: 'admin-containment',
-      selector: 'boundary=administrative, admin_level 2–10, tested locally against '
-        + `${num(zones.length)} zone centres`,
-      bbox: Array.from(bbox),
-      count: Object.keys(geo.admin.perZone).length,
-      cacheKey: '',
-      endpoint: worldProvenance(world, 'admin'),
-      partial: Object.keys(geo.admin.perZone).length === 0,
-    });
-  }
 
   // ── 6. cuisines, then the curse audit that consumes them ─────────────────
   const host = ((geo.admin.countryCode || '').toUpperCase()) || null;
