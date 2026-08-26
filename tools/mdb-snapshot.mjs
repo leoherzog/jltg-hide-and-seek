@@ -17,20 +17,25 @@
 //
 // The tool prints a review summary against the file already on disk
 // (`+18 added, -4 removed, 31 bboxes moved`) because a tool whose output is a tracked
-// 370 KB file has to make its own diff auditable — the same discipline
+// 810 KB file has to make its own diff auditable — the same discipline
 // `tools/osm-world/build.py` follows.
 //
-//   node tools/mdb-snapshot.mjs --csv ./sources.csv        # offline, from a saved CSV
+//   node tools/mdb-snapshot.mjs --csv ./feeds_v2.csv       # offline, from a saved CSV
 //   node tools/mdb-snapshot.mjs --regional-km 250          # long-distance cut-off
 //   node tools/mdb-snapshot.mjs --out data/feeds.json      # destination
 //   node tools/mdb-snapshot.mjs --snapshot 2026-08-23      # override the snapshot date
 //   node tools/mdb-snapshot.mjs --json --quiet             # machine-readable summary
 //
-// DETERMINISM. The same CSV bytes must produce the same file bytes, so nothing here
-// reads a clock: the `snapshot` date defaults to the newest
+// DETERMINISM. Nothing here reads a clock: the `snapshot` date defaults to the newest
 // `location.bounding_box.extracted_on` in the catalogue itself, rows are sorted by
-// `mdb_source_id`, and every string comparison is by code point. Rerunning against a
-// saved CSV is byte-identical, which is what makes a regeneration reviewable.
+// `id`, and every string comparison is by code point.
+//
+// The output is a function of the CSV and ONE other input — the `data/feeds.json`
+// already on disk, which a row with no usable upstream bbox borrows its box from (see
+// `toEntry`). Both inputs are in git, so a regeneration is still reproducible and
+// still reviewable; what it is not is derivable from the CSV alone. Rows that took a
+// carried box say so with `k`, and the run prints how many did, so the one place the
+// file remembers something the catalogue no longer says is visible in both.
 //
 // Zero dependencies, Node 24. No build step — this is a `tools/` script, not part of
 // the app; nothing in `lib/`, `gtfs/`, `osm/`, `rules/` or `render/` imports it.
@@ -44,28 +49,59 @@ import process from 'node:process';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 
-/** The published short link. It 302s to the GCS object; Node's fetch follows it. */
-const CATALOG_URL = 'https://bit.ly/catalogs-csv';
+/**
+ * The v2 catalogue export.
+ *
+ * The older `sources.csv` behind `https://bit.ly/catalogs-csv` is still published and
+ * this tool read it until now, but it holds only the `mdb-*` half of the catalogue and
+ * leaves `urls.latest` EMPTY for 1,031 of those rows — every one of which had to be
+ * dropped here for want of a fetchable mirror. v2 mirrors 4,056 feeds and carries the
+ * national-aggregator and Transitland imports besides, which is where a system like
+ * Holland's Macatawa Area Express (`tld-5873`) lives. Same columns, two renames:
+ * `mdb_source_id` became `id` and its values became strings.
+ *
+ * No short link, so no redirect to record: this URL is both what is fetched and what
+ * an offline `--csv` run writes into the snapshot header, so the two modes agree byte
+ * for byte.
+ */
+const CATALOG_URL = 'https://files.mobilitydatabase.org/feeds_v2.csv';
 
 /**
- * Where that short link lands today. Recorded so an offline `--csv` run writes the
- * same `source` a live run does — otherwise regenerating from a saved copy would
- * rewrite one header line and make the two modes disagree byte for byte.
+ * MobilityData's mirror of the latest fetched zip for each source. CORS-open for an
+ * arbitrary origin, which is the whole reason the page reads the mirror and never the
+ * agency's own URL.
+ *
+ * Every mirrored row spells this exactly one way — `MIRROR + id + MIRROR_SUFFIX`, all
+ * 4,056 of them, no exceptions — so an entry stores no part of the URL at all: `id` is
+ * the object name and `lib/catalog.js` rebuilds the rest. A row whose `urls.latest`
+ * does not match that shape has no mirror this tool can reconstruct and is dropped;
+ * in practice those are the 272 rows still parked on an openmobilitydata S3 bucket,
+ * 269 of them deprecated already.
  */
-const CATALOG_RESOLVED = 'https://storage.googleapis.com/storage/v1/b/mdb-csv/o/sources.csv?alt=media';
-
-/** MobilityData's mirror of the latest fetched zip for each source. CORS-open. */
-const MIRROR = 'https://storage.googleapis.com/storage/v1/b/mdb-latest/o/';
-const MIRROR_SUFFIX = '?alt=media';
+const MIRROR = 'https://files.mobilitydatabase.org/';
+const MIRROR_SUFFIX = '/latest.zip';
 
 /** Above this, a feed is long-distance rather than a city, and becomes opt-in. */
 const DEFAULT_REGIONAL_KM = 250;
 
-const SCHEMA_VERSION = 1;
+// 2: `id` is a catalogue id string rather than an integer, the mirror object name `f`
+// is gone (it was always `id`), and `k` marks a carried bbox. `lib/catalog.js`'s
+// CATALOG_VERSION moves with this.
+const SCHEMA_VERSION = 2;
 
 /** Every key an entry may carry, in the order it is written. */
-const ENTRY_KEYS = ['id', 'p', 'n', 'c', 's', 'm', 'b', 'f', 'd', 'a', 'r', 'x'];
-const OPTIONAL_KEYS = new Set(['n', 'd', 'a', 'r', 'x']);
+const ENTRY_KEYS = ['id', 'p', 'n', 'c', 's', 'm', 'b', 'd', 'a', 'k', 'r', 'x'];
+const OPTIONAL_KEYS = new Set(['n', 'd', 'a', 'k', 'r', 'x']);
+
+/** The bare flags among them: present means 1, absent means the row is not that. */
+const FLAG_KEYS = new Set(['k', 'r', 'x']);
+
+/**
+ * A catalogue id. It is also the mirror's object name, so its charset is a property of
+ * a URL path segment and not just of the CSV: anything outside this would have to be
+ * escaped by every caller that rebuilds the download URL.
+ */
+const ID_RE = /^[A-Za-z0-9_-]+$/;
 
 // ── argv ─────────────────────────────────────────────────────────────────────
 
@@ -213,43 +249,70 @@ export function spanKm(b) {
 
 // ── curation ─────────────────────────────────────────────────────────────────
 
-/**
- * One catalogue row to one snapshot entry, or a reason string it was dropped.
- * The rules run in the order the counters print them.
- * @param {Record<string,string>} row
- * @returns {{entry: object|null, drop: string|null}}
- */
 /** http(s) only — the one scheme the page is willing to put in an `href`. */
 export function isHttpUrl(value) {
   return typeof value === 'string'
     && (value.startsWith('http://') || value.startsWith('https://'));
 }
 
-export function toEntry(row) {
+/**
+ * One catalogue row to one snapshot entry, or a reason string it was dropped.
+ * The rules run in the order the counters print them.
+ *
+ * @param {Record<string,string>} row
+ * @param {number[]|null} [priorBbox] the box the previous snapshot recorded for this
+ *   id, offered as a fallback when the catalogue's own has stopped being usable
+ * @returns {{entry: object|null, drop: string|null}}
+ */
+export function toEntry(row, priorBbox = null) {
   const drop = (why) => ({ entry: null, drop: why });
 
   if (row['data_type'] !== 'gtfs') return drop('not gtfs (realtime or gbfs)');
+  // Only `deprecated` drops. v2 also spells `future` and `development`, which this
+  // deliberately keeps: 15 of them ship in the file today, they are ordinary small
+  // operators rather than bad data, and re-cutting the live/dead line is a curation
+  // decision to take on its own evidence, not a side effect of changing CSV.
   const status = row['status'];                       // blank counts as live — most are
   if (status === 'deprecated') return drop('deprecated');
 
-  const b = bboxOf(row);
-  if (!b) return drop('bbox does not parse');
-  const bad = corruptReason(b);
+  // The id is read before the box because it is both the mirror's object name and the
+  // key the carry-forward below looks the previous snapshot up by.
+  const id = row['id'];
+  if (!id || !ID_RE.test(id)) return drop('no usable source id');
+
+  // A row whose own box has stopped being usable keeps the box already on disk, when
+  // there is one. An upstream extraction that regresses is not a transit system that
+  // moved, and dropping a live feed over it costs a reader a city. `k` marks the row
+  // so the borrow is legible in the file itself and not only in this run's summary.
+  //
+  // Only a CITY-SIZED box is carried, though. An empty bbox column is the catalogue
+  // withdrawing a claim about where a feed is, and re-asserting a withdrawn claim is
+  // only defensible where the claim was modest: every oversized box this rule was
+  // offered belonged to a national aggregate and was already wrong on its face — the
+  // Germany-wide DELFI feed boxed in Argentina, a Dutch one spanning Pau to Lithuania.
+  // Those are what upstream is RIGHT to stop publishing. Cutting at the same 250 km
+  // that decides `r` also means a carried row is always one the map actually shows,
+  // so the rule can only ever restore a city, never pad the opt-in lists.
+  let b = bboxOf(row);
+  let bad = b ? corruptReason(b) : 'does not parse';
+  let carried = false;
+  if (bad && Array.isArray(priorBbox) && priorBbox.length === 4
+      && !corruptReason(priorBbox) && spanKm(priorBbox) <= REGIONAL_KM) {
+    b = priorBbox.slice();
+    bad = null;
+    carried = true;
+  }
   if (bad) return drop(`bbox ${bad}`);
 
   const provider = row['provider'];
   if (!provider) return drop('no provider');
 
-  // The mirror URL is stored as its object name alone: every row's `urls.latest` is
-  // `MIRROR + name + MIRROR_SUFFIX`, so keeping the whole URL is ~55 redundant bytes a
-  // row. A row that does not follow the pattern has no mirror the page can rebuild.
-  const latest = row['urls.latest'];
-  if (!latest.startsWith(MIRROR) || !latest.endsWith(MIRROR_SUFFIX)) return drop('no mirror URL');
-  const f = latest.slice(MIRROR.length, latest.length - MIRROR_SUFFIX.length);
-  if (!f.endsWith('.zip') || f.includes('/') || f.includes('?')) return drop('odd mirror URL');
-
-  const id = Number(row['mdb_source_id']);
-  if (!Number.isInteger(id) || id <= 0) return drop('no source id');
+  // No part of the mirror URL is stored: it is `MIRROR + id + MIRROR_SUFFIX` for every
+  // mirrored row in the catalogue, so `id` already is the object name and keeping the
+  // rest would be ~40 redundant bytes a row across 3,300 of them. Matching the whole
+  // string rather than its ends is what makes that identity checked rather than
+  // assumed — a row shaped any other way has no mirror the page can rebuild.
+  if (row['urls.latest'] !== `${MIRROR}${id}${MIRROR_SUFFIX}`) return drop('no mirror URL');
 
   const entry = {
     id,
@@ -258,7 +321,6 @@ export function toEntry(row) {
     s: row['location.subdivision_name'],
     m: row['location.municipality'],
     b,
-    f,
   };
   // `name` is the sub-feed label (Estonia's per-county feeds, an operator's second
   // network). Omitted when it is empty or just repeats the provider.
@@ -269,7 +331,7 @@ export function toEntry(row) {
   //
   // Only http(s) is kept. The page renders this value into an `href`, and escaping
   // stops markup injection but does not neutralise a SCHEME: one upstream row
-  // spelling `javascript:` would ship a live link inside a 375 KB generated file
+  // spelling `javascript:` would ship a live link inside an 810 KB generated file
   // nobody line-reads. A row whose only URL is something else keeps its marker and
   // loses the link.
   const direct = row['urls.direct_download'];
@@ -277,13 +339,20 @@ export function toEntry(row) {
   // Flag, never drop: the page shows these and says the browser cannot fetch them.
   const auth = Number(row['urls.authentication_type']);
   if (row['urls.authentication_type'] && Number.isFinite(auth) && auth !== 0) entry.a = auth;
+  if (carried) entry.k = 1;
   if (status === 'inactive') entry.x = 1;
   return { entry, drop: null };
 }
 
 /**
- * One row per `(provider, bbox)`, keeping the lowest source id — VBB and the Estonian
- * county set each publish the same box several times over.
+ * One row per `(provider, bbox)`, keeping the code-point-lowest id — VBB and the
+ * Estonian county set each publish the same box several times over.
+ *
+ * Code point is the only total order a catalogue id has left now that ids are strings,
+ * and it happens to break the tie the useful way: `mdb-` sorts below `ntd-`, `tdg-`,
+ * `tfs-` and `tld-`, so where a hand-curated entry and an auto-imported one describe
+ * the same network, the curated one — better municipality, better provider name — is
+ * the one that survives.
  * @param {object[]} entries
  * @returns {{kept: object[], removed: number}}
  */
@@ -292,9 +361,9 @@ export function dedupe(entries) {
   for (const entry of entries) {
     const key = `${entry.p} ${entry.b.join(',')}`;
     const prev = seen.get(key);
-    if (!prev || entry.id < prev.id) seen.set(key, entry);
+    if (!prev || cmpStr(entry.id, prev.id) < 0) seen.set(key, entry);
   }
-  const kept = [...seen.values()].sort((a, b) => a.id - b.id);
+  const kept = [...seen.values()].sort((a, b) => cmpStr(a.id, b.id));
   return { kept, removed: entries.length - kept.length };
 }
 
@@ -309,7 +378,7 @@ function ordered(entry) {
 
 /**
  * One JSON object per line inside `rows`, so `git diff` shows which feeds moved
- * rather than one 370 KB blob. The document's own opening brace is line 1; every
+ * rather than one 810 KB blob. The document's own opening brace is line 1; every
  * other line beginning `{` is exactly one feed.
  * @param {object} doc
  * @returns {string}
@@ -355,7 +424,7 @@ export async function writeSnapshot(entries, outPath, meta) {
 
 /**
  * What changed against the file already on disk. Printed on every regeneration so a
- * 370 KB diff can be reviewed as a sentence before it is read as a diff.
+ * 810 KB diff can be reviewed as a sentence before it is read as a diff.
  * @param {object|null} old
  * @param {object} next
  * @returns {object} counts
@@ -420,19 +489,18 @@ export async function checkSnapshot(filePath) {
 
   const ids = new Set();
   const pairs = new Set();
-  let lastId = -Infinity;
+  let lastId = '';
   for (const row of doc.rows) {
     if (!row || typeof row !== 'object') { problems.push('a row is not an object'); continue; }
     const at = `row id=${row.id}`;
-    say(Number.isInteger(row.id) && row.id > 0, `${at}: id is not a positive integer`);
+    say(typeof row.id === 'string' && ID_RE.test(row.id),
+      `${at}: id is not a catalogue id`);
     say(!ids.has(row.id), `${at}: duplicate id`);
     ids.add(row.id);
-    say(row.id > lastId, `${at}: rows are not sorted ascending by id`);
+    say(cmpStr(row.id, lastId) > 0, `${at}: rows are not sorted ascending by id`);
     lastId = row.id;
 
     say(typeof row.p === 'string' && row.p.length > 0, `${at}: p is empty`);
-    say(typeof row.f === 'string' && row.f.endsWith('.zip') && !row.f.includes('/')
-      && !row.f.includes('?'), `${at}: f is not a bare .zip object name`);
 
     const b = row.b;
     if (!Array.isArray(b) || b.length !== 4 || b.some((v) => !Number.isFinite(v))) {
@@ -455,7 +523,7 @@ export async function checkSnapshot(filePath) {
       say(ENTRY_KEYS.includes(k), `${at}: unexpected key ${JSON.stringify(k)}`);
       say(v !== null, `${at}: key ${k} is null`);
       if (!OPTIONAL_KEYS.has(k)) continue;
-      if (k === 'r' || k === 'x') say(v === 1, `${at}: ${k} is ${JSON.stringify(v)}, expected 1`);
+      if (FLAG_KEYS.has(k)) say(v === 1, `${at}: ${k} is ${JSON.stringify(v)}, expected 1`);
       if (k === 'a') say(Number.isInteger(v) && v !== 0, `${at}: a is not a non-zero integer`);
       if (k === 'n' || k === 'd') say(typeof v === 'string' && v.length > 0, `${at}: ${k} is empty`);
       // `d` becomes an `href` on the page, so its SCHEME is an invariant of the file,
@@ -504,7 +572,7 @@ async function main() {
   let source;
   if (CSV_PATH) {
     csv = await readFile(path.resolve(process.cwd(), CSV_PATH), 'utf8');
-    source = CATALOG_RESOLVED;                  // the origin of a saved copy is still this
+    source = CATALOG_URL;                       // the origin of a saved copy is still this
     chatter(colour(DIM, `Reading ${CSV_PATH} (${csv.length} bytes)`));
   } else {
     chatter(colour(DIM, `Fetching ${CATALOG_URL}`));
@@ -517,11 +585,26 @@ async function main() {
   const records = csvRecords(csv);
   if (!records.length) throw new Error('the catalogue parsed to zero rows');
 
+  // The file already on disk, read before curation rather than after it because a row
+  // whose upstream bbox has gone bad borrows the box recorded here (see `toEntry`).
+  let old = null;
+  try { old = JSON.parse(await readFile(OUT_PATH, 'utf8')); } catch { /* first run */ }
+  const priorBbox = new Map();
+  for (const row of (old && Array.isArray(old.rows)) ? old.rows : []) {
+    if (!Array.isArray(row.b)) continue;
+    priorBbox.set(String(row.id), row.b);
+    // A version-1 row's id was the Mobility Database source id as an integer, which
+    // v2 spells `mdb-<n>`. Reading each old row under both names is what lets the one
+    // regeneration that migrates the schema carry boxes ACROSS that migration; after
+    // it, ids match on the nose and the second name is never hit.
+    if (typeof row.id === 'number') priorBbox.set(`mdb-${row.id}`, row.b);
+  }
+
   // Curate. Every drop is counted under the rule that dropped it, in rule order.
   const drops = new Map();
   const entries = [];
   for (const row of records) {
-    const { entry, drop } = toEntry(row);
+    const { entry, drop } = toEntry(row, priorBbox.get(row['id']) || null);
     if (drop) { drops.set(drop, (drops.get(drop) || 0) + 1); continue; }
     entries.push(entry);
   }
@@ -533,10 +616,12 @@ async function main() {
   let regional = 0;
   let inactive = 0;
   let authed = 0;
+  let carried = 0;
   for (const entry of kept) {
     if (spanKm(entry.b) > REGIONAL_KM) { entry.r = 1; regional++; }
     if (entry.x) inactive++;
     if (entry.a) authed++;
+    if (entry.k) carried++;
   }
 
   // The snapshot date comes from the catalogue, never from a clock (see the header).
@@ -546,9 +631,6 @@ async function main() {
     .sort(cmpStr);
   const snapshot = SNAPSHOT_OVERRIDE || extracted[extracted.length - 1] || '';
   if (!snapshot) throw new Error('no usable extracted_on date in the catalogue; pass --snapshot');
-
-  let old = null;
-  try { old = JSON.parse(await readFile(OUT_PATH, 'utf8')); } catch { /* first run */ }
 
   const { doc, text } = await writeSnapshot(kept, OUT_PATH, { snapshot, source });
   const delta = diffSummary(old, doc);
@@ -566,6 +648,7 @@ async function main() {
       regional,
       inactive,
       authed,
+      carried,
       deduped,
       bytes: Buffer.byteLength(text),
       drops: Object.fromEntries([...drops].sort((a, b) => cmpStr(a[0], b[0]))),
@@ -589,6 +672,10 @@ async function main() {
         + `${delta.newlyRegional} newly regional`);
     line(`  ${doc.count - regional} city feeds, ${regional} regional or long-distance `
       + `(over ${REGIONAL_KM} km), ${inactive} no longer updated, ${authed} need a key`);
+    if (carried) {
+      line(`  ${carried} kept a bounding box from the previous snapshot because the `
+        + 'catalogue no longer publishes a usable one');
+    }
     line(verify.ok
       ? `  ${colour(GREEN, 'check OK')} — every invariant holds`
       : `  ${colour(RED, 'CHECK FAILED')} — ${verify.problems.length} problems`);

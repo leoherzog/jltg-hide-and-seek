@@ -214,7 +214,7 @@ const SOURCE_KINDS = Object.freeze(['file', 'osm', 'url']);
  * @param {SourceRef[]|Array<File|Blob|string>|File|Blob|ArrayBuffer|Uint8Array|string} source
  * @returns {Array<{arg: (File|Blob|ArrayBuffer|Uint8Array|string|null),
  *   ring: Array<[number, number]>|null, id: string, label: string,
- *   mdbId: number|null}>}
+ *   mdbId: string|null}>}
  */
 function normaliseSources(source) {
   const list = Array.isArray(source) ? source : [source];
@@ -248,7 +248,7 @@ function normaliseSources(source) {
       }
     }
     const mdbId = isRef && item.mdbId !== undefined && item.mdbId !== null
-      ? Number(item.mdbId) : null;
+      ? String(item.mdbId) : null;
     // `id` is carried only so a synthesized feed can be NAMED after the area it was
     // built from; nothing here sorts on it. The main thread already sorted the list.
     out.push({ arg, ring, id: isRef ? String(item.id || '') : '', label, mdbId });

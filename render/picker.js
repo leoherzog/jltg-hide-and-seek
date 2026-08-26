@@ -467,7 +467,7 @@ export function initPicker(root, handlers = {}) {
     if (!btn) return;
     event.preventDefault();
     st.focusHint = { list: 'results', id: btn.getAttribute('data-add') };
-    addRow(rowById.get(Number(btn.getAttribute('data-add'))));
+    addRow(rowById.get(btn.getAttribute('data-add')));
     refocus();                       // in case nothing re-rendered (a refused add)
   });
 

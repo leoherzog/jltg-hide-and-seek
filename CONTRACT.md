@@ -206,7 +206,7 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {string} label          // what the page calls it: 'The Rapid', 'mbta.zip'
  * @property {string} source         // the URL or File name `loadFeed` recorded
  * @property {string} sha256         // this feed's own hash — NOT the merged one
- * @property {number|null} mdbId     // Mobility Database source id, or null
+ * @property {string|null} mdbId     // Mobility Database catalogue id, or null
  * @property {string} agencyName @property {string} agencyUrl @property {string} timezone
  * @property {string} feedStart @property {string} feedEnd @property {string} feedVersion
  * @property {number} stops @property {number} routes @property {number} trips
@@ -1051,7 +1051,7 @@ this rule, not a violation of it.
  *                                   //   'mdb:<id>' | 'url:<the url>' | 'file:<name>:<size>'
  *                                   //   | 'osm:<stableHash of the ring>'
  * @property {string} label          // 'The Rapid' | 'mbta.zip' | 'OpenStreetMap rail near …'
- * @property {number|null} mdbId     // Mobility Database source id, or null
+ * @property {string|null} mdbId     // Mobility Database catalogue id, or null
  * @property {Array<[number,number]>} [ring] // kind === 'osm' ONLY: the drawn shape,
  *                                   //   [lat, lon] vertices quantised to 6 dp (so the
  *                                   //   same shape is the same id across sessions).

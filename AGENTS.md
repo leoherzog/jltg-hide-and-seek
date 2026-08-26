@@ -101,8 +101,10 @@ as `tools/osm-world/categories.json`. `tools/mdb-snapshot.mjs` regenerates it fr
 Database's open CSV, prints a summary of what changed against the file already on disk, and
 `--check` re-validates the committed file offline. Nothing in it reads a clock: the `snapshot` date
 comes from the catalogue's own newest `extracted_on`, so a rerun against the same CSV is
-byte-identical. Refreshing it is a checklist item, not a memory — the catalogue rots silently, and
-most of its bounding boxes were extracted in 2022.
+byte-identical *given the same two inputs*: the CSV, and the `data/feeds.json` already on disk,
+which a row whose upstream bounding box has been withdrawn borrows a city-sized box from (those
+rows carry `k`, and the run prints how many did). Refreshing it is a checklist item, not a
+memory — the catalogue rots silently.
 
 Three things about the merge that are load-bearing and non-obvious:
 
@@ -240,8 +242,9 @@ development, carried forward as a record of what was checked.
   dossiers, findings, house rules, top zone and its tenths), plus the merge assertions described
   above. The cheapest way to prove a change did not move an algorithm.
 - `node tools/mdb-snapshot.mjs --check`: every invariant of the committed feed catalogue — sorted
-  unique ids, four-finite-number boxes inside the sane ranges, the regional flag agreeing with the
-  250 km cut, no duplicate `(provider, box)` pair. Network-free, so CI can run it.
+  unique ids (code-point, and they are strings like `mdb-400` or `tld-5873`, not integers),
+  four-finite-number boxes inside the sane ranges, the regional flag agreeing with the 250 km cut,
+  no duplicate `(provider, box)` pair. Network-free, so CI can run it.
 - `node tools/test-synth.mjs`: the OSM-to-GTFS converter, network-free — byte-identical
   determinism, acceptance by the untouched `loadFeed`, ring clipping, stop clustering, the
   frequency-expansion landmines, and the failure paths. Shape assertions only, never golden

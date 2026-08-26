@@ -136,7 +136,7 @@ export function mergeOrder(feeds) {
  * prints one hash for three feeds is lying about what it analysed.
  *
  * @param {Array<{feed: Object, index: number, tag: string}>} order from `mergeOrder`
- * @param {Array<{label?: string, mdbId?: number|null}>|null} [srcs]
+ * @param {Array<{label?: string, mdbId?: string|null}>|null} [srcs]
  *        the main thread's own metadata, indexed as the `feeds` array was
  * @returns {Object[]} `FeedSourceRow[]`
  */
@@ -145,7 +145,7 @@ export function feedSourceRows(order, srcs = null) {
     const meta = (srcs && srcs[index]) || null;
     const label = (meta && meta.label) || String(feed.source || '');
     const mdbId = meta && meta.mdbId !== undefined && meta.mdbId !== null
-      ? Number(meta.mdbId) : null;
+      ? String(meta.mdbId) : null;
     return {
       tag,
       label,

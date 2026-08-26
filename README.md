@@ -40,7 +40,7 @@ node tools/smoke.mjs                     # headless: the pipeline, against 19 go
 node tools/mdb-snapshot.mjs --check      # validate the committed feed catalogue, no network
 ```
 
-**Pick your city on the map.** The landing page opens on a world map of 1,088 transit systems —
+**Pick your city on the map.** The landing page opens on a world map of 2,471 transit systems —
 one marker per feed, clustered, drawn from a tracked snapshot of the
 [Mobility Database](https://mobilitydatabase.org/) catalogue. Search for a city or an operator,
 click a marker, or draw a shape and take every system it touches. Two switches add the other 299
@@ -313,8 +313,8 @@ render/              main-side renderers (Report → HTML strings)
   render/landing.js  the landing picker's markup, pure data → string
   render/picker.js   the landing map: MapLibre, clustering, the hand-rolled draw tool
 lib/catalog.js       main-side reader for data/feeds.json: search, bbox intersection, feed URLs
-data/feeds.json      the feed catalogue snapshot the landing map draws — 1,387 systems, of
-                     which 1,088 are on the map before the two opt-in switches; one
+data/feeds.json      the feed catalogue snapshot the landing map draws — 3,309 systems, of
+                     which 2,471 are on the map before the two opt-in switches; one
                      JSON object per line so a regeneration reads as a diff
 styles.css           the one stylesheet
 CONTRACT.md          authoritative for every shape crossing a module boundary
@@ -361,12 +361,13 @@ in this repo — they're kept outside the tree, so stop hunting for them.
 - **The feed catalogue is a snapshot, and its boxes are crude.** The markers on the landing map
   come from `data/feeds.json`, curated from the Mobility Database's published CSV and regenerated
   by hand with `node tools/mdb-snapshot.mjs`. Each system is placed and sized by the bounding box
-  that catalogue records, and most of those boxes were extracted in 2022 — enough to drop a marker
-  and to decide whether a drawn shape crosses a system, and *not* evidence of where that system
-  runs today. 154 systems whose box spans more than 250 km (intercity rail, national aggregates)
-  are hidden behind an opt-in switch, along with 167 whose feed is no longer updated; both can be
-  added anyway from the search results. Seven feeds need an API key and cannot be fetched by the
-  page at all — it shows them and links the agency's own download instead. And a system whose
+  that catalogue records — enough to drop a marker and to decide whether a drawn shape crosses a
+  system, and *not* evidence of where that system runs today. A handful were measured years ago and
+  a few were measured once and then withdrawn upstream, in which case the file keeps the box it
+  already had and marks the row `k`. 253 systems whose box spans more than 250 km (intercity rail,
+  national aggregates) are hidden behind an opt-in switch, along with 638 whose feed is no longer
+  updated; both can be added anyway from the search results. 184 feeds need an API key and cannot
+  be fetched by the page at all — it shows them and links the agency's own download instead. And a system whose
   agency never published to the Mobility Database is not on the map: that is what bringing your own
   feed is for.
 - **A map pick downloads the catalogue's mirror, not the agency's own file.** MobilityData keeps a
