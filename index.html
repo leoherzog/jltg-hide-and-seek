@@ -45,6 +45,7 @@
 
 <!-- Web Awesome autoloader -->
 <script type="module" src="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0/webawesome.loader.js"></script>
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body data-state="landing">
@@ -83,6 +84,15 @@
     </div>
 
     <div class="wa-cluster wa-gap-2xs wa-align-items-center">
+      <!-- Report chrome, hence `data-when="report"`: on the landing state there is
+           nothing to reset, and a control that reloaded the landing card into itself
+           would be the browser's own reload button wearing a costume. In the `running`
+           state it IS the cancel button — the only one the page has.
+           app.js binds it in `boot()`; `resetToLanding` says why a reset is a document
+           load and not a teardown. -->
+      <wa-button data-role="reset" data-when="report" appearance="plain" size="s" variant="neutral">
+        <wa-icon slot="start" name="arrow-rotate-left"></wa-icon>Reset
+      </wa-button>
       <!-- id="color-scheme-button" must not change: the inline colour-scheme script at
            the foot of this file binds it unguarded. -->
       <wa-button id="color-scheme-button" appearance="plain" size="s" variant="neutral">

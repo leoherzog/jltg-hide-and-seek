@@ -426,6 +426,11 @@ export function boot() {
     });
   }
   guardStrayDrops();
+  // Chrome, not form: it is `data-when="report"`, so it is unreachable until a run
+  // exists, and it survives every state the run can end in — including `failed`,
+  // where it is the only control left on the page.
+  const reset = document.querySelector('wa-button[data-role="reset"]');
+  if (reset) reset.addEventListener('click', resetToLanding);
   initLanding();
   // The whole router. It has one route and one fallback, and on a cold load with no
   // report the fallback is the landing form — silently, which is the point.
@@ -1124,6 +1129,45 @@ function clearWatchdog() {
     clearTimeout(state.watchdog);
     state.watchdog = null;
   }
+}
+
+/**
+ * The header's Reset: back to the landing card, by way of a fresh document load.
+ *
+ * Deliberately NOT a teardown. By the time this button is reachable the shell has
+ * been *edited*, not just filled: `dropSection` has removed the sections that came
+ * back empty and `pruneNav` their nav entries, two MapLibre instances are mounted,
+ * §04's day views hold their own listeners, and `mountStrategy` may have inserted a
+ * whole second view as a sibling of `<main>`. Putting the landing state back would
+ * mean rebuilding markup this file deleted — from a shell only the server still has
+ * a copy of. A load is the honest reset, and it is the one `fatalError`'s card
+ * already asks the reader to perform by hand.
+ *
+ * The URL sheds its fragment first, so a reader deep-linked at `#verdict` — or at
+ * `#strategy`, which `applyRoute` would otherwise take straight back into the guide
+ * on the next boot — lands on the landing card and not where they were. A
+ * fragment-less URL can never be a same-document scroll (the spec's fragment branch
+ * requires a non-null fragment), so this is a load even when the fragment was the
+ * only difference, and `location.replace(href)` is a load even when there was no
+ * difference at all — it is the reload idiom, and it keeps Reset out of the session
+ * history. `reload()` is deliberately not used: it is the one navigation browsers
+ * restore form state across, and a Reset that hands back the previous feed's URL
+ * still sitting in the box is not one.
+ *
+ * The worker is terminated first. It dies with the document either way, but not
+ * before the next one has started fetching, and a mid-run pipeline is exactly the
+ * case where Reset is pressed — leaving it to compete with the new page for CPU and
+ * the same IndexedDB cache is a slow first paint for no reason.
+ */
+function resetToLanding() {
+  if (state.worker) {
+    state.worker.terminate();
+    state.worker = null;
+  }
+  const home = new URL(location.href);
+  home.hash = '';
+  home.search = '';
+  location.replace(home.href);
 }
 
 /**
