@@ -1579,7 +1579,17 @@ export function renderStrategy(report) {
     }),
   ), { className: 'wa-stack wa-gap-s' });
 
-  return el('div', join(
+  // `section`, and not a `div`, because `wa-page` pads exactly two element names in its
+  // default slot -- `slot:not([name]) { &::slotted(main), &::slotted(section) }` -- and a
+  // slotted `div` matches neither, so it lands flush against the header with no gutter at
+  // all. WebAwesome ships no sectioning element of its own and asks callers to slot their
+  // own; this is that. `section` and not `main` for two reasons: `wa-page > main` is what
+  // styles.css hides to put the report away, so a second `main` would hide the guide from
+  // itself, and the spec's one-visible-`main` rule is written against the `hidden`
+  // attribute, which a `display: none` report does not carry. The `--content-width` cap and
+  // the matching inline gutter come from the one measure rule in styles.css, which lists
+  // `wa-page > section` beside `main` -- the mount position does nothing on its own.
+  return el('section', join(
     hero(rep, views),
     thesis,
     sectionShortlist(rep),
@@ -1594,7 +1604,8 @@ export function renderStrategy(report) {
     // no landmark of its own (its shadow template wraps the slot in a plain `div`), so
     // without this the whole guide sits outside every landmark region. It cannot
     // collide with the report's `<main>`: a `display: none` element is not in the
-    // accessibility tree, and the two are never visible together.
+    // accessibility tree, and the two are never visible together. `main` is one of the
+    // roles ARIA in HTML allows on a `section`.
     role: 'main',
     dataWhen: 'strategy',
     className: 'wa-stack wa-gap-3xl',

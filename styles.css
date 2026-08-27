@@ -193,15 +193,25 @@ wa-page::part(main-content) { padding-inline: 0; }
    panel in this design is a raised surface, as it was before the migration. */
 wa-card { background-color: var(--wa-color-surface-raised); }
 /* ---- measure: every band on the page starts at the same x ----
-   wa-page's shadow sheet pads its slotted children by three different amounts
-   (`::slotted(main)` 3xl, `::slotted([slot='header'])` m, `::slotted([slot='footer'])`
-   3xl) and never pads the unslotted hero at all, so a single max-inline-size on its
-   own leaves four different content edges. Declarations from the outer tree beat
-   `::slotted()`, so one gutter is declared here and applied to all of them; the cap
-   is on the border box, so identical padding means identical text alignment. */
+   wa-page's shadow sheet pads its slotted children in four rules and by two different
+   amounts (`::slotted(main)` and `::slotted(section)` 3xl, `::slotted([slot='header'])`
+   m, `::slotted([slot='footer'])` 3xl) and never pads the unslotted hero at all, so a
+   single max-inline-size on its own leaves five different content edges. Declarations
+   from the outer tree beat `::slotted()`, so one gutter is declared here and applied to
+   all of them; the cap is on the border box, so identical padding means identical text
+   alignment.
+
+   `wa-page > section` is the secret view's root, `#strategy` — the only `section` that
+   is a direct child of the page, and the reason its root is a `section` and not a `div`
+   (see render/strategy.js). It is named here rather than by id because this list is the
+   page's ONE measure rule and a second one would be the drift. Membership is what caps
+   and centres the guide; being mounted next to `<main>` does nothing on its own. Its
+   block padding comes from `::slotted(section)` above, which is why the guide's vertical
+   rhythm matches the report's without a rule here. */
 wa-page { --gutter: var(--wa-space-3xl); }
 @media (max-width: 40rem) { wa-page { --gutter: var(--wa-space-m); } }
-:where(main, wa-page > header, [slot='subheader'], wa-page > [slot='footer'] > *) {
+:where(main, wa-page > section, wa-page > header, [slot='subheader'],
+       wa-page > [slot='footer'] > *) {
   max-inline-size: var(--content-width); margin-inline: auto; width: 100%;
   padding-inline: var(--gutter, var(--wa-space-3xl));
 }

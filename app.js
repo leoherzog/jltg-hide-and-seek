@@ -2574,8 +2574,11 @@ function mountDayChrome() {
 /**
  * Build the guide once and insert it inside `<wa-page>`, as a sibling of `<main>`.
  *
- * Sibling-of-`main` is what makes it inherit the page gutter and the `--content-width`
- * cap.
+ * The mount position is not what gives it the page measure — that comes from the root
+ * being a `<section>`: `wa-page > section` is in the one measure rule in styles.css for
+ * the `--content-width` cap and the inline gutter, and wa-page's own
+ * `::slotted(section)` supplies the block padding. A `<div>` here matches neither and
+ * renders flush and full-bleed. See `render/strategy.js`'s root element.
  *
  * @returns {HTMLElement|null} the `#strategy` root, or null when there is nothing to
  *   render (no zones, or the renderer threw). Callers gate on `state.finished`.
