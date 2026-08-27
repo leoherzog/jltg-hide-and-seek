@@ -532,6 +532,10 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 .pick-row-chosen { background: var(--wa-color-surface-lowered); }
 .pick-row-chosen + .pick-row-chosen { border-block-start: none; }
 #picks-count { font-variant-numeric: tabular-nums; }
+/* The example-map chips: a wrapping row of pill buttons under the lede. */
+#example-maps { display: flex; flex-direction: column; gap: var(--wa-space-2xs); }
+#example-maps p { margin: 0; }
+#example-maps wa-button::part(base) { white-space: nowrap; }
 
 /* ---- the skeleton ----
    `wa-skeleton` sized to the thing that is coming, so the layout does not move when

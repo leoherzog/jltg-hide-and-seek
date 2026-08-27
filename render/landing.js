@@ -25,7 +25,7 @@ import { labelOf, placeOf, spanKmOf } from '../lib/catalog.js';
 
 /** How many feeds one run may merge. PLAN D24: warn above 3, refuse above this.
  *  One number, defined in `lib/core.js`, because `readSources` and the worker refuse
- *  the same seventh feed this list refuses. */
+ *  the same eleventh feed this list refuses. */
 export const PICK_CAP = MAX_FEEDS_PER_RUN;
 /** Above this many, the note starts saying so. */
 export const PICK_WARN = 3;
@@ -57,6 +57,15 @@ export function renderPickerCard() {
       + 'to place a marker.',
       { className: 'wa-caption-s wa-color-text-quiet', style: 'max-inline-size:72ch' }),
   ), { className: 'wa-stack wa-gap-3xs' });
+
+  // Filled by `render/picker.js` once it knows which examples the catalogue can
+  // serve (`exampleMapsFor`); empty markup here so the card is still one string.
+  const examples = el('div', '', {
+    id: 'example-maps',
+    role: 'group',
+    ariaLabel: 'Example maps',
+    hidden: true,
+  });
 
   const toolbar = el('div', join(
     el('wa-input', '', {
@@ -150,8 +159,42 @@ export function renderPickerCard() {
     el('div', '', { id: 'picks-list', className: 'wa-stack wa-gap-2xs' }),
   ), { id: 'picks', className: 'wa-stack wa-gap-2xs' });
 
-  return el('div', join(header, toolbar, switches, results, map, mapNote, picks,
+  return el('div', join(header, examples, toolbar, switches, results, map, mapNote, picks,
     el('div', '', { id: 'picker-note', role: 'status' })), { className: 'wa-stack wa-gap-m' });
+}
+
+/**
+ * The example-map chips: one `<wa-button>` per city, `data-example` naming it.
+ *
+ * Buttons, not `<wa-tag>`s — a chip that loads four feeds is a control, and a tag is
+ * decoration a keyboard cannot reach. `aria-pressed` says whether the selection IS
+ * that example right now; `render/picker.js` keeps it current, because a reader who
+ * removes the Water Taxi has left Chicago and the chip must stop saying otherwise.
+ * `type="button"` for the same reason every button in this card carries it: the card
+ * lives inside `<form id="landing-form">`.
+ *
+ * @param {Array<{key: string, name: string, where: string, rows: Object[]}>} examples
+ * @param {{pressedKey?: string|null}} [opts]
+ * @returns {string} '' when there is nothing to offer, so the host stays hidden
+ */
+export function renderExampleMaps(examples, opts = {}) {
+  const { pressedKey = null } = opts;
+  if (!examples.length) return '';
+  return join(
+    el('p', 'Or try an example:', { className: 'wa-caption-s wa-color-text-quiet', id: 'example-maps-lede' }),
+    el('div', join(...examples.map((ex) => waButton(ex.name, {
+      type: 'button',
+      pill: true,
+      variant: ex.key === pressedKey ? 'brand' : 'neutral',
+      appearance: ex.key === pressedKey ? 'filled' : 'outlined',
+      ariaPressed: ex.key === pressedKey ? 'true' : 'false',
+      dataExample: ex.key,
+      // "Chicago, Illinois — 4 feeds": the tooltip a mouse gets and the name a
+      // screen reader hears, so the chip says what it costs before it is pressed.
+      title: `${ex.name}, ${ex.where} — ${num(ex.rows.length)} ${ex.rows.length === 1 ? 'feed' : 'feeds'}`,
+      ariaLabel: `${ex.name}, ${ex.where}: ${num(ex.rows.length)} ${ex.rows.length === 1 ? 'feed' : 'feeds'}`,
+    }))), { className: 'wa-cluster wa-gap-2xs', ariaLabelledby: 'example-maps-lede' }),
+  );
 }
 
 /** The `regional` / `no longer updated` / `sign-in required` badges for one row. */
@@ -334,9 +377,9 @@ export function renderPickerNote(s) {
     lines.push(`${num(s.count)} feeds is a lot to merge — the download, the walk-transfer `
       + 'graph and the zone cover all grow with it. Three or fewer is the comfortable range.');
   }
-  // `>=`, not `>`: the cap times the per-feed estimate lands EXACTLY on the threshold
-  // (6 × 25 MB = 150), so a strict test would make this line unreachable from map
-  // picks — which is the only flow it was written for.
+  // `>=`, not `>`: six map picks times the per-feed estimate lands EXACTLY on the
+  // threshold (6 × 25 MB = 150), so a strict test would delay this line by a whole
+  // pick in the only flow it was written for.
   if (s.estMb && s.estMb >= BIG_DOWNLOAD_MB) {
     lines.push(`Feeds this many can add up to a few hundred megabytes of download on a `
       + 'cold run. They are cached in this browser afterwards, so the second run is fast.');

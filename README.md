@@ -57,8 +57,14 @@ will warn you about: fetching a URL only works if the agency's server sends CORS
 plenty don't. When that happens, download the zip yourself and drop it in — same answer, one extra
 step. (The catalogue's own mirror URLs, which is what a map pick fetches, always send them.)
 
+**Or start from an example.** A row of chips under the picker's lede — Chicago, New York and a
+dozen other metros — loads a hand-picked set of that city's public operators in one click: CTA,
+Metra, Pace and the Water Taxi for Chicago; the subway, the borough bus feeds, both ferries and
+the Roosevelt Island tram for New York. Campus shuttles and private coaches are left out on
+purpose. The chip fills the selected list; add to it, remove from it or press another.
+
 **More than one system at a time.** A metro plus its commuter rail, or two neighbouring operators a
-drawn shape happened to cross, merge into one map. Up to six feeds per run; above three the page
+drawn shape happened to cross, merge into one map. Up to ten feeds per run; above three the page
 says so, because each one costs a download and a parse. Selecting more than one also pre-ticks
 *Skip OpenStreetMap* under **Advanced** — the map-feature layer's cost scales with the size of the
 border, and two metros make a big border. That happens once, the first time you go past one feed;
@@ -321,7 +327,9 @@ CONTRACT.md          authoritative for every shape crossing a module boundary
 tools/smoke.mjs      headless harness: runs the real pipeline, asserts 19 golden numbers,
                      then the merge assertions
 tools/mdb-snapshot.mjs   rebuilds data/feeds.json from the Mobility Database CSV; --check
-                     validates the committed file without touching the network
+                     validates the committed file without touching the network; --counts
+                     also measures each feed's stops and routes by reading three HTTP
+                     ranges out of its zip, never the whole archive
 tools/osm-world/     builds the prebuilt OpenStreetMap files the app reads
   build.py           planet.osm.pbf -> per-category FlatGeobuf -> R2 (uv script)
   categories.json    the build table: one entry per category, plus the density grid
@@ -359,8 +367,9 @@ in this repo — they're kept outside the tree, so stop hunting for them.
   So the test simply isn't run: candidate hiding spots are still found and listed, but every one of
   them is marked verify-on-the-ground, always. Stand somewhere legal.
 - **The feed catalogue is a snapshot, and its boxes are crude.** The markers on the landing map
-  come from `data/feeds.json`, curated from the Mobility Database's published CSV and regenerated
-  by hand with `node tools/mdb-snapshot.mjs`. Each system is placed and sized by the bounding box
+  come from `data/feeds.json`, curated from the Mobility Database's published CSV, refreshed
+  monthly by `.github/workflows/feed-catalogue.yml` as a pull request and regenerable by hand with
+  `node tools/mdb-snapshot.mjs`. Each system is placed and sized by the bounding box
   that catalogue records — enough to drop a marker and to decide whether a drawn shape crosses a
   system, and *not* evidence of where that system runs today. A handful were measured years ago and
   a few were measured once and then withdrawn upstream, in which case the file keeps the box it

@@ -25,6 +25,8 @@
 //   node tools/mdb-snapshot.mjs --out data/feeds.json      # destination
 //   node tools/mdb-snapshot.mjs --snapshot 2026-08-23      # override the snapshot date
 //   node tools/mdb-snapshot.mjs --json --quiet             # machine-readable summary
+//   node tools/mdb-snapshot.mjs --counts                   # ALSO measure each feed's size
+//   node tools/mdb-snapshot.mjs --counts --counts-concurrency 8
 //
 // DETERMINISM. Nothing here reads a clock: the `snapshot` date defaults to the newest
 // `location.bounding_box.extracted_on` in the catalogue itself, rows are sorted by
@@ -37,6 +39,35 @@
 // carried box say so with `k`, and the run prints how many did, so the one place the
 // file remembers something the catalogue no longer says is visible in both.
 //
+// `--counts` IS THE ONE EXCEPTION, AND IT IS OPT-IN FOR THAT REASON. The catalogue
+// says where a feed is and never how big it is: there is no stop or route column in
+// the CSV, and both APIs that carry one (`api.mobilitydatabase.org`, Transitland)
+// need a credential a public build cannot hold. So `--counts` measures the feeds
+// themselves, and that makes the run a function of what the mirror served TODAY —
+// reproducible only against an unchanged mirror. The default run does not probe, and
+// carries `t`/`u` forward from the file on disk untouched, so `node
+// tools/mdb-snapshot.mjs` still means exactly what this header has always said it
+// means. CI passes `--counts`; a human refreshing the catalogue by hand need not.
+//
+// HOW A FEED IS MEASURED WITHOUT DOWNLOADING IT. A GTFS zip keeps its index at the
+// END, so three HTTP Range requests are enough for an exact count and the 19.8 MB
+// body never moves:
+//
+//   1. the last 4 KB          → the EOCD record and, for a ~15-member archive, the
+//                               whole central directory: every member's name, offset,
+//                               compressed size and compression method
+//   2. `stops.txt`'s bytes    → inflate, count by `location_type` (see `countStops`)
+//   3. `routes.txt`'s bytes   → inflate, count data rows
+//
+// `stop_times.txt` is 90%+ of every feed and is never touched. Measured over a
+// 60-feed spread of the catalogue: 3.0 requests and 40 KB per feed, 0 failures —
+// about 135 MB and 2.5 minutes for the whole file at the default concurrency.
+//
+// A feed that cannot be measured — mirror 404, no Range support, ZIP64, a member that
+// is not deflate or stored — is NOT an error and never drops a row. It keeps the
+// numbers the previous snapshot recorded and is marked `q`, the same treatment `k`
+// gives a withdrawn bounding box, and the run prints how many took it.
+//
 // Zero dependencies, Node 24. No build step — this is a `tools/` script, not part of
 // the app; nothing in `lib/`, `gtfs/`, `osm/`, `rules/` or `render/` imports it.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -45,6 +76,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import process from 'node:process';
+import { inflateRawSync } from 'node:zlib';
+import { EXAMPLE_MAPS } from '../lib/catalog.js';
+import { MAX_FEEDS_PER_RUN } from '../lib/core.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -84,17 +118,58 @@ const MIRROR_SUFFIX = '/latest.zip';
 /** Above this, a feed is long-distance rather than a city, and becomes opt-in. */
 const DEFAULT_REGIONAL_KM = 250;
 
+/**
+ * Feeds measured at once under `--counts`.
+ *
+ * 12 is the measured knee against the mirror: the 60-feed calibration run finished in
+ * 2.7 s at 12 and gained nothing above it, because each feed is three small serial
+ * round trips and the wall clock is latency, not bandwidth. Raising it mostly raises
+ * the chance MobilityData's CDN starts shedding, and a shed feed costs a measurement.
+ */
+const DEFAULT_COUNTS_CONCURRENCY = 12;
+
+/** Per-request ceiling under `--counts`. Generous: a slow mirror is not a failed one. */
+const COUNTS_TIMEOUT_MS = 30_000;
+
+/** Attempts per range request before a feed is given up on and carries its old numbers. */
+const COUNTS_ATTEMPTS = 3;
+
+/**
+ * The tail read that hunts the zip's end-of-central-directory record.
+ *
+ * 4 KB rather than the 65,557 the format's maximum comment permits: a GTFS archive has
+ * ~15 members and no comment, so 4 KB holds the EOCD *and* the whole central directory,
+ * and the calibration run needed a second read for 0 of 60 feeds. The full read is
+ * still there as the fallback when it does not (`readDirectory`), so the small default
+ * costs correctness nothing.
+ */
+const ZIP_TAIL_BYTES = 4096;
+const ZIP_TAIL_MAX = 65_557;
+
 // 2: `id` is a catalogue id string rather than an integer, the mirror object name `f`
 // is gone (it was always `id`), and `k` marks a carried bbox. `lib/catalog.js`'s
 // CATALOG_VERSION moves with this.
-const SCHEMA_VERSION = 2;
+// 3: `t`, `u` and `q` — how big the feed is, measured rather than catalogued (see
+// `--counts` in the header). All three are optional and absent on an unprobed row, so
+// a v2 file is a v3 file with no measurements; the version still moves because
+// `lib/catalog.js` now RANKS on `t` and a reader that silently got none of them would
+// order the catalogue by a field that is never there.
+const SCHEMA_VERSION = 3;
 
-/** Every key an entry may carry, in the order it is written. */
-const ENTRY_KEYS = ['id', 'p', 'n', 'c', 's', 'm', 'b', 'd', 'a', 'k', 'r', 'x'];
-const OPTIONAL_KEYS = new Set(['n', 'd', 'a', 'k', 'r', 'x']);
+/**
+ * Every key an entry may carry, in the order it is written.
+ *
+ * `t` and `u` take the second letter of the word they abbreviate because the first is
+ * long since spent: `s` is the subdivision and `r` is the regional flag.
+ */
+const ENTRY_KEYS = ['id', 'p', 'n', 'c', 's', 'm', 'b', 'd', 'a', 't', 'u', 'k', 'q', 'r', 'x'];
+const OPTIONAL_KEYS = new Set(['n', 'd', 'a', 't', 'u', 'k', 'q', 'r', 'x']);
 
 /** The bare flags among them: present means 1, absent means the row is not that. */
-const FLAG_KEYS = new Set(['k', 'r', 'x']);
+const FLAG_KEYS = new Set(['k', 'q', 'r', 'x']);
+
+/** The two count keys, which are written and validated as a pair. */
+const COUNT_KEYS = ['t', 'u'];
 
 /**
  * A catalogue id. It is also the mirror's object name, so its charset is a property of
@@ -109,6 +184,7 @@ const argv = process.argv.slice(2);
 const QUIET = argv.includes('--quiet');
 const JSON_OUT = argv.includes('--json');
 const CHECK_ONLY = argv.includes('--check');
+const WITH_COUNTS = argv.includes('--counts');
 
 /** `--flag value`, or null when absent. */
 function flag(name) {
@@ -120,6 +196,7 @@ const OUT_PATH = path.resolve(REPO, flag('--out') || path.join('data', 'feeds.js
 const CSV_PATH = flag('--csv');
 const SNAPSHOT_OVERRIDE = flag('--snapshot');
 const REGIONAL_KM = Number(flag('--regional-km') || DEFAULT_REGIONAL_KM);
+const COUNTS_CONCURRENCY = Math.max(1, Number(flag('--counts-concurrency') || DEFAULT_COUNTS_CONCURRENCY));
 
 // ── console helpers ──────────────────────────────────────────────────────────
 
@@ -431,7 +508,7 @@ export async function writeSnapshot(entries, outPath, meta) {
  */
 export function diffSummary(old, next) {
   if (!old || !Array.isArray(old.rows)) {
-    return { fresh: true, added: next.count, removed: 0, moved: 0, newlyRegional: 0 };
+    return { fresh: true, added: next.count, removed: 0, moved: 0, newlyRegional: 0, resized: 0 };
   }
   const before = new Map(old.rows.map((r) => [r.id, r]));
   const after = new Map(next.rows.map((r) => [r.id, r]));
@@ -439,14 +516,18 @@ export function diffSummary(old, next) {
   let removed = 0;
   let moved = 0;
   let newlyRegional = 0;
+  let resized = 0;
   for (const [id, row] of after) {
     const prev = before.get(id);
     if (!prev) { added++; continue; }
     if (prev.b.join(',') !== row.b.join(',')) moved++;
     if (!prev.r && row.r) newlyRegional++;
+    // Only counts that MOVED, not counts that appeared: the run that first measures
+    // the catalogue would otherwise report 3,309 changes and say nothing.
+    if ((prev.t || prev.u) && (prev.t !== row.t || prev.u !== row.u)) resized++;
   }
   for (const id of before.keys()) if (!after.has(id)) removed++;
-  return { fresh: false, added, removed, moved, newlyRegional };
+  return { fresh: false, added, removed, moved, newlyRegional, resized };
 }
 
 // ── --check ──────────────────────────────────────────────────────────────────
@@ -519,6 +600,11 @@ export async function checkSnapshot(filePath) {
       pairs.add(key);
     }
 
+    // `q` says "these numbers are older than this snapshot", so it is meaningless
+    // without numbers to be older than.
+    say(!row.q || row.t !== undefined || row.u !== undefined,
+      `${at}: q is set but the row carries no counts`);
+
     for (const [k, v] of Object.entries(row)) {
       say(ENTRY_KEYS.includes(k), `${at}: unexpected key ${JSON.stringify(k)}`);
       say(v !== null, `${at}: key ${k} is null`);
@@ -526,9 +612,36 @@ export async function checkSnapshot(filePath) {
       if (FLAG_KEYS.has(k)) say(v === 1, `${at}: ${k} is ${JSON.stringify(v)}, expected 1`);
       if (k === 'a') say(Number.isInteger(v) && v !== 0, `${at}: a is not a non-zero integer`);
       if (k === 'n' || k === 'd') say(typeof v === 'string' && v.length > 0, `${at}: ${k} is empty`);
+      // A measured count is a positive integer or it is not written. Zero is the shape
+      // a failed read takes, and `lib/catalog.js` ranks on `t` — a zero there would
+      // sort a real operator below every unmeasured row in its own city.
+      if (COUNT_KEYS.includes(k)) {
+        say(Number.isInteger(v) && v > 0, `${at}: ${k} is ${JSON.stringify(v)}, expected a positive integer`);
+      }
       // `d` becomes an `href` on the page, so its SCHEME is an invariant of the file,
       // not a property of whatever the upstream happened to publish today.
       if (k === 'd') say(isHttpUrl(v), `${at}: d is not an http(s) URL`);
+    }
+  }
+
+  // The example maps (`lib/catalog.js`) name rows by id. A regeneration that drops
+  // one, or an upstream that puts one behind a key, breaks a chip on the landing
+  // page — so it fails here, where the diff is being reviewed, with the fix named.
+  const byId = new Map(doc.rows.map((row) => [row.id, row]));
+  const keys = new Set();
+  for (const ex of EXAMPLE_MAPS) {
+    const at = `example map ${ex.key}`;
+    say(!keys.has(ex.key), `${at}: duplicate key`);
+    keys.add(ex.key);
+    say(ex.ids.length > 0 && ex.ids.length <= MAX_FEEDS_PER_RUN,
+      `${at}: ${ex.ids.length} feeds, the run cap is ${MAX_FEEDS_PER_RUN}`);
+    say(new Set(ex.ids).size === ex.ids.length, `${at}: repeats an id`);
+    for (const id of ex.ids) {
+      const row = byId.get(id);
+      say(Boolean(row), `${at}: ${id} is not in the catalogue`);
+      if (!row) continue;
+      say(!row.a, `${at}: ${id} (${row.p}) needs an API key`);
+      say(!row.x, `${at}: ${id} (${row.p}) is no longer updated`);
     }
   }
   return { ok: problems.length === 0, problems, doc };
@@ -546,6 +659,374 @@ export async function fetchCatalog(url) {
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) throw new Error(`catalogue fetch failed: HTTP ${res.status} ${res.statusText}`);
   return { text: await res.text(), url: res.url || url };
+}
+
+// ── counts (--counts) ────────────────────────────────────────────────────────
+//
+// Enough of the ZIP format to read two members out of a remote archive, and no more.
+// This is not a general unzipper and must not grow into one: it reads the central
+// directory, then the bytes of two named members, and everything it cannot handle it
+// declines by throwing so the caller carries the previous snapshot's numbers instead.
+
+const EOCD_SIG = 0x06054b50;
+const CD_ENTRY_SIG = 0x02014b50;
+const ZIP_STORED = 0;
+const ZIP_DEFLATE = 8;
+
+/**
+ * One HTTP Range request, retried on anything transient.
+ *
+ * A 200 is a FAILURE here, not a success: it means the server ignored `Range` and is
+ * about to hand over a 300 MB body one line at a time. The whole design rests on 206,
+ * so a server that will not do partial content is declined rather than indulged.
+ *
+ * @param {string} url @param {string} spec an HTTP range spec — `0-4095`, `-4096`
+ * @returns {Promise<Buffer>}
+ */
+async function rangeGet(url, spec) {
+  let last;
+  for (let attempt = 1; attempt <= COUNTS_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { Range: `bytes=${spec}` },
+        signal: AbortSignal.timeout(COUNTS_TIMEOUT_MS),
+      });
+      if (res.status === 200) throw new Error('server ignored Range (200, not 206)');
+      if (res.status !== 206) throw new Error(`HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      last = err;
+      // Linear, not exponential: three tries against a CDN that is either there or
+      // not, and a catalogue-wide run cannot afford a long tail of sleeping workers.
+      if (attempt < COUNTS_ATTEMPTS) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw last;
+}
+
+/** The last `EOCD_SIG` in a buffer, scanning backwards as the format requires. */
+function findEocd(buf) {
+  for (let i = buf.length - 22; i >= 0; i--) if (buf.readUInt32LE(i) === EOCD_SIG) return i;
+  return -1;
+}
+
+/**
+ * Every member of a remote zip, from its central directory.
+ *
+ * Reads the tail once at `ZIP_TAIL_BYTES` and again at the format's maximum only if
+ * the first read missed the EOCD, then re-reads the directory separately only if it
+ * did not already land inside the tail — so the common case is exactly one request.
+ *
+ * @param {string} url
+ * @returns {Promise<{name: string, method: number, csize: number, usize: number, offset: number}[]>}
+ */
+export async function readDirectory(url) {
+  let tailLen = ZIP_TAIL_BYTES;
+  let tail = await rangeGet(url, `-${tailLen}`);
+  let at = findEocd(tail);
+  if (at < 0 && tail.length >= tailLen) {
+    tailLen = ZIP_TAIL_MAX;
+    tail = await rangeGet(url, `-${tailLen}`);
+    at = findEocd(tail);
+  }
+  // A mirror object that is not a zip at all is the commonest way this fails, and
+  // "no end-of-central-directory record" describes the symptom rather than the cause.
+  // Four rows in the catalogue today serve an HTML error page from the mirror.
+  if (at < 0) {
+    const head = tail.subarray(0, 64).toString('latin1').trimStart().toLowerCase();
+    throw new Error(head.startsWith('<htm') || head.startsWith('<!do') || head.startsWith('<?xml')
+      ? 'the mirror served a web page, not a zip'
+      : 'no end-of-central-directory record');
+  }
+
+  const entryCount = tail.readUInt16LE(at + 10);
+  const cdSize = tail.readUInt32LE(at + 12);
+  const cdOffset = tail.readUInt32LE(at + 16);
+  // ZIP64 is declined rather than implemented: it needs a 64-bit EOCD locator, a
+  // second directory format and per-entry extra-field parsing, and the calibration
+  // run met it 0 times in 60 feeds. A row that hits it carries its old numbers.
+  // The three sentinels ARE the detection — scanning the tail for the ZIP64 locator's
+  // signature would read compressed payload as structure and reject valid archives on
+  // a four-byte coincidence.
+  if (cdOffset === 0xffffffff || cdSize === 0xffffffff || entryCount === 0xffff) {
+    throw new Error('ZIP64 archive');
+  }
+
+  // The central directory ends exactly where the EOCD begins, so the EOCD's file
+  // offset is `cdOffset + cdSize` and it sits at `at` inside the tail. That fixes
+  // where the tail starts, and lets an offset already inside it be sliced rather than
+  // requested a second time.
+  const tailStart = cdOffset + cdSize - at;
+  const cd = cdOffset >= tailStart
+    ? tail.subarray(cdOffset - tailStart, cdOffset - tailStart + cdSize)
+    : await rangeGet(url, `${cdOffset}-${cdOffset + cdSize - 1}`);
+
+  const entries = [];
+  let p = 0;
+  for (let i = 0; i < entryCount; i++) {
+    if (p + 46 > cd.length || cd.readUInt32LE(p) !== CD_ENTRY_SIG) {
+      throw new Error(`central directory truncated at entry ${i} of ${entryCount}`);
+    }
+    const nameLen = cd.readUInt16LE(p + 28);
+    const extraLen = cd.readUInt16LE(p + 30);
+    const extraAt = p + 46 + nameLen;
+    const entry = {
+      name: cd.toString('utf8', p + 46, extraAt),
+      method: cd.readUInt16LE(p + 10),
+      csize: cd.readUInt32LE(p + 20),
+      usize: cd.readUInt32LE(p + 24),
+      offset: cd.readUInt32LE(p + 42),
+      disk: cd.readUInt16LE(p + 34),
+    };
+    widenZip64(entry, cd.subarray(extraAt, extraAt + extraLen));
+    entries.push(entry);
+    p = extraAt + extraLen + cd.readUInt16LE(p + 32);
+  }
+  return entries;
+}
+
+/**
+ * Replace an entry's 32-bit sentinels with the real values from its ZIP64 extra field.
+ *
+ * A per-entry ZIP64 record is NOT the same thing as a ZIP64 archive, and conflating
+ * them cost 24 feeds on the first catalogue-wide run. Several publishers write
+ * `0xFFFFFFFF` sizes into every entry — a streaming zip writer that will not seek back
+ * to patch them — while the archive's own EOCD stays perfectly 32-bit. mdb-1052 is
+ * 248 KB and does exactly this. Read the sentinels literally and the reader asks for a
+ * 4 GB range on a quarter-megabyte file.
+ *
+ * The 0x0001 field carries ONLY the members that were sentinelled, in a fixed order:
+ * uncompressed size, compressed size, local header offset, disk number. There is no
+ * length prefix per value — which of them are present is inferred from which of the
+ * fixed-record fields is 0xFFFF(FFFF), so the order of these four `if`s is the format.
+ *
+ * @param {{csize: number, usize: number, offset: number, disk: number}} entry mutated
+ * @param {Buffer} extra the central-directory extra field
+ */
+function widenZip64(entry, extra) {
+  if (entry.csize !== 0xffffffff && entry.usize !== 0xffffffff && entry.offset !== 0xffffffff) return;
+  for (let p = 0; p + 4 <= extra.length;) {
+    const id = extra.readUInt16LE(p);
+    const size = extra.readUInt16LE(p + 2);
+    const body = extra.subarray(p + 4, p + 4 + size);
+    p += 4 + size;
+    if (id !== 0x0001) continue;
+    let q = 0;
+    const take64 = () => {
+      if (q + 8 > body.length) throw new Error('ZIP64 extra field is short');
+      const v = body.readBigUInt64LE(q);
+      q += 8;
+      if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('ZIP64 value beyond 2^53');
+      return Number(v);
+    };
+    if (entry.usize === 0xffffffff) entry.usize = take64();
+    if (entry.csize === 0xffffffff) entry.csize = take64();
+    if (entry.offset === 0xffffffff) entry.offset = take64();
+    if (entry.disk === 0xffff && q + 4 <= body.length) entry.disk = body.readUInt32LE(q);
+    return;
+  }
+  throw new Error('a size is 0xFFFFFFFF but the entry has no ZIP64 extra field');
+}
+
+/**
+ * One member's bytes, decompressed.
+ *
+ * The SIZES come from the central directory, never from the local header: a zip
+ * written as a stream leaves the local header's sizes zero and defers them to a data
+ * descriptor after the payload. Only the two variable-length local fields are read
+ * here, and those are always correct — the request deliberately overshoots by
+ * `ZIP_TAIL_BYTES` so the header and the whole payload arrive together.
+ *
+ * @param {string} url @param {{method: number, csize: number, offset: number}} entry
+ * @returns {Promise<Buffer>}
+ */
+export async function readMember(url, entry) {
+  if (entry.method !== ZIP_STORED && entry.method !== ZIP_DEFLATE) {
+    throw new Error(`unsupported compression method ${entry.method}`);
+  }
+  const end = entry.offset + 30 + ZIP_TAIL_BYTES + entry.csize;
+  const raw = await rangeGet(url, `${entry.offset}-${end}`);
+  if (raw.length < 30) throw new Error('local header truncated');
+  const start = 30 + raw.readUInt16LE(26) + raw.readUInt16LE(28);
+  const body = raw.subarray(start, start + entry.csize);
+  if (body.length < entry.csize) throw new Error('member payload truncated');
+  return entry.method === ZIP_STORED ? body : inflateRawSync(body);
+}
+
+/**
+ * A member's name inside the archive, lowercased and stripped of any directory.
+ * A GTFS zip is allowed to nest its txt files one folder deep, and plenty do.
+ */
+const memberBase = (name) => name.split('/').pop().toLowerCase();
+
+/** A member by GTFS filename, or null when the archive has none. */
+const memberNamed = (entries, file) => entries.find((e) => memberBase(e.name) === file) || null;
+
+/**
+ * The data rows of a GTFS table, as arrays.
+ *
+ * Reuses `parseCsv` rather than splitting on newlines because `stop_name` routinely
+ * contains a comma AND, in a handful of feeds, a newline — both inside quotes, both
+ * invisible to a line count. Strips a UTF-8 BOM off the first header cell, which a
+ * surprising number of publishers emit.
+ *
+ * @param {Buffer} buf
+ * @returns {{header: string[], rows: string[][]}}
+ */
+function readTable(buf) {
+  const rows = parseCsv(buf.toString('utf8'));
+  if (!rows.length) return { header: [], rows: [] };
+  const header = rows[0].map((h, i) => (i === 0 ? h.replace(/^﻿/, '') : h).trim());
+  // A trailing newline parses to one empty final row; a blank line mid-file is not
+  // data either. Both are dropped by the same test.
+  const data = rows.slice(1).filter((r) => r.length > 1 || (r[0] || '') !== '');
+  return { header, rows: data };
+}
+
+/**
+ * How many places this feed serves — STATIONS where it models them, stops otherwise.
+ *
+ * The raw row count of `stops.txt` is the wrong number for exactly the systems this
+ * ranking exists to surface. NYC Subway writes 1,488 rows: 496 parent stations
+ * (`location_type=1`) and 992 platforms beneath them. 496 is the figure a reader
+ * means by "how big is the subway"; 1,488 is an artefact of how thoroughly MTA models
+ * its platforms, and it would rank the subway above systems several times its size.
+ *
+ * So: count parent stations when the feed has any, and its plain stops when it does
+ * not. Entrances (2), generic nodes (3) and boarding areas (4) are never places to
+ * ride from and are counted in neither branch. A feed with no `location_type` column
+ * at all — legal, and common in small feeds — is all stops by definition.
+ *
+ * @param {Buffer} buf `stops.txt`
+ * @returns {number}
+ */
+export function countStops(buf) {
+  const { header, rows } = readTable(buf);
+  const at = header.indexOf('location_type');
+  if (at < 0) return rows.length;
+  let stations = 0;
+  let stops = 0;
+  for (const row of rows) {
+    const kind = (row[at] || '').trim();
+    if (kind === '1') stations++;
+    else if (kind === '' || kind === '0') stops++;
+  }
+  return stations > 0 ? stations : stops;
+}
+
+/** How many routes this feed publishes: `routes.txt` data rows, and nothing subtler. */
+export function countRoutes(buf) {
+  return readTable(buf).rows.length;
+}
+
+/**
+ * One feed measured, or a reason it could not be.
+ *
+ * Never throws. A feed that cannot be read is a row that keeps the numbers it already
+ * had — the catalogue is 3,309 feeds against third-party infrastructure and a single
+ * 404 must not cost a refresh.
+ *
+ * @param {string} url the mirror object
+ * @returns {Promise<{t: number|null, u: number|null, why: string|null}>}
+ */
+export async function measureFeed(url) {
+  try {
+    const entries = await readDirectory(url);
+    const stops = memberNamed(entries, 'stops.txt');
+    const routes = memberNamed(entries, 'routes.txt');
+    if (!stops && !routes) throw new Error('neither stops.txt nor routes.txt is in the archive');
+    const t = stops ? countStops(await readMember(url, stops)) : null;
+    const u = routes ? countRoutes(await readMember(url, routes)) : null;
+    // A zip whose tables are headers and nothing else. Eight rows in the catalogue are
+    // like this — Columbia University's shuttle among them — and they read as a
+    // successful measurement of nothing, which is the one shape the caller cannot tell
+    // apart from a failure on its own. Naming it here is what keeps it out of the
+    // summary as a bare `null`, and it stays UNMEASURED rather than being written as a
+    // zero, because a feed with no stops is a publishing accident, not a small system.
+    if (!t && !u) throw new Error('the archive has no stops and no routes');
+    return { t, u, why: null };
+  } catch (err) {
+    return { t: null, u: null, why: reasonOf(err) };
+  }
+}
+
+/**
+ * An error as a groupable one-line reason.
+ *
+ * Never returns `"null"` or `"undefined"`. The first run over the catalogue produced
+ * eight of those and they named nothing at all — a summary line whose whole job is to
+ * tell a reviewer which feeds to look at cannot spend a row on a value that says a
+ * throw happened without saying what it was.
+ */
+function reasonOf(err) {
+  if (err && typeof err.message === 'string' && err.message) {
+    // `fetch` reports a whole class of network faults as a bare "fetch failed" and
+    // hides the real one underneath.
+    const cause = err.cause && err.cause.message ? ` (${err.cause.message})` : '';
+    return `${err.message}${cause}`;
+  }
+  if (err && err.name) return err.name;
+  return `threw ${Object.prototype.toString.call(err)}`;
+}
+
+/**
+ * Measure every entry, `COUNTS_CONCURRENCY` at a time, writing `t`/`u`/`q` in place.
+ *
+ * A measurement of 0 is thrown away rather than written. Zero stops is not a small
+ * system, it is a broken read or an empty archive, and writing it would sort a real
+ * operator to the bottom of every search on a number that is not true.
+ *
+ * @param {object[]} entries mutated in place
+ * @param {(done: number, total: number) => void} [onProgress]
+ * @returns {Promise<{measured: number, carried: number, missing: number, reasons: Map<string, number>}>}
+ */
+export async function measureAll(entries, onProgress) {
+  const reasons = new Map();
+  let measured = 0;
+  let carried = 0;
+  let missing = 0;
+  let done = 0;
+  let next = 0;
+
+  /** Write a successful measurement onto the row. Absent numbers are cleared, not kept. */
+  const accept = (entry, t, u) => {
+    if (t) entry.t = t; else delete entry.t;
+    if (u) entry.u = u; else delete entry.u;
+    delete entry.q;
+  };
+
+  const failed = [];
+  const worker = async () => {
+    for (let i = next++; i < entries.length; i = next++) {
+      const entry = entries[i];
+      const { t, u, why } = await measureFeed(`${MIRROR}${entry.id}${MIRROR_SUFFIX}`);
+      if (t || u) { accept(entry, t, u); measured++; } else failed.push({ entry, why });
+      done++;
+      if (onProgress && done % 100 === 0) onProgress(done, entries.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(COUNTS_CONCURRENCY, entries.length) }, worker));
+
+  // A SECOND PASS, SERIALLY, over whatever failed. `rangeGet` already retries a request
+  // three times, but that is the wrong granularity for the failure this catches: the
+  // mirror sheds under the concurrent pass and a feed loses all three attempts within a
+  // couple of seconds of each other. Re-reading the stragglers alone, one at a time and
+  // off the back of the burst, recovered every transient failure of the first
+  // catalogue-wide run. It is cheap because it is only ever tens of feeds — and when it
+  // is not cheap, the feeds are genuinely broken and worth the wait to say so.
+  const stillFailed = [];
+  for (const { entry, why } of failed) {
+    const retry = await measureFeed(`${MIRROR}${entry.id}${MIRROR_SUFFIX}`);
+    if (retry.t || retry.u) { accept(entry, retry.t, retry.u); measured++; continue; }
+    stillFailed.push({ entry, why: retry.why || why });
+  }
+  for (const { entry, why } of stillFailed) {
+    reasons.set(why, (reasons.get(why) || 0) + 1);
+    if (entry.t || entry.u) { entry.q = 1; carried++; } else { missing++; }
+  }
+
+  if (onProgress) onProgress(done, entries.length);
+  return { measured, carried, missing, retried: failed.length - stillFailed.length, reasons };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -590,7 +1071,11 @@ async function main() {
   let old = null;
   try { old = JSON.parse(await readFile(OUT_PATH, 'utf8')); } catch { /* first run */ }
   const priorBbox = new Map();
+  const priorCounts = new Map();
   for (const row of (old && Array.isArray(old.rows)) ? old.rows : []) {
+    // Counts are keyed independently of the box: a row whose bbox went bad still has
+    // perfectly good numbers, and vice versa.
+    if (row.t || row.u) priorCounts.set(String(row.id), { t: row.t, u: row.u, q: row.q });
     if (!Array.isArray(row.b)) continue;
     priorBbox.set(String(row.id), row.b);
     // A version-1 row's id was the Mobility Database source id as an integer, which
@@ -611,17 +1096,39 @@ async function main() {
 
   const { kept, removed: deduped } = dedupe(entries);
 
+  // Every row inherits whatever the last snapshot measured, BEFORE `--counts` gets a
+  // chance to improve on it. That ordering is what makes the default run a no-op for
+  // these two fields and a failed probe a silent hold rather than a loss.
+  for (const entry of kept) {
+    const prior = priorCounts.get(entry.id);
+    if (!prior) continue;
+    if (prior.t) entry.t = prior.t;
+    if (prior.u) entry.u = prior.u;
+    if (prior.q) entry.q = 1;
+  }
+
+  let counts = null;
+  if (WITH_COUNTS) {
+    chatter(colour(DIM, `Measuring ${kept.length} feeds over the mirror, `
+      + `${COUNTS_CONCURRENCY} at a time`));
+    counts = await measureAll(kept, (done, total) => {
+      chatter(colour(DIM, `  ${done}/${total}`));
+    });
+  }
+
   // Classify long-distance. A continent-sized box intersects every polygon a player
   // could draw, so Amtrak must not arrive uninvited with Chicago.
   let regional = 0;
   let inactive = 0;
   let authed = 0;
   let carried = 0;
+  let measured = 0;
   for (const entry of kept) {
     if (spanKm(entry.b) > REGIONAL_KM) { entry.r = 1; regional++; }
     if (entry.x) inactive++;
     if (entry.a) authed++;
     if (entry.k) carried++;
+    if (entry.t || entry.u) measured++;
   }
 
   // The snapshot date comes from the catalogue, never from a clock (see the header).
@@ -650,6 +1157,14 @@ async function main() {
       authed,
       carried,
       deduped,
+      measured,
+      counts: counts ? {
+        probed: true,
+        ok: counts.measured,
+        carried: counts.carried,
+        missing: counts.missing,
+        reasons: Object.fromEntries([...counts.reasons].sort((a, b) => b[1] - a[1] || cmpStr(a[0], b[0]))),
+      } : { probed: false },
       bytes: Buffer.byteLength(text),
       drops: Object.fromEntries([...drops].sort((a, b) => cmpStr(a[0], b[0]))),
       diff: delta,
@@ -669,12 +1184,23 @@ async function main() {
     line(delta.fresh
       ? `  new file: ${delta.added} rows`
       : `  ${delta.added} added, ${delta.removed} removed, ${delta.moved} bboxes moved, `
-        + `${delta.newlyRegional} newly regional`);
+        + `${delta.newlyRegional} newly regional, ${delta.resized} resized`);
     line(`  ${doc.count - regional} city feeds, ${regional} regional or long-distance `
       + `(over ${REGIONAL_KM} km), ${inactive} no longer updated, ${authed} need a key`);
     if (carried) {
       line(`  ${carried} kept a bounding box from the previous snapshot because the `
         + 'catalogue no longer publishes a usable one');
+    }
+    line(`  ${measured} carry a measured size, ${doc.count - measured} do not`
+      + (WITH_COUNTS ? '' : ' (run with --counts to measure)'));
+    if (counts) {
+      line(`  measured ${counts.measured} feeds over the mirror`
+        + (counts.retried ? `, ${counts.retried} of them only on the second pass` : '')
+        + (counts.carried ? `, ${counts.carried} held their previous numbers` : '')
+        + (counts.missing ? `, ${counts.missing} could not be measured at all` : ''));
+      for (const [why, n] of [...counts.reasons].sort((a, b) => b[1] - a[1] || cmpStr(a[0], b[0])).slice(0, 8)) {
+        chatter(colour(DIM, `    ${String(n).padStart(5)}  ${why}`));
+      }
     }
     line(verify.ok
       ? `  ${colour(GREEN, 'check OK')} — every invariant holds`

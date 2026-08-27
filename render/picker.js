@@ -38,12 +38,25 @@ import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, num } from '../lib/core.j
 import { bboxOf } from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
-  labelOf, placeOf, spanKmOf, sourceRefFor, osmSourceRef,
+  labelOf, placeOf, spanKmOf, sourceRefFor, osmSourceRef, exampleMapsFor,
 } from '../lib/catalog.js';
 import { esc } from './html.js';
 import {
-  renderResults, renderResultsSummary, renderPicks, renderPickerNote, PICK_CAP,
+  renderResults, renderResultsSummary, renderPicks, renderPickerNote, renderExampleMaps,
+  PICK_CAP,
 } from './landing.js';
+
+/**
+ * How many search results the box lists before it stops and says how many more matched.
+ *
+ * A subdivision query is what sets this: "new york" matches 101 rows, and every one of
+ * them ties at the weakest tier, so the cut lands in the middle of a field the ranking
+ * has no strong opinion about. 25 is enough to reach the NYC Subway, which sorts 22nd
+ * behind a dozen larger bus networks — 496 rail stations against their thousands of
+ * bus stops. It is a window, not a fix: `renderResultsSummary` still says how many
+ * more matched, because a list silently cut is a list lying about the catalogue.
+ */
+const SEARCH_LIMIT = 25;
 
 /** How close, in pixels, a click has to land to vertex 0 to close the ring. */
 const CLOSE_PX = 10;
@@ -123,6 +136,7 @@ export function initPicker(root, handlers = {}) {
   const finishBtn = $('draw-finish');
   const swRegional = $('include-regional');
   const swInactive = $('include-inactive');
+  const examplesBox = $('example-maps');
 
   const st = {
     doc,
@@ -177,8 +191,8 @@ export function initPicker(root, handlers = {}) {
 
   /**
    * How many of the run's feed slots are spoken for. The bring-your-own file or URL
-   * counts: `readSources` unions it with the map picks, so six picks plus a dropped
-   * zip is seven feeds, which is one more than a run merges.
+   * counts: `readSources` unions it with the map picks, so ten picks plus a dropped
+   * zip is eleven feeds, which is one more than a run merges.
    */
   function slotsUsed() {
     return st.selected.size + (st.byo ? 1 : 0);
@@ -201,8 +215,91 @@ export function initPicker(root, handlers = {}) {
   function commit() {
     renderPicksAndNote();
     renderResultsBox();
+    renderExamplesBox();
     syncSelectedLayer();
     onChange(new Map(st.selected));
+  }
+
+  // ── example maps ───────────────────────────────────────────────────────────
+
+  /** The chips this catalogue can serve; a dropped one is said once, in the console. */
+  const examples = (() => {
+    const found = exampleMapsFor(doc);
+    for (const gone of found.missing) {
+      // eslint-disable-next-line no-console
+      console.warn(`example map "${gone.key}" is not offered: ${gone.ids.join(', ')} `
+        + 'missing from the catalogue or behind an API key');
+    }
+    return found.examples;
+  })();
+
+  /**
+   * Which chip the selection IS right now, or null. Exact set equality over the
+   * catalogue picks — an extra feed or a removed one is no longer that city, and a
+   * pressed chip over a selection it does not describe is the chip lying.
+   */
+  function pressedExample() {
+    const picked = Array.from(st.selected.values())
+      .filter((ref) => ref.kind !== 'osm').map((ref) => ref.mdbId);
+    for (const ex of examples) {
+      if (ex.rows.length !== picked.length) continue;
+      const want = new Set(ex.rows.map((row) => row.id));
+      if (picked.every((id) => want.has(id))) return ex.key;
+    }
+    return null;
+  }
+
+  function renderExamplesBox() {
+    if (!examplesBox) return;
+    const html = renderExampleMaps(examples, { pressedKey: pressedExample() });
+    examplesBox.hidden = !html;
+    examplesBox.innerHTML = html;
+  }
+
+  /**
+   * Load one example: the chip REPLACES the catalogue picks rather than adding to
+   * them, because "Chicago" pressed after "New York" means Chicago, not a run that
+   * merges two cities a thousand kilometres apart. The bring-your-own feed is left
+   * alone — it lives in the form, not here — and so is a drawn shape, which is a
+   * border, not a pick. Everything goes through `addRow`, so the cap, the API-key
+   * refusal and the picks list see a chip exactly as they see ten clicks on Add.
+   */
+  function applyExample(key) {
+    const ex = examples.find((e) => e.key === key);
+    if (!ex) return;
+    st.blocked = [];
+    for (const [id, ref] of Array.from(st.selected)) {
+      if (ref.kind !== 'osm') st.selected.delete(id);
+    }
+    for (const row of ex.rows) {
+      const ref = sourceRefFor(st.doc, row);
+      if (slotsUsed() >= PICK_CAP) break;
+      st.selected.set(ref.id, ref);
+    }
+    commit();
+    fitRows(ex.rows);
+    if (picksCount && typeof picksCount.focus === 'function') safeFocus(picksCount);
+  }
+
+  /** Frame the map on a set of rows. A no-op until MapLibre has arrived. */
+  function fitRows(rows) {
+    if (!st.map || !rows.length) return;
+    let [s, w, n, e] = rows[0].b;
+    for (const row of rows) {
+      s = Math.min(s, row.b[0]); w = Math.min(w, row.b[1]);
+      n = Math.max(n, row.b[2]); e = Math.max(e, row.b[3]);
+    }
+    st.map.fitBounds([[w, s], [e, n]], { padding: 40, duration: reducedMotion() ? 0 : 600, maxZoom: 10 });
+  }
+
+  if (examplesBox) {
+    renderExamplesBox();
+    on(examplesBox, 'click', (event) => {
+      const btn = event.target.closest ? event.target.closest('[data-example]') : null;
+      if (!btn) return;
+      event.preventDefault();
+      applyExample(btn.getAttribute('data-example'));
+    });
   }
 
   function addRow(row) {
@@ -434,7 +531,7 @@ export function initPicker(root, handlers = {}) {
     // already told us which side of the regional threshold they are on (PLAN D15).
     st.searching = q.trim() !== '';
     const found = st.searching
-      ? searchCatalog(st.doc.rows, q, { limit: 20 })
+      ? searchCatalog(st.doc.rows, q, { limit: SEARCH_LIMIT })
       : { rows: [], total: 0 };
     st.results = found.rows;
     st.resultsTotal = found.total;
@@ -725,12 +822,20 @@ export function initPicker(root, handlers = {}) {
   };
 
   /**
-   * The selected feeds, as their own FeatureCollection.
+   * The selected feeds, as their own FeatureCollection: a marker AND the bounding
+   * box for each, so a pick shows the extent of what it adds to the run, not only
+   * where its middle is, and the box goes when the pick goes.
    *
    * They cannot come from the `feeds` source: that one clusters, and a clustered
    * point is not emitted as an individual feature — so at the zoom the map opens at,
    * where nearly every row is inside a cluster, a filter over `feeds` would match
    * nothing and pressing Add would change the map not at all.
+   *
+   * One source, two geometry types, layers filtered by `geometry-type`: the box is
+   * drawn from the same feature list as the marker, so the two can never disagree
+   * about which feeds are selected. The polygon carries no `mdb` on purpose — the
+   * click handler toggles whatever it hits, and a box the size of a county must not
+   * remove its feed when the reader clicks somewhere inside it.
    */
   function selectedFeatures() {
     const feats = [];
@@ -739,6 +844,12 @@ export function initPicker(root, handlers = {}) {
       const ref = st.selected.get(id);
       const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
       if (!row) continue;
+      const [s, w, n, e] = row.b;
+      feats.push({
+        type: 'Feature',
+        properties: { id, p: labelOf(row) },
+        geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] },
+      });
       feats.push({
         type: 'Feature',
         properties: { id, mdb: row.id, p: labelOf(row) },
@@ -772,6 +883,19 @@ export function initPicker(root, handlers = {}) {
     map.addSource('selected', { type: 'geojson', data: selectedFeatures() });
     map.addSource('hover', { type: 'geojson', data: EMPTY });
     map.addSource('draw', { type: 'geojson', data: drawFeatures() });
+
+    // The selected boxes go under every marker and the hover box, so a hovered
+    // neighbour still reads on top of a pick the size of a county.
+    map.addLayer({
+      id: 'selected-fill', type: 'fill', source: 'selected',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: { 'fill-color': p.gold, 'fill-opacity': 0.1 },
+    });
+    map.addLayer({
+      id: 'selected-line', type: 'line', source: 'selected',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: { 'line-color': p.gold, 'line-width': 1.4, 'line-opacity': 0.9 },
+    });
 
     map.addLayer({
       id: 'hover-fill', type: 'fill', source: 'hover',
@@ -820,6 +944,7 @@ export function initPicker(root, handlers = {}) {
     });
     map.addLayer({
       id: 'feeds-selected', type: 'circle', source: 'selected',
+      filter: ['==', ['geometry-type'], 'Point'],
       paint: {
         'circle-color': p.gold,
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 5, 10, 9, 14, 13],

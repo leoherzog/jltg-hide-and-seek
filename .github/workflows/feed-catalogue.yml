@@ -1,0 +1,149 @@
+# .github/workflows/feed-catalogue.yml — refresh data/feeds.json from the Mobility
+# Database, and measure how big each feed is while it is there.
+#
+# This is the ONLY workflow in this repo that is not part of the OSM world build, and
+# it is the cheap one: no planet extract, no osmium, no R2 credential, no disk
+# pressure. One `actions/checkout`, one Node, two commands, about four minutes.
+#
+# WHAT IT RUNS, AND WHY IN THAT ORDER
+#
+#   node tools/mdb-snapshot.mjs --counts     rewrite data/feeds.json from the CSV, then
+#                                            measure every feed over the mirror
+#   node tools/mdb-snapshot.mjs --check      re-validate the file that was just written
+#
+# The build already ends with its own `checkSnapshot` and exits non-zero when that
+# fails, so the second command is belt and braces — it re-reads the file FROM DISK,
+# which catches a serialisation bug the in-memory check would sail past. It costs a
+# second.
+#
+# IT OPENS A PULL REQUEST. IT DOES NOT PUSH TO main.
+#
+# AGENTS.md: "`data/feeds.json` is generated, tracked, and read as a diff." A workflow
+# that committed straight to the default branch would keep the file fresh and quietly
+# delete the review step that makes it trustworthy — the diff summary the tool prints
+# is written to be READ, and `--check`'s example-map assertions exist to fail in front
+# of a human when a refresh drops an operator a landing-page chip names. So the run
+# ends at a PR with that summary in the body, and a person merges it.
+#
+# `gh` is preinstalled on the runner and is the whole PR mechanism here; no
+# third-party action is involved in moving these bytes.
+#
+# CADENCE. Monthly, on the 6th — deliberately not the 1st, which is when every other
+# repo's monthly cron fires, and clear of world-density-shards (the 3rd) and
+# world-feature-shards (the 4th) so a human reviewing catalogue diffs is not also
+# reviewing a world rebuild. The upstream catalogue moves at the pace of transit
+# agencies publishing, which is to say slowly; nothing breaks if a month is missed.
+#
+# THE COUNTS ARE A MEASUREMENT, AND THAT IS WHY THEY LIVE IN CI. `--counts` reads
+# three HTTP ranges per feed out of MobilityData's mirror — about 135 MB and two
+# minutes for 3,309 feeds, with `stop_times.txt` never touched. It is the one part of
+# this tool that is not a pure function of the CSV (see the tool's header), so it is
+# opt-in there and explicit here: a human refreshing the catalogue by hand gets the
+# old numbers carried forward untouched, and this workflow is what keeps them current.
+#
+# A feed the mirror will not serve is NOT a failure. It keeps its previous numbers and
+# is marked `q`; 19 of 3,309 were unmeasurable on the calibration run — empty archives,
+# two zero-byte objects, three mirror objects that are HTML error pages. The job fails
+# only when `--check` does, which means the FILE is wrong rather than the internet.
+#
+# NOT verified by running this file: I cannot execute GitHub Actions from here. The
+# two commands were run locally against the live catalogue; the YAML is unverified
+# until dispatched.
+
+name: feed-catalogue
+
+on:
+  workflow_dispatch:
+    inputs:
+      counts:
+        description: "Measure each feed's stops and routes over the mirror (adds ~2 min)"
+        required: false
+        type: boolean
+        default: true
+      regional_km:
+        description: "Box span above which a feed is long-distance and becomes opt-in"
+        required: false
+        type: string
+        default: "250"
+  schedule:
+    # 06:00 UTC on the 6th. See §Cadence above for why not the 1st.
+    - cron: "0 6 6 * *"
+
+concurrency:
+  group: feed-catalogue
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # The tool is zero-dependency and ESM, and uses `AbortSignal.timeout` and
+          # `Buffer.readBigUInt64LE`. 24 is what tools/ is documented against.
+          node-version: "24"
+
+      - name: rebuild the catalogue
+        id: build
+        env:
+          # A dispatch with counts unchecked skips the measurement pass; a scheduled
+          # run always measures, which is the entire reason this is scheduled.
+          COUNTS: ${{ github.event_name == 'schedule' && 'true' || inputs.counts }}
+          REGIONAL_KM: ${{ inputs.regional_km || '250' }}
+        run: |
+          set -euo pipefail
+          args=(--regional-km "$REGIONAL_KM")
+          # `[ ... ] && ...` would exit the whole step under `set -e` when the test is
+          # false, silently skipping the build. An `if` is the only safe spelling here.
+          if [ "$COUNTS" = "true" ]; then args+=(--counts); fi
+          echo "::group::mdb-snapshot ${args[*]}"
+          node tools/mdb-snapshot.mjs "${args[@]}" | tee /tmp/snapshot.log
+          echo "::endgroup::"
+          # The summary the tool prints IS the review aid; carry it into the PR body
+          # and the job summary rather than making a reviewer open the log.
+          sed -n '/feeds,.*bytes, snapshot/,$p' /tmp/snapshot.log > /tmp/summary.txt
+          cat /tmp/summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: re-validate the written file
+        run: node tools/mdb-snapshot.mjs --check
+
+      - name: open a pull request if anything moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- data/feeds.json; then
+            echo "data/feeds.json is unchanged; nothing to open." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # One long-lived branch, force-pushed. A monthly job that opened a new branch
+          # every run would leave a year of stale catalogue PRs behind it.
+          branch=chore/feed-catalogue
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add data/feeds.json
+          git commit -m "Refresh Feed Catalogue Snapshot" -m "$(cat /tmp/summary.txt)"
+          git push --force origin "$branch"
+
+          if gh pr view "$branch" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            echo "Updated the open PR on $branch." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "$branch" \
+            --title "Refresh Feed Catalogue Snapshot" \
+            --body "$(printf '%s\n\n```\n%s\n```\n\n%s\n' \
+              'Regenerated by `.github/workflows/feed-catalogue.yml` from the Mobility Database CSV.' \
+              "$(cat /tmp/summary.txt)" \
+              'Read the diff, not just the summary — `data/feeds.json` is one JSON object per line so a moved bounding box or a resized system shows as its own changed line.')"

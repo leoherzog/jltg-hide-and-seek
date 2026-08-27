@@ -1001,8 +1001,8 @@ function readSources(form) {
     };
   }
   // The cap is enforced HERE as well as in the picker, because the two halves add:
-  // the picker refuses a seventh MAP pick, and a reader with six of those can still
-  // drop a zip into "Or bring your own feed". Every feed past the sixth is memory and
+  // the picker refuses an eleventh MAP pick, and a reader with ten of those can still
+  // drop a zip into "Or bring your own feed". Every feed past the tenth is memory and
   // minutes the merge has no bound on, so this is a refusal, not a warning.
   if (sources.length > MAX_FEEDS_PER_RUN) {
     return {

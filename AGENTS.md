@@ -39,6 +39,7 @@ node tools/smoke.mjs --merge-pipeline  # also run a merged feed end to end (off 
 node tools/smoke.mjs --no-merge        # goldens only
 node tools/mdb-snapshot.mjs --check    # validate data/feeds.json, no network
 node tools/mdb-snapshot.mjs            # refresh it from the Mobility Database CSV
+node tools/mdb-snapshot.mjs --counts   # ...and re-measure every feed's size over the mirror
 ```
 
 `smoke.mjs` imports `runPipeline` from `worker.js` directly — no browser, no Worker global — and
@@ -96,6 +97,15 @@ need an amendment to it. The picker's map must be `destroy()`ed before the run s
 never be folded into `PAGE_RUNTIME_JS`'s `String.raw` template (§05's map lives there; a backtick
 would end it).
 
+The **example-map chips** under the lede ("Chicago", "New York", …) are `lib/catalog.js`'s
+`EXAMPLE_MAPS`: hand-curated lists of catalogue ids, public operators only — no campus loops,
+tourist cruises or private coaches, however close to the centre they sit. A chip replaces the
+catalogue picks through the picker's own `commit()` funnel, so it is not a way in for a
+selection setter. `tools/mdb-snapshot.mjs --check` fails when a chip names a row the snapshot
+no longer has, so a catalogue refresh that drops an operator is caught at review, not on the
+page; `exampleMapsFor` additionally hides a chip at runtime rather than offer a city with a
+feed missing.
+
 `data/feeds.json` is a **build artifact reviewed as a diff**, not a live fetch — the same discipline
 as `tools/osm-world/categories.json`. `tools/mdb-snapshot.mjs` regenerates it from the Mobility
 Database's open CSV, prints a summary of what changed against the file already on disk, and
@@ -103,7 +113,19 @@ Database's open CSV, prints a summary of what changed against the file already o
 comes from the catalogue's own newest `extracted_on`, so a rerun against the same CSV is
 byte-identical *given the same two inputs*: the CSV, and the `data/feeds.json` already on disk,
 which a row whose upstream bounding box has been withdrawn borrows a city-sized box from (those
-rows carry `k`, and the run prints how many did). Refreshing it is a checklist item, not a
+rows carry `k`, and the run prints how many did).
+
+`--counts` is the ONE part of that tool which is not a function of the CSV, which is why it is
+opt-in. The catalogue records where a feed is and never how big it is — there is no stop or route
+column, and both APIs that carry one need a credential a public build cannot hold — so `--counts`
+measures the feeds themselves: three HTTP Range requests each, reading the zip's central directory
+and then only `stops.txt` and `routes.txt`, never the `stop_times.txt` that is 90% of the archive.
+3,290 of 3,309 feeds measure in about two minutes; the 19 that do not are empty archives, zero-byte
+mirror objects and three HTML error pages, and they hold their previous numbers under `q` rather
+than failing the run. A plain `node tools/mdb-snapshot.mjs` carries `t`/`u` forward untouched, so
+refreshing the catalogue by hand never needs the network beyond the CSV.
+`.github/workflows/feed-catalogue.yml` runs it monthly with `--counts` and opens a PR — it never
+pushes to `main`, because the diff is the review. Refreshing it is a checklist item, not a
 memory — the catalogue rots silently.
 
 Three things about the merge that are load-bearing and non-obvious:
@@ -289,6 +311,9 @@ development, carried forward as a record of what was checked.
   versions without checking the kit.
 - `data/feeds.json` is generated, tracked, and read as a diff. Edit `tools/mdb-snapshot.mjs` and
   regenerate; never hand-patch a row, and never make the page fetch the upstream CSV at load.
+  A row's `t` (stations, or stops where the feed models no stations) and `u` (routes) are
+  MEASURED from the feed, not read from the catalogue — `searchCatalog` ranks on `t`, so a row
+  that loses them silently sorts to the bottom of its own city.
 - Page prose is templated, not generated. The deleted CLI measured local LLMs for exactly this and
   removed the feature after it invented facts a validator couldn't catch — do not reintroduce
   model-written prose.

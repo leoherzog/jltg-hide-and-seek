@@ -254,7 +254,7 @@ function normaliseSources(source) {
     out.push({ arg, ring, id: isRef ? String(item.id || '') : '', label, mdbId });
   }
   if (!out.length) throw new Error('The run message carried no feed to read.');
-  // CONTRACT.md §(d) bounds the list at both ends. The page refuses the seventh feed
+  // CONTRACT.md §(d) bounds the list at both ends. The page refuses the eleventh feed
   // twice over before it gets here, so this is the backstop for a message that came
   // from somewhere else — a stale tab, a hand-built `postMessage` — rather than a
   // sentence anyone should be able to reach through the UI.
