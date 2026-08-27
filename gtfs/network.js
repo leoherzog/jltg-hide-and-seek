@@ -756,7 +756,11 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
   for (const sid of served) events[sid] = day.stopDays[sid].departures.length;
 
   const centres = zoneCover(served, radiusM, events, pos);
-  const centresHalf = zoneCover(served, HALF_MILE_M, events, pos);
+  // At LARGE the zone radius IS the half-mile radius, and nothing here mutates a
+  // cover, so the two share one greedy pass rather than running it twice.
+  const centresHalf = radiusM === HALF_MILE_M
+    ? centres
+    : zoneCover(served, HALF_MILE_M, events, pos);
 
   const points = served.map((sid) => pos[sid]);
   const [, hullArea, diameter] = s1HullAndShape(points);
@@ -810,7 +814,9 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
   const reachableCentres = Object.create(null);
   if (origin) {
     const run = raptor(day, [origin], depart);
-    hubTimes = Object.keys(run.arrivalS).sort(cmpStr)
+    // Unsorted keys on purpose: the map turns them into plain numbers before the
+    // cmpNum sort, so the key order cannot be observed. Do not restore a cmpStr sort.
+    hubTimes = Object.keys(run.arrivalS)
       .map((sid) => (run.arrivalS[sid] - depart) / 60.0).sort(cmpNum);
     for (const minutes of [30, 60, 180]) {
       let reach = 0;
@@ -834,7 +840,8 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
   const p90s = [];
   for (const sid of sample) {
     const run = raptor(day, [sid], depart);
-    const values = Object.keys(run.arrivalS).sort(cmpStr)
+    // Unsorted keys on purpose — same reasoning as the hub run above.
+    const values = Object.keys(run.arrivalS)
       .map((k) => (run.arrivalS[k] - depart) / 60.0).sort(cmpNum);
     if (values.length >= 50) p90s.push(quantile(values, 0.90));
   }

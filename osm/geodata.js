@@ -238,6 +238,7 @@ export const CATEGORY_FEATURE_BUDGET = 40000;  // above this, a category is coun
 export const LEGAL_SPOTS_PER_ZONE = 40;        // cap on the per-zone shortlist (page size guard)
 export const TOILET_WIDE_FACTOR = 1.5;         // A1's "just outside the circle" fallback ring
 export const REDUNDANT_PAIR_FRACTION = 0.05;   // 1/20 of the map diagonal (specs/osm.md §7.4)
+export const REDUNDANT_PAIR_MAX_M = 5000.0;    // …and never further than this — see `redundantPairs`
 // Buffering every walkable way by 5 m is the most expensive thing this program can ask
 // a shared free service to do. Measured on the reference bbox (84,466 non-motorway
 // highway ways) it timed out on all three mirrors, twice, costing 7½ minutes for an
@@ -1758,13 +1759,23 @@ function iconOffsetP90(pois, proj) {
  *
  * GR's zoo and aquarium are 81 m apart, so the two matching questions are the same
  * bit for six cards (specs/osm.md §7.4).
+ *
+ * The threshold is a fraction of the map diagonal UNDER AN ABSOLUTE CEILING, and the
+ * ceiling is not decoration: this feeds a sentence printed on the page claiming two
+ * icons are effectively in the same place, and the fraction alone scales with the
+ * border. On a city it lands at a kilometre or two, which is the scale the claim is
+ * true at; at a twentieth of a large border's diagonal the two questions plainly
+ * are not the same bit and the note is simply false. The cap binds above a ~100 km
+ * zone-centre diagonal, which a regional feed reaches long before a country does —
+ * MBTA's is 168 km, where it cuts the threshold from 8.4 km to 5 km. Measured
+ * 2026-08-26: no MBTA pair falls in that band, so no page moves today.
  */
 function redundantPairs(pois, proj, diagonalM) {
   const singles = Object.keys(pois)
     .filter((k) => pois[k].length === 1)
     .sort(cmpStr);
   const out = [];
-  const threshold = diagonalM * REDUNDANT_PAIR_FRACTION;
+  const threshold = Math.min(diagonalM * REDUNDANT_PAIR_FRACTION, REDUNDANT_PAIR_MAX_M);
   for (let i = 0; i < singles.length; i++) {
     for (let j = i + 1; j < singles.length; j++) {
       const pa = pois[singles[i]][0];
@@ -2038,6 +2049,15 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     } else if (outcome.kind === 'counted') {
       counts[key] = outcome.upperBound;
       partialCategories.add(key);
+      // A COUNTED LAYER WAS READ. `worldCount` walked this layer's R-tree and came back
+      // with a number; only the feature bytes were skipped, and only because there were
+      // too many of them to put on a page. Leaving it out of `layersRead` made a border
+      // where EVERY category is over budget — a country rather than a city — fall into
+      // the fatal branch below with an EMPTY reason list, reporting a scale problem as
+      // an origin failure, which is the exact confusion the comment there warns about.
+      // CONTRACT.md §(f) rule 1 is "not one world-file layer could be read"; this is one
+      // that could.
+      layersRead += 1;
       log('warn', `category ${key} has ~${outcome.upperBound} features `
         + `(> ${CATEGORY_FEATURE_BUDGET}): counted, not fetched`);
     } else if (outcome.kind === 'read') {

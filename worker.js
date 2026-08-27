@@ -652,6 +652,13 @@ export async function runPipeline(options, source, emit) {
     return null;
   }
 
+  // Built once, sent twice. CONTRACT.md §(d) carries these rows on the `'network'`
+  // stage AND in the `Report`, and nothing between the two touches `feed`, `days`,
+  // `best` or `zones`, so the `'done'` payload below reuses this array. On the worker
+  // path each `postMessage` clones it and the two messages stay independent; in Node
+  // (`tools/smoke.mjs`) they are one array, which neither consumer writes to.
+  const stops = stopRows(feed, days, best, zones);
+
   post({
     type: 'stage',
     stage: 'network',
@@ -667,7 +674,7 @@ export async function runPipeline(options, source, emit) {
       zoneReach,
       routeSpokes: spokes.spokes,
       spokeCap: spokes.cap,
-      stops: stopRows(feed, days, best, zones),
+      stops,
       proj: proj.toJSON(),
     },
   });
@@ -900,7 +907,7 @@ export async function runPipeline(options, source, emit) {
     // Not in the CLI's `Report`; CONTRACT.md §(d) sends both on their stages and
     // the renderers read them off the report object.
     caps,
-    stops: stopRows(feed, days, best, zones),
+    stops,
   };
 
   post({ type: 'done', report });

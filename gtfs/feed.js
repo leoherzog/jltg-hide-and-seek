@@ -46,6 +46,10 @@
  *     tripRows(feed)                // Map<trip_id, Int32Array of row indices,
  *                                   //     sorted by int(stop_sequence)>
  *
+ * `st.length` is the row count — never `arrv.length`. The arrays are allocated in
+ * whole steps and `compact()` leaves a small over-allocated tail where it is rather
+ * than copying six of them to trim it, so the two can differ.
+ *
  * `feed.tables.stop_times` is still present and still behaves like an array of row
  * dicts — it is a lazy `Proxy` over the store that materialises a row object on
  * index access, so `.length`, `for…of`, `.map`, `.filter` and `[i]` all work. Two
@@ -568,6 +572,26 @@ export class StopTimes {
     if (want <= this._cap) return;
     let cap = this._cap || 1024;
     while (cap < want) cap *= 2;
+    this._grow(cap);
+  }
+
+  /**
+   * Size the arrays to exactly `want` rows, skipping the doubling ladder.
+   *
+   * `readStopTimes` can name the row count to within about a tenth before it has
+   * finished the first trip — the zip entry declares the member's uncompressed size
+   * and the opening rows declare their own width — and MBTA's 2.15 M rows otherwise
+   * climb eleven doublings to a capacity nearly twice what they need, each step
+   * holding the old arrays and the new ones at once. Growth past this point still
+   * goes through `_reserve`, so an estimate that lands low costs one doubling and
+   * nothing else. Capacity reaches no value, so neither can move a number.
+   */
+  _reserveExact(want) {
+    if (want > this._cap) this._grow(want);
+  }
+
+  /** Reallocate every column at `cap` rows, `cap` being larger than the current one. */
+  _grow(cap) {
     const grow = (old, Ctor) => { const a = new Ctor(cap); a.set(old); return a; };
     this.trip = grow(this.trip, Uint32Array);
     this.stop = grow(this.stop, Uint32Array);
@@ -614,10 +638,20 @@ export class StopTimes {
     this.length = i + 1;
   }
 
-  /** Trim the over-allocated tail once loading is finished. */
+  /**
+   * Trim the over-allocated tail once loading is finished.
+   *
+   * Six slices copy the whole store, so a tail too small to be worth that is left
+   * where it is: every reader goes through `st.length` and none has ever asked a
+   * column for its own. The cut is an eighth, which is the headroom `readStopTimes`
+   * pre-sizes with plus the slack in its estimate, so a store that landed near its
+   * estimate keeps its tail. A store that came off the doubling ladder instead — a
+   * merge, a `frequencies.txt` rebuild — normally sits well above that and is
+   * trimmed exactly as before.
+   */
   compact() {
     const n = this.length;
-    if (n === this._cap) return;
+    if (this._cap - n <= (n >> 3)) return;
     this.trip = this.trip.slice(0, n);
     this.stop = this.stop.slice(0, n);
     this.seqv = this.seqv.slice(0, n);
@@ -823,10 +857,37 @@ async function readTable(entry) {
   return rows;
 }
 
+/** Rows measured before the store is pre-sized — one trip's worth, near enough. */
+const RESERVE_SAMPLE_ROWS = 64;
+
+/**
+ * A deflate ratio no CSV reaches. The pre-size below trusts the central directory's
+ * uncompressed size, and a corrupt or hostile one would otherwise be an allocation
+ * this reader makes on the archive's say-so; past the guard the doubling ladder
+ * takes over, which is what a feed got before there was a pre-size at all.
+ */
+const RESERVE_MAX_RATIO = 64;
+
+/**
+ * A floor under the measured row width. The pre-size divides the member's declared
+ * size by what the opening rows are wide, so a sample NARROWER than the rest of the
+ * file scales the allocation up — blank times and one-character ids in the first
+ * trip would size the store for rows the file does not contain. The narrowest
+ * 64-row window in any cached feed averages 36 units, so this never binds on a real
+ * feed; past it the doubling ladder takes over.
+ */
+const RESERVE_MIN_ROW_WIDTH = 24;
+
 async function readStopTimes(entry) {
   const st = new StopTimes();
   let header = null;
   let iTrip = -1; let iArr = -1; let iDep = -1; let iStop = -1; let iSeq = -1; let iDist = -1;
+  // Row width, measured rather than assumed: a Rapid row is half an MBTA one and no
+  // single bytes-per-row constant is within reach of both. The measure under-counts
+  // slightly — UTF-16 units against a byte count, one terminator against CRLF — so
+  // the row estimate errs high, which is the safe direction and what `compact()` is.
+  let sampled = 0;
+  let sampledWidth = 0;
   await streamCsv(entry, (fields) => {
     if (header === null) {
       header = fields.map((f) => f.trim());
@@ -838,6 +899,18 @@ async function readStopTimes(entry) {
       iDist = header.indexOf('shape_dist_traveled');
       if (iDist >= 0) st.enableDist();
       return;
+    }
+    if (sampled < RESERVE_SAMPLE_ROWS) {
+      for (const f of fields) sampledWidth += f.length;
+      sampledWidth += fields.length;                      // the commas, and the newline
+      if (++sampled === RESERVE_SAMPLE_ROWS) {
+        const bytes = Math.min(entry.size, entry.compressedSize * RESERVE_MAX_RATIO);
+        // A sixteenth of headroom, so an estimate landing a shade low still fits
+        // without a doubling — and a tail this small is one `compact()` leaves.
+        const width = Math.max(sampledWidth, sampled * RESERVE_MIN_ROW_WIDTH);
+        const rows = Math.trunc((bytes * sampled * 17) / (width * 16));
+        if (Number.isFinite(rows)) st._reserveExact(rows);
+      }
     }
     const cell = (k) => (k >= 0 && k < fields.length ? fields[k] : '');
     const arr = hmsToS(cell(iArr));
