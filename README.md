@@ -70,6 +70,29 @@ says so, because each one costs a download and a parse. Selecting more than one 
 border, and two metros make a big border. That happens once, the first time you go past one feed;
 after that the switch is yours. Untick it if you want the full audit and have the time.
 
+**Where the game is played.** As soon as you pick a feed, a gold rectangle appears on the map: the
+game border, fitted to what you picked. Drag a corner, drag an edge, drag the middle to move the
+whole thing, or type the four numbers — South, West, North and East — into the fields under the map;
+Shift+↑ and Shift+↓ in a field nudge that edge, so the keyboard does everything the handles do.
+Buttons beside them fit the border back to the feeds, seed it from where two systems overlap, box a
+shape you drew, or shrink and grow it 10 % at a time. **Leave it alone and nothing changes**: an
+untouched border is inferred from what the start stop can actually reach, exactly as before. Touch
+it and the box becomes the game — the stops outside it stop counting, and so do the zones, the size
+vote, the crossing time and the score.
+
+**"Re-run with this border."** Some maps are two games in one. CTA + Metra + Pace + the Water Taxi
+measures LARGE, because the outer Pace and Metra stops stretch the map across the whole metro,
+though the game most people mean to play is the core. So the report asks a narrower question: is
+there a tighter box — everything the start stop can reach inside one hiding period — that measures
+as a smaller, self-consistent game? When there is, §01 says so in plain numbers (on that Chicago
+run: 11,430 of 24,705 stops, carrying 77 % of the day's departures, a MEDIUM game rather than
+LARGE; of the 13,275 stops left outside, 12,281 are Pace), draws the suggested box on the map
+beside the current one, and offers a button. Pressing it re-runs everything inside that border. The
+feeds come back out of the browser's cache, so the second run downloads nothing, and a chip at the
+top of the page says which run you are looking at and what the last one measured. The suggestion is
+an offer the report never applies on its own, and it appears only when it would change the answer —
+so re-running inside the suggested box is the end of it, not the start of a loop.
+
 The map is optional, not load-bearing: search, Add and Analyse all work before the map library
 loads, and if it never loads.
 
@@ -80,13 +103,13 @@ map layer entirely — everything the feed alone can answer still runs, and ever
 sub-score that needs map features is excluded from the denominator, not guessed at.
 
 **Overrides.** The Advanced panel also holds an override for every inference — game size, zone
-radius, hiding period, start stop, border shape and box, departure time, analysis date, excluded
-stops and routes. One more control wakes up once you've drawn a shape on the map: *Use the shape I
-drew as the game border*, which takes that shape's bounding box instead of one fitted to the
-network — and a border box typed in by hand still wins over it. Everything is inferred by default;
-the overrides exist for when you disagree, or when your group has already agreed on a border. Two
-more switches manage the feed cache: one
-re-downloads a feed the browser has already cached (worth flipping when the agency publishes a new
+radius, hiding period, start stop, border shape, departure time, analysis date, excluded stops and
+routes. The border box itself is no longer typed in here: the panel shows the four numbers read-only
+and the map above is where you edit them, so the two can never disagree. Everything is inferred by
+default; the overrides exist for when you disagree, or when your group has already agreed on a
+border. Excluding stops or routes now narrows the whole report, not just the border — the excluded
+stops stop counting toward the zones, the size and the score. Two more switches manage the feed
+cache: one re-downloads a feed the browser has already cached (worth flipping when the agency publishes a new
 one), and one does the opposite — a cache miss becomes an error, so a run either reproduces exactly
 what an earlier run saw or stops and says so.
 

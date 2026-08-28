@@ -12,6 +12,13 @@
 //   node tools/smoke.mjs [--feed <path>] [--quiet] [--json]
 //                        [--no-merge] [--merge-pipeline]
 //
+// After the goldens, and before the merge phases, the BORDER scenario (B1) runs the
+// same feed a second time with `borderBbox` set to a box that clips about 20 % of
+// the served stops off the south edge. It asserts the in-play facts CONTRACT.md
+// §(b) Metrics "Stop set" promises — the measured set shrank, the whole-feed count
+// is still reported, the border is the reader's box unpadded — as SHAPE checks and
+// relations, never as golden numbers: a clipped run is not a stable reference.
+//
 // After the goldens it runs the MERGE phases, which cover `gtfs/merge.js` and carry
 // their own pass/fail count, reported on its own line so the 19 above stay legible:
 //
@@ -99,6 +106,13 @@ const PIPELINE_OPTS = {
   offline: false,
   refresh: false,
 };
+
+// The B1 border: the reference feed's served stops span S 42.837874 → N 43.043655,
+// and the 20th percentile of their latitudes is 42.898863 (measured 2026-08-27), so
+// a south edge at 42.8989 keeps ~1,190 of 1,490 stops — enough to stay MEDIUM and
+// well clear of `IN_PLAY_MIN_SHARE`, which is the point: the scenario is "the reader
+// trimmed the map", not "the reader missed the city". W/N/E are the feed's own box.
+const BORDER_CLIP_BBOX = Object.freeze([42.8989, -85.88913, 43.043655, -85.530098]);
 
 // ── console helpers ──────────────────────────────────────────────────────────
 
@@ -571,6 +585,102 @@ async function main() {
     line('');
   }
 
+  // ── B1 · a supplied border ────────────────────────────────────────────────
+  // The second scenario: the same feed with `borderBbox` clipping the south fifth.
+  // Every assertion is a relation to the plain run above or a shape — the served
+  // count fell, the unfiltered count is still 1,490, the border is the box itself
+  // with no padding and says so, and no row of the stop table lies outside it.
+  /** @type {Array<{name:string,expected:string,actual:string,pass:boolean}>} */
+  const borderResults = [];
+  {
+    line('The in-play set (CONTRACT.md §(b) Metrics "Stop set")');
+    const bis = (name, got, want) => borderResults.push({
+      name, expected: show(want), actual: show(got), pass: got === want,
+    });
+
+    // Additive (2026-08-27): the Border and Metrics fields the in-play set added,
+    // read off the PLAIN run above. There the set is null all the way down, so
+    // these describe the whole feed; they live here rather than among the goldens
+    // so the 19 stay the 19.
+    const b = report.border || {};
+    bis('plain.trimmedStopIds', Array.isArray(b.trimmedStopIds), true);
+    bis('plain.derivation', b.derivation || null, 'reach');
+    bis('plain.rawBbox', Array.isArray(b.rawBbox) && b.rawBbox.length === 4, true);
+    bis('plain.allServedStops', m.allServedStops, 1490);
+    bis('plain.inPlayFallback', m.inPlayFallback, false);
+    // `suggestBorder` (2026-08-27) on the reference feed: 1,484 of its 1,490 served
+    // stops are within one 60-minute hiding period of Central Station one-way, a
+    // 0.4 % trim under `SUGGEST_MIN_TRIM_SHARE`, so the gate says nothing to offer.
+    // Measured, not assumed; the field is present and null, and a run that starts
+    // offering a border here has moved the reach model or the threshold.
+    bis('plain.suggestedBorder', 'suggestedBorder' in report && report.suggestedBorder === null, true);
+
+    line('  B1 · the same feed inside a border clipping the south fifth');
+    let clipFatal = null;
+    const clipSource = typeof File === 'function'
+      ? new File([bytes], path.basename(FEED_PATH), { type: 'application/zip' })
+      : Object.assign(new Blob([bytes], { type: 'application/zip' }),
+        { name: path.basename(FEED_PATH) });
+    const clipOpts = {
+      source: path.basename(FEED_PATH), ...PIPELINE_OPTS, borderBbox: Array.from(BORDER_CLIP_BBOX),
+    };
+    let clipped = null;
+    try {
+      clipped = await runPipeline(clipOpts, clipSource, (msg) => {
+        if (msg.type === 'error' && msg.fatal) clipFatal = `${msg.stage}: ${msg.message}`;
+      });
+    } catch (err) {
+      clipFatal = err && err.stack ? err.stack : String(err);
+    }
+    bis('border.fatal', clipFatal, null);
+    bis('border.report', Boolean(clipped), true);
+    if (clipped) {
+      const cm = clipped.metrics || {};
+      const cb = clipped.border || {};
+      const allServed = Number(m.servedStops) || 0;
+      const served = Number(cm.servedStops) || 0;
+      // Fewer than the whole feed, more than the fallback floor — the clip was a
+      // trim, not a miss, and no fallback fired.
+      bis('border.served_stops', served < allServed && served > 0.5 * allServed, true);
+      bis('border.allServedStops', cm.allServedStops, 1490);
+      bis('border.inPlayFallback', cm.inPlayFallback, false);
+      bis('border.size', clipped.size ? clipped.size.name : null, 'medium');
+      bis('border.derivation', cb.derivation || null, 'option');
+      bis('border.padM', cb.padM, 0);
+      bis('border.bbox', JSON.stringify(cb.bbox), JSON.stringify(BORDER_CLIP_BBOX));
+      bis('border.rawBbox', JSON.stringify(cb.rawBbox), JSON.stringify(cb.bbox));
+      bis('border.trimmedStopIds', Array.isArray(cb.trimmedStopIds), true);
+      // The stop table and the zones are the in-play set, not the feed: nothing
+      // south of the box may appear on the map.
+      const [bs, bw, bn, be] = BORDER_CLIP_BBOX;
+      const inside = (r) => bs <= r.lat && r.lat <= bn && bw <= r.lon && r.lon <= be;
+      bis('border.stops_inside', (clipped.stops || []).every(inside), true);
+      bis('border.stops_rows', (clipped.stops || []).length, served);
+      // The hub run covers the whole network whatever the in-play set is, so the reach
+      // counts have to be narrowed to the set as well: §05 and the A2 finding print
+      // `reachWithinHidingPeriod` and `servedStops` against each other, and this used
+      // to read "1,486 of 1,190 served stops". A count can never exceed its own
+      // denominator. (2026-08-27.)
+      bis('border.reach_le_served', cm.reachWithinHidingPeriod <= served, true);
+      bis('border.reach_by_size_le_served',
+        Object.values(cm.reachWithinHidingPeriodBySize || {}).every((n) => n <= served), true);
+      // Zone MEMBERS are the in-play set too, not just the zone centres: a stop the box
+      // deleted must not go on contributing its departures to a zone's headway and its
+      // id to the strategy view's "N stops inside the circle".
+      const known = new Set((clipped.stops || []).map((r) => r.stopId));
+      bis('border.zone_members_in_play',
+        (clipped.zones || []).every((z) => (z.stopIds || []).every((sid) => known.has(sid))), true);
+      bis('border.zones_fewer', (clipped.zones || []).length < (report.zones || []).length, true);
+      // The hub is still the reference hub — Central Station is well inside the box.
+      bis('border.hub', clipped.hub ? clipped.hub.stopId : null, '1');
+    }
+    for (const r of borderResults) {
+      const tag = r.pass ? colour(GREEN, 'PASS') : colour(RED, 'FAIL');
+      line(`  ${tag}  ${r.name.padEnd(24)} expected ${r.expected.padEnd(12)} actual ${r.actual}`);
+    }
+    line('');
+  }
+
   // ── the merge phases ──────────────────────────────────────────────────────
   // Reported on their own line: the 19 above are the algorithm's fingerprint and
   // must stay legible, and a merge assertion is a different kind of claim.
@@ -595,11 +705,13 @@ async function main() {
   }
 
   const failed = results.filter((r) => !r.pass);
+  const borderFailed = borderResults.filter((r) => !r.pass);
   const mergeFailed = mergeResults.filter((r) => !r.pass);
   if (JSON_OUT) {
     process.stdout.write(`${JSON.stringify({
       mode: NO_MERGE ? 'goldens' : (MERGE_PIPELINE ? 'goldens+merge+pipeline' : 'goldens+merge'),
       results,
+      borderResults,
       mergeResults,
       mergeSkips,
       degradations,
@@ -610,6 +722,10 @@ async function main() {
     ? colour(RED, `SUMMARY: ${results.length - failed.length}/${results.length} golden numbers pass `
       + `— ${failed.map((f) => f.name).join(', ')} FAILED`)
     : colour(GREEN, `SUMMARY: ${results.length}/${results.length} golden numbers pass`));
+  line(borderFailed.length
+    ? colour(RED, `BORDER:  ${borderResults.length - borderFailed.length}/${borderResults.length} `
+      + `border assertions pass — ${borderFailed.map((f) => f.name).join(', ')} FAILED`)
+    : colour(GREEN, `BORDER:  ${borderResults.length}/${borderResults.length} border assertions pass`));
   if (!NO_MERGE) {
     const n = mergeResults.length;
     const skipTail = mergeSkips.length ? ` (${mergeSkips.length} skipped)` : '';
@@ -619,7 +735,7 @@ async function main() {
       : colour(GREEN, `MERGE:   ${n}/${n} merge assertions pass${skipTail}`));
   }
 
-  return (failed.length || mergeFailed.length) ? 1 : 0;
+  return (failed.length || borderFailed.length || mergeFailed.length) ? 1 : 0;
 }
 
 process.exitCode = await main();

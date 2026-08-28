@@ -32,8 +32,6 @@ import {
   cmpStr, num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
 } from './lib/core.js';
 
-import { bboxOf } from './lib/geo.js';
-
 import {
   esc, el, join, waIcon, waCard, waDetails, jsonBlock, chip,
 } from './render/html.js';
@@ -71,6 +69,18 @@ import { initStrategy } from './render/simulator.js';
  */
 const ORDINAL_PLACEHOLDER = '--';
 
+/**
+ * The ONE cross-load handoff (CONTRACT §(d), AGENTS.md, 2026-08-27). "Re-run with
+ * this border" writes `{v:1, sources, options, note}` here and reloads; `boot()`
+ * reads it, REMOVES it, validates it and starts the run without the picker. Session
+ * storage, not local: a re-run is a thing this tab is doing now, and a key that
+ * outlived the tab would replay a run into a stranger's fresh visit. Consumed
+ * exactly once — Reset from the second run finds nothing and is the plain landing.
+ */
+const RERUN_KEY = 'jltg.rerun';
+/** The handoff's schema version. Anything else is ignored, never migrated. */
+const RERUN_VERSION = 1;
+
 /** `class Options`, minus everything meaningless in a browser. */
 const DEFAULT_OPTIONS = Object.freeze({
   useOsm: true,
@@ -87,6 +97,10 @@ const DEFAULT_OPTIONS = Object.freeze({
   startStopId: null,
   borderShape: 'bbox',
   borderBbox: null,
+  // Provenance only — no pipeline reads it (CONTRACT §(c), 2026-08-27). `'landing'`
+  // when the reader set the frame on the landing map, `'suggestion'` when a re-run
+  // took the worker's suggested border, null when the border was inferred.
+  borderSource: null,
   excludeStops: [],
   excludeRoutes: [],
   departure: DEFAULT_DEPARTURE,
@@ -252,6 +266,9 @@ function emptyReport() {
     sizeInference: null,
     hub: null,
     border: null,
+    // The worker's tighter, reachability-aware box (CONTRACT §(b) SuggestedBorder),
+    // or null — null is the common case and every renderer prints nothing for it.
+    suggestedBorder: null,
     days: [],
     selectedDay: '',
     zones: [],
@@ -277,6 +294,12 @@ function emptyReport() {
     place: '',
     provenance: {},
     degradations: [],
+    // MAIN-SIDE, not a worker field: the `kind` of every `SourceRef` the run was
+    // started with, in the order they were posted. §05's suggestion callout reads it
+    // to know whether a re-run is possible at all — a `File` cannot survive the
+    // reload a re-run is — and nothing else does. Stamped in `startRun`, fixed for
+    // the run, so it can never move a rendered string.
+    sourceKinds: [],
   };
 }
 
@@ -332,6 +355,19 @@ const state = {
    *  Empty means "not in the guide"; see `applyRoute`. */
   /** @type {string} */ strategyTitle: '',
   /**
+   * What this run was started with, retained verbatim so a re-run can replay it.
+   * `sources` and `options` are the two halves of the one `run` message; `source`
+   * is the display string §09 echoes; `note` is the previous run's handoff note
+   * when THIS run is itself a re-run (the `#run-history` chip reads it), else null.
+   * Null until `startRun` — no run, nothing to replay.
+   */
+  run: {
+    /** @type {Object[]|null} */ sources: null,
+    /** @type {Object|null} */ options: null,
+    /** @type {string} */ source: '',
+    /** @type {Object|null} */ note: null,
+  },
+  /**
    * Landing-page feed picker. `selected` is `Map<string, SourceRef>` keyed by the
    * ref's stable `id`, and it is the ONLY place a map pick lives. With no picker on
    * the page it stays empty and every path below behaves exactly as it did before
@@ -339,7 +375,19 @@ const state = {
    */
   landing: {
     /** @type {Map<string, Object>} */ selected: new Map(),
-    /** @type {Array<[number,number]>|null} */ drawnRing: null,
+    /**
+     * The game-border frame the picker draws, or null while nothing is picked. The
+     * picker owns it and reports it through `onPickerBorder`; this is a read-only
+     * copy for `readOptions`. `mode` decides what crosses the wire: `'auto'` (the
+     * frame is fitted to the picks and the reader never touched it) sends
+     * `borderBbox: null`, so the worker infers the border exactly as it did before
+     * the frame existed; `'custom'` sends the rectangle. Null here does NOT mean "no
+     * border": with no frame — a bring-your-own zip or URL, which the picker has no
+     * bounding box to frame — `readOptions` falls back to the writable
+     * `#opt-border-bbox` field.
+     * @type {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null}
+     */
+    border: null,
     /** The picker's handle — `{ setByo, refresh, resize, destroy }` — or
      *  null when the catalogue never loaded and the bring-your-own card is the whole
      *  page. Everything that redraws the note goes through `refreshPicker`. */
@@ -347,10 +395,6 @@ const state = {
     /** Has `#opt-no-osm` already been ticked on the reader's behalf? Ticked once, on
      *  the first move past one feed, and never unticked: after that the box is theirs. */
     osmAutoTicked: false,
-    /** The same one-shot for `#opt-use-drawn-border`, ticked when the drawn area is
-     *  taken as an OpenStreetMap source. Reset when the ring goes, because the next
-     *  ring is a new gesture and deserves the same offer. */
-    osmBorderTicked: false,
   },
 };
 
@@ -403,9 +447,20 @@ export function boot() {
   if (form) {
     form.addEventListener('submit', (event) => {
       event.preventDefault();
-      startRun(form);
+      startRunFromForm(form);
     });
   }
+  // `#suggest-rerun` lives inside §05's rendered string, which is re-mounted on
+  // hydration, so it is delegated from the document rather than bound per mount.
+  // Wired HERE and never from `PAGE_RUNTIME_JS` (CONTRACT §05): the handoff is a
+  // main-thread concern that touches `state.run`, which the runtime cannot see.
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    const button = target && target.closest ? target.closest('#suggest-rerun') : null;
+    if (!button || button.disabled || button.hasAttribute('disabled')) return;
+    event.preventDefault();
+    rerunWithSuggestion();
+  });
   // <wa-file-input> names the file and draws its own card, so all that is left here is
   // the cross-field rule: a URL and a file together is an error, and choosing a file is
   // the unambiguous half of that pair, so the URL box is cleared rather than making the
@@ -431,7 +486,19 @@ export function boot() {
   // where it is the only control left on the page.
   const reset = document.querySelector('wa-button[data-role="reset"]');
   if (reset) reset.addEventListener('click', resetToLanding);
-  initLanding();
+  // A re-run handed over by the previous document (`RERUN_KEY`) skips the picker
+  // entirely: the sources and options are already decided, the feeds are in the
+  // IndexedDB zip cache under their URLs, and the only thing left is to run. The key
+  // is gone by the time `takeRerunHandoff` returns, valid or not, so a reload from
+  // here — Reset included — is the plain landing.
+  const handoff = takeRerunHandoff();
+  if (handoff) {
+    state.run.note = handoff.note;
+    mountRunHistory(handoff);
+    startRun(handoff.sources, handoff.options, handoff.source);
+  } else {
+    initLanding();
+  }
   // The whole router. It has one route and one fallback, and on a cold load with no
   // report the fallback is the landing form — silently, which is the point.
   window.addEventListener('hashchange', applyRoute);
@@ -492,17 +559,9 @@ function isOsmSkipped() {
   return Boolean(sw && sw.checked);
 }
 
-/** The use-drawn-border box, wherever the markup put it. */
-function borderBox() {
-  return document.querySelector('[data-opt="useDrawnBorder"]');
-}
-
-/** Whether the drawn shape is the game border RIGHT NOW, for the picker's note —
- *  the box is the reader's after the one auto-tick, and a note that kept calling
- *  the shape the border after they unticked it would be lying in a live region. */
-function isDrawnBorderUsed() {
-  const box = borderBox();
-  return Boolean(box && box.checked && state.landing.drawnRing);
+/** The Advanced panel's read-only mirror of the frame, wherever the markup put it. */
+function borderMirror() {
+  return document.querySelector('[data-opt="borderBbox"]');
 }
 
 function syncAnalyse() {
@@ -523,20 +582,6 @@ function syncAnalyse() {
   }
 
   const osmArea = osmAreaRef();
-
-  // The area IS the border: one drawn shape, read once as the extent to build from
-  // and once as the map to play on. Leaving the box for the reader would give a run
-  // two different extents for one gesture — the shape they drew, and a border
-  // inferred from the network that shape produced. Ticked once, said in words by
-  // `#picker-note`, and armed again by the next ring.
-  if (osmArea && !state.landing.osmBorderTicked) {
-    state.landing.osmBorderTicked = true;
-    const box = borderBox();
-    if (box && !box.checked) {
-      box.checked = true;
-      refreshPicker();
-    }
-  }
 
   // PLAN D24. Two or more feeds means a border spanning two metros, and OSM-layer
   // scale guards for a border that big are explicitly out of scope this round — so
@@ -591,16 +636,29 @@ function onPickerChange(next) {
   syncAnalyse();
 }
 
-/** A shape was closed or cleared. Gates `#opt-use-drawn-border`, which is disabled
- *  in the shipped markup precisely because there is no shape on a cold landing. */
-function onPickerRing(ring) {
-  state.landing.drawnRing = ring;
-  // A cleared ring is the end of that gesture, so the one-shot below is armed again.
-  if (!ring) state.landing.osmBorderTicked = false;
-  const box = borderBox();
-  if (!box) return;
-  box.disabled = !ring;
-  if (!ring) box.checked = false;
+/**
+ * The picker moved the game-border frame, or dropped it. This is the ONLY writer of
+ * `state.landing.border`, and the only writer of `#opt-border-bbox`: that field is
+ * a read-only MIRROR of the frame since 2026-08-27, so a reader who opens Advanced
+ * sees the same four numbers the map shows, with `data-border-mode` saying whether
+ * they will be sent (`custom`) or the border inferred instead (`auto`). Nothing
+ * reads the field's text back — `readOptions` reads the state — so the mirror can
+ * never disagree with the run.
+ */
+function onPickerBorder(border) {
+  state.landing.border = border;
+  const mirror = borderMirror();
+  if (!mirror) return;
+  mirror.value = border ? border.bbox.map((x) => String(coord(x))).join(', ') : '';
+  mirror.setAttribute('data-border-mode', border ? border.mode : 'none');
+  // Read-only WHILE there is a frame, writable when there is not. A bring-your-own
+  // zip or URL never produces a frame — the picker has no bounding box for a feed it
+  // has not read — so with the field permanently readonly a BYO run had no way to set
+  // a border at all, which it had before the frame existed. The two never overlap: a
+  // frame means the map and `#border-row` are the editor, no frame means this field
+  // is, and `readOptions` reads whichever exists. Losing the frame clears the text
+  // rather than leaving four numbers behind that would now be sent as a hard border.
+  mirror.toggleAttribute('readonly', Boolean(border));
 }
 
 /**
@@ -676,19 +734,14 @@ function initLanding() {
     state.landing.picker = picker.initPicker(host, {
       doc,
       onChange: onPickerChange,
-      onRing: onPickerRing,
+      onBorder: onPickerBorder,
       onRemoveByo: onPickerRemoveByo,
       osmSkipped: isOsmSkipped,
-      drawnBorderUsed: isDrawnBorderUsed,
     });
     // The note tells the reader they can untick Skip OpenStreetMap. When they do, it
     // has to stop saying so — the switch is theirs from the first tick onwards.
     const sw = osmSwitch();
     if (sw) sw.addEventListener('change', refreshPicker);
-    // Same rule for the drawn-border box: the note says whether the shape is the
-    // game border, so flipping the box has to make it say so again.
-    const border = borderBox();
-    if (border) border.addEventListener('change', refreshPicker);
     syncAnalyse();
   })().catch((err) => {
     host.hidden = true;
@@ -849,28 +902,51 @@ function readOptions(form) {
     else options.borderShape = shape;
   }
 
-  const bbox = orNull(readControl(form, 'borderBbox'));
-  if (bbox !== null) {
-    const parts = bbox.split(/[\s,]+/).filter((p) => p !== '').map(Number);
-    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
-      errors.push('Border box must be exactly four numbers: south, west, north, east.');
-    } else {
-      options.borderBbox = /** @type {[number,number,number,number]} */ (parts);
+  // The game border comes from the landing map's frame, and from its MODE, whenever
+  // there IS a frame — `#opt-border-bbox` is then a read-only mirror and is not
+  // parsed, so the mirror and the run cannot disagree. An `'auto'` frame (fitted to
+  // the picks, never touched) sends null, so a single feed with an untouched frame is
+  // byte-identical to a run made before the frame existed and the worker infers the
+  // border from what the start stop can reach. A `'custom'` frame — dragged, typed,
+  // overlap-seeded, boxed around a shape — sends its rectangle, and `borderShape` is
+  // forced to `bbox` because the reader set a rectangle and fitting a circle to it
+  // would be a different shape than the one on their map. With NO frame the field is
+  // the input again (see below): the picker only frames feeds it has a catalogue box
+  // for, and a dropped zip or a pasted URL must not lose the border it could always
+  // set. `borderSource` is provenance only.
+  const frame = state.landing.border;
+  if (!frame) {
+    // No frame at all: a bring-your-own zip or URL, or a run made after the catalogue
+    // fetch failed and the page degraded to the bring-your-own card. Then
+    // `#opt-border-bbox` is a real input again (`onPickerBorder` takes `readonly` off
+    // with the frame) and this is the pre-frame parse, unchanged: four numbers or a
+    // sentence under the form.
+    const typed = orNull(readControl(form, 'borderBbox'));
+    if (typed !== null) {
+      const parts = typed.split(/[\s,]+/).filter((x) => x !== '').map(Number);
+      if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+        errors.push('Border box must be exactly four numbers: south, west, north, east.');
+      } else if (parts[0] >= parts[2] || parts[1] >= parts[3]) {
+        errors.push('The game border has no area: south must be below north and west left of east.');
+      } else {
+        options.borderBbox = /** @type {[number,number,number,number]} */ (parts.map((x) => coord(x)));
+        options.borderSource = 'landing';
+      }
     }
-  }
-
-  // The shape drawn on the picker map, offered as the game border.
-  //
-  // A value TYPED into Border box wins — this only fills `borderBbox` when the field
-  // is blank, which is what that field's hint promises. It lands in `inferBorder`'s
-  // existing `options.borderBbox` override, so there is no new field on the wire and
-  // no worker change: `borderShape` is forced to `bbox` because a ring's bounding box
-  // is a rectangle and fitting a circle to it would be a different shape than the one
-  // the reader drew.
-  if (options.borderBbox === null && readControl(form, 'useDrawnBorder') === true
-      && state.landing.drawnRing && state.landing.drawnRing.length >= 3) {
-    options.borderBbox = bboxOf(state.landing.drawnRing);
-    options.borderShape = 'bbox';
+  } else if (frame.mode === 'custom') {
+    const b = frame.bbox;
+    if (b.length !== 4 || b.some((n) => !Number.isFinite(n))) {
+      errors.push('Border box must be exactly four numbers: south, west, north, east.');
+    } else if (b[0] >= b[2] || b[1] >= b[3]) {
+      errors.push('The game border has no area: south must be below north and west left of east.');
+    } else {
+      // `coord()`-quantised (6 dp, ~11 cm), so the rectangle sent is the one the
+      // fields and the mirror print — a dragged edge is otherwise a float the
+      // provenance argv would round anyway.
+      options.borderBbox = /** @type {[number,number,number,number]} */ (b.map((x) => coord(x)));
+      options.borderShape = 'bbox';
+      options.borderSource = 'landing';
+    }
   }
 
   options.excludeStops = idList(readControl(form, 'excludeStops'));
@@ -1060,7 +1136,7 @@ function clearFormError() {
  * would double peak memory on a 65 MB feed for no gain — structured clone handles
  * `File` objects and the worker can stream it.
  */
-function startRun(form) {
+function startRunFromForm(form) {
   if (state.running) return;
   clearFormError();
 
@@ -1074,10 +1150,28 @@ function startRun(form) {
     showFormError(errors.join(' '));
     return;
   }
+  startRun(src.sources, options, src.source);
+}
+
+/**
+ * Spawn the worker and post the single `run` message for an already-validated
+ * `SourceRef[]` and `Options`. Two callers: the landing form, through
+ * `startRunFromForm`, and `boot()` replaying a re-run handoff — which is exactly why
+ * the validation is not in here: the form validates against its controls, the
+ * handoff against its stored shape, and both arrive here as the same two values.
+ *
+ * @param {Object[]} sources `SourceRef[]` (CONTRACT §(d)), sorted by `id`
+ * @param {Object} options an `Options` (CONTRACT §(c))
+ * @param {string} source the display string §09 echoes as `Options.source`
+ */
+function startRun(sources, options, source) {
+  if (state.running) return;
+  state.run = { ...state.run, sources, options, source };
   // `source` stays on this side: CONTRACT §(c) carries the inputs in the message's
   // `sources` list, and keeping the display string apart from them is what makes the
   // protocol readable.
-  state.report.opts = { ...options, source: src.source };
+  state.report.opts = { ...options, source };
+  state.report.sourceKinds = sources.map((ref) => String(ref.kind));
 
   let worker;
   try {
@@ -1108,9 +1202,300 @@ function startRun(form) {
     fatalError('worker', 'The analysis sent a message this browser could not read.');
   });
 
-  enterRunningState(src);
+  enterRunningState({ sources });
   armWatchdog();
-  worker.postMessage({ type: 'run', options, sources: src.sources });
+  worker.postMessage({ type: 'run', options, sources });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// The cached re-run
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * "Re-run with this border": store the handoff and reload.
+ *
+ * A re-run is a NEW DOCUMENT, not a second run in this one — `resetToLanding` says
+ * why the shell cannot be put back in place, and the same reasons apply to running
+ * again inside it. So the whole of the run's inputs go through `RERUN_KEY`: the
+ * same `SourceRef[]` (URL and OSM refs only — a `File` is not serialisable and
+ * would not survive the reload; §05's button is disabled in that case and this is
+ * the guard behind it), the same `Options` with the suggested box in `borderBbox`,
+ * `borderShape` forced to `bbox` (the suggestion IS a rectangle), `sizeOverride`
+ * cleared (the second run measures the in-border game itself), and `borderSource:
+ * 'suggestion'` for provenance. The feeds come back from the IndexedDB zip cache
+ * under their URLs, so the second run costs a parse and a RAPTOR pass, no download.
+ *
+ * `note` is what the second run's `#run-history` chip says about this one. `run`
+ * counts up so a re-run of a re-run reads "Run 3"; `prevBorderSource` says what
+ * kind of border the previous run had.
+ *
+ * Storage can refuse (a private window with the quota at zero, a browser with site
+ * data blocked). Then the box goes to the clipboard instead, with the sentence that
+ * says where to paste it — the landing frame's four fields take exactly that line.
+ */
+function rerunWithSuggestion() {
+  const sb = state.report.suggestedBorder;
+  const run = state.run;
+  if (!sb || !Array.isArray(sb.bbox) || !run.sources || !run.options) return;
+  if (run.sources.some((ref) => ref.kind === 'file')) return;
+  const bbox = sb.bbox.map((x) => coord(x));
+  const handoff = {
+    v: RERUN_VERSION,
+    sources: run.sources.map(portableSourceRef),
+    options: {
+      ...run.options,
+      borderBbox: bbox,
+      borderShape: 'bbox',
+      sizeOverride: null,
+      borderSource: 'suggestion',
+    },
+    note: {
+      prevSize: state.report.size ? String(state.report.size.name) : null,
+      prevBorderSource: run.options.borderSource || null,
+      run: ((run.note && run.note.run) || 1) + 1,
+    },
+  };
+  try {
+    sessionStorage.setItem(RERUN_KEY, JSON.stringify(handoff));
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[app] could not store the re-run handoff', err);
+    const line = bbox.map((x) => num(x, 6, { comma: false })).join(', ');
+    const note = $id('suggest-note');
+    if (note) {
+      note.textContent = `This browser would not keep the run for a reload. The border `
+        + `${line} has been copied — press Reset and paste into the border fields on the `
+        + 'landing map.';
+      // The page otherwise visibly does nothing: the button stays where it was and the
+      // only feedback is a paragraph that has just appeared below it. `#suggest-note` is
+      // `role="status"` so it is announced, and `tabindex="-1"` so the caret can be put
+      // ON the explanation — a keyboard reader who pressed the button lands on the
+      // sentence that says what happened instead of on the inert button. (2026-08-27.)
+      try { note.focus({ preventScroll: true }); } catch { /* not focusable here */ }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(line).catch(() => { /* the sentence still says the numbers */ });
+    }
+    return;
+  }
+  resetToLanding();
+}
+
+/**
+ * A `SourceRef` as plain JSON: exactly the CONTRACT §(d) fields, `file` always
+ * null, the `ring` only on an OSM ref. Anything else the picker may have hung on
+ * the object stays behind.
+ * @param {Object} ref @returns {Object}
+ */
+function portableSourceRef(ref) {
+  const out = {
+    kind: ref.kind,
+    file: null,
+    url: ref.kind === 'url' ? String(ref.url) : null,
+    id: String(ref.id),
+    label: String(ref.label || ''),
+    mdbId: ref.mdbId === null || ref.mdbId === undefined ? null : String(ref.mdbId),
+  };
+  if (ref.kind === 'osm') out.ring = ref.ring;
+  return out;
+}
+
+/**
+ * Read, remove and validate the handoff, in that order — removal is unconditional
+ * so a malformed value can never replay on every load, and it happens before any
+ * exception the parse could throw.
+ *
+ * @returns {{sources: Object[], options: Object, source: string, note: Object}|null}
+ */
+function takeRerunHandoff() {
+  let raw = null;
+  try {
+    raw = sessionStorage.getItem(RERUN_KEY);
+    if (raw !== null) sessionStorage.removeItem(RERUN_KEY);
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return validateRerunHandoff(parsed);
+}
+
+/**
+ * The handoff's shape, checked with the SAME rules `readSources` and `readOptions`
+ * apply to the form — the worker sees one message shape from two doors, so the two
+ * doors must agree on what is legal. Any failure rejects the whole handoff: a
+ * partially-honoured re-run would run something the reader did not ask for.
+ *
+ * @param {*} h
+ * @returns {{sources: Object[], options: Object, source: string, note: Object}|null}
+ */
+function validateRerunHandoff(h) {
+  if (!h || typeof h !== 'object' || h.v !== RERUN_VERSION) return null;
+  if (!Array.isArray(h.sources) || !h.sources.length || h.sources.length > MAX_FEEDS_PER_RUN) {
+    return null;
+  }
+  const byId = new Map();
+  for (const raw of h.sources) {
+    const ref = normaliseRerunSource(raw);
+    if (!ref) return null;
+    byId.set(ref.id, ref);
+  }
+  // Sorted by id, code-point, exactly as `readSources` sorts — the same selection
+  // must post the same message whichever door it came through.
+  const sources = Array.from(byId.keys()).sort(cmpStr).map((id) => byId.get(id));
+  const options = normaliseRerunOptions(h.options);
+  if (!options) return null;
+  const note = h.note && typeof h.note === 'object' ? h.note : {};
+  const run = Number(note.run);
+  return {
+    sources,
+    options,
+    source: sources.map((ref) => ref.label).join(' + '),
+    note: {
+      prevSize: typeof note.prevSize === 'string' ? note.prevSize : null,
+      prevBorderSource: ['landing', 'suggestion'].includes(note.prevBorderSource)
+        ? note.prevBorderSource : null,
+      run: Number.isInteger(run) && run >= 2 ? run : 2,
+    },
+  };
+}
+
+/**
+ * One stored `SourceRef` → a live one, or null. `'file'` is refused by name — the
+ * button that writes the handoff never offers it, so its presence means a stale or
+ * hand-edited value — and so is any kind the contract does not list.
+ * @param {*} raw @returns {Object|null}
+ */
+function normaliseRerunSource(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const label = typeof raw.label === 'string' ? raw.label : '';
+  const mdbId = raw.mdbId === null || raw.mdbId === undefined ? null : String(raw.mdbId);
+  if (raw.kind === 'url') {
+    if (typeof raw.url !== 'string') return null;
+    let parsed;
+    try {
+      parsed = new URL(raw.url);
+    } catch {
+      return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : `url:${raw.url}`;
+    return { kind: 'url', file: null, url: raw.url, id, label: label || raw.url, mdbId };
+  }
+  if (raw.kind === 'osm') {
+    const ring = raw.ring;
+    if (!Array.isArray(ring) || ring.length < 3) return null;
+    for (const v of ring) {
+      if (!Array.isArray(v) || v.length !== 2 || !Number.isFinite(v[0]) || !Number.isFinite(v[1])) {
+        return null;
+      }
+    }
+    if (typeof raw.id !== 'string' || !raw.id) return null;
+    return { kind: 'osm', file: null, url: null, id: raw.id, label, mdbId, ring };
+  }
+  return null;
+}
+
+/**
+ * A stored `Options` → a live one over `DEFAULT_OPTIONS`, or null. Field by field
+ * the rules are `readOptions`'s: the same enumerations, the same positivity checks,
+ * the same `':00'` rule on `departure`, the same sort-and-dedupe on the id lists,
+ * and `borderBbox` four finite numbers with area, quantised through `coord()`.
+ * Unknown keys are dropped rather than forwarded.
+ * @param {*} raw @returns {Object|null}
+ */
+function normaliseRerunOptions(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = { ...DEFAULT_OPTIONS };
+  const bool = (key) => {
+    if (raw[key] === undefined) return true;
+    if (typeof raw[key] !== 'boolean') return false;
+    o[key] = raw[key];
+    return true;
+  };
+  const nullable = (key, ok) => {
+    const v = raw[key];
+    if (v === undefined || v === null) return true;
+    if (!ok(v)) return false;
+    o[key] = v;
+    return true;
+  };
+  const positive = (v) => Number.isFinite(v) && v > 0;
+  if (!bool('useOsm') || !bool('offline') || !bool('refresh')) return null;
+  if (!nullable('asOf', (v) => typeof v === 'string' && /^\d{8}$/.test(v))) return null;
+  if (!nullable('sizeOverride', (v) => ['small', 'medium', 'large'].includes(v))) return null;
+  if (!nullable('zoneRadiusM', positive) || !nullable('hidingPeriodMin', positive)) return null;
+  if (!nullable('startStopId', (v) => typeof v === 'string' && v.trim() !== '')) return null;
+  if (!nullable('borderSource', (v) => ['landing', 'suggestion'].includes(v))) return null;
+  if (raw.worldBaseUrl !== undefined && raw.worldBaseUrl !== null) {
+    let parsed;
+    try {
+      parsed = new URL(String(raw.worldBaseUrl));
+    } catch {
+      return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    o.worldBaseUrl = String(raw.worldBaseUrl).replace(/\/+$/, '');
+  }
+  if (raw.borderShape !== undefined) {
+    if (!['bbox', 'circle'].includes(raw.borderShape)) return null;
+    o.borderShape = raw.borderShape;
+  }
+  if (raw.borderBbox !== undefined && raw.borderBbox !== null) {
+    const b = raw.borderBbox;
+    if (!Array.isArray(b) || b.length !== 4 || !b.every((x) => Number.isFinite(x))) return null;
+    if (b[0] >= b[2] || b[1] >= b[3]) return null;
+    o.borderBbox = /** @type {[number,number,number,number]} */ (b.map((x) => coord(x)));
+  }
+  for (const key of ['excludeStops', 'excludeRoutes']) {
+    if (raw[key] === undefined) continue;
+    if (!Array.isArray(raw[key]) || !raw[key].every((x) => typeof x === 'string')) return null;
+    o[key] = idList(raw[key].join(','));
+  }
+  if (raw.departure !== undefined && raw.departure !== null) {
+    const d = String(raw.departure);
+    const value = d.split(':').length === 2 ? `${d}:00` : d;
+    if (!/^\d{1,2}:\d{2}:\d{2}$/.test(value)) return null;
+    o.departure = value;
+  }
+  if (raw.boardSlackS !== undefined && raw.boardSlackS !== null) {
+    if (!Number.isFinite(raw.boardSlackS) || raw.boardSlackS < 0) return null;
+    o.boardSlackS = raw.boardSlackS;
+  }
+  return o;
+}
+
+/**
+ * The `#run-history` chip: what this run is and what the previous one was, so a
+ * reader looking at run 2 knows every number now describes the in-border game and
+ * why the border is the one it is. Templated from the handoff — nothing is
+ * measured here — and only ever mounted from `boot()`, once, for a re-run.
+ *
+ * @param {{options: Object, note: Object}} handoff
+ */
+function mountRunHistory(handoff) {
+  const host = $id('run-history');
+  if (!host) return;
+  const b = handoff.options.borderBbox;
+  const line = Array.isArray(b) ? b.map((x) => num(x, 6, { comma: false })).join(', ') : '';
+  const note = handoff.note || {};
+  const from = handoff.options.borderSource === 'suggestion' ? 'from the suggestion'
+    : handoff.options.borderSource === 'landing' ? 'from the landing map' : 'inferred';
+  const prevBorder = note.prevBorderSource === 'suggestion' ? 'suggested border'
+    : note.prevBorderSource === 'landing' ? 'your own border' : 'inferred border';
+  // A handoff always carries a box today, but the chip is templated from stored
+  // JSON: an older or hand-made one without a `borderBbox` must read "border
+  // inferred", not "border  inferred" with the hole where the numbers would be.
+  const where = line ? `border ${line} ${from}` : `border ${from}`;
+  const text = `Run ${num(note.run || 2)} · ${where} · previous run: `
+    + `${prevBorder}${note.prevSize ? `, ${note.prevSize}` : ''}`;
+  host.innerHTML = chip(text, 'arrow-rotate-left', { variant: 'brand', title: text });
+  host.hidden = false;
 }
 
 /** (Re)start the silence timer. Every message from the worker is a sign of life. */
@@ -1333,6 +1718,7 @@ function applyStage(stage, payload) {
       r.zones = payload.zones || [];
       r.hub = payload.hub || null;
       r.border = payload.border || null;
+      r.suggestedBorder = payload.suggestedBorder || null;
       r.size = payload.size || null;
       r.sizeInference = payload.sizeInference || null;
       r.metrics = payload.metrics || {};
@@ -2260,6 +2646,10 @@ function dataPayload(report) {
       stop_id: hub.stopId, name: hub.name, lat: coord(hub.lat), lon: coord(hub.lon),
       shape: hub.shape, dominant: hub.dominant, route_share: rhu(hub.routeShare, 4),
     } : null,
+    // The runtime's `border-suggested-line` reads `.bbox` and nothing else; the rest
+    // is here so the page is self-describing. Null when the worker offered nothing,
+    // and null for a malformed box — the runtime draws no line for null.
+    suggestedBorder: suggestedBorderPayload(report.suggestedBorder),
     fitness: f ? {
       score: f.score === null ? null : rhu(f.score, 1),
       raw_score: rhu(f.rawScore, 1),
@@ -2344,6 +2734,30 @@ function cursesPayload(report) {
       id: c.id, name: c.name, tier: c.tier, action: c.action,
       predicate: c.predicate, count: c.count, why: c.why,
     })),
+  };
+}
+
+/**
+ * `DATA.suggestedBorder`, or null. Guards the shape rather than trusting it: this
+ * field crosses from a concurrently-built worker, and a missing bbox must degrade
+ * to "no line" rather than to a runtime exception in `buildMap`.
+ * @param {Object|null} sb a `SuggestedBorder`
+ * @returns {Object|null}
+ */
+function suggestedBorderPayload(sb) {
+  if (!sb || typeof sb !== 'object') return null;
+  const b = sb.bbox;
+  if (!Array.isArray(b) || b.length !== 4 || !b.every((x) => Number.isFinite(x))) return null;
+  const raw = Array.isArray(sb.rawBbox) && sb.rawBbox.length === 4 ? sb.rawBbox : b;
+  return {
+    kind: 'bbox',
+    bbox: b.map((x) => coord(x)),
+    raw_bbox: raw.map((x) => coord(x)),
+    pad_m: rhu(Number(sb.padM || 0), 1),
+    area_sq_m: rhu(Number(sb.areaSqM || 0), 1),
+    size: sb.sizeName || null,
+    core_stops: sb.coreStops || 0,
+    trimmed_stops: sb.trimmedStops || 0,
   };
 }
 
@@ -3447,6 +3861,12 @@ async function buildMap() {
       W.map.setPaintProperty('border-line', 'line-width', kind === 'extent' ? 3 : 1.6);
       W.map.setPaintProperty('border-line', 'line-opacity', kind === 'extent' ? 1 : .85);
     }
+    /* The extent tile thickens BOTH gold frames: the suggestion is part of the
+       "how big is this" answer. Paint only, like everything else in here. */
+    if (W.map.getLayer('border-suggested-line')) {
+      W.map.setPaintProperty('border-suggested-line', 'line-width', kind === 'extent' ? 2.4 : 1.2);
+      W.map.setPaintProperty('border-suggested-line', 'line-opacity', kind === 'extent' ? 1 : .9);
+    }
     if (kind === 'zones') {
       set('stop-dots', 'circle-opacity', .12);
     } else if (kind === 'stops') {
@@ -3544,6 +3964,25 @@ async function buildMap() {
       type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: borderRing } } });
     map.addLayer({ id: 'border-line', type: 'line', source: 'border',
       paint: { 'line-color': p.gold, 'line-width': 1.6, 'line-opacity': .85, 'line-dasharray': [3, 2.4] } });
+
+    /* The worker's suggested border, when it offered one: a second gold rectangle,
+       SOLID and thinner so the two frames read as different things. Built once here
+       from DATA.suggestedBorder at 'network' and static from then on -- the callout
+       under the map is the interactive half, and it is app.js's, not this runtime's.
+       No suggestion is the COMMON case and must draw nothing: the source is then an
+       empty FeatureCollection rather than a zero-coordinate LineString (which is not
+       valid GeoJSON), so the source and the layer exist either way and applyHl()
+       below can address the layer without branching on the data. */
+    const SB = DATA.suggestedBorder;
+    const sbb = (SB && SB.bbox && SB.bbox.length === 4 && SB.bbox.every(Number.isFinite))
+      ? SB.bbox : null;
+    map.addSource('border-suggested', { type: 'geojson', data: sbb
+      ? { type: 'Feature', properties: {}, geometry: { type: 'LineString',
+        coordinates: [[sbb[1], sbb[0]], [sbb[3], sbb[0]], [sbb[3], sbb[2]],
+          [sbb[1], sbb[2]], [sbb[1], sbb[0]]] } }
+      : { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'border-suggested-line', type: 'line', source: 'border-suggested',
+      paint: { 'line-color': p.gold, 'line-width': 1.2, 'line-opacity': .9 } });
 
     map.addSource('zonerings', { type: 'geojson', data: zoneRings });
     map.addLayer({ id: 'zone-fill', type: 'fill', source: 'zonerings',

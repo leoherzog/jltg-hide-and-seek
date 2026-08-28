@@ -1190,12 +1190,17 @@ export function renderProvenance(payload) {
         + `${s4Dist(report, size.zoneRadiusM, 2)} zones · `
         + `${num(size.catalogueSize)} questions · ${num(curses.length)} curses`
       : ''],
+    // The pad clause follows `Border.derivation` (CONTRACT §(b)): a box the reader set
+    // is unpadded, and one the in-play filter fell back on was not applied at all.
+    // "padded 0 ft" was the milder version of the same false sentence §05 printed.
     ['border', 'Border', border
       ? `${border.kind} · S ${num(border.bbox[0], 6, { comma: false })}, `
         + `W ${num(border.bbox[1], 6, { comma: false })}, `
         + `N ${num(border.bbox[2], 6, { comma: false })}, `
-        + `E ${num(border.bbox[3], 6, { comma: false })} · padded `
-        + `${s4Dist(report, border.padM, 2)}`
+        + `E ${num(border.bbox[3], 6, { comma: false })} · `
+        + (border.derivation === 'option_fallback' ? 'set by you, not applied'
+          : border.derivation === 'option' ? 'set by you, unpadded'
+            : `padded ${s4Dist(report, border.padM, 2)}`)
       : ''],
     ['questions', 'Question audit', questions.length
       ? `${num(questions.length)} questions evaluated inside the border; `

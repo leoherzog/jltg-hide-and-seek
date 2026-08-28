@@ -47,7 +47,7 @@ import {
 
 import {
   esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton, waButton,
-  chip, kpi, section, subhead, provChip,
+  waCallout, chip, kpi, section, subhead, provChip,
 } from './html.js';
 
 import {
@@ -158,6 +158,134 @@ function servedStopCount(report, day) {
  * which carries the same names and arrives at the `'network'` stage — sits between
  * the two. The printed name is identical either way.
  */
+/**
+ * The worker's `SuggestedBorder`, or null — and null for anything that is not the
+ * shape CONTRACT §(b) describes. Every renderer above treats null as "print nothing",
+ * so a report from a worker that predates the field, or one that emitted a partial
+ * object, degrades to the page as it was rather than to a half-filled sentence.
+ *
+ * @param {Object} report
+ * @returns {Object|null}
+ */
+function s4SuggestedBorder(report) {
+  const sb = report && report.suggestedBorder;
+  if (!sb || typeof sb !== 'object') return null;
+  const bbox = sb.bbox;
+  if (!Array.isArray(bbox) || bbox.length !== 4 || !bbox.every((x) => Number.isFinite(x))) {
+    return null;
+  }
+  if (!sb.vote || typeof sb.vote !== 'object') return null;
+  return sb;
+}
+
+/**
+ * `S, W, N, E` — the suggested rectangle as the one line the landing frame's four
+ * fields accept, so the copied text pastes straight back in. Six decimals, no
+ * thousands separators, the same digits the Exact coordinates table prints.
+ *
+ * @param {number[]} bbox `[S, W, N, E]`
+ * @returns {string}
+ */
+function s4BboxLine(bbox) {
+  return bbox.map((x) => num(x, 6, { comma: false })).join(', ');
+}
+
+/**
+ * `#border-suggest` — the worker found a tighter border and this is the offer.
+ *
+ * ONE sentence of measurement, one of consequence, one of what is left out, then
+ * two actions: copy the four numbers (for the landing frame's fields, or for a
+ * player's map app), and `#suggest-rerun`, which app.js wires — never this module
+ * and never `PAGE_RUNTIME_JS` (CONTRACT §05, 2026-08-27). The re-run is a fresh
+ * document load that replays the run's sources from the browser's feed cache, so it
+ * is only possible when every source is addressable by URL: a `File` the reader
+ * chose cannot survive a reload, and the button says so instead of failing later.
+ *
+ * Every figure is the worker's: the renderer formats `coreStops`, `eventShare`, the
+ * candidate's own hull/T90/zone vote, and never derives one from another.
+ *
+ * @param {Object} report
+ * @param {Object|null} suggested the already-validated `SuggestedBorder`, or null
+ * @returns {string} HTML, or '' when there is nothing to offer
+ */
+function s4SuggestCallout(report, suggested) {
+  const sb = suggested;
+  if (!sb) return '';
+  const size = report.size || {};
+  const vote = sb.vote || {};
+  const startName = startStopName(report);
+  const dayLabel = s4DayLabel(report, sb.dayKey);
+  const byFeed = Array.isArray(sb.trimmedByFeed) ? sb.trimmedByFeed : [];
+  // "mostly X (n)" is only information when there is more than one feed to
+  // attribute the trimmed stops to; on a single feed it would name the only feed.
+  const mostly = byFeed.length > 1 && byFeed[0]
+    ? ` — mostly ${byFeed[0].agencyName} (${num(byFeed[0].count)})`
+    : '';
+  // Both size words are upper-cased, the way every other size name on the page is
+  // (`s4Tiles`, \u00a707's deck sentences, the strategy view): SMALL / MEDIUM / LARGE is
+  // the rulebook's own spelling, and the two halves of "a MEDIUM game rather than
+  // LARGE" have to be spelled alike to be read as the comparison they are.
+  const suggestWord = String(sb.sizeName || '').toUpperCase();
+  const currentWord = String(size.name || '').toUpperCase();
+  // A core that votes the run's OWN size is a legitimate emission, not a bug:
+  // `suggestBorder` only ever offers a box at least `SUGGEST_MIN_TRIM_SHARE` tighter
+  // than the whole feed, and "the same game on a much smaller box" is worth the
+  // reader's attention. But the comparison clause degenerates to "a MEDIUM game …
+  // rather than MEDIUM", which reads as a rendering fault and undermines the offer
+  // sitting under it — so the same-size case gets its own half-sentence. (2026-08-27.)
+  const measured = `Measured on those stops alone this is `
+    + `${suggestWord === currentWord ? 'still a' : 'a'} ${suggestWord} game `
+    + `(${s4Area(report, Number(vote.hullSqM || 0))}, ${num(vote.nZones || 0)} zones, `
+    + `T90 ${mins(Number(vote.t90Min || 0))})`;
+  const versus = suggestWord === currentWord
+    ? ', on the reachable core rather than on the whole network. '
+    : ` rather than ${currentWord || 'the size measured on the whole feed'}. `;
+  const sentence = `Within ${num(sb.hidingPeriodMin || 0)} minutes of ${startName} on a `
+    + `${dayLabel} the network keeps ${num(sb.coreStops || 0)} of `
+    + `${num(sb.allServedStops || 0)} stops carrying ${pct(Number(sb.eventShare || 0), 0)} `
+    + 'of the day\u2019s departures. '
+    + measured + versus
+    + `${num(sb.trimmedStops || 0)} stops lie outside${mostly}.`;
+
+  const kinds = Array.isArray(report.sourceKinds) ? report.sourceKinds : [];
+  const hasFile = kinds.includes('file');
+  const line = s4BboxLine(sb.bbox);
+  const actions = el('div', join(
+    waCopyButton(line, {
+      label: 'Copy suggested border', id: 'suggestcopy',
+      trigger: waButton('Copy suggested border'),
+    }),
+    waButton('Re-run with this border', {
+      id: 'suggest-rerun', type: 'button', variant: 'brand', appearance: 'filled',
+      disabled: hasFile,
+    }),
+  ), { className: 'wa-cluster wa-gap-s wa-align-items-center' });
+  // `#suggest-note` ships with the file sentence, or empty; app.js writes into it
+  // when the handoff cannot be stored (the clipboard fallback). `:empty` hides it.
+  //
+  // `role="status"` and `tabindex="-1"` are both for that fallback path: pressing
+  // `#suggest-rerun` in a private window with the quota at zero writes an explanation
+  // here and returns, leaving a page that visibly did nothing. Live, the sentence is
+  // announced; focusable, app.js can put the caret on it, so a keyboard reader lands
+  // on the explanation instead of on a button that appeared inert. (2026-08-27.)
+  const note = el('p', hasFile
+    ? esc('Re-running needs feeds picked by URL \u2014 a file you chose cannot survive a reload. '
+      + 'Copy the border and set it in the landing frame\u2019s fields instead.')
+    : '', {
+    id: 'suggest-note', role: 'status', tabindex: '-1',
+    className: 'wa-caption-s wa-color-text-quiet',
+  });
+
+  return waCallout(join(
+    el('p', esc('A tighter border is on offer.'), { className: 'wa-heading-s' }),
+    el('p', esc(sentence), { className: 'wa-body-s' }),
+    el('p', esc(`Suggested box: ${line} (south, west, north, east).`),
+      { className: 'wa-caption-s wa-color-text-quiet' }),
+    actions,
+    note,
+  ), { id: 'border-suggest', variant: 'brand', icon: 'compress' });
+}
+
 function startStopName(report) {
   const hub = report.hub || {};
   const startId = (report.opts && report.opts.startStopId) || hub.stopId || '';
@@ -976,7 +1104,7 @@ export function s4SpokeNotes(report) {
  * @returns {string}
  */
 export function s4MapLegends(report, flags) {
-  const { stopsShown, ringsShown, spokesShown } = flags;
+  const { stopsShown, ringsShown, spokesShown, suggestShown = false } = flags;
   const hub = report.hub || {};
   const size = report.size || {};
   const hp = num(size.hidingPeriodMin || 0);
@@ -1013,6 +1141,13 @@ export function s4MapLegends(report, flags) {
     [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
     [s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
   );
+  // The suggested frame is a second, thinner, SOLID gold line — solid so the two
+  // gold rectangles read as different things at a glance. Only when the worker
+  // offered one (2026-08-27).
+  if (suggestShown) {
+    always.push([s4Swatch('background:transparent;border:1px solid var(--gold-deep)'),
+      'Suggested border']);
+  }
 
   const baseItems = [];
   if (stopsShown) {
@@ -1111,9 +1246,11 @@ export function s4MapLegends(report, flags) {
  * Never wrap the map in a `wa-scroller`.
  *
  * WHAT THIS FUNCTION MAY READ, and nothing else: `border`, `hub`, `size`, `zones`,
- * `days` / `selectedDay`, `metrics`, `stops`, `zoneReach`, `routeSpokes` and
- * `spokeCap` — every one of them a `network`-stage field, plus `geo.admin.countryCode`
- * reaching it through `s4Dist`/`s4Area`. Quoting
+ * `days` / `selectedDay`, `metrics`, `stops`, `zoneReach`, `routeSpokes`,
+ * `spokeCap` and `suggestedBorder` — every one of them a `network`-stage field —
+ * plus `geo.admin.countryCode` reaching it through `s4Dist`/`s4Area`, and the
+ * main-side `sourceKinds` list app.js stamps on the report before the worker starts
+ * (fixed for the run, so it cannot move the string either). Quoting
  * a question count, a curse, a score or a finding here would change this string at
  * `rules` or `score`, and a changed string re-mounts the section, which destroys the
  * MapLibre instance and throws away the reader's pan and zoom. That is why the stat
@@ -1141,6 +1278,9 @@ export function renderNetworkMap(payload) {
   // there, not here (lib/core.js `MAX_MAP_SPOKES`), because the geometry must not
   // cross `postMessage` only to be thrown away on this side.
   const spokesShown = (report.routeSpokes || []).length > 0;
+  // The worker's tighter, reachability-aware box, or null. Null is the common case
+  // and renders NOTHING here: no caption sentence, no legend row, no callout.
+  const suggested = s4SuggestedBorder(report);
   const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
 
   const bestKey = s4BestDay(report);
@@ -1183,7 +1323,16 @@ export function renderNetworkMap(payload) {
         + 'Sunday map. Lines that call at the hub are gold and a shade heavier.',
     !spokesShown ? '' : s4SpokeNotes(report).join(' '),
     `★ = ${hub.name}, the inferred round-start station.`,
-    'Dashed gold frame = the game border. Nothing outside it exists for this game.',
+    // The same three-way split as the border sentence below the map: on a fallback run
+    // the frame is still drawn, but "nothing outside it exists" is exactly the claim
+    // the run did not honour.
+    (border.derivation === 'option_fallback'
+      ? 'Dashed gold frame = the box you set. It kept fewer than half this network, so it '
+        + 'was drawn and not applied: the stops, zones and counts here are the whole network.'
+      : 'Dashed gold frame = the game border. Nothing outside it exists for this game.'),
+    !suggested ? ''
+      : 'Thin solid gold frame = the tighter border the analysis suggests; the note '
+        + 'under the map says what it keeps and offers to re-run inside it.',
     'If your browser blocks the map library the map is omitted and everything below still works.',
   ];
   const caption = captionParts.filter((x) => x).join(' ');
@@ -1279,12 +1428,32 @@ export function renderNetworkMap(payload) {
     ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
   ), { id: 'netcontrols', className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s' });
 
+  // `Border.derivation` (CONTRACT §(b), 2026-08-27): `'option'` means the reader set
+  // the rectangle on the landing map and the worker used it as given — no padding,
+  // so the padded-box sentence would be describing a construction that did not
+  // happen. `'reach'` is the inferred box and the sentence it always had.
+  //
+  // `'option_fallback'` is the third case and the one that must never be silent: the
+  // box was drawn but kept under `IN_PLAY_MIN_SHARE` of the served stops, so the
+  // worker measured the whole network instead. Saying "every count is measured inside
+  // your box" there would be false, and the reader's only other signal is a
+  // degradation banner. (2026-08-27.)
+  const borderArea = s4Area(report, Number(border.areaSqM || 0));
+  const borderSentence = border.derivation === 'option_fallback'
+    ? `The border is the box you set on the landing map (no padding), and it covers `
+      + `${borderArea} — but it kept fewer than half the stops this network serves, so `
+      + 'nothing on this page was measured inside it: every count below is the whole '
+      + 'network. '
+    : border.derivation === 'option'
+      ? `The border is the box you set on the landing map (no padding). It covers `
+        + `${borderArea}. `
+      : 'The border is the bounding box of the in-map stops padded by one hiding-zone '
+        + `radius (${s4Dist(report, Number(border.padM || 0), 2)}), so every legal zone lies `
+        + `wholly inside it. It covers ${borderArea}. `;
   const howToRead = join(
     el('p', esc(caption), { className: 'wa-body-s wa-color-text-quiet' }),
     el('p', esc(
-      'The border is the bounding box of the in-map stops padded by one hiding-zone '
-      + `radius (${s4Dist(report, Number(border.padM || 0), 2)}), so every legal zone lies `
-      + `wholly inside it. It covers ${s4Area(report, Number(border.areaSqM || 0))}. `
+      borderSentence
       + 'Copy GeoJSON pastes into geojson.io, Google My Maps or a GPX app; Copy '
       + 'coordinates gives the four labelled degrees as text.',
     ) + provChip('border'), { className: 'wa-body-s wa-color-text-quiet' }),
@@ -1294,7 +1463,9 @@ export function renderNetworkMap(payload) {
     el('div', join(
       toolbar,
       el('div', '', { id: 'netmap', className: 'wa-border-radius-m' }),
-      el('div', s4MapLegends(report, { stopsShown, ringsShown, spokesShown }), {
+      el('div', s4MapLegends(report, {
+        stopsShown, ringsShown, spokesShown, suggestShown: suggested !== null,
+      }), {
         id: 'netlegend',
         dataMode: reachDay === null ? 'base' : 'reach',
         className: 'wa-stack wa-gap-3xs',
@@ -1315,6 +1486,10 @@ export function renderNetworkMap(payload) {
       el('div', s4MapCaption(report, bestKey), {
         id: 'netcaption', className: 'wa-body-s wa-color-text-quiet',
       }),
+      // The suggestion sits under the reading notes and above the coordinates:
+      // it is an offer about the border, and the coordinates are the border. An
+      // empty string when there is no suggestion — `join` drops it.
+      s4SuggestCallout(report, suggested),
       waDetails('How to read this map', howToRead, { appearance: 'plain' }),
       waDetails('Exact coordinates', degrees, { appearance: 'plain', id: 'mapborder' }),
     ), { className: 'wa-stack wa-gap-s' }),

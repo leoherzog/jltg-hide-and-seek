@@ -433,6 +433,28 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
   #hydration { flex: 1 1 100%; max-inline-size: none; order: 1; }
 }
 
+/* ---- the re-run chip (`#run-history`) ----
+   One `wa-tag` in the header on a re-run, empty and hidden otherwise. It carries
+   four six-decimal numbers, so the tag itself is allowed to clip: the whole
+   sentence is in its `title`, and the numbers are also §05's, under the map. On a
+   narrow header it takes a line of its own like the progress block does. */
+#run-history { min-inline-size: 0; max-inline-size: 30rem; overflow: hidden; }
+/* The tag is inline-flex with a nowrap base; clipping has to happen on the host
+   AND the base, or the base keeps its intrinsic width and pokes out of the host. */
+#run-history wa-tag { display: inline-flex; max-inline-size: 100%; overflow: hidden; }
+#run-history wa-tag::part(base) { max-inline-size: 100%; min-inline-size: 0; overflow: hidden; }
+#run-history wa-tag::part(content) {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-inline-size: 0;
+}
+@media (max-width: 46rem) {
+  #run-history { flex: 1 1 100%; max-inline-size: none; order: 2; }
+}
+
+/* ---- the suggested-border callout (`#border-suggest`, §05) ----
+   `#suggest-note` is the file sentence or the storage-fallback sentence, and empty
+   the rest of the time; an empty paragraph would still be a gap in the stack. */
+#border-suggest #suggest-note:empty { display: none; }
+
 /* ---- the landing card ----
    72rem, not the 48rem a form wants: the card holds the feed picker's map too, and
    `#landing` renders in no state but `landing`, so there is nothing to gate a wider
@@ -519,6 +541,24 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 /* draw mode. The canvas cursor is set in JS as well, because MapLibre writes its own
    cursor onto the canvas element and wins the specificity argument there. */
 #catalog-map.drawing { cursor: crosshair; }
+/* a border handle or the whole frame is being dragged: the cursor is held for the
+   duration, whatever the pointer passes over, and the canvas must not start a
+   text selection or a touch scroll under the drag. render/picker.js sets the
+   resize cursors (nwse-resize etc.) on the canvas itself while hovering a handle. */
+#catalog-map.border-dragging,
+#catalog-map.border-dragging .maplibregl-canvas { cursor: grabbing; user-select: none; touch-action: none; }
+
+/* ---- the game-border frame's row ----
+   Four edge fields on one line where there is room, two by two on a phone. The
+   fields are the keyboard path to the frame — the handles on the map are not
+   focusable — so they never collapse below a readable width. */
+#border-row .border-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: var(--wa-space-xs);
+}
+#border-row .border-field::part(input) { font-variant-numeric: tabular-nums; }
+#border-row .border-field::part(label) { font-size: var(--wa-font-size-xs); }
 
 #catalog-results {
   max-block-size: 18rem;

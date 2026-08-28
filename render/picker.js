@@ -26,6 +26,19 @@
  * `.remove()`d in `app.js`'s `enterRunningState`, because a hidden WebGL context held
  * for the whole run is a leak the reader pays for.
  *
+ * THE BORDER FRAME IS HAND-ROLLED FOR THE SAME REASON. The moment a feed is picked
+ * a solid gold rectangle — the game border — is drawn from the union of the picked
+ * boxes, with eight handles on it (`border-handle`) that resize it and an outline
+ * (`border-line`) that moves the whole box — the fill (`border-fill`) is a tint and
+ * NOT a drag target, so the map can still be panned under a frame that covers the
+ * viewport; everything is MapLibre's own `mousedown` / `mousemove` /
+ * `touchstart` events, about 150 lines below. It has two modes and the distinction
+ * is the whole design: an `'auto'` frame is a PREVIEW and is sent to the worker as
+ * `null`, so a reader who never touches it gets exactly the run they got before the
+ * frame existed; any drag, field edit or button other than Fit makes it `'custom'`
+ * and its rectangle crosses the wire. `handlers.onBorder` is how `app.js` hears
+ * which — the frame is owned here, read there, never pushed back in.
+ *
  * COORDINATE CONVENTION. Everything in this repo is geographic `[lat, lon]` and
  * `[S, W, N, E]`; MapLibre is `[lng, lat]`. The conversion happens HERE, at the map
  * boundary, and nowhere else — `lib/catalog.js` and `lib/geo.js` never see a
@@ -34,8 +47,8 @@
  * @module render/picker
  */
 
-import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, num } from '../lib/core.js';
-import { bboxOf } from '../lib/geo.js';
+import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, num, coord } from '../lib/core.js';
+import { bboxOf, bboxUnion, bboxIntersection, bboxAreaSqM, bboxScale } from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
   labelOf, placeOf, spanKmOf, sourceRefFor, osmSourceRef, exampleMapsFor,
@@ -43,7 +56,7 @@ import {
 import { esc } from './html.js';
 import {
   renderResults, renderResultsSummary, renderPicks, renderPickerNote, renderExampleMaps,
-  PICK_CAP,
+  renderBorderRow, renderBorderCaption, PICK_CAP,
 } from './landing.js';
 
 /**
@@ -64,6 +77,35 @@ const CLOSE_PX = 10;
 const DEDUPE_DEG = 1e-7;
 /** A rough per-feed download, for the "this is a lot of bytes" warning. */
 const EST_MB_PER_FEED = 25;
+/** Half the side of a border handle's hit box: 24 px square, which is the smallest
+ *  target a finger reliably lands on, drawn as a 6 px circle so it does not hide
+ *  the marker it may sit on. */
+const HANDLE_PX = 12;
+/** Shift+Arrow in an edge field moves that edge this far. About a kilometre. */
+const NUDGE_DEG = 0.01;
+/** Shrink / Grow move every side by this share of the box. */
+const BORDER_STEP = 0.1;
+/** How close, in pixels, the pointer has to be to the frame's OUTLINE to grab the
+ *  whole box. The fill is deliberately not a move target: after a pick the frame is
+ *  the union of the picked boxes and the map is fitted to it, so a fill that started
+ *  a drag would swallow every attempt to pan the map. */
+const EDGE_PX = 8;
+/** A move drag does nothing until the pointer has travelled this far. Below it a
+ *  press is a press: without the threshold a 1 px jitter during an attempted pan
+ *  silently turned an `'auto'` frame `'custom'`, which changes what the run is sent. */
+const MOVE_PX = 4;
+/** How long the frame's caption stays a silent live region after the last change.
+ *  A drag or a held Shift+Arrow rewrites it dozens of times a second; `role="status"`
+ *  would queue every one of them. Announce the settled sentence, once. */
+const CAPTION_QUIET_MS = 500;
+/** The eight handles, clockwise from the top-left. Each key names the edges it
+ *  moves — `'nw'` moves north AND west — which is all the drag code reads. */
+const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+/** CSS cursors for the handles, keyed the same way. */
+const HANDLE_CURSOR = {
+  nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+};
 
 /**
  * The same four literals `app.js`'s `buildMap` writes out — `--ink-2`, `--surface`,
@@ -94,6 +136,8 @@ const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)'
  * @param {Object} [handlers]
  * @param {(selected: Map<string, Object>) => void} [handlers.onChange] the ONLY way selection moves
  * @param {(ring: Array<[number, number]>|null) => void} [handlers.onRing]
+ * @param {(border: {bbox: [number,number,number,number], mode: 'auto'|'custom'}|null) => void}
+ *        [handlers.onBorder] the game-border frame, every time it moves or changes mode
  * @param {() => void} [handlers.onRemoveByo] clear the form's file/URL — it is not ours
  * @param {Object} handlers.doc the catalogue snapshot
  * @returns {{setByo: Function, refresh: Function, resize: Function, destroy: Function}}
@@ -115,12 +159,10 @@ export function initPicker(root, handlers = {}) {
   // to the reader — so the note has to read its live state or it ends up instructing
   // someone to do what they have already done.
   const osmSkipped = handlers.osmSkipped || (() => false);
-  // Whether the drawn shape is ALSO the game border right now. Same posture as
-  // `osmSkipped`, for the same reason: `#opt-use-drawn-border` lives in the form's
-  // Advanced panel and belongs to the reader after the one auto-tick, so the note
-  // must read its live state or keep calling the shape the border after they have
-  // said otherwise.
-  const drawnBorderUsed = handlers.drawnBorderUsed || (() => false);
+  // The frame, reported outward every time it changes. One-way like `onChange`:
+  // `app.js` reads it into `state.landing.border` and mirrors it into the Advanced
+  // panel; nothing pushes a frame back in.
+  const onBorder = handlers.onBorder || (() => {});
 
   const $ = (id) => root.querySelector(`#${id}`);
   const search = $('catalog-search');
@@ -137,6 +179,7 @@ export function initPicker(root, handlers = {}) {
   const swRegional = $('include-regional');
   const swInactive = $('include-inactive');
   const examplesBox = $('example-maps');
+  const borderRow = $('border-row');
 
   const st = {
     doc,
@@ -172,6 +215,23 @@ export function initPicker(root, handlers = {}) {
      */
     ringVacant: false,
     blocked: [],
+    /**
+     * The game-border frame, or null while nothing is picked. `mode` is the whole
+     * contract with `app.js`: `'auto'` = fitted to the picks and sent as null,
+     * `'custom'` = the reader's box and sent as-is. `bbox` is `[S, W, N, E]`.
+     * @type {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null}
+     */
+    border: null,
+    /** what `#border-row` was last built for, so a rebuild happens only on a shape change */
+    borderRowKey: '',
+    /** a handle or outline drag in progress:
+     *  `{kind, handle, origin, point, start, moved}` — `point` is the mousedown in
+     *  screen pixels, which is what `MOVE_PX` is measured against */
+    borderDrag: null,
+    /** the cursor the last hover asked for — a handle's resize arrow, `move` over the
+     *  frame's outline, or '' for the map's own. Compared, not recomputed, so a
+     *  mousemove over unchanged ground writes nothing. */
+    hoverCursor: '',
     map: null,
     mapPending: false,
     mapFailed: false,
@@ -180,6 +240,9 @@ export function initPicker(root, handlers = {}) {
   };
 
   const rowById = new Map(doc.rows.map((row) => [row.id, row]));
+  /** The `quietCaption` timer, so `destroy()` can cancel it. Not a pipeline clock:
+   *  it decides when a live region speaks, never a number on the page. */
+  let captionTimer = null;
   const listeners = [];
   /** Every listener goes through here so `destroy` can be exhaustive. */
   const on = (target, type, fn, opts) => {
@@ -217,6 +280,7 @@ export function initPicker(root, handlers = {}) {
     renderResultsBox();
     renderExamplesBox();
     syncSelectedLayer();
+    refitBorder();
     onChange(new Map(st.selected));
   }
 
@@ -276,6 +340,15 @@ export function initPicker(root, handlers = {}) {
       if (slotsUsed() >= PICK_CAP) break;
       st.selected.set(ref.id, ref);
     }
+    // The frame goes with the picks it was fitted to. `refitBorder` deliberately
+    // leaves a `'custom'` frame alone — the reader put it there — but a chip is the
+    // "start over with this city" gesture, and a New York rectangle kept across a
+    // press of Chicago governs the run from off-screen: the map flies to Chicago, the
+    // gold frame is not on it, and Analyse posts a box containing none of the picked
+    // stops. Clearing it here refits an `'auto'` frame around the city that was asked
+    // for, the same way the non-OSM picks above are replaced rather than added to.
+    // (2026-08-27.)
+    st.border = null;
     commit();
     fitRows(ex.rows);
     if (picksCount && typeof picksCount.focus === 'function') safeFocus(picksCount);
@@ -355,6 +428,12 @@ export function initPicker(root, handlers = {}) {
     const ref = osmSourceRef(st.ring);
     if (!ref) return;
     st.selected.set(ref.id, ref);
+    // The area IS the border, by construction: one drawn shape, read once as the
+    // extent to build from and once as the map to play on. Seeded `'custom'` so it
+    // crosses the wire — an `'auto'` frame would be sent as null and the worker
+    // would fit a border to the synthesized network instead, giving one gesture two
+    // extents. `commit()`'s refit leaves a custom frame alone.
+    st.border = { bbox: normBbox(bboxOf(st.ring)), mode: 'custom' };
     commit();
     if (picksCount && typeof picksCount.focus === 'function') safeFocus(picksCount);
   }
@@ -448,7 +527,6 @@ export function initPicker(root, handlers = {}) {
       // nothing inside it, there is a slot free, and it has not been taken yet.
       osmOffer: Boolean(st.ring) && st.ringVacant && !osm && slotsUsed() < PICK_CAP,
       osmPicked: Boolean(osm),
-      drawnBorderUsed: drawnBorderUsed(),
     });
   }
 
@@ -621,6 +699,8 @@ export function initPicker(root, handlers = {}) {
 
   function setDrawing(value) {
     st.drawing = value;
+    // Drawing suspends the frame's hit-testing, so a drag cannot continue under it.
+    if (value) endBorderDrag();
     st.rubber = null;
     st.boxing = false;
     st.boxA = null;
@@ -663,10 +743,16 @@ export function initPicker(root, handlers = {}) {
     if (!st.searching) st.results = [];
     if (clearBtn) clearBtn.hidden = true;
     onRing(null);
+    // The area's frame was the box around the shape; with the shape gone it is a
+    // custom box around nothing, so it is dropped and the refit below seeds an
+    // `'auto'` frame from whatever catalogue picks remain (or none).
+    if (osm) st.border = null;
     // `st.selected` may have just lost a member, and `onChange` is the only way the
     // main thread hears about that — the re-renders below are this card's own copy.
     if (osm) onChange(new Map(st.selected));
     syncDrawSource();
+    syncSelectedLayer();
+    refitBorder();
     renderPicksAndNote();
     renderResultsBox();
   }
@@ -691,6 +777,10 @@ export function initPicker(root, handlers = {}) {
     onRing(ring.map((p) => [p[0], p[1]]));
     applyRing();
     syncDrawSource();
+    // A ring is a sweep, not a border (final spec §1.6): the frame is untouched
+    // unless the sweep added feeds to an `'auto'` one, which `applyRing`'s commits
+    // have already handled. The row is re-drawn for "Box around my shape" alone.
+    renderBorderRowBox();
   }
 
   /** Every visible feed the shape touches, up to the cap. */
@@ -737,6 +827,410 @@ export function initPicker(root, handlers = {}) {
       syncDrawSource();
     }
   });
+
+  // ── the border frame ──────────────────────────────────────────────────────
+
+  /** Clamp to the map and put the edges in order. A frame the reader drags past
+   *  itself turns inside out rather than refusing — the same rubber-band feel a
+   *  shift-drag box has — and lat/lon never leave the world (final spec §5:
+   *  antimeridian-straddling frames are clamped, not supported). */
+  function normBbox(b) {
+    let s0 = Math.max(-90, Math.min(90, b[0]));
+    let n0 = Math.max(-90, Math.min(90, b[2]));
+    let w0 = Math.max(-180, Math.min(180, b[1]));
+    let e0 = Math.max(-180, Math.min(180, b[3]));
+    if (s0 > n0) { const t = s0; s0 = n0; n0 = t; }
+    if (w0 > e0) { const t = w0; w0 = e0; e0 = t; }
+    return [s0, w0, n0, e0];
+  }
+
+  /**
+   * The picked boxes the frame is fitted to: every catalogue pick's `b`, and the
+   * box around a drawn OpenStreetMap area. Sorted by pick id like every other walk
+   * over `st.selected`, so a union built from them is order-independent by
+   * construction and an overlap search is deterministic.
+   */
+  function selectedBoxes() {
+    const out = [];
+    const ids = Array.from(st.selected.keys()).sort(cmpStr);
+    for (const id of ids) {
+      const ref = st.selected.get(id);
+      if (ref.kind === 'osm' && ref.ring) { out.push(bboxOf(ref.ring)); continue; }
+      const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
+      if (row) out.push(row.b);
+    }
+    return out;
+  }
+
+  /** The `'auto'` frame: the union of the picked boxes, or null with nothing picked. */
+  function seedBorder() {
+    const u = bboxUnion(selectedBoxes());
+    return u ? normBbox(u) : null;
+  }
+
+  /**
+   * "Where they overlap": the intersection of every picked box when it has area,
+   * else the largest-area intersection of any two of them, else null. The pairwise
+   * fallback is what makes the button useful on a three-feed pick where a small
+   * outlying operator touches neither of the other two.
+   */
+  function overlapSeed() {
+    const boxes = selectedBoxes();
+    if (boxes.length < 2) return null;
+    let all = boxes[0];
+    for (let i = 1; i < boxes.length && all; i++) all = bboxIntersection(all, boxes[i]);
+    if (all && bboxAreaSqM(all) > 0) return normBbox(all);
+    let best = null;
+    let bestArea = 0;
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const x = bboxIntersection(boxes[i], boxes[j]);
+        const a = x ? bboxAreaSqM(x) : 0;
+        if (a > bestArea) { bestArea = a; best = x; }
+      }
+    }
+    return best ? normBbox(best) : null;
+  }
+
+  /**
+   * The frame follows the picks while it is `'auto'`: a pick added or removed
+   * refits it, and the last pick going takes it with it. A `'custom'` frame is the
+   * reader's and is left exactly where they put it — except when nothing is picked
+   * any more, because a border with no feed inside it describes no run.
+   */
+  function refitBorder() {
+    const seed = seedBorder();
+    if (!seed) st.border = null;
+    else if (!st.border || st.border.mode === 'auto') st.border = { bbox: seed, mode: 'auto' };
+    syncBorder();
+  }
+
+  /** Move the frame to `bbox` as the reader's own box. */
+  function setBorder(bbox, opts = {}) {
+    if (!bbox) return;
+    st.border = { bbox: normBbox(bbox), mode: 'custom' };
+    syncBorder(opts);
+  }
+
+  /** The frame as GeoJSON: one polygon (fill + line) and eight handle points. */
+  function borderFeatures() {
+    if (!st.border) return EMPTY;
+    const [s, w, n, e] = st.border.bbox;
+    const midLat = (s + n) / 2;
+    const midLon = (w + e) / 2;
+    const at8 = {
+      nw: [n, w], n: [n, midLon], ne: [n, e], e: [midLat, e],
+      se: [s, e], s: [s, midLon], sw: [s, w], w: [midLat, w],
+    };
+    const feats = [{
+      type: 'Feature',
+      properties: { role: 'frame' },
+      geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] },
+    }];
+    for (const h of HANDLES) {
+      feats.push({
+        type: 'Feature',
+        properties: { role: 'handle', handle: h },
+        geometry: { type: 'Point', coordinates: toLngLat(at8[h]) },
+      });
+    }
+    return { type: 'FeatureCollection', features: feats };
+  }
+
+  /** Everything that reads the frame, in one place: the map, the row, `app.js`. */
+  function syncBorder(opts = {}) {
+    setData('border', borderFeatures());
+    renderBorderRowBox(opts);
+    onBorder(st.border ? { bbox: st.border.bbox.slice(), mode: st.border.mode } : null);
+  }
+
+  /** What `renderBorderRow` and `renderBorderCaption` are told.
+   *
+   *  `osmPicked` is not simply "an OpenStreetMap area is picked": it is "and the frame
+   *  is STILL the box around it". The caption's OSM sentence describes the frame as
+   *  the box around the drawn shape, which stops being true the moment a handle moves
+   *  it, and a frame the reader has dragged kilometres must not go on calling itself
+   *  their shape's box. (2026-08-27.) */
+  function borderView() {
+    const osm = osmPick();
+    const shapeBox = osm && osm.ring ? normBbox(bboxOf(osm.ring)) : null;
+    const isShapeBox = Boolean(shapeBox) && Boolean(st.border)
+      && shapeBox.every((v, i) => coord(v) === coord(st.border.bbox[i]));
+    return {
+      border: st.border,
+      count: st.selected.size,
+      areaSqM: st.border ? bboxAreaSqM(st.border.bbox) : 0,
+      osmPicked: Boolean(osm),
+      osmFrame: isShapeBox,
+      overlap: overlapSeed() !== null,
+      hasRing: Boolean(st.ring),
+    };
+  }
+
+  /**
+   * Keep `#border-caption` a live region that speaks at REST, not per frame.
+   *
+   * The caption carries `role="status"` (render/landing.js) and is rewritten on every
+   * `syncBorder` — which means on every `mousemove` of a drag and, worse for the
+   * reader this is for, at the OS key-repeat rate while Shift+Arrow is held in an edge
+   * field. That queues thirty announcements for a two-second press and the region goes
+   * on speaking long after the frame stops moving. So each change silences the region
+   * and arms a timer; when the gesture stops, the attribute comes off and the settled
+   * sentence is re-written once, which is the one announcement worth making. The
+   * VISIBLE text is never delayed. (2026-08-27.)
+   */
+  function quietCaption(caption) {
+    caption.setAttribute('aria-live', 'off');
+    if (captionTimer !== null) clearTimeout(captionTimer);
+    captionTimer = setTimeout(() => {
+      captionTimer = null;
+      const node = borderRow ? borderRow.querySelector('#border-caption') : null;
+      if (!node) return;
+      const settled = node.textContent;
+      node.removeAttribute('aria-live');
+      // Blank and re-write in one task: the region is live again and the mutation is
+      // what makes it speak, exactly once, with the sentence the reader ended on.
+      node.textContent = '';
+      node.textContent = settled;
+    }, CAPTION_QUIET_MS);
+  }
+
+  /**
+   * Draw or patch `#border-row`.
+   *
+   * Rebuilt only when its shape changes (frame present, overlap button, shape
+   * button, OpenStreetMap wording): an `innerHTML` rebuild detaches the field being
+   * typed in and drops the caret on the floor. Otherwise the caption's text node
+   * and the four field values are patched — skipping `opts.except`, the edge whose
+   * field is the SOURCE of this change, because writing a normalised number back
+   * into a field mid-keystroke turns "41." into "41" under the reader's fingers.
+   */
+  function renderBorderRowBox(opts = {}) {
+    if (!borderRow) return;
+    const view = borderView();
+    // Deliberately NOT keyed on the frame's mode or on `osmFrame`: both change on the
+    // first keystroke in an edge field, and a rebuild there would detach the field
+    // being typed in. They only ever change the CAPTION, which is patched below.
+    const key = [Boolean(view.border), view.overlap, view.hasRing, view.osmPicked].join('|');
+    if (key !== st.borderRowKey) {
+      st.borderRowKey = key;
+      const html = renderBorderRow(view);
+      borderRow.innerHTML = html;
+      borderRow.hidden = !html;
+      return;
+    }
+    if (!view.border) return;
+    const caption = borderRow.querySelector('#border-caption');
+    if (caption) {
+      caption.textContent = renderBorderCaption(view);
+      quietCaption(caption);
+    }
+    const edges = { s: 0, w: 1, n: 2, e: 3 };
+    for (const edge of Object.keys(edges)) {
+      if (edge === opts.except) continue;
+      const field = borderRow.querySelector(`[data-border-edge="${edge}"]`);
+      if (!field) continue;
+      const next = String(coord(view.border.bbox[edges[edge]]));
+      if (field.value !== next) field.value = next;
+    }
+  }
+
+  /**
+   * A typed edge. Only a finite number moves anything; "-" and "41." are left be.
+   *
+   * Two things `Number(field.value)` alone got wrong, both of them silent:
+   *   * `Number('')` is 0 and finite, so CLEARING the north field and tabbing out
+   *     wrote north = 0, `normBbox` swapped the edges, and the game border quietly
+   *     became a box from the equator to the old north;
+   *   * `Number('42,9')` is NaN, so a reader on a keyboard whose decimal key is a
+   *     comma — the `inputmode="decimal"` pad on a German or French phone — typed a
+   *     number, saw nothing happen, and left the field reading `42,9` for the rest of
+   *     the session while the run used the old value.
+   * So: the empty string is rejected explicitly, a comma decimal is normalised, and a
+   * value that is still not a number is REJECTED VISIBLY on commit — the edge in force
+   * goes back into the field and `aria-invalid` says it was refused, rather than the
+   * text being left to disagree with the map, the mirror and the run. (2026-08-27.)
+   */
+  function onBorderField(event, commitValue) {
+    const field = event.target && event.target.closest
+      ? event.target.closest('[data-border-edge]') : null;
+    if (!field || !st.border) return;
+    const edge = field.getAttribute('data-border-edge');
+    const idx = { s: 0, w: 1, n: 2, e: 3 }[edge];
+    const raw = String(field.value).trim();
+    const value = raw === '' ? NaN : Number(raw.replace(',', '.'));
+    if (!Number.isFinite(value)) {
+      // Mid-keystroke ('-', '41.', a half-typed minus) is left alone; a COMMITTED
+      // non-number is put back, because the field is the only place the reader can
+      // see what the border actually is.
+      if (commitValue) {
+        field.value = String(coord(st.border.bbox[idx]));
+        field.setAttribute('aria-invalid', 'true');
+      }
+      return;
+    }
+    field.removeAttribute('aria-invalid');
+    const next = st.border.bbox.slice();
+    next[idx] = value;
+    if (commitValue) {
+      // `change` (the field was left): put the edges in order and write them back.
+      setBorder(next);
+      return;
+    }
+    // Live typing: keep the raw edge, even inverted for a moment, and leave this
+    // field's text alone. The map and the caption follow; `change` tidies up.
+    st.border = { bbox: next, mode: 'custom' };
+    syncBorder({ except: edge });
+  }
+
+  if (borderRow) {
+    on(borderRow, 'input', (event) => onBorderField(event, false));
+    on(borderRow, 'change', (event) => onBorderField(event, true));
+    on(borderRow, 'keydown', (event) => {
+      const field = event.target && event.target.closest
+        ? event.target.closest('[data-border-edge]') : null;
+      if (!field || !st.border) return;
+      if (event.key === 'Enter') {
+        // A text input inside a <form> submits it on Enter — here that would start
+        // the analysis from an edge field, the same trap `#catalog-search` guards
+        // against. Enter commits the edge instead, exactly as leaving the field does.
+        event.preventDefault();
+        onBorderField(event, true);
+        return;
+      }
+      // Shift+↑ / Shift+↓ nudge the edge the field owns. Shift, so a plain arrow
+      // still moves the caret through the digits.
+      if (!event.shiftKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+      event.preventDefault();
+      const idx = { s: 0, w: 1, n: 2, e: 3 }[field.getAttribute('data-border-edge')];
+      const next = st.border.bbox.slice();
+      next[idx] += event.key === 'ArrowUp' ? NUDGE_DEG : -NUDGE_DEG;
+      setBorder(next);
+    });
+    on(borderRow, 'click', (event) => {
+      const btn = event.target.closest ? event.target.closest('[data-border-action]') : null;
+      if (!btn || btn.disabled) return;
+      event.preventDefault();
+      const action = btn.getAttribute('data-border-action');
+      if (action === 'fit') {
+        // The one way back to `'auto'` — and to a run that sends null.
+        st.border = null;
+        refitBorder();
+      } else if (action === 'overlap') {
+        setBorder(overlapSeed());
+      } else if (action === 'from-shape') {
+        if (st.ring) setBorder(bboxOf(st.ring));
+      } else if (action === 'shrink' && st.border) {
+        setBorder(bboxScale(st.border.bbox, 1 - BORDER_STEP));
+      } else if (action === 'grow' && st.border) {
+        setBorder(bboxScale(st.border.bbox, 1 + BORDER_STEP));
+      }
+    });
+  }
+
+  /**
+   * The handle under a screen point, within a 24 px square, or null. Nearest wins
+   * when a small frame puts two handles inside one hit box. Suspended while drawing,
+   * because a click that starts a vertex must not grab a corner instead.
+   */
+  function handleAt(point) {
+    const map = st.map;
+    if (!map || !st.border || st.drawing || !map.getLayer('border-handle')) return null;
+    const box = [
+      [point.x - HANDLE_PX, point.y - HANDLE_PX],
+      [point.x + HANDLE_PX, point.y + HANDLE_PX],
+    ];
+    const hits = map.queryRenderedFeatures(box, { layers: ['border-handle'] });
+    let best = null;
+    let bestD = Infinity;
+    for (const f of hits) {
+      const p = map.project(f.geometry.coordinates);
+      const d = Math.hypot(p.x - point.x, p.y - point.y);
+      if (d < bestD) { bestD = d; best = f.properties.handle; }
+    }
+    return best;
+  }
+
+  /**
+   * Is the point ON the frame's outline — within `EDGE_PX` of `border-line`, and not
+   * over a marker the click should reach instead?
+   *
+   * The frame's FILL used to be the move target, which cost the card its primary
+   * gesture: after a pick the frame is the union of the picked boxes and `fitRows`
+   * fits the viewport to exactly that, so the fill covers essentially the whole
+   * canvas and a plain drag-to-pan anywhere inside it moved the border instead — the
+   * only surface left to pan with was a feed marker. The outline is a real target (the
+   * cursor says `move` over it, the same way it says `nwse-resize` over a corner) and
+   * it leaves the interior to `dragPan`, where a map's drag belongs. (2026-08-27.)
+   */
+  function edgeAt(point) {
+    const map = st.map;
+    if (!map || !st.border || st.drawing || !map.getLayer('border-line')) return false;
+    const markers = ['feeds-selected', 'feeds-dot', 'feeds-cluster'].filter((id) => map.getLayer(id));
+    if (markers.length && map.queryRenderedFeatures(point, { layers: markers }).length) return false;
+    const box = [
+      [point.x - EDGE_PX, point.y - EDGE_PX],
+      [point.x + EDGE_PX, point.y + EDGE_PX],
+    ];
+    return map.queryRenderedFeatures(box, { layers: ['border-line'] }).length > 0;
+  }
+
+  function beginBorderDrag(kind, handle, origin, point) {
+    st.borderDrag = {
+      kind, handle, origin, point: point || null, start: st.border.bbox.slice(), moved: false,
+    };
+    if (st.map) st.map.dragPan.disable();
+    if (mapHost) mapHost.classList.add('border-dragging');
+  }
+
+  /** Apply the pointer at `[lat, lon]` to the drag in progress. `point` is the same
+   *  position in screen pixels, when the caller has one. */
+  function moveBorderDrag(here, point) {
+    const d = st.borderDrag;
+    if (!d || !st.border) return;
+    // A whole-box move waits for `MOVE_PX` of travel. The first `mousemove` used to
+    // set `mode: 'custom'` unconditionally, so a hand that twitched while pressing
+    // turned an `'auto'` frame into a `'custom'` one — and `readOptions` then sends
+    // the box instead of null, which is the difference between "the border is
+    // inferred from what the start stop can reach" and "this rectangle is the map".
+    if (d.kind === 'move' && !d.moved && point && d.point
+      && Math.hypot(point.x - d.point.x, point.y - d.point.y) < MOVE_PX) return;
+    const b = d.start.slice();
+    if (d.kind === 'handle') {
+      if (d.handle.includes('n')) b[2] = here[0];
+      if (d.handle.includes('s')) b[0] = here[0];
+      if (d.handle.includes('e')) b[3] = here[1];
+      if (d.handle.includes('w')) b[1] = here[1];
+    } else {
+      // Move the whole box by the pointer's travel, and stop at the edge of the
+      // world rather than letting one side clamp and the box shrink.
+      let dlat = here[0] - d.origin[0];
+      let dlon = here[1] - d.origin[1];
+      dlat = Math.max(-90 - b[0], Math.min(90 - b[2], dlat));
+      dlon = Math.max(-180 - b[1], Math.min(180 - b[3], dlon));
+      b[0] += dlat; b[2] += dlat; b[1] += dlon; b[3] += dlon;
+    }
+    d.moved = true;
+    st.border = { bbox: normBbox(b), mode: 'custom' };
+    syncBorder();
+  }
+
+  function endBorderDrag() {
+    const d = st.borderDrag;
+    if (!d) return;
+    st.borderDrag = null;
+    // The click MapLibre fires after this mouseup would land on whatever is under
+    // the handle — a marker, most likely — and toggle it. Spent the same way the
+    // shift-drag's trailing click is.
+    if (d.moved) st.suppressClick = true;
+    if (st.map) st.map.dragPan.enable();
+    if (mapHost) mapHost.classList.remove('border-dragging');
+  }
+
+  // A mouseup outside the canvas still ends the drag; MapLibre only reports its own.
+  on(window, 'mouseup', endBorderDrag);
+  on(window, 'touchend', endBorderDrag);
+  on(window, 'touchcancel', endBorderDrag);
 
   // ── MapLibre ──────────────────────────────────────────────────────────────
 
@@ -883,6 +1377,7 @@ export function initPicker(root, handlers = {}) {
     map.addSource('selected', { type: 'geojson', data: selectedFeatures() });
     map.addSource('hover', { type: 'geojson', data: EMPTY });
     map.addSource('draw', { type: 'geojson', data: drawFeatures() });
+    map.addSource('border', { type: 'geojson', data: borderFeatures() });
 
     // The selected boxes go under every marker and the hover box, so a hovered
     // neighbour still reads on top of a pick the size of a county.
@@ -895,6 +1390,21 @@ export function initPicker(root, handlers = {}) {
       id: 'selected-line', type: 'line', source: 'selected',
       filter: ['==', ['geometry-type'], 'Polygon'],
       paint: { 'line-color': p.gold, 'line-width': 1.4, 'line-opacity': 0.9 },
+    });
+
+    // The game-border frame: a SOLID gold line, against the draw tool's dashed one,
+    // so the border and a sweep never look like the same thing. Fill and line sit
+    // under the markers like the selected boxes; the handles go on top of everything
+    // (added last, below) so a corner on a marker is still a corner.
+    map.addLayer({
+      id: 'border-fill', type: 'fill', source: 'border',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: { 'fill-color': p.gold, 'fill-opacity': 0.06 },
+    });
+    map.addLayer({
+      id: 'border-line', type: 'line', source: 'border',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: { 'line-color': p.gold, 'line-width': 2.2, 'line-opacity': 1 },
     });
 
     map.addLayer({
@@ -981,6 +1491,15 @@ export function initPicker(root, handlers = {}) {
       paint: {
         'circle-color': p.gold, 'circle-radius': 4,
         'circle-stroke-color': p.edge, 'circle-stroke-width': 1.5,
+      },
+    });
+
+    map.addLayer({
+      id: 'border-handle', type: 'circle', source: 'border',
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: {
+        'circle-color': p.edge, 'circle-radius': 6,
+        'circle-stroke-color': p.gold, 'circle-stroke-width': 2,
       },
     });
   }
@@ -1101,6 +1620,18 @@ export function initPicker(root, handlers = {}) {
     });
 
     map.on('mousemove', (event) => {
+      if (st.borderDrag) { moveBorderDrag(at(event), event.point); return; }
+      if (!st.drawing && st.border) {
+        // The resize cursor over a handle, `move` over the outline between them, and
+        // nothing over the fill — which keeps the map's own cursor, so the markers
+        // under it can still say "pointer" and a drag there still pans.
+        const h = handleAt(event.point);
+        const want = h ? HANDLE_CURSOR[h] : (edgeAt(event.point) ? 'move' : '');
+        if (want !== st.hoverCursor) {
+          st.hoverCursor = want;
+          map.getCanvas().style.cursor = want;
+        }
+      }
       if (!st.drawing) return;
       if (st.boxing && st.boxA) {
         const b = at(event);
@@ -1116,6 +1647,24 @@ export function initPicker(root, handlers = {}) {
     map.on('mousedown', (event) => {
       // A new gesture: whatever the last one asked to swallow is spent.
       st.suppressClick = false;
+      // The frame, before the draw tool: drawing suspends the handles (`handleAt`
+      // says so), so the two never compete for one mousedown. `preventDefault` on
+      // the MapLibre event is what keeps `dragPan` from starting under the drag.
+      if (!st.drawing && st.border && event.originalEvent.button === 0) {
+        const h = handleAt(event.point);
+        if (h) {
+          event.preventDefault();
+          beginBorderDrag('handle', h, at(event), event.point);
+          return;
+        }
+        // The OUTLINE moves the whole box; the fill is the map's, so a drag inside the
+        // frame pans exactly as it does outside it.
+        if (edgeAt(event.point)) {
+          event.preventDefault();
+          beginBorderDrag('move', null, at(event), event.point);
+          return;
+        }
+      }
       if (!st.drawing || !event.originalEvent.shiftKey) return;
       event.preventDefault();
       st.boxing = true;
@@ -1124,6 +1673,7 @@ export function initPicker(root, handlers = {}) {
       map.dragPan.disable();
     });
     map.on('mouseup', (event) => {
+      if (st.borderDrag) { endBorderDrag(); return; }
       if (!st.boxing) return;
       st.boxing = false;
       map.dragPan.enable();
@@ -1140,6 +1690,27 @@ export function initPicker(root, handlers = {}) {
       }
       closeRing(ring);
     });
+
+    // Touch: a finger on a HANDLE drags it, and only then is the browser's default
+    // — the page scroll, or under cooperativeGestures the "use two fingers" overlay
+    // — prevented. A finger anywhere else, the fill included, is left to the map
+    // and the page: on a phone the frame fills the screen after a pick, and a fill
+    // that swallowed every touch would be a map that cannot be scrolled past.
+    map.on('touchstart', (event) => {
+      if (st.drawing || !st.border || !event.point) return;
+      const h = handleAt(event.point);
+      if (!h) return;
+      event.preventDefault();
+      if (event.originalEvent && event.originalEvent.cancelable) event.originalEvent.preventDefault();
+      beginBorderDrag('handle', h, at(event), event.point);
+    });
+    map.on('touchmove', (event) => {
+      if (!st.borderDrag) return;
+      event.preventDefault();
+      if (event.originalEvent && event.originalEvent.cancelable) event.originalEvent.preventDefault();
+      moveBorderDrag(at(event), event.point);
+    });
+    map.on('touchend', () => { if (st.borderDrag) endBorderDrag(); });
   }
 
   /** Put a cluster's members in the results list — the keyboard path to the same feeds. */
@@ -1266,6 +1837,7 @@ export function initPicker(root, handlers = {}) {
   // ── the handle ────────────────────────────────────────────────────────────
 
   renderPicksAndNote();
+  renderBorderRowBox();
 
   const handle = {
     /** The bring-your-own file or URL, shown in the same list. */
@@ -1284,6 +1856,7 @@ export function initPicker(root, handlers = {}) {
     destroy() {
       if (st.destroyed) return;
       st.destroyed = true;
+      if (captionTimer !== null) { clearTimeout(captionTimer); captionTimer = null; }
       for (const [target, type, fn, opts] of listeners) target.removeEventListener(type, fn, opts);
       listeners.length = 0;
       if (io) { io.disconnect(); io = null; }

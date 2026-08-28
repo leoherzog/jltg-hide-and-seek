@@ -46,7 +46,11 @@ node tools/mdb-snapshot.mjs --counts   # ...and re-measure every feed's size ove
 runs it against the reference feed (The Rapid, Grand Rapids) with the OSM layer off, asserting 19
 measured golden numbers: feed metrics, hub, game size, hull area, T90, and the fitness and
 zone-score outputs. **Never adjust an assertion to make it pass** — a change to one of those
-numbers means an algorithm moved, which may be correct but must be deliberate.
+numbers means an algorithm moved, which may be correct but must be deliberate. It also prints a
+`BORDER:` line (2026-08-27): shape assertions for the in-play set and the suggested border,
+including a second scenario that re-runs the pipeline with a `borderBbox` clipping the reference
+network's southern fifth. Those are deliberately **not** in the `SUMMARY` count, so "19 golden
+numbers" stays the true figure.
 
 The reference feed lives at `cache/gtfs/c25d617e4716161f.zip`, which is gitignored — a fresh clone
 doesn't have it. `--feed <path>` points the harness at any local GTFS zip.
@@ -96,6 +100,33 @@ than to an empty grey box. The polygon tool is **hand-rolled on the map's own ev
 need an amendment to it. The picker's map must be `destroy()`ed before the run starts, and it must
 never be folded into `PAGE_RUNTIME_JS`'s `String.raw` template (§05's map lives there; a backtick
 would end it).
+
+The **game-border frame** — the gold rectangle with eight handles that appears the moment a feed is
+picked — is hand-rolled on MapLibre's own events for exactly the same reason as the draw tool, and
+is owned by the picker: `handlers.onBorder({bbox, mode}|null)` reports it outward and there is no
+setter back in. An untouched, auto-fitted frame sends `borderBbox: null`, so a reader who never
+touches it gets the run they got before the frame existed. The four `#border-s/w/n/e` fields ARE the
+keyboard path — the handles are deliberately not focusable — and `#opt-border-bbox` under Advanced is
+a `readonly` mirror WHILE a frame exists; `readOptions` reads the frame's `mode`, never the mirror's
+text. With no frame at all — a dropped zip or a pasted URL, which the picker has no bounding box for
+— the field is writable and `readOptions` parses it, because that was the only way a
+bring-your-own feed could ever be given a border. `#opt-use-drawn-border` was deleted with this
+change. On the map the eight handles resize and the rectangle's OUTLINE moves the whole box; the
+FILL is left to the map, or a frame fitted to the picks would swallow every attempt to pan.
+
+**`jltg.rerun` in `sessionStorage` is the only cross-load handoff in the repo**, and it is consumed
+exactly once, in `boot()`, which removes the key *before* it validates so a bad value cannot replay.
+It exists because "Re-run with this border" is a new document load — `resetToLanding` explains why
+the shell cannot be put back in place — and it carries URL and OSM sources only, never a `File`.
+Nothing else may ride it: it is not a request/response channel and not a way to push a selection
+into the picker.
+
+`servedStopIds` is **cmpStr-sorted at build** (`gtfs/service.js`), and `s1DayMetrics`' T90 origin
+sample is a fixed stride over it. Any stop subset must therefore be produced by **filtering** that
+array — never by re-sorting, never by round-tripping through a `Set` — or the stride lands on
+different stops and a golden moves. `gtfs/infer.js` `inPlayStopIds` is the one place that builds
+such a subset; with no override it threads `null` instead of an array so the no-override path is
+literally the old one.
 
 The **example-map chips** under the lede ("Chicago", "New York", …) are `lib/catalog.js`'s
 `EXAMPLE_MAPS`: hand-curated lists of catalogue ids, public operators only — no campus loops,
@@ -262,7 +293,8 @@ development, carried forward as a record of what was checked.
 - `node tools/smoke.mjs`: 19/19 golden numbers on the reference feed (served stops, routes, trips,
   zones, hub, game size, hull area, T90, hub route share, fitness score/band, ranked zones,
   dossiers, findings, house rules, top zone and its tenths), plus the merge assertions described
-  above. The cheapest way to prove a change did not move an algorithm.
+  above and the 24 `BORDER:` assertions. The cheapest way to prove a change did not move an
+  algorithm.
 - `node tools/mdb-snapshot.mjs --check`: every invariant of the committed feed catalogue — sorted
   unique ids (code-point, and they are strings like `mdb-400` or `tld-5873`, not integers),
   four-finite-number boxes inside the sane ranges, the regional flag agreeing with the 250 km cut,

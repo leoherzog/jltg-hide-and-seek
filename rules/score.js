@@ -1588,12 +1588,25 @@ export function deriveRecommendations(reportParts) {
     // being the other two). The map is now their single home; this rule points at it and
     // the renderer appends them to the COPIED checklist, so the copy-paste artefact
     // still stands alone. (2026-08-23.)
+    // The evidence line has to follow `Border.derivation` (CONTRACT §(b)) the way §05's
+    // sentence and the `map_border_derivation` interpretation do. On a reader-supplied
+    // box `padM` is 0, and "padded by 0 m — one hiding-zone radius" is false twice
+    // over: nothing was padded, and without the pad a zone centred near the edge really
+    // does extend past the border. (2026-08-27.)
+    const derivation = get(border, 'derivation');
+    const borderBasis = derivation === 'option_fallback'
+      ? 'border set on the landing map but not applied — it kept under half the served '
+        + 'stops, so every count is measured over the whole network'
+      : derivation === 'option'
+        ? 'border set on the landing map, unpadded — a zone centred near an edge may '
+          + 'extend past it'
+        : `border padded by ${num(border.padM)} m — one hiding-zone radius, so every legal `
+          + 'zone lies wholly inside';
     add('use_borders', 30,
       'Use exactly the border printed under the map, and copy the GeoJSON rather than '
       + 'redrawing it. The rulebook is emphatic that every player must be using the same '
       + 'set of borders, and on this map the border decides which questions work at all.',
-      `border padded by ${num(border.padM)} m — one hiding-zone radius, so every legal zone `
-      + 'lies wholly inside', true);
+      borderBasis, true);
   }
 
   // 4 · is this a transit game at all
@@ -1847,11 +1860,17 @@ function synthArgv(opts, feeds = []) {
  * Contains **no timestamp** that is not derived from `feed_info` or `options.asOf`.
  * (generate.py `build_provenance`)
  *
+ * `border` (2026-08-27) is read for exactly one thing: the `map_border_derivation`
+ * interpretation says how the border was derived, and a run measured inside the
+ * reader's own box must not claim it was padded from reachability. Optional, so
+ * a caller without a `Border` gets the inferred sentence it always got.
+ *
  * @param {Object} opts @param {Object} feed @param {Object} geo @param {Object} size
  * @param {string} asOf @param {string[]} degradations
+ * @param {Object|null} [border] the run's `Border`, for its `derivation`
  * @returns {Object} a `Provenance`
  */
-export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
+export function buildProvenance(opts, feed, geo, size, asOf, degradations, border = null) {
   // One row per input feed, in merge order — length 1 for an ordinary run. §09 prints
   // them all: a merged report that showed a single sha256 would be lying about what
   // it read.
@@ -1889,9 +1908,14 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
   const adminLevels = Object.create(null);
   for (const k of ['1', '2', '3', '4']) adminLevels[k] = nullish(get(geo.admin.ordinals, k));
 
+  const derivation = border && typeof border.derivation === 'string' ? border.derivation : '';
   const interpretations = INTERPRETATIONS.slice()
     .sort((a, b) => cmpStr(a.id, b.id))
-    .map((row) => ({ id: row.id, text: row.text, affects: Array.from(row.affects) }));
+    .map((row) => ({
+      id: row.id,
+      text: (row.byDerivation && derivation && row.byDerivation[derivation]) || row.text,
+      affects: Array.from(row.affects),
+    }));
 
   return {
     feedUrl: feed.source,                       // feed_url
@@ -1928,6 +1952,12 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations) {
     boardSlackS: get(opts, 'boardSlackS'),      // board_slack_s
     excludedStops: Array.from(get(opts, 'excludeStops') || []),   // excluded_stops
     excludedRoutes: Array.from(get(opts, 'excludeRoutes') || []), // excluded_routes
+    // Where a supplied `borderBbox` came from — 'landing' (the frame the reader
+    // set), 'suggestion' (the cached re-run from §05's callout) or null. Echoed
+    // from `Options.borderSource`; nothing in the pipeline reads it, and `argv`
+    // is deliberately unchanged so a hand-typed and a suggested box reproduce
+    // the same command line.
+    borderSource: nullish(get(opts, 'borderSource')),
     llmUsed: false,                             // llm_used — the LLM path is dropped in the port
     // No Python counterpart: the CLI's cache is a directory and is always persistent.
     // The browser's is IndexedDB when it can be opened and a per-run Map when it

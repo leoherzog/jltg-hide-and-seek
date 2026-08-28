@@ -28,7 +28,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
 | External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
-| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) has never been in this list even though every `useOsm` run fetches from it, and a `kind:'osm'` source now depends on it with no feed zip in the run at all. Folding it into the row is an explicit amendment someone must make deliberately — do not do it as a side effect of another change, and do not cite this note as having done it. |
+| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) has never been in this list even though every `useOsm` run fetches from it, and a `kind:'osm'` source now depends on it with no feed zip in the run at all. Folding it into the row is an explicit amendment someone must make deliberately — do not do it as a side effect of another change, and do not cite this note as having done it. **2026-08-27:** the landing border editor (frame, 8 handles, drag) is hand-rolled on MapLibre's own events for the same reason as the draw tool. Still five. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. The semantics are exactly `a < b ? -1 : a > b ? 1 : 0`, never `localeCompare` (locale-dependent = non-deterministic). That body now has exactly **one** implementation — `cmpStr`, exported from `lib/core.js` and imported by every module that sorts strings; do not spell a new local copy. Two deliberate hold-outs, so a future reader does not "finish the job": `tools/mdb-snapshot.mjs` keeps a private copy because it is a standalone Node tool that imports nothing from the app, and `lib/geo.js`'s `GridIndex.nearKeys` keeps a local arrow on its hot path. |
@@ -50,8 +50,8 @@ embedded JSON block; it is built from `state.report` in memory.
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`; the constants `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`), `PICK_WARN`, `BIG_DOWNLOAD_MB`. Pure `data → string`, no DOM — the landing feed picker's markup. |
-| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, refresh, resize, destroy}` (`handlers.osmSkipped()` reports the live state of the Advanced panel's Skip OpenStreetMap switch, which lives outside this card) — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. **Selection is one-way, outward only** — `commit()` → `handlers.onChange`, and the handle's write-side `setSelection` was deleted 2026-08-26 with no caller in the repo. Do not add one back to push a selection in; `app.js` owns the pick list. The example-map chips are NOT such a setter: they are picker-internal controls that write `st.selected` through the same `commit()` funnel an Add button does, and a chip **replaces** the catalogue picks (the drawn shape and the bring-your-own feed are left alone). |
+| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption` (2026-08-27 — the game-border frame's row under the map; the `#border-row` **host** is emitted by `renderPickerCard`, not by `index.html`, because `app.js` replaces the card's `[data-role=pickerbody]` wholesale); the constants `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`), `PICK_WARN`, `BIG_DOWNLOAD_MB`. Pure `data → string`, no DOM — the landing feed picker's markup. `renderBorderCaption` branches on the frame's `mode` FIRST and on the OpenStreetMap flags second: `mode` is the only thing that decides what `readOptions` sends, so an `'auto'` frame must say the border will be inferred even when the pick is a drawn shape. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, refresh, resize, destroy}` (`handlers.osmSkipped()` reports the live state of the Advanced panel's Skip OpenStreetMap switch, which lives outside this card) — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. **Selection is one-way, outward only** — `commit()` → `handlers.onChange`, and the handle's write-side `setSelection` was deleted 2026-08-26 with no caller in the repo. Do not add one back to push a selection in; `app.js` owns the pick list. The example-map chips are NOT such a setter: they are picker-internal controls that write `st.selected` through the same `commit()` funnel an Add button does, and a chip **replaces** the catalogue picks (the drawn shape and the bring-your-own feed are left alone). **2026-08-27:** the picker also owns the game-border **frame** — `st.border`, the `border` source and its `border-fill` / `border-line` / `border-handle` layers, the eight handles, the pointer and touch drags, the four edge fields and the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons — all hand-rolled on MapLibre's own events, like the draw tool and for the same §0 reason. It reports outward and only outward: `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)`, called every time the frame moves or changes mode. There is no `setBorder` any more than there is a `setSelection`; `app.js` reads the frame, the picker owns it. Two rules the drag code must keep (2026-08-27): the eight handles resize and the frame's OUTLINE (`border-line`, within `EDGE_PX`) moves the whole box, while the FILL belongs to the map — a frame fitted to the picks covers the viewport, and a fill that started a drag took the card's pan gesture away; and a move drag does nothing until the pointer has travelled `MOVE_PX`, so a twitch cannot silently turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region rewritten on every frame of a drag, so it is set `aria-live="off"` while the gesture runs and speaks once, at rest. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
@@ -62,15 +62,15 @@ embedded JSON block; it is built from `state.report` in memory.
 | `gtfs/merge.js` | worker | `mergeFeeds`, `mergeOrder`, `feedSourceRows`, `MERGE_TABLES`, `NAMESPACED_COLUMNS` — table-level merge of several feeds into one `Feed` |
 | `gtfs/service.js` | worker | `dayTypes`, `buildServiceDay`, `clusterStations`, `noServiceDates`, `busiestDay` (the one implementation of "the day this report is about" — see the service-day layer), `s1BestDirGaps` (best route-direction median headway per stop, read by `gtfs/network.js`'s `s1DayMetrics` as well as by `buildServiceDay`) |
 | `gtfs/raptor.js` | worker | `raptor`, `raptorReverse`, `buildJourney` |
-| `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness` |
-| `gtfs/infer.js` | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts` |
+| `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness`. **2026-08-27:** `networkMetrics`, `s1DayMetrics` and `buildZones` take a trailing `inPlay: string[]|null`, and the metrics memo key gains `in:<length>:<stableHash(join(','))>` — or the literal `'all'` when `inPlay` is null, which is what keeps a no-override run on today's key. `inPlayForDay` is the one place the per-day intersection is written, and it falls back to the whole day when that intersection is empty. |
+| `gtfs/infer.js` | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts`, plus (2026-08-27) `excludedStopSet`, `inPlayStopIds`, `hubRun` and `suggestBorder`. `hubRun(feed, day, originId, departS)` is the **one** memoised forward RAPTOR from the run's origin (an `s1Cache` entry keyed `raptor:<dayKey>:<origin>:<departS>`); `inferBorder`, `s1DayMetrics` and `suggestBorder` all read the same result object, which is why the suggestion costs no extra routing pass. `gtfs/network.js` imports `hubRun` and `gtfs/infer.js` imports `networkMetrics`: a **function-body-only** module cycle that ESM hoisting resolves, commented at both imports. Do not add a top-level use on either side. |
 | `osm/flatgeobuf.js` | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
 | `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `worldTransitRoutes`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
 | `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData`. Only `GEO_CATEGORIES` and `LOW_STREETVIEW_COUNTRIES` actually cross into `rules/audit.js`; `CAR_STREET_SELECTOR` is now the `car_street` entry's own `selector` (it is declared above the table so it can be), so audit reads it through `GEO_CATEGORIES` like every other category and imports it no more. |
 | `osm/synth.js` | worker | `synthesizeFeedZip` plus the frozen `SYNTH_*` assumption constants (`SYNTH_MODE_ROUTE_TYPE`, `SYNTH_MODE_SPEED_KMH`, `SYNTH_MODE_HEADWAY_S`, `SYNTH_DWELL_S`, `SYNTH_SERVICE_WINDOW_S`, `SYNTH_TEMPLATE_ANCHOR_S`, `SYNTH_CALENDAR_DAYS`, `SYNTH_FALLBACK_ASOF`, `SYNTH_CLUSTER_NAME_M`, `SYNTH_CLUSTER_ANY_M`, `SYNTH_HEADWAY_MIN_S`, `SYNTH_HEADWAY_MAX_S`), which `rules/catalogue.js`'s three `osm_synth_*` INTERPRETATIONS rows quote — a constant moved here without re-syncing that prose is a page lying about the code. Pure and synchronous: `worldTransitRoutes` output + the drawn ring + `asOf` → a byte-deterministic GTFS zip (`Uint8Array`) the **untouched** `loadFeed` accepts, plus prose notes. Imported DYNAMICALLY by `worker.js` only when a run names a `kind:'osm'` source; a run of published feeds never parses it. Harness: `node tools/test-synth.mjs`, network-free. |
-| `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. |
+| `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread for the question fields `QuestionAudit` does not carry. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, and the radar radii as `S1_RADAR_MILES` — a *different* list from the one this file used to carry. **2026-08-27:** `INTERPRETATIONS`' `map_border_derivation` row stays plain frozen data and gains a `byDerivation` map rather than becoming a function — `{option: '…the box you set on the landing map, with no padding…'}` beside the unchanged `text`, which remains the `'reach'` sentence. `buildProvenance` picks between them. A row whose `text` became a callback would break every main-thread reader that treats this file as data. |
 | `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
-| `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance` |
+| `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance`. **2026-08-27:** `buildProvenance(opts, feed, geo, size, asOf, degradations, border = null)` — the trailing `Border` is optional, and a caller that omits it gets the `'reach'` interpretation text exactly as before. The provenance SHAPE is unchanged apart from the new `borderSource` field; `argv` is untouched on purpose, because it is the echo of the CLI's own flags and there is no CLI flag for where a box came from. |
 
 **Import edges added deliberately, so a reader does not take them for accidents.**
 `rules/score.js` imports `busiestDay` from `gtfs/service.js` — the **first** `rules/` →
@@ -86,7 +86,9 @@ SQM_PER_SQMI EARTH_R_M WALK_SPEED_MPS WALK_RADIUS_M WALK_CIRCUITY BOARD_SLACK_S
 MAX_TRANSFERS DEFAULT_DEPARTURE SERVICE_DAY_SECONDS HEADWAY_WINDOW MIDDAY_WINDOW
 EVENING_WINDOW FREQUENT_HEADWAY_MIN STATION_CLUSTER_M HUB_SNAP_M T90_ORIGIN_STRIDE
 RADAR_SAMPLE_PAIRS RADAR_DEAD_HIGH RADAR_DEAD_LOW SEEKER_SAMPLE_CAP
-SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN
+SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN IN_PLAY_MIN_SHARE
+SUGGEST_MIN_TRIM_SHARE SUGGEST_MIN_EVENT_SHARE SUGGEST_MIN_CORE_STOPS
+SUGGEST_MIN_CORE_SHARE
 MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES`
 
 Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
@@ -98,6 +100,7 @@ Notes:
 * `HEADWAY_WINDOW`/`MIDDAY_WINDOW`/`EVENING_WINDOW` are frozen 2-element arrays of `'HH:MM:SS'`.
 * `MAX_FEEDS_PER_RUN` is the run's feed cap (10; it was 6 until 2026-08-27, raised so a metro published as borough-sized feeds fits one run). It lives in `lib/core.js` because three modules have to agree on it and none may own it: the picker refuses the eleventh pick, `readSources` refuses an eleventh that arrived by the other door (ten map picks plus a dropped zip), and `normaliseSources` refuses one the worker was handed anyway.
 * `cmpStr(a, b)` is the shared code-point string comparator — see §0's *Sorting strings* row for the two hold-outs that keep a private copy on purpose. `byString` and `jdump` use it too, so `lib/core.js` has one body, not one per section.
+* The five 2026-08-27 thresholds live here for the usual reason — two modules have to agree and neither may own the number. `IN_PLAY_MIN_SHARE` (0.5) is the floor under `inPlayStopIds`; `SUGGEST_MIN_TRIM_SHARE` (0.05), `SUGGEST_MIN_EVENT_SHARE` (0.5), `SUGGEST_MIN_CORE_STOPS` (100) and `SUGGEST_MIN_CORE_SHARE` (0.10) are `suggestBorder`'s four gates. Each carries its one-line rationale at the declaration; move one and the rationale moves with it.
 * `IMPERIAL_COUNTRIES` is a frozen **sorted Array** (`['gb','lr','mm','us']`), not a Set, so it is clone-safe. Use `.includes()`.
 * **`sha256Text` and `sha256Bytes` are `async`** — `crypto.subtle.digest` returns a Promise. Every caller must `await`. This is the one signature that differs from the Python.
 * `stableHash(text)` is **synchronous** and returns 16 hex characters. It exists because a click handler building a `SourceRef` id cannot await `crypto.subtle` (and must not require a secure context). It is a **stable identity, never a content address** — collision-resistant enough to key a pick list, not to verify bytes. `sha256` fields stay `sha256Text`/`sha256Bytes`; do not "unify" the two.
@@ -108,7 +111,8 @@ Notes:
 
 ### `lib/geo.js` — exported symbols (already written)
 
-`haversineM Projection bboxOf bboxExpand bboxContains segIntersects bboxIntersectsRing
+`haversineM Projection bboxOf bboxExpand bboxContains bboxUnion bboxIntersection
+bboxAreaSqM bboxScale segIntersects bboxIntersectsRing
 convexHull polygonArea ringCentroid pointInRing representativePoint polylineMidpoint
 segPointDist ringWithin minEnclosingCircle GridIndex`
 
@@ -117,6 +121,7 @@ Conventions:
 * `Projection` is a class: `new Projection(lat0, lon0)`, `Projection.about(points)`, `Projection.from({lat0, lon0})`. Methods `xy(lat, lon) → [x, y]`, `lonlat(x, y) → [lon, lat]` (note the order — mirrors Python) — the sole planar→geographic method, the JS-only `latlon` convenience having been deleted 2026-08-26 with no caller anywhere — getters `mPerDegLat` / `mPerDegLon`, `toJSON() → {lat0, lon0}`. **Projection instances are class instances and cannot cross `postMessage`** — send `{lat0, lon0}` and rebuild with `Projection.from()`.
 * `segIntersects(a, b, c, d) → boolean` is the planar orientation test, collinear overlap included. `bboxIntersectsRing(bbox, ring) → boolean` answers "does this `[S,W,N,E]` box overlap this ring at all", and checks **all three** cases — a box corner inside the ring, a ring vertex inside the box, and a box edge crossing a ring edge — because any one alone is quietly wrong. Both are used by the landing picker to decide which feeds a drawn shape sweeps up.
 * `GridIndex(cell)`: `.add(key, x, y)`, `.addBbox(key, minx, miny, maxx, maxy, {cap = 400}) → boolean`, `.near(x, y, radius) → [[key, x, y], …]` sorted by `String(key)`, `.nearKeys(x, y, radius) → [key, …]` deduped + sorted. `radius` may be `Infinity`; the 3×3 neighbourhood restriction still applies (that is intentional and load-bearing for the area-index callers). Holds a `Map` — **not clone-safe**, build inside the worker.
+* `bboxUnion(bboxes) → bbox|null`, `bboxIntersection(a, b) → bbox|null`, `bboxAreaSqM(bbox)` and `bboxScale(bbox, factor)` (about the centre, clamped to ±90/±180) are the landing frame's arithmetic, added 2026-08-27. `bboxAreaSqM` uses the same 111132 / 111320·cos(mid) constants as `Projection` and `bboxExpand`, so the area the caption prints and the area the border reports cannot drift apart.
 * `minEnclosingCircle` returns `[cx, cy, r]`. It uses a fixed-seed `mulberry32(0)` Fisher–Yates over the sorted+deduped point list. **This is the one intentional divergence from the CLI**, which uses `random.Random(0)` (Mersenne Twister). Fixed permutation, not entropy; the circle is permutation-invariant up to fp noise well inside the existing `1e-7` slack.
 
 ### Constants NOT in `core.js` — owned by `lib/http.js`
@@ -452,13 +457,87 @@ reconcile them; the goldens move if you do.
 /**
  * @typedef {Object} Border          // class Border. Both a box and a circle; the rulebook sanctions both.
  * @property {'bbox'|'circle'} kind                 // kind
- * @property {[number,number,number,number]} bbox   // bbox — (S, W, N, E), padded
- * @property {[number,number,number,number]} rawBbox// raw_bbox — unpadded
+ * @property {[number,number,number,number]} bbox   // bbox — (S, W, N, E), padded by one zone
+ *                                   //   radius; or the reader's own box, UNPADDED (padM 0)
+ * @property {[number,number,number,number]} rawBbox// raw_bbox — before padding; EQUALS bbox
+ *                                   //   when derivation is 'option'
  * @property {[number,number,number]} circle        // circle — (lat, lon, radiusM)
- * @property {number} padM                          // pad_m
+ * @property {number} padM                          // pad_m — 0 on an 'option' border
  * @property {Object} geojson                       // geojson — a GeoJSON Feature, {type:'Feature', properties:{kind}, geometry:{type:'Polygon', coordinates:[ring]}}; ring is [lon,lat] pairs, closed
  * @property {number} areaSqM                       // area_sq_m
- * @property {string[]} trimmedStopIds              // trimmed_stop_ids — stops ruled out-of-map, sorted
+ * @property {string[]} trimmedStopIds              // trimmed_stop_ids — sorted cmpStr: the
+ *                                   //   in-play stops outside the 3× hiding-period
+ *                                   //   there-and-back reach of the hub, after the two 50 %
+ *                                   //   fallbacks (exclusions removed first)
+ * @property {'reach'|'option'|'option_fallback'} derivation // derivation — 'option' iff
+ *                                   //   options.borderBbox; 'option_fallback' when there WAS a
+ *                                   //   box and `inPlayStopIds` fell back off it (below), i.e.
+ *                                   //   the rectangle is still the reader's and is still drawn,
+ *                                   //   but nothing was measured inside it. Stamped by worker.js
+ *                                   //   after inferBorder, which is handed a set and cannot know.
+ *                                   //   (2026-08-27.)
+ */
+
+/**
+ * `rawBbox` and `trimmedStopIds` are RETURNED BY `inferBorder` since 2026-08-27. They were
+ * documented here before they existed; the divergence recorded in COUNTRY-SCALE.md
+ * ("Correction 1") was resolved toward this typedef, not by deleting the fields. `derivation`
+ * is new in the same change and is what `rules/catalogue.js`'s `map_border_derivation` row is
+ * conditioned on: a reader's own box is not "the bbox of in-map stops, padded".
+ *
+ * THREE derivations, three sentences, and every place that describes the border must carry all
+ * three: §05's sentence under the map and its legend line (render/map.js), the
+ * `map_border_derivation` interpretation (`byDerivation`), the `use_borders` house rule's
+ * evidence (rules/score.js) and §07's border row (render/deck.js). `'option_fallback'` is the
+ * one that must never be silent — it is the only case where the drawn border and the measured
+ * numbers disagree — so worker.js ALSO emits a `degraded` message for it.
+ */
+
+/**
+ * @typedef {Object} SuggestedBorder // `Report.suggestedBorder`, or null. NEW 2026-08-27.
+ * A tighter, reachability-aware box the run OFFERS and never applies. Computed only by
+ * `gtfs/infer.js` `suggestBorder`, on the busiest service day, emitted on the `'network'`
+ * payload and on the `Report`. Renderers format it; nothing in `render/` or `rules/` derives
+ * a number from it, and the worker never acts on it — applying it is a second run (§(d)).
+ *
+ * Reachability criterion, verbatim: a stop is in the CORE of size `s` when its ONE-WAY RAPTOR
+ * arrival from the run origin (`options.startStopId || hub.stopId`) at the run departure is
+ * within `S1_SIZE_PARAMS[s].hidingPeriodMin` — the same rule `ZoneReach.unreachableZoneIds`
+ * colours the map with, and NOT the 3× there-and-back rule `inferBorder` uses. The suggestion
+ * is the SMALLEST size whose core, re-measured on those stops alone, votes that same size
+ * (ascending small → medium → large, stopping at the all-stop vote), subject to
+ * `SUGGEST_MIN_EVENT_SHARE`, `SUGGEST_MIN_CORE_STOPS` / `SUGGEST_MIN_CORE_SHARE` and
+ * `SUGGEST_MIN_TRIM_SHARE` in `lib/core.js`.
+ *
+ * `null` when `sizeOverride` or `borderBbox` is set (the reader has already decided — which is
+ * also why a re-run inside the suggested box offers nothing further, so the loop converges),
+ * when the origin sees no departure on the best day, when no candidate size is self-consistent,
+ * or when the suggestion would equal the current game.
+ *
+ * @property {'bbox'} kind
+ * @property {[number,number,number,number]} bbox   // = bboxExpand(rawBbox, S1_SIZE_PARAMS[sizeName].zoneRadiusM)
+ * @property {[number,number,number,number]} rawBbox// the core stops' own bbox
+ * @property {number} padM @property {Object} geojson @property {number} areaSqM
+ * @property {'small'|'medium'|'large'} sizeName    // the accepted size
+ * @property {number} hidingPeriodMin
+ * @property {string} originStopId @property {number} departureS @property {string} dayKey
+ * @property {number} coreStops                     // stops in the accepted core
+ * @property {number} allServedStops                // the best day's UNFILTERED served count
+ * @property {number} trimmedStops                  // = trimmedStopIds.length
+ * @property {number} eventShare                    // 0..1, departure-weighted, of the core
+ * @property {string[]} trimmedStopIds              // sorted cmpStr — the in-play stops the core
+ *                                   //   leaves out (in-play MINUS core, not served minus core)
+ * @property {Array<{feedIndex:number, agencyName:string, count:number}>} trimmedByFeed
+ *                                   //   count desc, then feedIndex asc
+ * @property {{axes:number[], hullSqM:number, t90Min:number, nZones:number, diameterM:number}} vote
+ * @property {Array<{sizeName:string, keptStops:number, eventShare:number, vote:string|null, reason:string}>} candidatesTried
+ *                                   //   every candidate in the order tried, so the page can say
+ *                                   //   why nothing was offered. `reason` is one of
+ *                                   //   'degenerate' | 'sparse' | 'outvoted' | 'accepted'.
+ *                                   //   'outvoted' is NOT in the design note: it is the case
+ *                                   //   the code found it needed — a core that clears both
+ *                                   //   floors but whose own metrics vote a different size.
+ * @property {'one_way_from_origin_within_hiding_period'} definition
  */
 
 /**
@@ -858,6 +937,37 @@ not an empty zip, routed through the worker's ordinary per-source catch.
  *                                     //   nothing can tell an invented timetable's
  *                                     //   trips from a published one's. See §(f) 7.
  * @property {Object<string, DayMetrics>} perDay             // dayKey → DayMetrics
+ * @property {number} allServedStops   // all_served_stops (2026-08-27) — the UNFILTERED
+ *                                     //   served-stop count on the best day, so the page can
+ *                                     //   say "11,430 of 24,705" when a box is in force.
+ * @property {boolean} inPlayFallback  // in_play_fallback (2026-08-27) — true when the in-play
+ *                                     //   filter kept too few stops and the whole served set
+ *                                     //   was used instead. `networkMetrics` cannot know this
+ *                                     //   (it is handed a set, not the options), so it writes
+ *                                     //   `false` and worker.js overwrites the flag right
+ *                                     //   after each call — the same pattern as
+ *                                     //   `assumedSchedule`.
+ *
+ * STOP SET (2026-08-27). Every Metrics quantity, the hub candidate list, `zoneCover`,
+ * `StopRow`s and `inferBorder`'s served set are measured over the IN-PLAY SET =
+ * `servedStopIds` ∩ `borderBbox` − `excludeStops` − every stop whose routes are ALL in
+ * `excludeRoutes` (a stop keeping one live route stays), computed once per run by
+ * `gtfs/infer.js` `inPlayStopIds` — which shares that exclusion set with `inferBorder` through
+ * `excludedStopSet`, so the border and the metrics can never disagree — by FILTERING the
+ * cmpStr-sorted `servedStopIds` — never re-sorted, because the T90 stride sample depends on
+ * that order. With no override the set IS `servedStopIds` and `null` is threaded instead of an
+ * array, so a no-override run takes literally today's code path down to the memo keys; that
+ * identity is the precondition the smoke goldens rest on. If fewer than `IN_PLAY_MIN_SHARE`
+ * (lib/core.js) of served stops survive, the whole served set is used and `inPlayFallback` is
+ * true. The convex-hull and T90 choices above are unchanged — only the set they read is
+ * filtered. The hub run is a whole-network RAPTOR pass whatever the set is, so `hubTravelP50Min`,
+ * `hubTravelP95Min` and `reachWithinHidingPeriod*` are narrowed to the day's in-play set where
+ * they are counted, not where they are computed: a reach count printed against `servedStops`
+ * must never exceed it. `buildZones` takes the set too — the cover picks the CENTRES, and
+ * without it a stop the box deleted would still be a member of a zone. Per DAY the set is
+ * intersected with that day's served stops, and a day the set does not touch at all is measured
+ * WHOLE rather than not at all (an empty set is `RangeError: no points` in `minEnclosingCircle`,
+ * i.e. no report); the `IN_PLAY_MIN_SHARE` floor covers the best day, this covers the others.
  */
 
 /**
@@ -925,6 +1035,8 @@ not an empty zip, routed through the worker's ordinary per-source catch.
  * @property {number} greedyK @property {number} seekerSampleCap
  * @property {string} departure @property {number} boardSlackS
  * @property {string[]} excludedStops @property {string[]} excludedRoutes
+ * @property {'landing'|'suggestion'|null} borderSource // 2026-08-27 — echoed from
+ *                                     //   `Options.borderSource`; `argv` is unchanged
  * @property {boolean} llmUsed                     // always false in the browser port
  * @property {Array<{id:string,text:string,affects:string[]}>} interpretations // sorted by id
  * @property {string[]} degradations
@@ -943,6 +1055,8 @@ not an empty zip, routed through the worker's ordinary per-source catch.
  * @property {SizeInference} sizeInference        // size_inference
  * @property {Hub} hub                            // hub
  * @property {Border} border                      // border
+ * @property {SuggestedBorder|null} suggestedBorder // suggested_border (2026-08-27) — the offer
+ *                                               //   §05 prints; null is the common case
  * @property {DaySummary[]} days                  // days — see §(d) stage 'days'; NOT full ServiceDay objects
  * @property {string} selectedDay                 // selected_day — the best day's dayType.key
  * @property {Zone[]} zones                       // zones
@@ -986,6 +1100,8 @@ Ported from `class Options`. Dropped as meaningless in a browser: `out_dir`,
  * @property {string|null} startStopId   // start_stop_id — overrides the inferred hub / round-start station
  * @property {'bbox'|'circle'} borderShape // border_kind
  * @property {[number,number,number,number]|null} borderBbox // border_bbox — (S, W, N, E) decimal degrees
+ * @property {'landing'|'suggestion'|null} borderSource // 2026-08-27 — PROVENANCE ONLY: where the
+ *                                     //   box came from. No pipeline code reads it.
  * @property {string[]} excludeStops     // exclude_stops — SORTED + DEDUPED by the caller
  * @property {string[]} excludeRoutes    // exclude_routes — SORTED + DEDUPED by the caller
  * @property {string} departure          // departure — 'HH:MM:SS' on the representative day
@@ -1005,6 +1121,7 @@ export const DEFAULT_OPTIONS = {
   startStopId: null,
   borderShape: 'bbox',
   borderBbox: null,
+  borderSource: null,     // provenance only
   excludeStops: [],
   excludeRoutes: [],
   departure: '09:00:00',   // DEFAULT_DEPARTURE
@@ -1024,12 +1141,31 @@ travel in the `run` message's `sources` list, not inside `options` (a `File` is
 clone-safe, but keeping the two apart makes the protocol readable). On a multi-feed run
 `source` is the labels joined with `' + '`.
 
-The landing map's drawn shape is a **page** control, not an `Options` field: it produces a
-`borderBbox` (and leaves `borderShape` at `'bbox'`), which `inferBorder` already honours
-as an override. Do not add a shape or ring field to **`Options`**. The one place a ring
-does cross the wire is *inside a `kind:'osm'` `SourceRef`* (§(d)) — there the ring IS the
-source, the same category as a `File`'s bytes, not a run setting; that is a reading of
-this rule, not a violation of it.
+The landing map's **border frame** is a page control, not an `Options` field: it produces a
+`borderBbox`. An untouched, auto-fitted frame sends **`null`** — the reader who never touched
+the map gets the inferred border, byte for byte as before the frame existed. A frame that was
+dragged, typed into, seeded from an overlap or from a drawn shape, or handed over by "Re-run
+with this border" sends its rectangle, with `borderShape` forced to `'bbox'`. `readOptions`
+decides this from the frame's own `mode`, not by parsing the mirror field: while a frame exists
+`#opt-border-bbox` is `readonly` and shows what the frame holds, so the two cannot disagree.
+With NO frame it is the input again, parsed exactly as it was before the frame existed — the
+picker only frames feeds it has a catalogue bounding box for, so a dropped zip, a pasted URL, or
+a run made after the catalogue fetch failed would otherwise have no way to set a border at all
+(fixed 2026-08-27; `app.js`'s `onPickerBorder` is the one place that toggles `readonly`). Do not
+add a shape or
+ring field to **`Options`**. The one place a ring does cross the wire is *inside a `kind:'osm'`
+`SourceRef`* (§(d)) — there the ring IS the source, the same category as a `File`'s bytes, not
+a run setting; that is a reading of this rule, not a violation of it.
+
+**2026-08-27.** `borderBbox`, `excludeStops` and `excludeRoutes` are now honoured by
+`inferHub`, `networkMetrics`, `zoneCover`, `stopRows` and `inferBorder` — not only by the
+border rectangle. Zones outside a supplied box are not built at all. This is a deliberate
+behaviour change on override runs only: a typed, dragged or suggested box now narrows the hub
+candidates, the metric table, the size vote, the zone cover, the stop table and the border
+trim. See the Metrics stop-set note in §(b). `Options` also gains `borderSource:
+'landing'|'suggestion'|null`, provenance only — `rules/score.js` echoes it and nothing in the
+pipeline branches on it. The `#opt-use-drawn-border` checkbox was **deleted** in the same
+change: the frame replaced it, and a drawn sweep ring is a sweep, not a border.
 
 ---
 
@@ -1076,6 +1212,22 @@ independently inside the worker, from the feed bytes (§(b)). It is still **exac
 message** however many feeds it names: the worker never receives a second one and never
 posts back a request; there is no request/response channel.
 
+**2026-08-27 — "exactly one message" is per Worker instance.** A re-run is a NEW DOCUMENT
+LOAD, not a second message. `app.js` writes the sessionStorage key **`jltg.rerun`**
+(`{v: 1, sources, options, note}`; `sources` are `kind:'url'` or `kind:'osm'` refs only,
+`file` always `null` — a `File` cannot survive the reload, which is why §05's button is
+disabled when any source is a file) and calls `resetToLanding()`, which is a `location.replace`
+of a fragment-less, query-less URL. `boot()` reads the key and **removes it before validating**,
+so a bad value cannot replay on the next reload; it then validates with the same normalisers
+`readOptions` / `readSources` use (`normaliseRerunOptions`, `normaliseRerunSource`), skips
+`initLanding` entirely and calls `startRun(sources, options)`. An invalid, file-bearing,
+wrong-`v` or already-consumed value is ignored and the reader gets the ordinary landing. The
+feeds come back from the IndexedDB zip cache under their URLs, so run 2 costs a parse and a
+RAPTOR pass and downloads nothing. This is **not** a request/response channel and it adds no
+picker setter. `note` is chip copy for the second run's `#run-history`, not pipeline input:
+`{prevSize, prevBorderSource, run}` — the design note said `{prevSize}` alone; the chip needs
+the other two to say "Run 3" and to name what kind of border the previous run had.
+
 `runPipeline(options, source, emit)` also accepts a bare `File` / `Blob` / buffer / URL
 string, or an array of them, as a list of one — that is the shape `tools/smoke.mjs` uses
 and the path the golden numbers are measured on.
@@ -1103,7 +1255,7 @@ internally but must flatten before emitting. `Projection` crosses as `{lat0, lon
 |---|---|---|---|
 | 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, feeds: FeedSourceRow[], stops: number, routes: number, trips: number, place }` — every scalar describes the MERGED feed; `feeds` names what it was merged from | hero |
 | 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 |
-| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], zoneReach: ZoneReach, routeSpokes: RouteSpoke[], spokeCap: {shown,total,source}, stops: StopRow[], proj: {lat0,lon0} }` | §05 and its stat rail |
+| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, suggestedBorder: SuggestedBorder\|null, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], zoneReach: ZoneReach, routeSpokes: RouteSpoke[], spokeCap: {shown,total,source}, stops: StopRow[], proj: {lat0,lon0} }` — 2026-08-27: `suggestedBorder` is new here, `Border` gained `rawBbox` / `trimmedStopIds` / `derivation`, and `Metrics` gained `allServedStops` / `inPlayFallback`. The `Report` carries `suggestedBorder` too. | §05 and its stat rail |
 | 4 | `'geo'` | `{ geo: GeoData }` | stage 5 |
 | 5 | `'rules'` | `{ questions: QuestionAudit[], curses: CurseAudit[], questionOrder: string[], questionFunnel: number[] }` | §07, §08 |
 | 6 | `'score'` | `{ fitness: Fitness, caps: FitnessCap[], zoneScores: Object<string,ZoneScore>, rankedZoneIds: string[], dossierZoneIds: string[], findings: Finding[], recommendations: Recommendation[], questions: QuestionAudit[] }` | §01, §02, §03 |
@@ -1226,6 +1378,22 @@ Notes on the stage payloads:
   part of §05's string. Its per-day variants ride in `#data` as
   `days[k].map_caption_html`, beside `banner_html` and `tiles_html`, so switching the
   day is an `innerHTML` swap and never a re-render.
+  **2026-08-27:** `renderNetworkMap` may additionally read `suggestedBorder` — a `network`
+  field like the rest — and one main-side field, `report.sourceKinds`, which `app.js` stamps
+  on the report *before* the worker starts and never changes; it decides only whether
+  `#suggest-rerun` ships `disabled`, and because it cannot move after the run begins it cannot
+  move this string either, which is what the rule above actually requires. The suggested box
+  reaches the map as a second static line layer, **`border-suggested-line`**, built once in
+  `buildMap` from `DATA.suggestedBorder` at `network` and static thereafter (the `'extent'`
+  tile highlight thickens both lines); its source is an empty `FeatureCollection` when there is
+  no suggestion, so the layer exists unconditionally and `applyHl` need not branch. The
+  `#suggest-rerun` button is wired from `app.js` by **one delegated document-level click
+  listener**, never from `PAGE_RUNTIME_JS` and never per mount — §05 re-mounts at `geo`
+  (`s4Imperial` flips km→mi), which replaces the button node, and a per-mount listener would be
+  lost with it. `#suggest-note` — the paragraph beside that button — ships `role="status"` and
+  `tabindex="-1"` because the storage-refusal path (a private window with the quota at zero)
+  writes its explanation there and returns: without both, a reader who pressed the button by
+  keyboard gets a page that visibly does nothing. `app.js` moves focus to it after writing.
 * **Stages 4–7 must still emit when the OSM layer is unavailable**, carrying the
   degradation. See §(f).
 * **S5 changed no payload here, and that is deliberate.** The hider's guide (§(g)) is built
@@ -1480,8 +1648,9 @@ only ever visible to someone already inside it.
 | Mount point | Inside `<wa-page>`, as a sibling of `<main>`, in the default slot. The position is not what gives it the page measure: **the root is a `<section>`**, and that is. `wa-page` pads exactly two element names in its default slot (`slot:not([name]) { &::slotted(main), &::slotted(section) }`), which is the guide's block padding, and `wa-page > section` is a member of the one measure rule in `styles.css` (`:where(main, wa-page > section, …)`), which is the `--content-width` cap, the centring and the inline gutter. A `<div>` root — what this shipped as — matches neither and renders flush and full-bleed. `section` and not `main` because `body[data-view='strategy']` hides `wa-page > main` to put the report away, so a second `<main>` would hide the guide from itself, and the spec's one-visible-`main` rule is written against the `hidden` attribute, which a `display: none` report does not carry. |
 | Kept out of the ported runtime | Nothing about this view is added to `PAGE_RUNTIME_JS`, whose source string was a verbatim port of the CLI's page JS. The CLI is gone, so there is nothing left to diff it against — treat the string as owned here now. The view ships no JSON block at all, so nothing is added to the blocks written by `writeDataBlocks` either. Its wiring lives in module code (`render/simulator.js`, `initStrategy`), which is where anything the CLI does not have belongs. |
 | Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the CLI's simulator never consumed it either — it recomputes answers client-side by haversine (`answerFor`). `report.geo.pois` crosses `postMessage` whole and is richer than the CLI's `[lon, lat, name]` triples. |
+| Re-runs and the URL (2026-08-27) | "Re-run with this border" (§05) hands the next document load its inputs through the sessionStorage key `jltg.rerun` (§(d)), **never through the URL** — no query string, no fragment, nothing a reader could bookmark into a run they did not ask for. `resetToLanding()` remains a plain reload of a fragment-less, query-less URL, which is also what clears the key's effect: `boot()` has already removed it, so Reset from run 2 is the ordinary landing and never a replay. |
 | Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. The CLI's bare ids collide in a single document: `#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion, `#zmap`/`#ztable` with nothing yet but by luck. The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
-| Controls | The three mutually-exclusive rows — `#s-modes` (question mode), `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same native pair `s4ChipGroup` (`render/map.js` 169) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` itself cannot be reused because it has no way to disable an option. A dead option is a `disabled` radio **and** a printed reason — a disabled control is not focusable, so a `title` on one is reachable by hovering with a pointer and by nothing else. Never express the selection by rewriting `appearance`. |
+| Controls | The three mutually-exclusive rows — `#s-modes` (question mode), `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same native pair `s4ChipGroup` (`render/deck.js:225` — it moved out of `render/map.js` and this reference was stale until 2026-08-27) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` itself cannot be reused because it has no way to disable an option. A dead option is a `disabled` radio **and** a printed reason — a disabled control is not focusable, so a `title` on one is reachable by hovering with a pointer and by nothing else. Never express the selection by rewriting `appearance`. |
 | Seeker placement | Pointer **and** keyboard. The map click and the marker drag are the CLI's; the port adds a "Place the seekers at …" `wa-button` in `#s-opts` (a leg from the hub to the selected zone, in thermometer mode) and makes the marker element itself a focusable control that the arrow keys nudge. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user, i.e. the flagship feature does not run at all. |
 | Module boundary | `app.js` → `renderStrategy(report) → string` (one root element, or `''`) and `initStrategy(root, report) → void`. `initStrategy` is called **only after** `body[data-view]` is set, because MapLibre reads its container size once, at construction. It is idempotent: a second call resizes the map and returns, so mode, selection, sort, filter and page survive leaving and re-entering. The dependency between the two new modules is one-way — `simulator.js` imports `strategy.js`, never the reverse. The one shape that crosses it is `modeChips`' `CatChip` (typedef in `render/strategy.js`), whose `reachMi` — that tentacle question's own reach in miles, `null` on matching and measuring chips — is what `answerFor` measures against. Never `size.tentacleReachMi`: that is the deck's headline figure and a LARGE deck holds two reaches at once. |
 | What `answerFor` answers | `generate.py` is the port's source, but it is **not** the specification — `rules/audit.js` is, and three of its answers used to disagree with the CLI's simulator. All three were fixed on both sides and the two implementations now agree. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
@@ -1514,7 +1683,7 @@ only ever visible to someone already inside it.
    rows and in `aria-sort` alike. Same class of finding as 6 — a contradiction, not a
    shape. **File it.**
 8. **The overall score is printed over 100, not over Σ `axisMax`.** `overallTenths` is
-   already renormalised (`rules/score.js:1121`, `1000 × earned ÷ max`), so its
+   already renormalised (`rules/score.js:1208`, `1000 × earned ÷ max`), so its
    denominator is always 100 — but the CLI prints it against the raw axis maxima
    (14326, 14361). With OSM the two are the same number; on a `--no-osm` run the E and
    A axes have `axisMax === 0` and the CLI would print `97.6 / 70.0`, plus a 139%-full

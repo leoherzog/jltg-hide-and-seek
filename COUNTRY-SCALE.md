@@ -42,6 +42,14 @@ it. `inferBorder` returns exactly `{kind, bbox, circle, padM, geojson, areaSqM}`
 materialised*, on purpose. If CONTRACT.md §(b) documents that field, that is a live contract/code
 divergence worth reporting on its own.
 
+> **Closed 2026-08-27.** `inferBorder` now returns `rawBbox` and `trimmedStopIds` (and
+> `derivation: 'reach'|'option'`). The divergence was resolved **toward CONTRACT.md §(b)** — the
+> fields were implemented, not deleted from the typedef — because the game-border work needed the
+> list itself: §05 explains the border with it and `suggestBorder` attributes the trimmed stops to
+> the feeds they came from. The line references above describe the file as it stood before that
+> change. The polygon `Border.kind` question in §8 remains **reserved**: this change keeps borders
+> rectangular.
+
 **Correction 2 — `worldCount`'s result is published.** Both Border First (move 7) and Honest Country
 Run (move 6.2) claim "the budget branch discards the exact count anyway." It does not:
 `osm/geodata.js:2039` is `counts[key] = outcome.upperBound`, and `GeoData.counts` reaches
@@ -340,10 +348,11 @@ Two things the graft must also handle:
 
 ## 6. CONTRACT.md amendments
 
-Sections at: §0 Ground rules (line 22), §(a) Module map (40), §(b) Data shapes (143), §(c) Options
-(971), §(d) worker protocol (1036), §(f) degradation policy (1381).
+Sections at: §0 Ground rules (line 22), §(a) Module map (40), §(b) Data shapes (148), §(c) Options
+(1065), §(d) worker protocol (1147), §(f) degradation policy (1521). *(Re-measured 2026-08-27,
+after the game-border amendments; every line number in this section moved.)*
 
-1. **§(c), lines 1027-1032** — the ring rule. The clip ring must be argued as a *source*, not a run
+1. **§(c), lines 1124-1133** — the ring rule. The clip ring must be argued as a *source*, not a run
    setting, riding the sentence already there: *"there the ring IS the source, the same category as a
    `File`'s bytes."* Deliberate amendment, not reinterpretation.
 2. **§(b) `Feed`** — a new `Feed.clip` record: the ring's `stableHash`, and how many
@@ -364,12 +373,19 @@ Sections at: §0 Ground rules (line 22), §(a) Module map (40), §(b) Data shape
 8. **§(f) rule 6** — exceeding the post-clip row budget is a fatal error with a named remedy.
 9. **§(b) `Border`** — if `trimmedStopIds` is documented there, it does not exist in
    `gtfs/infer.js:358-365`. Fix the divergence in whichever direction you prefer.
+   **Closed 2026-08-27:** fixed toward the typedef — `inferBorder` returns `rawBbox` and
+   `trimmedStopIds`, plus a new `derivation` field. Borders stay rectangular; the polygon
+   `Border.kind` question is still reserved.
 
 Also: `rules/catalogue.js` `INTERPRETATIONS` (the frozen `{id, affects, text}` array at ~463-618)
 needs **three** new rows and **one conditioned row**: country-border clip; through-service truncation
 at the ring; the LARGE A2 re-base. And `map_border_derivation` (~470-473) currently tells the reader
 the border is the bbox of in-map stops padded by one zone radius — on a clipped run that is false and
 it must be conditioned, not merely supplemented.
+**Partly done 2026-08-27:** that row is now conditioned on `Border.derivation` — it carries a
+`byDerivation.option` sentence for a reader-supplied box, which `buildProvenance` selects. The row
+stays frozen data (a `byDerivation` map, not a callback), so the same mechanism is there for the
+country-clip sentence when it is written. The three genuinely new rows are still owed.
 
 ---
 

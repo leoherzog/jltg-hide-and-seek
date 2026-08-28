@@ -44,7 +44,7 @@ import {
 } from './gtfs/network.js';
 import {
   inferHub, inferBorder, inferGameSize, travelTimeSamples, gtfsQuestionFacts,
-  dayRaptorRuns, zoneReachMinutes,
+  dayRaptorRuns, zoneReachMinutes, inPlayStopIds, excludedStopSet, suggestBorder,
   setInferLogger,
 } from './gtfs/infer.js';
 import { collectGeodata, emptyGeoData } from './osm/geodata.js';
@@ -87,6 +87,8 @@ const DEFAULT_PIPELINE_OPTIONS = Object.freeze({
   startStopId: null,
   borderShape: 'bbox',
   borderBbox: null,
+  // Provenance only: where a `borderBbox` came from ('landing' | 'suggestion').
+  borderSource: null,
   excludeStops: [],
   excludeRoutes: [],
   departure: DEFAULT_DEPARTURE,
@@ -584,6 +586,8 @@ export async function runPipeline(options, source, emit) {
   let size;
   let sizeInference;
   let border;
+  /** The tighter border `suggestBorder` offers, or null. Never applied here. */
+  let suggestedBorder = null;
   let zones;
   let headways;
   let gtfsFacts;
@@ -592,9 +596,45 @@ export async function runPipeline(options, source, emit) {
   let spokes = { spokes: [], cap: { shown: 0, total: 0, source: 'shapes' } };
   let origin;
   let depS;
+  // ── the in-play set (CONTRACT.md §(b) Metrics "Stop set", 2026-08-27) ──────
+  // Computed ONCE, here, and threaded into every measurement below: hub
+  // candidates, both metric passes, the zone cover, the stop table and the border
+  // trim all see the same array. `null` is the literal "no override" case — not an
+  // array that happens to equal `servedStopIds` — because a null reaches every
+  // memo key and code path as the pre-2026-08-27 value, which is the property the
+  // smoke goldens are an identity under. `excludedStopSet` rather than the two
+  // option lists: `excludeRoutes` can name a route no stop is exclusively on,
+  // and that must stay a no-op.
+  let inPlay = null;
+  let inPlayFallback = false;
+  if (opts.borderBbox || excludedStopSet(feed, best, opts).size) {
+    const picked = inPlayStopIds(feed, best, opts);
+    inPlay = picked.ids;
+    inPlayFallback = picked.fallback;
+    log('info', `in-play: ${inPlay.length} of ${best.servedStopIds.length} served stops`
+      + (inPlayFallback ? ' (fallback: every served stop)' : '')
+      + (opts.borderBbox ? ' inside the supplied border' : '')
+      + ' after exclusions');
+    // The fallback used to leave no trace but a worker log line, while §05 and the
+    // provenance interpretation went on saying "every stop, zone and instance count
+    // on this page is measured inside it" — which is exactly what did NOT happen. A
+    // silent fallback that contradicts two printed sentences is worse than either
+    // honouring or refusing the box, so it is a degradation like any other, and
+    // `Border.derivation` is marked `'option_fallback'` below so the three sentences
+    // that describe the border pick the third wording. (2026-08-27.)
+    if (inPlayFallback) {
+      degrade(opts.borderBbox
+        ? 'The border you set kept fewer than half the stops this network serves, so it '
+          + 'was used as the frame drawn on the map and not as a filter: every stop, zone '
+          + 'and count on this page is measured over the whole network instead.'
+        : 'The stops and routes you excluded would have removed more than half the '
+          + 'network, so they were not applied: every count on this page is measured over '
+          + 'the whole network instead.');
+    }
+  }
   try {
     progress.begin(3);
-    hub = inferHub(feed, best, proj);
+    hub = inferHub(feed, best, proj, inPlay);
     progress.finish();
 
     progress.begin(4);
@@ -602,11 +642,20 @@ export async function runPipeline(options, source, emit) {
     // `nZones`, and `nZones` depends on the radius, so the radius the size
     // resolves to cannot be used to compute the vote. The CLI does the same and
     // then re-runs the whole metric table at the real radius below.
-    metrics = networkMetrics(feed, days, proj, hub, QUARTER_MILE_M);
+    metrics = networkMetrics(feed, days, proj, hub, QUARTER_MILE_M, inPlay);
+    metrics.inPlayFallback = inPlayFallback;
     progress.finish();
 
     [size, sizeInference] = inferGameSize(metrics, opts);
-    border = inferBorder(feed, best, hub, size, proj, opts);
+    border = inferBorder(feed, best, hub, size, proj, opts, inPlay);
+    // `inferBorder` cannot tell a box that happens to keep everything from a box the
+    // in-play filter threw away — it is handed a set, not the decision. The worker is
+    // the knower, the same way it is for `Metrics.inPlayFallback`, so the third
+    // derivation is stamped here. The rectangle itself is still the reader's box:
+    // what changed is that nothing was measured inside it.
+    // Only when there WAS a box: a fallback caused by exclusions alone leaves the
+    // border inferred ('reach'), and the degradation above is the whole of the story.
+    if (inPlayFallback && border && opts.borderBbox) border.derivation = 'option_fallback';
 
     progress.begin(5);
     const events = Object.create(null);
@@ -615,10 +664,21 @@ export async function runPipeline(options, source, emit) {
       events[sid] = best.stopDays[sid].departures.length;
       pos[sid] = proj.xy(feed.stops[sid].lat, feed.stops[sid].lon);
     }
-    const centres = zoneCover(best.servedStopIds, size.zoneRadiusM, events, pos);
-    zones = buildZones(feed, best, centres, size.zoneRadiusM, proj);
+    // The reachability-aware suggestion (CONTRACT.md §(b) SuggestedBorder). It is
+    // OFFERED on the 'network' payload and the Report and never applied: applying
+    // it is the reader's cached re-run with `borderBbox` set, which is why it is
+    // computed on the run's own inputs — the same hub, in-play set and vote — and
+    // returns null the moment `sizeOverride` or `borderBbox` says they already
+    // chose. Costs the memoised hub run plus at most three metric passes.
+    progress.report(0, 'Looking for a tighter border');
+    suggestedBorder = suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, events);
+    // Zones outside a supplied border cease to exist rather than being drawn
+    // and then explained away: the cover runs over the in-play set.
+    const centres = zoneCover(inPlay ?? best.servedStopIds, size.zoneRadiusM, events, pos);
+    zones = buildZones(feed, best, centres, size.zoneRadiusM, proj, inPlay);
     progress.report(0.5, 'Re-measuring at the resolved zone radius');
-    metrics = networkMetrics(feed, days, proj, hub, size.zoneRadiusM);
+    metrics = networkMetrics(feed, days, proj, hub, size.zoneRadiusM, inPlay);
+    metrics.inPlayFallback = inPlayFallback;
     // The honesty boundary, carried as one clone-safe boolean on the object that
     // already reaches every scoring entry point — `auditQuestions`, `scoreFitness`,
     // `fitnessCaps`, `scoreZones`, `deriveRecommendations` — so nothing downstream
@@ -657,7 +717,7 @@ export async function runPipeline(options, source, emit) {
   // `best` or `zones`, so the `'done'` payload below reuses this array. On the worker
   // path each `postMessage` clones it and the two messages stay independent; in Node
   // (`tools/smoke.mjs`) they are one array, which neither consumer writes to.
-  const stops = stopRows(feed, days, best, zones);
+  const stops = stopRows(feed, days, best, zones, inPlay);
 
   post({
     type: 'stage',
@@ -666,6 +726,7 @@ export async function runPipeline(options, source, emit) {
       zones,
       hub,
       border,
+      suggestedBorder,
       size,
       sizeInference,
       metrics,
@@ -856,7 +917,7 @@ export async function runPipeline(options, source, emit) {
   let provenance = null;
   if (score && score.buildProvenance) {
     try {
-      provenance = score.buildProvenance(opts, feed, geo, size, asOf, degradations);
+      provenance = score.buildProvenance(opts, feed, geo, size, asOf, degradations, border);
     } catch (err) {
       nonFatal('provenance', err);
       degrade(`The provenance record could not be assembled (${(err && err.name) || 'Error'}), `
@@ -881,6 +942,7 @@ export async function runPipeline(options, source, emit) {
     sizeInference,
     hub,
     border,
+    suggestedBorder,
     days: days.map(daySummary),
     selectedDay: best.dayType.key,
     zones,
@@ -990,7 +1052,7 @@ function daySummary(day) {
  * small: a stop served only on a Sunday never appears (3 of 1,493 on the reference
  * feed), and `null` is what says so.
  */
-function stopRows(feed, days, day, zones) {
+function stopRows(feed, days, day, zones, inPlay = null) {
   const owner = Object.create(null);
   for (const z of Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId))) {
     for (const sid of z.stopIds) if (owner[sid] === undefined) owner[sid] = z.zoneId;
@@ -1003,7 +1065,9 @@ function stopRows(feed, days, day, zones) {
   for (const d of days || []) stopDaysByKey.set(d.dayType.key, d.stopDays);
 
   const rows = [];
-  for (const sid of day.servedStopIds) {
+  // The in-play set when one exists (a stop outside the reader's box is not on
+  // the map), else every served stop — both in `servedStopIds` order.
+  for (const sid of (inPlay ?? day.servedStopIds)) {
     const stop = feed.stops[sid];
     if (!stop) continue;
     const sd = day.stopDays[sid];

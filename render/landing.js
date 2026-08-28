@@ -19,7 +19,7 @@
  * @module render/landing
  */
 
-import { num, MAX_FEEDS_PER_RUN } from '../lib/core.js';
+import { num, coord, MAX_FEEDS_PER_RUN } from '../lib/core.js';
 import { esc, el, join, waIcon, waButton, waCallout, chip } from './html.js';
 import { labelOf, placeOf, spanKmOf } from '../lib/catalog.js';
 
@@ -159,8 +159,160 @@ export function renderPickerCard() {
     el('div', '', { id: 'picks-list', className: 'wa-stack wa-gap-2xs' }),
   ), { id: 'picks', className: 'wa-stack wa-gap-2xs' });
 
-  return el('div', join(header, examples, toolbar, switches, results, map, mapNote, picks,
-    el('div', '', { id: 'picker-note', role: 'status' })), { className: 'wa-stack wa-gap-m' });
+  // The game-border frame's controls. Empty and hidden until a feed is picked:
+  // `render/picker.js` fills it with `renderBorderRow` the moment `st.border`
+  // exists and empties it again when the last pick goes. It sits between the map
+  // and the picks list because it edits the rectangle drawn ON the map, and a
+  // control two cards away from the thing it moves is a control nobody finds.
+  const borderRow = el('div', '', { id: 'border-row', hidden: true });
+
+  return el('div', join(header, examples, toolbar, switches, results, map, mapNote, borderRow,
+    picks, el('div', '', { id: 'picker-note', role: 'status' })), { className: 'wa-stack wa-gap-m' });
+}
+
+/** A frame edge as the fields print it: `coord()`'s six decimals, no grouping. */
+function deg(x) {
+  return String(coord(x));
+}
+
+/** `about 11,400 km²` — the frame's area, spoken roughly because the boxes it is
+ *  fitted to are catalogue boxes, "only accurate enough to place a marker". */
+function aboutArea(areaSqM) {
+  return `about ${num(areaSqM / 1000000.0)} km²`;
+}
+
+/**
+ * The `#border-caption` sentence, as plain text — the caller writes it with
+ * `textContent`, so a drag that moves the frame sixty times a second updates one
+ * text node rather than rebuilding the row under the reader's pointer.
+ *
+ * The state is the frame's `mode` FIRST, then the flags — never the other way round,
+ * because `mode` is the only thing that decides what `readOptions` sends. An untouched
+ * (`'auto'`) frame says the border will be INFERRED, because that is what happens to
+ * it: null crosses the wire and the worker fits the border to what the start stop can
+ * reach, exactly as a run with no frame at all. A frame the reader has moved says so
+ * and names the way back.
+ *
+ * An OpenStreetMap area splits the same way and used to be tested first, which made
+ * its sentence win in every mode: taking the area, then pressing "Fit to feeds", left
+ * a frame that sends null while the caption still called it "the box around the shape
+ * you drew" — the two-extents confusion the auto/custom split exists to prevent. So
+ * the OSM sentence is for `'custom'` only, and `osmFrame` narrows it further to a
+ * frame that is still literally that box (see `borderView` in render/picker.js): once
+ * a handle has moved it, it is the reader's rectangle like any other. (2026-08-27.)
+ *
+ * @param {Object} s
+ * @param {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null} s.border
+ * @param {number} s.count how many feeds the frame is fitted to
+ * @param {number} s.areaSqM the frame's area, from `bboxAreaSqM`
+ * @param {boolean} [s.osmPicked] a drawn OpenStreetMap area is one of the picks
+ * @param {boolean} [s.osmFrame] and the frame is still the box around that shape
+ * @returns {string} plain text, '' when there is no frame
+ */
+export function renderBorderCaption(s) {
+  if (!s.border) return '';
+  if (s.border.mode === 'custom') {
+    if (s.osmPicked && s.osmFrame) {
+      return 'Game border: the box around the shape you drew (the OpenStreetMap read is '
+        + `clipped to the shape itself, ${aboutArea(s.areaSqM)}). Drag a corner or edge, `
+        + 'or edit the numbers, to play a different box.';
+    }
+    return `Game border: the box you set (${aboutArea(s.areaSqM)}). Fit to feeds resets it.`;
+  }
+  if (s.osmPicked) {
+    // 'auto' with a shape picked: the frame is fitted to the shape's box, but it is
+    // still sent as null, so the border will be inferred from the network the shape
+    // produces — not from the shape's own extent. Saying which is the whole point.
+    return `Game border: fitted to the shape you drew (${aboutArea(s.areaSqM)}), and left `
+      + 'to be inferred — an untouched border is fitted to what the start stop can reach '
+      + 'in the network built from that shape. Drag a corner or edge, or edit the '
+      + 'numbers, to play the box instead.';
+  }
+  const feeds = s.count === 1 ? 'the feed' : `the ${num(s.count)} feeds`;
+  return `Game border: fitted to ${feeds} you picked (${aboutArea(s.areaSqM)}). Drag a `
+    + 'corner or edge, edit the numbers, or leave it — an untouched border is inferred '
+    + 'from what the start stop can reach.';
+}
+
+/** One of the four edge fields. `inputmode="decimal"` for a phone keyboard with a
+ *  minus sign; `data-border-edge` is what `render/picker.js` delegates on. */
+function borderField(edge, label, value) {
+  return el('wa-input', '', {
+    id: `border-${edge}`,
+    type: 'text',
+    size: 's',
+    label,
+    value: deg(value),
+    inputmode: 'decimal',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    dataBorderEdge: edge,
+    className: 'border-field',
+  });
+}
+
+/**
+ * The `#border-row` markup: caption, the four edge fields, the five buttons.
+ *
+ * Rebuilt by `render/picker.js` only when its SHAPE changes — the frame appears or
+ * goes, the overlap button earns or loses its place, a drawn shape arrives — and
+ * otherwise patched in place, because an `innerHTML` rebuild detaches the field the
+ * reader is typing in. That is why the caption and the field values are also
+ * reachable one at a time (`renderBorderCaption`, and the fields by `data-border-edge`).
+ *
+ * The four fields ARE the keyboard path. The handles on the map are not focusable —
+ * eight tab stops on a canvas the search box already bypasses would be eight stops
+ * to nowhere — so the help line says the fields do the same job, and Shift+Arrow in
+ * one nudges that edge by 0.01°.
+ *
+ * Every `<wa-button>` is `type="button"`: this row lives inside `<form
+ * id="landing-form">`, and "Shrink 10 %" starting the analysis would be a bad joke.
+ *
+ * @param {Object} s
+ * @param {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null} s.border
+ * @param {number} s.count @param {number} s.areaSqM
+ * @param {boolean} [s.osmPicked] @param {boolean} [s.osmFrame]
+ * @param {boolean} [s.overlap] two or more picked boxes intersect, so "Where they
+ *        overlap" has something to seed from
+ * @param {boolean} [s.hasRing] a drawn shape exists, so "Box around my shape" can
+ * @returns {string} '' when there is no frame, so the host stays hidden
+ */
+export function renderBorderRow(s) {
+  if (!s.border) return '';
+  const [south, west, north, east] = s.border.bbox;
+  const caption = el('p', esc(renderBorderCaption(s)), {
+    id: 'border-caption', role: 'status', className: 'wa-caption-s',
+  });
+  const fields = el('div', join(
+    borderField('s', 'South', south),
+    borderField('w', 'West', west),
+    borderField('n', 'North', north),
+    borderField('e', 'East', east),
+  ), { className: 'border-fields', role: 'group', ariaLabel: 'Game border edges, in decimal degrees' });
+  const buttons = el('div', join(
+    waButton('Fit to feeds', {
+      id: 'border-fit', type: 'button', icon: 'arrows-to-dot', dataBorderAction: 'fit',
+    }),
+    s.overlap ? waButton('Where they overlap', {
+      id: 'border-overlap', type: 'button', icon: 'object-group', dataBorderAction: 'overlap',
+    }) : '',
+    waButton('Box around my shape', {
+      id: 'border-from-shape', type: 'button', icon: 'draw-polygon', dataBorderAction: 'from-shape',
+      disabled: !s.hasRing,
+    }),
+    waButton('Shrink 10 %', {
+      id: 'border-shrink', type: 'button', icon: 'compress', dataBorderAction: 'shrink',
+    }),
+    waButton('Grow 10 %', {
+      id: 'border-grow', type: 'button', icon: 'expand', dataBorderAction: 'grow',
+    }),
+  ), { className: 'wa-cluster wa-gap-2xs', role: 'group', ariaLabel: 'Game border tools' });
+  const help = el('p', 'The gold rectangle on the map is the same box: drag a corner or an '
+    + 'edge handle to resize it, or drag the rectangle’s outline between the handles to '
+    + 'move the whole box. Dragging inside it pans the map. The fields do the same job '
+    + 'from the keyboard — Shift+↑ and Shift+↓ in a field nudge that edge by 0.01°.',
+  { className: 'wa-caption-xs wa-color-text-quiet', style: 'max-inline-size:72ch' });
+  return el('div', join(caption, fields, buttons, help), { className: 'wa-stack wa-gap-xs' });
 }
 
 /**
@@ -364,8 +516,6 @@ export function renderPicks(picks) {
  * @param {number} [s.estMb] a rough total download, for the "this is a lot" line
  * @param {boolean} [s.osmOffer] the drawn area can still be built from OpenStreetMap
  * @param {boolean} [s.osmPicked] it already has been, and is in the list below
- * @param {boolean} [s.drawnBorderUsed] the shape is the game border right now —
- *        `#opt-use-drawn-border`'s live state, read the way `osmSkipped` is
  * @returns {string}
  */
 export function renderPickerNote(s) {
@@ -410,17 +560,13 @@ export function renderPickerNote(s) {
       + 'would be assumed, and the report says which is which on every number.');
   }
   if (s.osmPicked) {
-    // The border sentence tracks the box that actually governs it: unticked, the
-    // run infers its border from the network instead, and a status region must not
-    // keep asserting the state the reader has just changed.
+    // The border itself is described by `#border-caption`, which tracks the frame
+    // live; this sentence only says where the frame came from, so the two status
+    // regions never disagree about which box governs the run.
     lines.push('This area will be built from OpenStreetMap’s own rail, metro and tram '
       + 'lines. Where they run is measured; how often they run is assumed, so every '
-      + 'score that rests on the timetable is dropped rather than guessed at. '
-      + (s.drawnBorderUsed
-        ? 'The shape you drew is the game border as well as the area read.'
-        : 'The shape you drew is only the area read — the game border will be inferred '
-          + 'from the network it produces. Ticking “Use the shape I drew as the game '
-          + 'border” in Advanced makes the shape the border again.'));
+      + 'score that rests on the timetable is dropped rather than guessed at. The game '
+      + 'border above starts as the box around the shape you drew.');
   }
   for (const label of s.blocked || []) {
     lines.push(`${label} needs an API key, so this page cannot fetch it. Download the zip `

@@ -63,6 +63,14 @@
       <span>Hide+Seek</span>
     </a>
 
+    <!-- `#run-history`: the one line a RE-RUN prints about the run before it
+         ("Run 2 · border S, W, N, E from the suggestion · previous run: inferred
+         border, medium"). Filled by app.js's `mountRunHistory` from the
+         `jltg.rerun` handoff in `boot()`, once, and only on a re-run — on an
+         ordinary run it stays hidden and empty. `data-when="report"` because a
+         re-run is never in the landing state. -->
+    <span id="run-history" data-when="report" class="wa-cluster wa-gap-2xs wa-align-items-center" hidden></span>
+
     <!-- THE PROGRESS BAR LIVES IN THE HEADER. `total` may grow as the worker
          discovers work (CONTRACT §(d)), so the label carries the words and the
          bar carries the fraction; neither is allowed to look finished early. -->
@@ -387,7 +395,18 @@
                   <wa-radio value="circle" appearance="button" size="s">Circle</wa-radio>
                 </wa-radio-group>
 
-                <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four decimal degrees, south west north east. Blank fits the box to the network."></wa-input>
+                <!-- A MIRROR of the frame on the landing map since 2026-08-27, and
+                     the bring-your-own flow's only way to set a border. app.js
+                     writes the frame's four numbers here and stamps
+                     `data-border-mode` (`auto` = sent as null, the border inferred;
+                     `custom` = sent as typed) — and makes the field `readonly` WHILE
+                     a frame exists, because then #border-row's fields and the map
+                     are the editor and two inputs for one rectangle could disagree.
+                     With no frame (a dropped zip or a pasted URL, which the picker
+                     has no bounding box for) the field is writable and readOptions
+                     parses it: the ability to give a BYO feed a border predates the
+                     frame and must not be lost to it. -->
+                <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four numbers: south, west, north, east. With a feed picked on the map, edit the frame there instead — this mirrors it. Blank means the border is fitted to the network." data-border-mode="none"></wa-input>
 
                 <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="When the clock starts on the representative day."></wa-input>
 
@@ -458,15 +477,6 @@
                 <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
               </wa-switch>
 
-              <!-- Ships disabled; app.js enables it the moment a shape exists on the
-                   picker map and disables it again when the shape is cleared. It feeds
-                   `options.borderBbox` through `inferBorder`'s existing override, so
-                   there is no new field on the wire and no worker change. A value typed
-                   into Border box above WINS — the hint says so, and app.js only fills
-                   `borderBbox` from the shape when that field is blank. -->
-              <wa-checkbox id="opt-use-drawn-border" data-opt="useDrawnBorder" name="use-drawn-border" size="s" disabled>Use the shape I drew as the game border
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The drawn shape's bounding box becomes the border instead of one fitted to the network, and the border shape above is forced to a box. Border box overrides this if you fill it in.</span>
-              </wa-checkbox>
             </div>
           </wa-details>
 

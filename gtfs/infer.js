@@ -7,9 +7,9 @@
  *
  * Five public entry points, in the order `build_report` calls them:
  *
- *   inferHub(feed, day, proj)                     → Hub
+ *   inferHub(feed, day, proj, inPlay)             → Hub
  *   inferGameSize(metrics, options)               → [GameSize, SizeInference]
- *   inferBorder(feed, day, hub, size, proj, opts) → Border
+ *   inferBorder(feed, day, hub, size, proj, opts, inPlay) → Border
  *   gtfsQuestionFacts(feed, days, zones, stations)→ the GTFS-only question inputs
  *   travelTimeSamples(days, zones, …)             → TravelSampleRow[]  (runs LAST;
  *                                                    see worker.js's reordering note)
@@ -20,6 +20,27 @@
  *   dayRaptorRuns(days, originStopId, departureS) → Map<dayKey, run|null>
  *   zoneReachMinutes(days, zones, runs, …)        → ZoneReach
  *
+ * And the in-play set (2026-08-27, CONTRACT.md §(b) Metrics "Stop set"), which
+ * is what makes `Options.borderBbox` / `excludeStops` / `excludeRoutes` honest —
+ * before it they trimmed the border rectangle and nothing else:
+ *
+ *   excludedStopSet(feed, day, opts)              → Set<stopId>
+ *   inPlayStopIds(feed, day, opts)                → {ids, fallback}
+ *   hubRun(feed, day, originId, departS)          → the memoised RAPTOR run
+ *
+ * And the suggested border (same date, CONTRACT.md §(b) SuggestedBorder), which
+ * the worker computes after `inferBorder` and only ever OFFERS — applying it is
+ * the reader's cached second run, never this module's decision:
+ *
+ *   suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, events)
+ *                                                 → SuggestedBorder | null
+ *
+ * `inPlay` is an optional trailing parameter everywhere it is threaded, and
+ * `null` means "every served stop, exactly as before" — the worker passes null
+ * whenever no override narrows the set, so a plain run's memo keys, sample
+ * strides and iteration orders are literally the pre-2026-08-27 ones. The
+ * smoke goldens rest on that.
+ *
  * ── determinism ────────────────────────────────────────────────────────────────
  * Every `Map`/`Set`/plain object is sorted before it is iterated anywhere the
  * result can reach output. String order is code-point order (`cmpStr`), never
@@ -29,20 +50,25 @@
 import {
   HUB_SNAP_M, HUB_RADIAL_MIN, HUB_SEMI_RADIAL_MIN,
   QUARTER_MILE_M, HALF_MILE_M, SQM_PER_SQMI, M_PER_MILE,
-  DEFAULT_DEPARTURE, HEADWAY_WINDOW, SERVICE_DAY_SECONDS,
+  DEFAULT_DEPARTURE, HEADWAY_WINDOW, SERVICE_DAY_SECONDS, IN_PLAY_MIN_SHARE,
+  SUGGEST_MIN_TRIM_SHARE, SUGGEST_MIN_EVENT_SHARE, SUGGEST_MIN_CORE_STOPS,
+  SUGGEST_MIN_CORE_SHARE,
   cmpStr, coord, rhu, num, hmsToS, lowerMedian,
 } from '../lib/core.js';
 import {
-  Projection, bboxOf, bboxExpand, minEnclosingCircle,
+  Projection, bboxOf, bboxExpand, bboxContains, minEnclosingCircle,
 } from '../lib/geo.js';
-import { s1Median, s1Share } from './feed.js';
+import { s1Cache, s1Median, s1Share } from './feed.js';
 import { busiestDay, s1Positions, s1Extras } from './service.js';
 import { raptor, raptorReverse, buildJourney } from './raptor.js';
 // `S1_SIZE_PARAMS` / `S1_SIZE_ORDER` / `s1AxisScores` live in `network.js` because
 // `_s1_provisional_size` (which network_metrics needs) uses the same thresholds.
 // One source of truth; re-exported here so a caller can reach them from either.
+// `networkMetrics` is what `suggestBorder` votes each candidate core with; the
+// module cycle this closes (network.js imports `hubRun` from here) is function-only
+// on both sides and resolves under ESM hoisting. Do not add a top-level use.
 import {
-  zoneCover, S1_SIZE_PARAMS, S1_SIZE_ORDER, s1AxisScores,
+  zoneCover, networkMetrics, S1_SIZE_PARAMS, S1_SIZE_ORDER, s1AxisScores,
 } from './network.js';
 
 // ── logging ───────────────────────────────────────────────────────────────────
@@ -127,6 +153,92 @@ function s1TripsTouching(day, stopId) {
 }
 
 /**
+ * The stops an `Options` object excludes outright: `excludeStops` verbatim, plus
+ * every served stop whose routes are ALL in `excludeRoutes` (a stop that keeps
+ * one live route stays — excluding a route is not excluding its shared poles).
+ *
+ * Lifted from `inferBorder`, which used to be the only reader of the two lists
+ * and now shares the set with `inPlayStopIds` so the border and the metrics can
+ * never disagree about which stops an exclusion removes.
+ *
+ * @param {object} feed a `Feed` (unused today; kept so a future route-level
+ *   rule has the feed without a signature change)
+ * @param {object} day a `ServiceDay`
+ * @param {object} opts an `Options`
+ * @returns {Set<string>}
+ */
+export function excludedStopSet(feed, day, opts) {
+  const o = opts || {};
+  const excluded = new Set(o.excludeStops || []);
+  if (o.excludeRoutes && o.excludeRoutes.length) {
+    const blocked = new Set(o.excludeRoutes);
+    for (const sid of day.servedStopIds) {
+      const rs = day.stopDays[sid].routes;
+      let subset = true;
+      for (const r of rs) if (!blocked.has(r)) { subset = false; break; }
+      if (subset) excluded.add(sid);
+    }
+  }
+  return excluded;
+}
+
+/**
+ * The in-play stop set: the day's served stops inside `opts.borderBbox` (when one
+ * is given) minus `excludedStopSet`. Everything measured — hub candidates, the
+ * metric table, the size vote, zones, the stop table and the border trim — runs
+ * over this set, so a box the reader drew on the landing map is the game, not a
+ * decoration on it.
+ *
+ * FILTERS `servedStopIds`, never re-sorts it: `buildServiceDay` sorts that array
+ * with `cmpStr` once, `s1DayMetrics`' T90 origin sample is a fixed stride over it,
+ * and a subset produced any other way would shift which stops the stride lands on.
+ *
+ * The 50 % floor (`IN_PLAY_MIN_SHARE`) mirrors `inferBorder`'s own fallbacks: a box
+ * that keeps under half the system has missed the city, and the honest answer is
+ * to measure the whole system and say so (`Metrics.inPlayFallback`) rather than
+ * print a report about a suburb.
+ *
+ * @param {object} feed a `Feed`
+ * @param {object} day the best `ServiceDay`
+ * @param {object} opts an `Options`
+ * @returns {{ids: string[], fallback: boolean}} `ids` in `servedStopIds` order
+ */
+export function inPlayStopIds(feed, day, opts) {
+  const o = opts || {};
+  const served = day.servedStopIds;
+  const excluded = excludedStopSet(feed, day, o);
+  const box = o.borderBbox || null;
+  const ids = served.filter((sid) => {
+    if (excluded.has(sid)) return false;
+    if (!box) return true;
+    const stop = feed.stops[sid];
+    return bboxContains(box, stop.lat, stop.lon);
+  });
+  if (ids.length < IN_PLAY_MIN_SHARE * served.length) {
+    LOG.warn(`in-play: the border and exclusions kept only ${ids.length} of `
+      + `${served.length} served stops; using every served stop`);
+    return { ids: served.slice(), fallback: true };
+  }
+  return { ids, fallback: false };
+}
+
+/**
+ * One forward RAPTOR run from `originId` at `departS` on `day`, memoised on the
+ * feed. `inferBorder`, `s1DayMetrics` (network.js) and `suggestBorder` all want
+ * exactly this run from the hub at the default departure, and the memo means the
+ * three share one object rather than recomputing it — the SAME object, so nothing
+ * numeric can move; callers must therefore treat the result as read-only.
+ *
+ * @param {object} feed a `Feed` @param {object} day a `ServiceDay`
+ * @param {string} originId @param {number} departS
+ * @returns {{arrivalS: Object<string, number>}} the `raptor` result
+ */
+export function hubRun(feed, day, originId, departS) {
+  return s1Cache(feed, `raptor:${day.dayType.key}:${originId}:${departS}`,
+    () => raptor(day, [originId], departS));
+}
+
+/**
  * Infer the round-start station and classify the network's shape.
  *
  * Scores every served stop by `(distinct routes, stop events, stop_id)` and snaps
@@ -136,14 +248,20 @@ function s1TripsTouching(day, stopId) {
  * false and the pages must *not* name a single hub, using the min-enclosing-circle
  * centre as the map centre and the top three stops as start suggestions.
  *
+ * With an in-play set the candidates (and the snap cluster and the alternatives)
+ * are restricted to it, so a hub outside the reader's box is never named; an empty
+ * restriction falls back to every served stop rather than to no hub at all.
+ *
  * @param {object} feed a `Feed`
  * @param {object} day  the best `ServiceDay`
  * @param {Projection|{lat0:number,lon0:number}} proj
+ * @param {string[]|null} [inPlay] the in-play set, or null for every served stop
  * @returns {object} a `Hub`
  */
-export function inferHub(feed, day, proj) {
+export function inferHub(feed, day, proj, inPlay = null) {
   const pos = s1Positions(feed, proj);
-  const served = Array.from(day.servedStopIds);
+  const restricted = inPlay ? inPlay.filter((sid) => has(day.stopDays, sid)) : [];
+  const served = restricted.length ? restricted : Array.from(day.servedStopIds);
   /** @type {Object<string, number>} */ const events = Object.create(null);
   /** @type {Object<string, number>} */ const routes = Object.create(null);
   for (const sid of served) {
@@ -261,35 +379,32 @@ function s1CircleGeojson(lat, lon, radiusM) {
  * stops it deletes are the airport and the university campus — all excellent game
  * locations. Padding is one zone radius, so every legal zone lies wholly inside.
  *
- * `options.borderBbox` overrides the derivation entirely; `options.borderShape ===
- * 'circle'` only changes which shape is presented as canonical.
+ * `options.borderBbox` overrides the derivation entirely (`derivation: 'option'`,
+ * no padding, `rawBbox === bbox`); `options.borderShape === 'circle'` only changes
+ * which shape is presented as canonical. `trimmedStopIds` names the in-play stops
+ * the reach test dropped, after the two fallbacks — the list §05 explains the
+ * border with, and the one `suggestBorder` attributes to feeds.
  *
  * @param {object} feed @param {object} day @param {object} hub @param {object} size
  * @param {Projection|{lat0:number,lon0:number}} projLike
  * @param {object} options an `Options`
+ * @param {string[]|null} [inPlay] the in-play set, or null for every served stop
  * @returns {object} a `Border`
  */
-export function inferBorder(feed, day, hub, size, projLike, options) {
+export function inferBorder(feed, day, hub, size, projLike, options, inPlay = null) {
   const proj = Projection.from(projLike);
   const opts = options || {};
   const pos = s1Positions(feed, proj);
-  const served = Array.from(day.servedStopIds);
-  const excluded = new Set(opts.excludeStops || []);
-  if (opts.excludeRoutes && opts.excludeRoutes.length) {
-    const blocked = new Set(opts.excludeRoutes);
-    for (const sid of served) {
-      const rs = day.stopDays[sid].routes;
-      let subset = true;
-      for (const r of rs) if (!blocked.has(r)) { subset = false; break; }
-      if (subset) excluded.add(sid);
-    }
-  }
+  const served = inPlay ? Array.from(inPlay) : Array.from(day.servedStopIds);
+  // Already applied inside an in-play set, and a no-op on it then; kept so a
+  // null `inPlay` behaves exactly as it did before the set existed.
+  const excluded = excludedStopSet(feed, day, opts);
 
   // Python's `or` chain: `hms_to_s('00:00:00')` is 0, which is falsy, so a
   // midnight departure falls through to the default. Kept.
   const depart = hmsToS(opts.departure) || hmsToS(DEFAULT_DEPARTURE) || 32400;
   const budget = 3 * size.hidingPeriodMin * 60;
-  const forward = raptor(day, [hub.stopId], depart);
+  const forward = hubRun(feed, day, hub.stopId, depart);
   const backward = raptorReverse(day, [hub.stopId], depart + budget);
 
   let allowed = served.filter((sid) => !excluded.has(sid));
@@ -323,6 +438,9 @@ export function inferBorder(feed, day, hub, size, projLike, options) {
   }
 
   const inMapSorted = Array.from(new Set(inMap)).sort(cmpStr);
+  // `allowed − inMap`: the stops the reach test (after its fallbacks) left outside.
+  const trimmedStopIds = Array.from(new Set(allowed.filter((sid) => !inMapSet.has(sid))))
+    .sort(cmpStr);
   const latLon = inMapSorted.map((sid) => [feed.stops[sid].lat, feed.stops[sid].lon]);
   let raw = bboxOf(latLon);
   let pad = Number(size.zoneRadiusM);
@@ -358,10 +476,13 @@ export function inferBorder(feed, day, hub, size, projLike, options) {
   return {
     kind,
     bbox: padded.map(coord),
+    rawBbox: raw.map(coord),
     circle: [coord(circle[0]), coord(circle[1]), circle[2]],
     padM: pad,
     geojson,
     areaSqM: area,
+    trimmedStopIds,
+    derivation: opts.borderBbox ? 'option' : 'reach',
   };
 }
 
@@ -458,6 +579,208 @@ export function inferGameSize(metrics, options) {
   };
   LOG.info(`game size: ${name} (axes ${votes.join(', ')})${forced ? ' [forced]' : ''}`);
   return [size, inference];
+}
+
+/**
+ * Offer a tighter, reachability-aware game border — or nothing.
+ *
+ * The inferred border (`inferBorder`) keeps every stop the hub can reach there
+ * and back within three hiding periods, which on a metro-plus-commuter-rail merge
+ * is the whole region: Chicago + Pace measures LARGE because the outer Metra and
+ * Pace stops stretch the hull, though the game most readers mean to play is the
+ * CTA core. This asks a narrower question: is there a size `s` whose one-way
+ * hiding-period core — the stops reachable from the run origin within
+ * `S1_SIZE_PARAMS[s].hidingPeriodMin`, the SAME rule `zoneReachMinutes` colours
+ * the map with — measures as an `s`-sized game when everything is re-measured on
+ * those stops alone? The smallest such `s` is the suggestion.
+ *
+ * What it costs: the memoised hub run (`hubRun`, already made) plus at most three
+ * `networkMetrics` passes, one per candidate core. Because the hiding periods are
+ * 30 < 60 < 180 min, `core(small) ⊆ core(medium) ⊆ core(large)`, and the memo key
+ * carries the set's hash so two candidates with the same core pay once.
+ *
+ * What it refuses to do (`null`):
+ *   * when the reader has already decided — `opts.sizeOverride` or
+ *     `opts.borderBbox` set — a suggestion would be second-guessing them;
+ *   * when the origin sees no departure on the best day (no run to read);
+ *   * when the core at the voted size trims under `SUGGEST_MIN_TRIM_SHARE` of the
+ *     in-play stops — the whole-feed border is close enough to say nothing;
+ *   * when no candidate is self-consistent: a core is `degenerate` under
+ *     `max(SUGGEST_MIN_CORE_STOPS, SUGGEST_MIN_CORE_SHARE × |inPlay|)` stops,
+ *     `sparse` under `SUGGEST_MIN_EVENT_SHARE` of the day's departures (weighted by
+ *     departures so a ring of one-bus stops cannot veto a dense core), and
+ *     `outvoted` when `inferGameSize` on its metrics names a different size.
+ *
+ * What it does NOT refuse: a core that votes the run's own size. That is a tighter
+ * box for the SAME game — the trim-share gate above has already established it is at
+ * least `SUGGEST_MIN_TRIM_SHARE` smaller — and it is worth offering. The renderer,
+ * not this function, is the place that must not print "a MEDIUM game rather than
+ * MEDIUM". (The spec's second emission guard was dead code; see the note at the
+ * acceptance below.)
+ *
+ * Every candidate is recorded in `candidatesTried` in the order tried, so the
+ * page can say why nothing was offered. All iteration is over cmpStr-sorted
+ * arrays produced by FILTERING `inPlay` — never re-sorted, for the same T90
+ * stride reason `inPlayStopIds` gives — and nothing reads a clock.
+ *
+ * @param {object} feed a `Feed`
+ * @param {object[]} days every `ServiceDay` (the metric passes are per day)
+ * @param {object} best the busiest `ServiceDay`
+ * @param {object} hub the run's `Hub`
+ * @param {Projection|{lat0:number,lon0:number}} proj
+ * @param {object} opts an `Options`
+ * @param {object} size the `GameSize` the in-play metrics voted
+ * @param {string[]|null} inPlay the in-play set, or null for every served stop
+ * @param {Object<string, number>} events `stopId → departures on the best day`
+ * @returns {object|null} a `SuggestedBorder` (CONTRACT.md §(b)), or null
+ */
+export function suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, events) {
+  const o = opts || {};
+  if (o.sizeOverride !== null && o.sizeOverride !== undefined) return null;
+  if (o.borderBbox) return null;
+
+  const origin = o.startStopId || hub.stopId;
+  if (!has(best.stopDays, origin)) return null;
+  // The same `or` chain as `inferBorder`: a literal midnight falls through.
+  const depart = hmsToS(o.departure) || hmsToS(DEFAULT_DEPARTURE) || 32400;
+
+  // Already in `servedStopIds` order when threaded; re-filtered against the day so
+  // a caller handing in a stale set cannot index a missing `stopDays` row.
+  const pool = (inPlay ? inPlay : best.servedStopIds).filter((sid) => has(best.stopDays, sid));
+  if (!pool.length) return null;
+  const run = hubRun(feed, best, origin, depart);
+
+  const eventsOf = (sid) => {
+    if (events && has(events, sid)) return Number(events[sid]) || 0;
+    return best.stopDays[sid].departures.length;
+  };
+  let totalEvents = 0;
+  for (const sid of pool) totalEvents += eventsOf(sid);
+
+  /** The one-way hiding-period core at size `s`. A filter, so `pool` order holds. */
+  const core = (s) => {
+    const budget = 60 * S1_SIZE_PARAMS[s].hidingPeriodMin;
+    return pool.filter((sid) => has(run.arrivalS, sid) && run.arrivalS[sid] - depart <= budget);
+  };
+  const trimShareOf = (kept) => (pool.length - kept.length) / pool.length;
+
+  // Gate: at the voted size the core must trim enough to be worth a sentence.
+  const stopAt = S1_SIZE_ORDER.indexOf(size.name);
+  if (stopAt < 0) return null;
+  const votedCore = core(size.name);
+  if (trimShareOf(votedCore) < SUGGEST_MIN_TRIM_SHARE) {
+    LOG.info(`suggest: the ${size.name} core keeps ${votedCore.length} of ${pool.length} `
+      + 'in-play stops; nothing to offer');
+    return null;
+  }
+
+  const floor = Math.max(SUGGEST_MIN_CORE_STOPS, SUGGEST_MIN_CORE_SHARE * pool.length);
+  /** @type {Array<{sizeName:string, keptStops:number, eventShare:number, vote:string|null, reason:string}>} */
+  const candidatesTried = [];
+  let accepted = null;
+  let acceptedCore = null;
+  let acceptedMetrics = null;
+  let acceptedVotes = null;
+  for (let i = 0; i <= stopAt; i++) {
+    const s = S1_SIZE_ORDER[i];
+    const c = core(s);
+    let coreEvents = 0;
+    for (const sid of c) coreEvents += eventsOf(sid);
+    const eventShare = totalEvents > 0 ? coreEvents / totalEvents : 0;
+    const row = { sizeName: s, keptStops: c.length, eventShare, vote: null, reason: '' };
+    candidatesTried.push(row);
+    if (c.length < floor) { row.reason = 'degenerate'; continue; }
+    if (eventShare < SUGGEST_MIN_EVENT_SHARE) { row.reason = 'sparse'; continue; }
+    LOG.info(`suggest: measuring the ${s} core, ${c.length} of ${pool.length} in-play stops`);
+    const m = networkMetrics(feed, days, proj, hub, QUARTER_MILE_M, c);
+    const [voted, inference] = inferGameSize(m, { ...o, sizeOverride: null });
+    row.vote = voted.name;
+    if (voted.name !== s) { row.reason = 'outvoted'; continue; }
+    row.reason = 'accepted';
+    accepted = s;
+    acceptedCore = c;
+    acceptedMetrics = m;
+    acceptedVotes = inference.votes;
+    break;
+  }
+  if (accepted === null) {
+    LOG.info(`suggest: no self-consistent core (${candidatesTried
+      .map((r) => `${r.sizeName}:${r.reason}`).join(', ')})`);
+    return null;
+  }
+  // No emission guard here, deliberately (2026-08-27). The spec's guard was "emit only
+  // if the accepted size differs OR the trim share is at least SUGGEST_MIN_TRIM_SHARE",
+  // which is dead code as written: when the search accepts `s === size.name`,
+  // `acceptedCore` IS the `votedCore` the gate above already measured, and that gate
+  // returned null unless its trim share cleared the same threshold. So a same-size
+  // suggestion always cleared it and always shipped — correctly, because "the same
+  // size on a box under half the area" is a real offer. It is the SENTENCE that has to
+  // know: `s4SuggestCallout` (render/map.js) has a same-size branch, because
+  // "a MEDIUM game rather than MEDIUM" is what the comparison degenerates to.
+
+  const params = S1_SIZE_PARAMS[accepted];
+  const coreSet = new Set(acceptedCore);
+  const trimmedStopIds = pool.filter((sid) => !coreSet.has(sid)).sort(cmpStr);
+  const latLon = acceptedCore.map((sid) => [feed.stops[sid].lat, feed.stops[sid].lon]);
+  const rawBbox = bboxOf(latLon);
+  const padM = Number(params.zoneRadiusM);
+  const bbox = bboxExpand(rawBbox, padM);
+  const p = Projection.from(proj);
+  const sw = p.xy(bbox[0], bbox[1]);
+  const ne = p.xy(bbox[2], bbox[3]);
+  const areaSqM = Math.abs(ne[0] - sw[0]) * Math.abs(ne[1] - sw[1]);
+
+  // Which feeds the trimmed stops belong to. Merged ids are `f<k>:` namespaced
+  // (gtfs/merge.js) and `feed.sources[k].tag` names the prefix; a single feed's
+  // ids are bare and all of it is feed 0.
+  const sources = Array.isArray(feed.sources) ? feed.sources : [];
+  /** @type {Map<string, number>} */ const tagIndex = new Map();
+  if (sources.length > 1) sources.forEach((row, i) => tagIndex.set(String(row.tag), i));
+  /** @type {Map<number, number>} */ const perFeed = new Map();
+  for (const sid of trimmedStopIds) {
+    const colon = sid.indexOf(':');
+    const tag = colon > 0 ? sid.slice(0, colon) : '';
+    const idx = tagIndex.has(tag) ? tagIndex.get(tag) : 0;
+    perFeed.set(idx, (perFeed.get(idx) || 0) + 1);
+  }
+  const trimmedByFeed = Array.from(perFeed, ([feedIndex, count]) => ({
+    feedIndex,
+    agencyName: String((sources[feedIndex] && sources[feedIndex].agencyName) || feed.agencyName || ''),
+    count,
+  })).sort((a, b) => (b.count - a.count) || (a.feedIndex - b.feedIndex));
+
+  const acceptedRow = candidatesTried[candidatesTried.length - 1];
+  LOG.info(`suggest: ${accepted} core keeps ${acceptedCore.length} of ${pool.length} in-play `
+    + `stops (${num(acceptedRow.eventShare * 100, 1, { comma: false })}% of departures); `
+    + `the run measured ${size.name}`);
+  return {
+    kind: 'bbox',
+    bbox: bbox.map(coord),
+    rawBbox: rawBbox.map(coord),
+    padM,
+    geojson: s1BboxGeojson(bbox),
+    areaSqM,
+    sizeName: accepted,
+    hidingPeriodMin: Math.trunc(params.hidingPeriodMin),
+    originStopId: origin,
+    departureS: depart,
+    dayKey: best.dayType.key,
+    coreStops: acceptedCore.length,
+    allServedStops: best.servedStopIds.length,
+    trimmedStops: trimmedStopIds.length,
+    eventShare: acceptedRow.eventShare,
+    trimmedStopIds,
+    trimmedByFeed,
+    vote: {
+      axes: Array.from(acceptedVotes),
+      hullSqM: Number(acceptedMetrics.hullSqM || 0),
+      t90Min: Number(acceptedMetrics.t90Min || 0),
+      nZones: Math.trunc(Number(acceptedMetrics.nZones || 0)),
+      diameterM: Number(acceptedMetrics.diameterM || 0),
+    },
+    candidatesTried,
+    definition: 'one_way_from_origin_within_hiding_period',
+  };
 }
 
 /**

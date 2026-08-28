@@ -467,10 +467,30 @@ export const INTERPRETATIONS = Object.freeze([
           'not existing, so every instance count here is measured inside the drawn border. ' +
           'The border therefore decides most of this audit, which is why questions that would ' +
           'change status under a slightly larger border are flagged as borderline.' },
+  // The one row whose sentence depends on the run: `text` is the inferred
+  // ('reach') derivation, and `byDerivation` carries the alternatives for a run
+  // whose border was the reader's own box — honoured ('option') or thrown away by
+  // the in-play fallback ('option_fallback'). `buildProvenance` picks; the row
+  // stays plain data so the main thread can still read it without a border in hand.
   { id: 'map_border_derivation', affects: Object.freeze(['border', 'every instance count']),
     text: 'The border is the bounding box of the in-map stops padded by one hiding-zone ' +
           'radius, so that every legal zone lies wholly inside the map. The rulebook leaves ' +
-          'borders entirely to the players; this is a default, not a rule.' },
+          'borders entirely to the players; this is a default, not a rule.',
+    byDerivation: Object.freeze({
+      option: 'The border is the box you set on the landing map, with no padding: every ' +
+              'stop, zone and instance count on this page is measured inside it. The ' +
+              'rulebook leaves borders entirely to the players; this one is yours.',
+      // The third sentence is the honest one for a run where the box was DRAWN but
+      // not APPLIED: `inPlayStopIds` kept under `IN_PLAY_MIN_SHARE` of the served
+      // stops and fell back to the whole network, so the 'option' sentence above
+      // would assert the opposite of what was measured. worker.js stamps the
+      // derivation and also degrades, so the reader sees it twice. (2026-08-27.)
+      option_fallback: 'The border is the box you set on the landing map, with no padding — ' +
+              'but it kept fewer than half the stops this network serves, so it was not ' +
+              'used to filter anything: every stop, zone and instance count on this page ' +
+              'is measured over the WHOLE network, inside the box and out. Draw a box ' +
+              'that keeps more of the system to play the game it describes.',
+    }) },
   { id: 'osm_is_not_google_maps', affects: Object.freeze(['all OSM counts', 'B', 'E', 'A']),
     text: 'Every matching, measuring and tentacle question is defined by what a mapping app ' +
           'categorises, with a five-Google-Reviews legitimacy test. This generator reads ' +

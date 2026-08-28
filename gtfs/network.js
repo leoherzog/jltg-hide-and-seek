@@ -52,6 +52,7 @@ import {
   T90_ORIGIN_STRIDE,
   cmpStr,
   coord,
+  stableHash,
   dateRange,
   dowOf,
   hhmmss,
@@ -69,6 +70,11 @@ import {
   polygonArea,
 } from '../lib/geo.js';
 import { s1Cache, s1Float, s1Int, s1Median, s1Share } from './feed.js';
+// A cycle on purpose: infer.js imports the size table from here, and this file
+// takes the memoised hub run from there. Both sides only call the other's
+// functions from inside functions, never at module top level, so ES-module
+// hoisting resolves it; do not add a top-level use of `hubRun` here.
+import { hubRun } from './infer.js';
 import {
   busiestDay,
   clusterStations,
@@ -313,15 +319,25 @@ export function s1ZoneMembers(centres, stopIds, radiusM, pos) {
  * and the total stop events — so the dossier can say "6 stops, 3 routes, this is
  * the one you name". Sorted by `zoneId`.
  *
+ * `inPlay` (2026-08-27) is the in-play set, or null for every served stop. It has to
+ * be threaded here as well as into `zoneCover`: the cover picks the CENTRES, and
+ * without this the MEMBERS would still be drawn from every served stop, so a stop the
+ * border or `excludeStops` deleted would go on contributing its departures to
+ * `stopEvents`, its routes to `routeIds`, and its id to `Zone.stopIds` — which
+ * `s3ZoneHeadwayMin`, `s3ZoneLastArrivalS` and the strategy view's "N stops inside the
+ * circle" all read. `s1DayMetrics` has always measured its own zones over the in-play
+ * set, so the emitted zones and the metrics measured over them used to disagree.
+ *
  * @param {object} feed @param {object} day a `ServiceDay`
  * @param {string[]} centres @param {number} radiusM
  * @param {Projection|{lat0:number,lon0:number}} projLike
+ * @param {string[]|null} [inPlay] the in-play set, or null for every served stop
  * @returns {object[]} `Zone` records
  */
-export function buildZones(feed, day, centres, radiusM, projLike) {
+export function buildZones(feed, day, centres, radiusM, projLike, inPlay = null) {
   const proj = Projection.from(projLike);
   const pos = s1Positions(feed, proj);
-  const members = s1ZoneMembers(centres, day.servedStopIds, radiusM, pos);
+  const members = s1ZoneMembers(centres, inPlayForDay(day, inPlay), radiusM, pos);
   const out = [];
   for (const centre of Object.keys(members).sort(cmpStr)) {
     const stop = feed.stops[centre];
@@ -736,6 +752,30 @@ export function s1Percentiles(values, probs) {
 }
 
 /**
+ * The in-play set as one service day sees it: `inPlay ∩ day.servedStopIds`, in
+ * `inPlay`'s order, or every served stop when `inPlay` is null. The one place the
+ * intersection is written, so `s1DayMetrics`, `buildZones` and the radar sample cannot
+ * drift apart.
+ * @param {object} day a `ServiceDay`
+ * @param {string[]|null} inPlay
+ * @returns {string[]}
+ */
+function inPlayForDay(day, inPlay) {
+  if (!inPlay) return Array.from(day.servedStopIds);
+  const today = new Set(day.servedStopIds);
+  const out = inPlay.filter((sid) => today.has(sid));
+  // A day the set does not touch AT ALL is measured whole rather than not at all.
+  // The `IN_PLAY_MIN_SHARE` floor in `inPlayStopIds` protects the best day only, and
+  // the set is then measured across every day type (and, for `suggestBorder`, over a
+  // candidate core built on the best day): a Sunday network entirely outside the
+  // reader's box leaves this intersection empty, and an empty set reaches
+  // `minEnclosingCircle` below as `RangeError: no points` — which worker.js turns
+  // into a fatal 'network' error and no report at all, for a border the reader was
+  // entitled to draw. Same discipline as the floor, applied per day. (2026-08-27.)
+  return out.length ? out : Array.from(day.servedStopIds);
+}
+
+/**
  * Everything that is a property of one service day. Called once per day type.
  * `_s1_day_metrics`, generate.py.
  *
@@ -743,15 +783,23 @@ export function s1Percentiles(values, probs) {
  * `networkMetrics` itself. Do not rename one without grepping.
  *
  * @param {object} feed @param {object} day a `ServiceDay`
+ * `inPlay` (2026-08-27) narrows every quantity to the in-play set ∩ this day's
+ * served stops — an intersection, because the set is built on the best day and a
+ * Sunday-only stop is not in it while a weekday-only one is not served today.
+ * Filtered in `inPlay`'s own order, which is `servedStopIds` order, so the T90
+ * origin stride below samples the same way it always has. `null` is every served
+ * stop and byte-identical to the pre-2026-08-27 behaviour.
+ *
  * @param {Projection|{lat0:number,lon0:number}} projLike
  * @param {string|null} hubStopId @param {number} radiusM
+ * @param {string[]|null} [inPlay] the in-play set, or null for every served stop
  * @returns {object} a `DayMetrics`
  */
-export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
+export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = null) {
   const proj = Projection.from(projLike);
   const pos = s1Positions(feed, proj);
   const extras = s1Extras(day);
-  const served = Array.from(day.servedStopIds);
+  const served = inPlayForDay(day, inPlay);
   const events = Object.create(null);
   for (const sid of served) events[sid] = day.stopDays[sid].departures.length;
 
@@ -764,10 +812,14 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
 
   const points = served.map((sid) => pos[sid]);
   const [, hullArea, diameter] = s1HullAndShape(points);
-  const [cx, cy, mecR] = minEnclosingCircle(points);
+  // Belt and braces beside `inPlayForDay`'s floor: `minEnclosingCircle` throws on an
+  // empty array and `bboxOf` returns ±Infinity, which `proj.xy` turns into NaN. A day
+  // with no served stops at all cannot reach here today; a table of zeroes is still a
+  // better failure than a fatal stage. (2026-08-27.)
+  const [cx, cy, mecR] = points.length ? minEnclosingCircle(points) : [0, 0, 0];
   const [mecLon, mecLat] = proj.lonlat(cx, cy);
   const latLon = served.map((sid) => [feed.stops[sid].lat, feed.stops[sid].lon]);
-  const box = bboxOf(latLon);
+  const box = latLon.length ? bboxOf(latLon) : [0, 0, 0, 0];
   const sw = proj.xy(box[0], box[1]);
   const ne = proj.xy(box[2], box[3]);
   const bboxArea = Math.abs(ne[0] - sw[0]) * Math.abs(ne[1] - sw[1]);
@@ -813,10 +865,21 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM) {
   const reachByMinutes = Object.create(null);
   const reachableCentres = Object.create(null);
   if (origin) {
-    const run = raptor(day, [origin], depart);
+    // Memoised on the feed: `inferBorder` and `suggestBorder` want this exact run
+    // (hub, DEFAULT_DEPARTURE) and now read the same object. Read-only from here.
+    const run = hubRun(feed, day, origin, depart);
+    // The run covers the WHOLE network — RAPTOR does not know about the in-play set —
+    // so the arrival keys have to be narrowed to it here or `reachWithinHidingPeriod`
+    // and the two hub-travel percentiles would be measured over stops the border
+    // deleted, while `servedStops` beside them counts only the in-play ones. §05 and
+    // the A2 finding print the two against each other ("1,486 of 1,190 served stops"),
+    // so the mismatch was visible on the page. A null set keeps `Object.keys` verbatim
+    // — same members, same order, byte-identical goldens. (2026-08-27.)
+    const daySet = inPlay ? new Set(served) : null;
     // Unsorted keys on purpose: the map turns them into plain numbers before the
     // cmpNum sort, so the key order cannot be observed. Do not restore a cmpStr sort.
     hubTimes = Object.keys(run.arrivalS)
+      .filter((sid) => daySet === null || daySet.has(sid))
       .map((sid) => (run.arrivalS[sid] - depart) / 60.0).sort(cmpNum);
     for (const minutes of [30, 60, 180]) {
       let reach = 0;
@@ -999,18 +1062,28 @@ export function s1ProvisionalSize(metrics) {
  * `…BySize` object and as a single default keyed on the size the axes imply, so a
  * caller that already knows the resolved `GameSize` can read the exact figure.
  *
+ * `inPlay` (2026-08-27) is the in-play set the whole table is measured over, or
+ * null for every served stop. The memo key carries the set's length and a content
+ * hash, so a caller measuring several candidate sets (`suggestBorder`) pays once
+ * per DISTINCT set while a null caller keeps the key it always had. Two extra
+ * fields describe the set: `allServedStops` (the unfiltered count on the best day)
+ * and `inPlayFallback`, false here — the worker, which is the only caller that
+ * knows whether `inPlayStopIds` fell back, overwrites it on the run's tables.
+ *
  * @param {object} feed @param {object[]} days `ServiceDay`s
  * @param {Projection|{lat0:number,lon0:number}} projLike
  * @param {object} hub @param {number} radiusM
+ * @param {string[]|null} [inPlay] the in-play set, or null for every served stop
  * @returns {object} a `Metrics`
  */
-export function networkMetrics(feed, days, projLike, hub, radiusM) {
+export function networkMetrics(feed, days, projLike, hub, radiusM, inPlay = null) {
   const proj = Projection.from(projLike);
   const ordered = Array.from(days);
   if (!ordered.length) throw new RangeError('networkMetrics needs at least one service day');
 
   const key = ['metrics', feed.sha256, ordered.map((d) => d.dayType.key).join(SEP),
-    hub.stopId, Number(radiusM).toFixed(4)].join(SEP);
+    hub.stopId, Number(radiusM).toFixed(4),
+    inPlay ? `in:${inPlay.length}:${stableHash(inPlay.join(','))}` : 'all'].join(SEP);
   const memo = s1Cache(feed, 'metrics_memo', () => new Map());
   if (memo.has(key)) return memo.get(key);
 
@@ -1020,7 +1093,7 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
   /** @type {Object<string, object>} */
   const perDay = Object.create(null);
   for (const day of ordered) {
-    perDay[day.dayType.key] = s1DayMetrics(feed, day, proj, hubStop, radiusM);
+    perDay[day.dayType.key] = s1DayMetrics(feed, day, proj, hubStop, radiusM, inPlay);
   }
 
   // A shallow copy, exactly like the Python `dict(...)`: the nested objects stay
@@ -1076,7 +1149,7 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
   }
 
   const pos = s1Positions(feed, proj);
-  const radar = radarLiveness(Array.from(best.servedStopIds), pos,
+  const radar = radarLiveness(inPlayForDay(best, inPlay), pos,
     S1_RADAR_MILES.map((m) => m * M_PER_MILE));
 
   const baseNames = new Set();
@@ -1111,6 +1184,8 @@ export function networkMetrics(feed, days, projLike, hub, radiusM) {
     radarHitRate: radar,                             // radar_hit_rate
     bestDay: best.dayType.key,                       // best_day
     perDay,                                          // per_day
+    allServedStops: best.servedStopIds.length,       // all_served_stops (2026-08-27)
+    inPlayFallback: false,                           // in_play_fallback — worker overwrites
   });
 
   const sizeName = s1ProvisionalSize(head);
