@@ -1595,6 +1595,14 @@ function enterRunningState(src) {
   if (landing) landing.hidden = true;
   const report = document.querySelector('main');
   if (report) report.hidden = false;
+  // The Analyse button is at the foot of a card several screens tall, and swapping the
+  // card for the report skeletons keeps the window's scroll offset — so without this
+  // the reader lands partway down a page they have never seen, with the header's
+  // progress bar out of view. `wa-page` scrolls the document itself (its sticky
+  // regions ride the window scroll), so the window is the right target. `instant`
+  // rather than the stylesheet's smooth default: this is a new view, not a move
+  // within one, and animating up from the middle of a skeleton is just a flicker.
+  window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   const first = (src.sources && src.sources[0]) || null;
   setProgress({
     stage: 'feed',
