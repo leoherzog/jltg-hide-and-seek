@@ -537,6 +537,13 @@ export const OVERTURE_ADMIN_ORDINAL_OVERRIDES = Object.freeze({
   // out "Third Ward" (44 of 319 zones) and the CTA map "Austin" (44 of 1,204), while
   // level 8 held "Grand Rapids" (138 of 319) and "Chicago" (1,070 of 1,204). US cities
   // are Overture localities at 8; what sits below is not a division a map is named for.
+  ca: Object.freeze([4, 6, 8, null]),   // province / regional district / municipality; the
+  // same judgement as `us` for the same disease (2026-08-30): Canadian cities are
+  // Overture localities at 8 and level 9 holds macrohoods, so the generic path's
+  // fourth rung filled with "Downtown" (6.1% of the TransLink census) — and, worse,
+  // the absence of an entry here withheld the city-rung plurality clause from the
+  // census walk, which is what left that map named "Metro Vancouver Regional
+  // District" over a Vancouver leading Surrey 1.9x.
   fr: Object.freeze([4, 6, 8, 10]),     // region / department / commune / neighbourhood
   it: Object.freeze([4, 6, 8, 10]),     // regione / provincia / comune / neighbourhood
   jp: Object.freeze([4, 6, 8, null]),   // prefecture / municipality / ward
@@ -942,6 +949,19 @@ function adminLevel(tags) {
   return null;
 }
 
+/**
+ * Normalise a place name for equality against a timezone's city token: NFD, strip
+ * combining marks, casefold, collapse whitespace. "São Paulo" equals "Sao Paulo";
+ * "Wien" does NOT equal "Vienna" — deliberately no fuzzier than accents and case
+ * (no substrings, no "City of"/"County" stripping), because the ordinal-1 rule this
+ * feeds accepts on exact match only and a looser match is how false positives arm.
+ */
+function normPlace(value) {
+  return String(value || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 
 /**
  * Resolve the 1st–4th administrative divisions for this map.
@@ -958,11 +978,25 @@ function adminLevel(tags) {
  * Ordinals 2–4 come from the distinct levels present across *all* zone centres, not
  * one probe point. Never guess an `admin_level`.
  *
+ * The place name is a service-weighted census: each zone votes its `stopEvents`
+ * (departures, `gtfs/network.js` buildZones), the walk visits ordinals 4→3→2, and a
+ * division wins with a third of the census — or, additively, with a ≥20% city-rung
+ * plurality at 1.5× the runner-up in countries with an override-table entry. When
+ * nothing wins, an ordinal-1 division holding ≥90% of the census is accepted iff its
+ * name equals the feed's `agency_timezone` city and no deeper rung holds that name
+ * (Tokyo, Vienna — pass the timezone as `hooks.timezone` to arm this); then the
+ * deepest LADDER-level admin area at the map centre (`name:en` preferred); then the
+ * caller's agency-name fallback.
+ *
  * @returns {Promise<Object>} AdminInfo
  */
 export async function adminInfo(world, zones, bbox, hooks = {}) {
   const progress = hooks.progress || new Progress(null, 0);
   const log = hooks.log || noopLog;
+  // The primary feed's `agency_timezone`, threaded from the worker for the ordinal-1
+  // rule below. A hint, never an input the ladder depends on — gtfs/merge.js keeps
+  // only the primary feed's timezone, and it is display-grade data.
+  const feedTimezone = typeof hooks.timezone === 'string' ? hooks.timezone : '';
 
   const ordered = Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId));
 
@@ -1159,64 +1193,162 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     perZone[zoneId] = entry;
   }
 
-  // The place name is the municipality that contains the most zone centres, not the
-  // one under the bbox centre: the centre of a bounding box is a geometric artefact
-  // and on the reference feed it lands in a suburb (Wyoming, MI) while 171 of 319
-  // zones sit in Grand Rapids. This was already the source and Nominatim was already
-  // the fallback, so dropping Nominatim leaves the normal path untouched — it only
-  // changes what happens on a map with no zones at all, handled below.
+  // The place name is the division that carries the most SERVICE, not the one that
+  // covers the most map and not the one under the bbox centre (a geometric artefact —
+  // on the reference feed it lands in a suburb, Wyoming, MI). Each zone votes its
+  // `stopEvents` (departures inside the zone, `gtfs/network.js` buildZones) rather
+  // than 1: a zone is ~one disc of map AREA, so a bare count rewards sprawl — Surrey
+  // out-zoned Vancouver 283:226 on the TransLink map while Vancouver out-served it
+  // roughly 2:1, and San Jose out-zoned San Francisco the same way. Departures
+  // measure where the transit system actually is. Zone discs overlap
+  // (`s1ZoneMembers` gives every centre all stops within the radius), so a boundary
+  // stop's departures are counted by several zones; the census is a share of summed
+  // zone `stopEvents`, not of the map's departures — it smooths across division
+  // borders, which is harmless for a plurality test.
   //
-  // Go as specific as the data allows, then take the division containing the most
-  // zone centres *within that ordinal*. Ranking candidates by raw zone count across
-  // ordinals does not work: a broader division always wins on count, which named the
-  // Grand Rapids map "Kent County" (317 of 319).
-  //
-  // Which ordinal holds "the municipality" is not fixed, even across US states.
-  // Michigan puts cities at ordinal 3 and has no ordinal 4. Illinois puts historic
-  // civil townships at 3 and the city at 4, so reading ordinal 3 named the CTA map
-  // "Lake Township" (265 of 1,204) when ordinal 4 held "Chicago" (1,070). Taking the
-  // deepest populated ordinal gets both right.
+  // Go as specific as the data allows, then take the division carrying the most
+  // service *within that ordinal*. Ranking candidates by raw weight across ordinals
+  // does not work: a broader division always wins, which named the Grand Rapids map
+  // "Kent County". Which ordinal holds "the municipality" is not fixed, even across
+  // US states — Michigan puts cities at ordinal 3 and has no ordinal 4; Illinois
+  // puts historic civil townships at 3 and the city at 4 — so the walk starts deep.
   const zoneIds = Object.keys(perZone).sort(cmpStr);
-  if (zoneIds.length) {
+  /** zoneId → census weight: departures when the zones carry them, 1 each otherwise. */
+  const weightOf = new Map();
+  {
+    let events = 0;
+    for (const zone of ordered) {
+      const weight = Math.max(0, Number(zone.stopEvents) || 0);
+      weightOf.set(zone.zoneId, weight);
+      events += weight;
+    }
+    if (!(events > 0)) {
+      // Synthetic or stripped zones: degrade to the one-zone-one-vote census this
+      // used to be, never divide by zero.
+      for (const zone of ordered) weightOf.set(zone.zoneId, 1);
+    }
+  }
+  let censusTotal = 0;
+  for (const zoneId of zoneIds) censusTotal += weightOf.get(zoneId) || 0;
+  const pctOf = (weight) => (censusTotal > 0
+    ? ((100.0 * weight) / censusTotal).toFixed(1) : '0.0');
+
+  // Weighted tally per ordinal, ranked (weight desc, then name) so the answer never
+  // depends on the order the areas came back in. Ordinal 1 is tallied too: the walk
+  // below never visits it, but the timezone rule after the walk does.
+  /** @type {Object<number, Array<[string, number]>>} */
+  const census = {};
+  for (const ordinal of [1, 2, 3, 4]) {
+    const tally = new Map();
+    for (const zoneId of zoneIds) {
+      const name = perZone[zoneId][ordinal];
+      if (name) tally.set(name, (tally.get(name) || 0) + (weightOf.get(zoneId) || 0));
+    }
+    census[ordinal] = Array.from(tally.entries())
+      .sort((a, b) => (b[1] - a[1]) || cmpStr(a[0], b[0]));
+  }
+
+  if (zoneIds.length && censusTotal > 0) {
+    const ord2Leader = census[2].length ? census[2][0][0] : null;
+    const ord2Runner = census[2].length > 1 ? census[2][1][0] : null;
     for (const ordinal of [4, 3, 2]) {
-      /** @type {Map<string, number>} */
-      const tally = new Map();
-      for (const zoneId of zoneIds) {
-        const name = perZone[zoneId][ordinal];
-        if (name) tally.set(name, (tally.get(name) || 0) + 1);
-      }
-      if (!tally.size) continue;
-      const best = Array.from(tally.entries())
-        .sort((a, b) => (b[1] - a[1]) || cmpStr(a[0], b[0]))[0];
-      // "Deepest ordinal holding any tally" is too weak on its own: one stray division
-      // covering a handful of zones beats an ordinal that names the whole map. The
-      // table above fixes the countries listed there; this is what protects the ones
-      // that are not, since the generic overture path always fills the fourth rung.
-      // A third is the loosest bar that separates the measured cases — a neighbourhood
-      // holding 13.8% of zones fails it, a city holding 43% passes — and a map whose
-      // deepest leader is thinner than that is more honestly named by the level above.
-      if (best[1] * 3 < zoneIds.length) {
+      const ranked = census[ordinal];
+      if (!ranked.length) continue;
+      const [leaderName, leaderW] = ranked[0];
+      const runnerW = ranked.length > 1 ? ranked[1][1] : 0;
+      // A third of the whole census is the bar, as it always was: one stray division
+      // covering a sliver must not beat an ordinal that names the whole map, and a
+      // map whose deepest leader is thinner than that is more honestly named by the
+      // level above.
+      const clearsThird = leaderW * 3 >= censusTotal;
+      // The ADDITIVE city-rung clause. A regional network's core city routinely holds
+      // 20–30% of the service with nothing else close (Seattle ~26%, 1.8× Tacoma;
+      // the flat third then hands the header to "King County"). Accept a clear
+      // city-rung plurality — but only ADDITIVELY (a leader already over the third is
+      // never demoted for having a strong twin: PATCO's Philadelphia/Camden sits at
+      // 1.67×), only where an override entry vouches that ordinal 3 is the locality
+      // rung (on the generic path it can be a freguesia, an electoral division or a
+      // ward — the same hole the `us` overture entry plugs one rung down), only when
+      // the rung holds three or more divisions (a one- or two-entry rung is a thin or
+      // cross-border artefact, and the ratio clause is vacuous there), and never when
+      // ordinal 2 is the SAME RUNG duplicated (Japan files the same wards at two
+      // levels, and a duplicated rung must not get a discounted bar). Rung
+      // duplication is detected by BOTH the leader and the runner-up coinciding
+      // across the two ordinals — the leader alone is not enough, because a
+      // city-département legitimately tops both rungs while the rest of each rung
+      // differs (Paris leads ordinal 2 among départements and ordinal 3 among
+      // communes at the same 26%, and blocking on that named the IDFM map
+      // "Vigneux-sur-Seine" off the map-centre fallback).
+      const rungDuplicated = leaderName === ord2Leader
+        && (ranked.length > 1 ? ranked[1][0] : null) === ord2Runner;
+      const loose = !clearsThird
+        && ordinal === 3
+        && Boolean(override)
+        && ranked.length >= 3
+        && !rungDuplicated
+        && leaderW >= 0.20 * censusTotal
+        && runnerW > 0 && leaderW >= 1.5 * runnerW;
+      if (!clearsThird && !loose) {
         log('info', `ordinal ${ordinal} skipped for the place name: its leader `
-          + `${JSON.stringify(best[0])} holds only ${best[1]} of ${zoneIds.length} zones`);
+          + `${JSON.stringify(leaderName)} carries only ${pctOf(leaderW)}% of the census`);
         continue;
       }
-      [placeName] = best;
+      placeName = leaderName;
       log('info', `place name ${JSON.stringify(placeName)} from ordinal ${ordinal} `
-        + `(${best[1]} of ${zoneIds.length} zones, ${tally.size} divisions there)`);
+        + `(${pctOf(leaderW)}% of the census, ${ranked.length} divisions there${loose
+          ? `; city-rung plurality, ${(leaderW / runnerW).toFixed(2)}x the runner-up` : ''})`);
       break;
     }
   }
+
+  // A city-state or a prefecture-city: the city's name exists ONLY at ordinal 1 in
+  // the world file (Tokyo, Vienna — neither has a locality polygon named after it).
+  // The walk above never visits ordinal 1 because a state must not name a map
+  // ("Massachusetts" for Boston), so ordinal 1 is admitted only under a conjunction:
+  // the division must hold ≥90% of the census AND be named by an independent signal —
+  // the feed's `agency_timezone` city — AND no deeper rung may hold a division of
+  // that name. The deeper-rung guard is what disarms the confirmed false-positive
+  // class: Rochester sits inside a level-4 division literally named "New York" under
+  // America/New_York, and Campinas inside "São Paulo" under America/Sao_Paulo; both
+  // have the same-named city elsewhere on the ladder, so the guard blocks them. The
+  // timezone alone is NOT trustworthy (all four Dublin feeds declare Europe/London;
+  // MBTA declares America/New_York) — only the conjunction is.
+  if (placeName === null && zoneIds.length && censusTotal > 0
+      && ordinals[1] !== null && census[1].length) {
+    const [leaderName, leaderW] = census[1][0];
+    const tzCity = normPlace(String(feedTimezone).split('/').pop().replace(/_/g, ' '));
+    const deeperSame = tzCity !== '' && [2, 3, 4].some(
+      (ordinal) => census[ordinal].some(([name]) => normPlace(name) === tzCity),
+    );
+    if (tzCity !== '' && leaderW * 10 >= censusTotal * 9
+        && normPlace(leaderName) === tzCity && !deeperSame) {
+      placeName = leaderName;
+      log('info', `place name ${JSON.stringify(placeName)} from ordinal 1 `
+        + `(${pctOf(leaderW)}% of the census; matches the agency timezone `
+        + `${JSON.stringify(feedTimezone)})`);
+    }
+  }
+
   if (placeName === null) {
-    // No zones, or no named division containing any of them — the one case where
-    // Nominatim used to answer. The local equivalent is the deepest administrative area
-    // covering the middle of the map: a geometric artefact, and worse than the census
-    // above, but it is the same kind of answer Nominatim gave and it needs no network.
+    // No zones, or no division passed any bar above — the one case where Nominatim
+    // used to answer. The local equivalent is the administrative area covering the
+    // middle of the map: a geometric artefact, and worse than the census above, but
+    // the same kind of answer Nominatim gave and it needs no network. Two rules keep
+    // it as honest as a geometric artefact can be: candidates are restricted to the
+    // LADDER'S levels when any of them cover the centre (a raw deepest-level sort
+    // resurfaces exactly the macrohoods the ladder deliberately skips — "Praha 10"
+    // on a CZ ladder of 4/6/7/8), and `name:en` is preferred, same as the census
+    // (the raw `name` printed 武蔵野市 where the census path says Musashino).
+    const ladderLevels = new Set([ordinals[1], ordinals[2], ordinals[3], ordinals[4]]
+      .filter((level) => level !== null && level !== undefined));
     const [s, w, n, e] = bbox;
-    const covering = adminAreasAt(areas, (s + n) / 2.0, (w + e) / 2.0)
-      .filter((area) => area.name)
+    const at = adminAreasAt(areas, (s + n) / 2.0, (w + e) / 2.0)
+      .filter((area) => area.name || area.nameEn);
+    const onLadder = at.filter((area) => ladderLevels.has(area.level));
+    const covering = (onLadder.length ? onLadder : at)
       .sort((a, b) => b.level - a.level || cmpStr(a.name, b.name));
     if (covering.length) {
-      placeName = covering[0].name;
+      placeName = covering[0].nameEn || covering[0].name;
       log('info', `place name ${JSON.stringify(placeName)} from the admin area at the `
         + `map centre (level ${covering[0].level}); no zone census was available`);
     }
@@ -1927,7 +2059,7 @@ export function emptyGeoData(bbox, note) {
  * @param {Array<Object>} zones
  * @param {Projection} proj
  * @param {number} radiusM
- * @param {{onProgress?: function(number, number, string), onLog?: function(string, string)}
+ * @param {{onProgress?: function(number, number, string), onLog?: function(string, string), timezone?: string}
  *        | function(number, number, string)} [hooks]
  * @returns {Promise<Object>} GeoData
  */
@@ -2196,7 +2328,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   // the fallback is now the whole story — see `adminInfo`. That removes the last
   // shared-free-service dependency in the pipeline, and with it a 1 req/s rate limit
   // and a mandatory-User-Agent header a browser cannot set.
-  const admin = await adminInfo(world, zones, bbox, { progress, log });
+  const admin = await adminInfo(world, zones, bbox, { progress, log, timezone: h.timezone });
   if (zones.length) {
     queries.push({
       key: 'admin-containment',

@@ -617,7 +617,15 @@ reconcile them; the goldens move if you do.
  * distinct levels present across all zone centres above it. This used to come from
  * Nominatim's `ISO3166-2-lvl<N>` key; it is now read off the polygons instead of asked
  * for, and no network service is consulted. A missing ordinal is `null` and must render
- * as "no Nth division here", never as a guessed level. Unknown country ⇒ every admin
+ * as "no Nth division here", never as a guessed level. `place_name` is a
+ * service-weighted census: each zone votes its `stopEvents`, the walk visits
+ * ordinals 4→3→2, and a division wins with a third of the census — or, additively,
+ * with a ≥20% city-rung plurality at ≥1.5× the runner-up where the country has an
+ * override-table entry. If nothing wins, an ordinal-1 division holding ≥90% of the
+ * census is accepted iff its name equals the feed's `agency_timezone` city
+ * (accent/case-insensitive, exact otherwise) and no deeper rung holds that name;
+ * then the deepest LADDER-level admin area at the map centre (`name:en` preferred);
+ * the caller falls back to the agency name. Unknown country ⇒ every admin
  * question is `unknown`, NOT `dead`.
  * @property {string|null} countryCode                       // country_code — ISO-3166-1 alpha-2, lowercase
  * @property {string|null} countryName                       // country_name

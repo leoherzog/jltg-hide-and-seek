@@ -761,6 +761,9 @@ export async function runPipeline(options, source, emit) {
       geo = await collectGeodata(handle, opts, border, zones, proj, size.zoneRadiusM, {
         onProgress: progress.sink(),
         onLog: (level, message) => log(level === 'warning' ? 'warn' : level, message),
+        // Arms adminInfo's ordinal-1 place rule (Tokyo, Vienna). The primary feed's
+        // agency_timezone — a hint the census cross-checks, never an input it trusts.
+        timezone: feed.timezone,
       });
       log('info', worldStatsLine(handle));
     } catch (err) {
