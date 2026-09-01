@@ -40,7 +40,9 @@ node tools/smoke.mjs                     # headless: the pipeline, against 19 go
 node tools/mdb-snapshot.mjs --check      # validate the committed feed catalogue, no network
 ```
 
-**Pick your city on the map.** The landing page opens on a world map of 2,471 transit systems —
+**Pick your city on the map.** The landing page *is* a world map of 2,471 transit systems —
+full-screen, with every control in one panel floating on it (a column on the left on a desktop, a
+bottom sheet on a phone) —
 one marker per feed, clustered, drawn from a tracked snapshot of the
 [Mobility Database](https://mobilitydatabase.org/) catalogue. Search for a city or an operator,
 click a marker, or draw a shape and take every system it touches. Two switches add the other 299
@@ -57,22 +59,21 @@ will warn you about: fetching a URL only works if the agency's server sends CORS
 plenty don't. When that happens, download the zip yourself and drop it in — same answer, one extra
 step. (The catalogue's own mirror URLs, which is what a map pick fetches, always send them.)
 
-**Or start from an example.** A row of chips under the picker's lede — Chicago, New York and a
+**Or start from an example.** A row of chips in the panel — Chicago, New York and a
 dozen other metros — loads a hand-picked set of that city's public operators in one click: CTA,
 Metra, Pace and the Water Taxi for Chicago; the subway, the borough bus feeds, both ferries and
 the Roosevelt Island tram for New York. Campus shuttles and private coaches are left out on
 purpose. The chip fills the selected list; add to it, remove from it or press another.
 
 **More than one system at a time.** A metro plus its commuter rail, or two neighbouring operators a
-drawn shape happened to cross, merge into one map. Up to ten feeds per run; above three the page
-says so, because each one costs a download and a parse. Selecting more than one also pre-ticks
-*Skip OpenStreetMap* under **Advanced** — the map-feature layer's cost scales with the size of the
-border, and two metros make a big border. That happens once, the first time you go past one feed;
-after that the switch is yours. Untick it if you want the full audit and have the time.
+drawn shape happened to cross, merge into one map. Up to ten feeds per run — each one costs a
+download and a parse, so a big pick takes longer and the tenth is refused rather than merged.
+Picking several no longer changes anything else about the run: the map-feature layer used to switch
+itself off past one feed, and doesn't any more.
 
 **Where the game is played.** As soon as you pick a feed, a gold rectangle appears on the map: the
 game border, fitted to what you picked. Drag a corner, drag an edge, drag the middle to move the
-whole thing, or type the four numbers — South, West, North and East — into the fields under the map;
+whole thing, or type the four numbers — South, West, North and East — into the fields in the panel;
 Shift+↑ and Shift+↓ in a field nudge that edge, so the keyboard does everything the handles do.
 Buttons beside them fit the border back to the feeds, seed it from where two systems overlap, box a
 shape you drew, or shrink and grow it 10 % at a time. **Leave it alone and nothing changes**: an
@@ -97,10 +98,13 @@ The map is optional, not load-bearing: search, Add and Analyse all work before t
 loads, and if it never loads.
 
 **How long it takes.** The schedule side runs in seconds. The map-feature layer is the slow part:
-on the Grand Rapids reference border it takes about 33 seconds, and the browser's HTTP cache makes
-a second run much cheaper. There's a "Skip OpenStreetMap" switch under **Advanced** that drops the
-map layer entirely — everything the feed alone can answer still runs, and every question, curse and
-sub-score that needs map features is excluded from the denominator, not guessed at.
+about 18 seconds on the Grand Rapids reference border, over roughly 303 HTTP Range requests and
+14.7 MB, and the browser's HTTP cache makes a second run much cheaper. There is no switch to turn
+it off. There used to be, and it was a mistake: a run without map features loses 37 of the 80
+questions, 16 of the 24 curses and two of the six score axes — a third of the report, gone for
+about 18 seconds. If the map files genuinely cannot be read the run still finishes, and says so:
+everything the feed alone can answer is reported, and everything that needed map features is
+excluded from the denominator rather than guessed at.
 
 **Overrides.** The Advanced panel also holds an override for every inference — game size, zone
 radius, hiding period, start stop, border shape, departure time, analysis date, excluded stops and
@@ -333,7 +337,7 @@ they must get the same report, or it isn't evidence of anything.
 ## Repo layout
 
 ```
-index.html           the page shell: landing card, Advanced panel, eight skeleton sections
+index.html           the page shell: landing stage, Advanced panel, eight skeleton sections
 app.js               main-thread controller: owns every element, listener, and the worker protocol
 worker.js            the pipeline orchestrator, off the main thread
 lib/ gtfs/ osm/ rules/   worker-side pipeline (no DOM)

@@ -83,7 +83,6 @@ const RERUN_VERSION = 1;
 
 /** `class Options`, minus everything meaningless in a browser. */
 const DEFAULT_OPTIONS = Object.freeze({
-  useOsm: true,
   // An override, and null is the whole of its default. The published bucket is named
   // once, in `osm/worldfile.js`'s `DEFAULT_WORLD_BASE_URL`, and this file does not
   // import it: doing so would pull the world-file reader and the FlatGeobuf decoder
@@ -388,13 +387,9 @@ const state = {
      * @type {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null}
      */
     border: null,
-    /** The picker's handle — `{ setByo, refresh, resize, destroy }` — or
-     *  null when the catalogue never loaded and the bring-your-own card is the whole
-     *  page. Everything that redraws the note goes through `refreshPicker`. */
+    /** The picker's handle — `{ setByo, resize, destroy }` — or null when the
+     *  catalogue never loaded and the bring-your-own card is the whole page. */
     /** @type {Object|null} */ picker: null,
-    /** Has `#opt-no-osm` already been ticked on the reader's behalf? Ticked once, on
-     *  the first move past one feed, and never unticked: after that the box is theirs. */
-    osmAutoTicked: false,
   },
 };
 
@@ -539,6 +534,11 @@ function guardStrayDrops() {
  */
 const CATALOG_URL = new URL('./data/feeds.json', import.meta.url);
 
+/** The Advanced panel's read-only mirror of the frame, wherever the markup put it. */
+function borderMirror() {
+  return document.querySelector('[data-opt="borderBbox"]');
+}
+
 /**
  * Keep `#analyse` honest: enabled exactly when there is something to run, labelled
  * with the count when there is more than one, and mirroring the bring-your-own file
@@ -548,22 +548,6 @@ const CATALOG_URL = new URL('./data/feeds.json', import.meta.url);
  * Called from every path that can change either half of the answer. Cheap, and safe
  * to call before the picker exists — `readByoSource` is the whole of the fallback.
  */
-/** The Advanced panel's "Skip OpenStreetMap" switch, wherever it is on the page. */
-function osmSwitch() {
-  return document.querySelector('[data-opt="noOsm"]');
-}
-
-/** Its live state, for the picker's note. */
-function isOsmSkipped() {
-  const sw = osmSwitch();
-  return Boolean(sw && sw.checked);
-}
-
-/** The Advanced panel's read-only mirror of the frame, wherever the markup put it. */
-function borderMirror() {
-  return document.querySelector('[data-opt="borderBbox"]');
-}
-
 function syncAnalyse() {
   const form = runForm();
   const byo = readByoSource(form);
@@ -581,28 +565,6 @@ function syncAnalyse() {
     if (label) label.textContent = count > 1 ? `Analyse ${num(count)} feeds` : 'Analyse';
   }
 
-  const osmArea = osmAreaRef();
-
-  // PLAN D24. Two or more feeds means a border spanning two metros, and OSM-layer
-  // scale guards for a border that big are explicitly out of scope this round — so
-  // the default is "skip the map files", ticked ONCE and said in words by
-  // `#picker-note`. Never unticked afterwards: past the first tick the box is the
-  // reader's, and silently re-ticking it would be the page arguing with them.
-  //
-  // Never while an OpenStreetMap area is picked. The switch only gates the S2 geo
-  // layer (worker.js) — the area's feed is synthesized from the same map files
-  // either way — but a run built FROM OpenStreetMap whose own default turned the
-  // OpenStreetMap layer off would be the page contradicting itself, so the default
-  // stays on and the switch stays the reader's.
-  if (count > 1 && !state.landing.osmAutoTicked && !osmArea) {
-    state.landing.osmAutoTicked = true;
-    const sw = osmSwitch();
-    if (sw && !sw.checked) sw.checked = true;
-    // The picker drew its note BEFORE this tick — it is called from the selection
-    // change that caused it — so the note is asked to re-read the switch it now
-    // disagrees with.
-    refreshPicker();
-  }
 }
 
 /**
@@ -662,41 +624,14 @@ function onPickerBorder(border) {
 }
 
 /**
- * The drawn area taken as an OpenStreetMap source, or null.
- *
- * `readSources` deliberately never inspects `ref.kind` — it reads `id` and `label` and
- * nothing else, which is what lets a third kind travel through it unchanged. This
- * lookup exists for the two form defaults an area pick has to change, and for nothing
- * else.
- */
-function osmAreaRef() {
-  for (const ref of state.landing.selected.values()) {
-    if (ref && ref.kind === 'osm') return ref;
-  }
-  return null;
-}
-
-/**
- * Re-draw `#picker-note`.
- *
- * Every box this file ticks on the reader's behalf is set through `.checked`, which
- * fires no event, and the note reads those very switches — so it has to be asked to
- * look again. `CONTRACT.md` §(a) pins `refresh` on the handle; the only question
- * here is whether there is a picker at all.
- */
-function refreshPicker() {
-  if (state.landing.picker) state.landing.picker.refresh();
-}
-
-/**
- * Wire the landing card, then try to build the picker on top of it.
+ * Wire the landing panel, then try to build the picker on top of it.
  *
  * ORDER IS THE POINT. Everything the bring-your-own path needs is wired
  * SYNCHRONOUSLY, first, and cannot be skipped by a rejected import or a failed fetch.
  * Only then does the catalogue load, and a failure there is silent-and-degraded — the
- * picker card stays hidden, the bring-your-own disclosure is opened instead, and the
- * page is exactly what it was before this feature existed. A grey box where a map
- * should be is worse than no map.
+ * map is hidden, the stage collapses back to a centred card, the bring-your-own
+ * disclosure is opened instead, and the page is exactly what it was before this
+ * feature existed. A grey box where a map should be is worse than no map.
  *
  * The three picker modules are imported dynamically for the same reason MapLibre is:
  * the `#strategy` route and every report reload would otherwise pay to parse a card
@@ -708,19 +643,19 @@ function initLanding() {
   if (urlInput) {
     urlInput.addEventListener('input', () => { clearFormError(); syncAnalyse(); });
   }
+  initPanelGrip();
   syncAnalyse();
 
   const host = $id('picker');
   const body = host && host.querySelector('[data-role="pickerbody"]');
   if (!host || !body) return;
 
-  // The catalogue is ~370 KB, and on a slow connection the lede promises a map that
+  // The catalogue is ~370 KB, and on a slow connection the panel promises a map that
   // is not on the page yet. One line of copy holds the space, the same way the report
-  // skeletons cover their own load; the failure path below hides the card again, so
-  // nobody is left with a promise and a blank.
+  // skeletons cover their own load. `index.html` ships the same sentence, so this is
+  // a no-op on a cold load and the honest thing to say on a re-entry.
   body.innerHTML = '<p class="wa-caption-s wa-color-text-quiet" role="status">'
     + 'Loading the list of transit feeds…</p>';
-  host.hidden = false;
 
   (async () => {
     const [catalog, landing, picker] = await Promise.all([
@@ -730,26 +665,58 @@ function initLanding() {
     ]);
     const doc = await catalog.loadCatalog(CATALOG_URL);
     body.innerHTML = landing.renderPickerCard();
-    host.hidden = false;
     state.landing.picker = picker.initPicker(host, {
       doc,
       onChange: onPickerChange,
       onBorder: onPickerBorder,
       onRemoveByo: onPickerRemoveByo,
-      osmSkipped: isOsmSkipped,
     });
-    // The note tells the reader they can untick Skip OpenStreetMap. When they do, it
-    // has to stop saying so — the switch is theirs from the first tick onwards.
-    const sw = osmSwitch();
-    if (sw) sw.addEventListener('change', refreshPicker);
     syncAnalyse();
   })().catch((err) => {
-    host.hidden = true;
+    // The MAP is hidden here, where `#picker` used to be. Since 2026-09-01 the host
+    // is the STAGE — the map and the floating panel both live inside it — and the
+    // panel carries the heading, the bring-your-own disclosure, Advanced and
+    // Analyse, none of which need a catalogue. Hiding the host would take the
+    // working half of the page down with the broken half. Hiding the map instead
+    // collapses the stage back to a centred card (styles.css §7 `NO MAP`, one rule
+    // shared with `giveUpOnMap`'s MapLibre failure). A grey box where a map should
+    // be is still worse than no map.
+    const map = host.querySelector('#catalog-map');
+    if (map) map.hidden = true;
     body.innerHTML = '';
     const byo = $id('byo');
     if (byo) byo.open = true;
     // eslint-disable-next-line no-console
     console.warn('The feed catalogue is unavailable — bring your own feed instead', err);
+  });
+}
+
+/**
+ * The bottom sheet's grab bar.
+ *
+ * Landing chrome, not picker chrome: the panel it collapses holds the bring-your-own
+ * disclosure and Analyse as well as the picker's own controls, and it has to work on
+ * a page whose catalogue never loaded. It is `display: none` above the sheet
+ * breakpoint (styles.css §7), which also keeps it out of the tab order there, so
+ * there is no media query to mirror here — the button simply cannot be pressed on a
+ * desktop.
+ *
+ * Collapsing hides the scroller and leaves the foot, which is where Analyse lives, so
+ * a collapsed sheet is still the whole of the page's primary action. The label is the
+ * button's only accessible name (the bar itself is `aria-hidden`), so it has to say
+ * what pressing it does now, not what state the panel is in — `aria-expanded` carries
+ * that.
+ */
+function initPanelGrip() {
+  const grip = document.querySelector('[data-role="panelgrip"]');
+  const panel = grip && grip.closest('.landing-panel');
+  if (!grip || !panel) return;
+  const label = grip.querySelector('[data-role="panelgriplabel"]');
+  grip.addEventListener('click', () => {
+    const collapsed = !panel.hasAttribute('data-collapsed');
+    panel.toggleAttribute('data-collapsed', collapsed);
+    grip.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    if (label) label.textContent = collapsed ? 'Show the panel' : 'Hide the panel';
   });
 }
 
@@ -843,9 +810,6 @@ function idList(value) {
 function readOptions(form) {
   const errors = [];
   const options = { ...DEFAULT_OPTIONS };
-
-  const noOsm = readControl(form, 'noOsm');
-  if (typeof noOsm === 'boolean') options.useOsm = !noOsm;
 
   // Validated here rather than in the worker for the same reason every other field
   // is: a bad value should come back as a sentence under the form, not as a failed
@@ -1426,7 +1390,7 @@ function normaliseRerunOptions(raw) {
     return true;
   };
   const positive = (v) => Number.isFinite(v) && v > 0;
-  if (!bool('useOsm') || !bool('offline') || !bool('refresh')) return null;
+  if (!bool('offline') || !bool('refresh')) return null;
   if (!nullable('asOf', (v) => typeof v === 'string' && /^\d{8}$/.test(v))) return null;
   if (!nullable('sizeOverride', (v) => ['small', 'medium', 'large'].includes(v))) return null;
   if (!nullable('zoneRadiusM', positive) || !nullable('hidingPeriodMin', positive)) return null;
@@ -1517,7 +1481,7 @@ function clearWatchdog() {
 }
 
 /**
- * The header's Reset: back to the landing card, by way of a fresh document load.
+ * The header's Reset: back to the landing stage, by way of a fresh document load.
  *
  * Deliberately NOT a teardown. By the time this button is reachable the shell has
  * been *edited*, not just filled: `dropSection` has removed the sections that came
@@ -1530,7 +1494,7 @@ function clearWatchdog() {
  *
  * The URL sheds its fragment first, so a reader deep-linked at `#verdict` — or at
  * `#strategy`, which `applyRoute` would otherwise take straight back into the guide
- * on the next boot — lands on the landing card and not where they were. A
+ * on the next boot — lands on the landing stage and not where they were. A
  * fragment-less URL can never be a same-document scroll (the spec's fragment branch
  * requires a non-null fragment), so this is a load even when the fragment was the
  * only difference, and `location.replace(href)` is a load even when there was no
@@ -1569,7 +1533,7 @@ function resetToLanding() {
  * hero is `data-when="report"`, and that same `!important` rule makes it
  * `display: none` in the landing state — an anchor to a hidden element scrolls
  * nowhere and cannot take sequential focus. So the wordmark points at the landing
- * card while the landing card is what there is to point at.
+ * card while the landing stage is what there is to point at.
  */
 function setShellState(value) {
   if (document.body) document.body.setAttribute('data-state', value);
@@ -1595,10 +1559,12 @@ function enterRunningState(src) {
   if (landing) landing.hidden = true;
   const report = document.querySelector('main');
   if (report) report.hidden = false;
-  // The Analyse button is at the foot of a card several screens tall, and swapping the
-  // card for the report skeletons keeps the window's scroll offset — so without this
-  // the reader lands partway down a page they have never seen, with the header's
-  // progress bar out of view. `wa-page` scrolls the document itself (its sticky
+  // The landing is one viewport tall and does not usually scroll, but it CAN — a
+  // short landscape viewport hits the stage's `min-block-size`, and the failed-
+  // catalogue state is an ordinary tall card. Swapping either for the report
+  // skeletons keeps the window's scroll offset, so without this the reader lands
+  // partway down a page they have never seen, with the header's progress bar out of
+  // view. `wa-page` scrolls the document itself (its sticky
   // regions ride the window scroll), so the window is the right target. `instant`
   // rather than the stylesheet's smooth default: this is a new view, not a move
   // within one, and animating up from the middle of a skeleton is just a flicker.

@@ -187,6 +187,13 @@ html, body { min-height: 100%; padding: 0; margin: 0; }
 body { background-image: radial-gradient(color-mix(in srgb, var(--ink) 3%, transparent) 1px, transparent 1px);
        background-size: 22px 22px; }                          /* one rule, both schemes */
 wa-page { --menu-width: 15rem; --content-width: 1080px; }     /* group headings + icons need the width */
+/* A SEED, not a setting. <wa-page> measures its own header with a ResizeObserver and
+   writes `--header-height` as an inline style, which beats this — but only from the
+   first observation onwards, and the landing stage is sized off it (§7). Without a
+   seed the stage spends its first frame a whole header too tall and MapLibre gets a
+   resize it did not need. 4rem is what the landing header measures: one wa-button of
+   chrome inside `::slotted([slot='header'])`'s wa-space-m padding. */
+wa-page { --header-height: 4rem; }
 wa-page[view='mobile'] { --menu-width: auto; }
 wa-page::part(main-content) { padding-inline: 0; }
 /* wa-card's :host paints --wa-color-surface-default, i.e. the body colour; every
@@ -455,13 +462,148 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
    the rest of the time; an empty paragraph would still be a gap in the stack. */
 #border-suggest #suggest-note:empty { display: none; }
 
-/* ---- the landing card ----
-   72rem, not the 48rem a form wants: the card holds the feed picker's map too, and
-   `#landing` renders in no state but `landing`, so there is nothing to gate a wider
-   measure on. The lede keeps its own 60ch; `#landing-fields`' 220px columns just get
-   four across instead of three. */
-#landing { max-inline-size: min(72rem, 100%); margin-inline: auto; }
+/* ---- the landing stage: the map IS the page (2026-09-01) ------------------
+   `#picker` is a ONE-CELL GRID the height of the viewport under the header.
+   `#catalog-map` and `.landing-panel` are both in that cell, so the panel floats on
+   the map without taking a pixel of width from it and without a single absolute
+   position to keep in sync — `justify-self` / `align-self` place the panel, and the
+   grid does the rest. The map's own ResizeObserver (render/picker.js) calls
+   `map.resize()` when the cell changes, so nothing here has to tell it.
+
+   Scoped to the landing state throughout: the report is a scrolling document and
+   must keep `main`'s measure, its gutters and its block padding. `main` gets all
+   three back the moment `body[data-state]` stops being `landing`.
+
+   `--header-height` is set on <wa-page> by the component's own ResizeObserver; §4
+   seeds it with the height the header actually has so the stage is the right size on
+   the first frame rather than one frame too tall. `dvh`, not `vh`: on a phone the
+   browser chrome is part of the viewport this has to fit inside. */
+body[data-state='landing'] main { max-inline-size: none; padding: 0; }
 #landing-lede { max-inline-size: 60ch; }
+
+#picker {
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  block-size: calc(100dvh - var(--header-height, 4rem));
+  /* A phone held sideways is about 310px under the header, and a sheet over most of
+     that is not a map. Below this the page scrolls instead, which is the lesser
+     evil — `enterRunningState`'s scroll reset is written for exactly this case. */
+  min-block-size: 32rem;
+}
+/* `isolation` is load-bearing, not tidiness: MapLibre's control corners are
+   `position: absolute; z-index: 2` and `#catalog-map` is `position: relative` with
+   `z-index: auto`, so without a stacking context of its own those controls would
+   paint through the panel wherever the two overlap. One line here beats guessing a
+   z-index that stays ahead of a library's internals. */
+#catalog-map { grid-area: 1 / 1; isolation: isolate; }
+
+/* The floating control panel. A column down the left on a desktop; a bottom sheet
+   below 48rem. `overflow: hidden` is what makes the rounded corners clip the
+   scroller inside it. */
+.landing-panel {
+  grid-area: 1 / 1;
+  z-index: 1;                       /* grid items take z-index without positioning */
+  justify-self: start;
+  align-self: start;
+  margin: var(--wa-space-m);
+  inline-size: min(27rem, calc(100% - var(--wa-space-m) * 2));
+  max-block-size: calc(100% - var(--wa-space-m) * 2);
+  display: flex;
+  flex-direction: column;
+  background: var(--wa-color-surface-raised);
+  border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+  border-radius: var(--wa-border-radius-l);
+  box-shadow: var(--wa-shadow-l);
+  overflow: hidden;
+}
+/* The scroller and the foot. Everything optional scrolls; the primary action and the
+   sentence that says why it failed do not. `min-block-size: 0` is what lets a flex
+   child actually shrink to its container instead of to its content. */
+.panel-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--wa-space-m);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wa-space-l);
+}
+.panel-foot {
+  flex: none;
+  padding: var(--wa-space-s) var(--wa-space-m);
+  border-block-start: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+  background: var(--wa-color-surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wa-space-2xs);
+}
+/* The one full-width button on the page. `::part(base)` as well as the host, because
+   the host is inline-flex and only the part carries the button's own box. */
+#analyse, #analyse::part(base) { inline-size: 100%; }
+.panel-intro h1 { text-wrap: balance; }
+
+/* The sheet's grab bar. `display: none` here is also what keeps it out of the tab
+   order on a desktop, where the panel is never collapsed. */
+.panel-grip { display: none; }
+
+/* ---- the sheet ----
+   Below this width the panel is a bottom sheet: full-bleed, squared off against the
+   bottom edge, capped so the map keeps a usable share of the screen. The grip
+   collapses it to nothing but the foot, which is where Analyse lives — so the
+   collapsed sheet is still the whole of the page's primary action. */
+@media (max-width: 48rem) {
+  .landing-panel {
+    justify-self: stretch;
+    align-self: end;
+    inline-size: auto;
+    margin: 0;
+    max-block-size: min(62%, 32rem);
+    border-inline-width: 0;
+    border-block-end-width: 0;
+    border-end-start-radius: 0;
+    border-end-end-radius: 0;
+  }
+  .panel-scroll { padding-block-start: var(--wa-space-2xs); }
+  .panel-grip {
+    display: block;
+    flex: none;
+    inline-size: 100%;
+    padding: var(--wa-space-2xs) 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .panel-grip-bar {
+    display: block;
+    inline-size: 2.5rem;
+    block-size: 4px;
+    margin-inline: auto;
+    border-radius: var(--wa-border-radius-pill);
+    background: var(--wa-color-surface-border);
+  }
+  .panel-grip:hover .panel-grip-bar { background: var(--ink-3); }
+  .landing-panel[data-collapsed] .panel-scroll { display: none; }
+
+  /* ATTRIBUTION, and it is not cosmetic: MapLibre's compact attribution sits bottom
+     right, which is exactly where the sheet is, and the map data is OpenStreetMap
+     under ODbL — the credit has to be on screen. The control is moved to the free
+     top-left corner rather than nudged up by a sheet height nothing here knows. */
+  #catalog-map .maplibregl-ctrl-bottom-right,
+  #catalog-map .maplibregl-ctrl-bottom-left {
+    bottom: auto; right: auto; top: 0; left: 0;
+  }
+
+  /* WHILE A SHAPE IS BEING DRAWN the sheet keeps exactly the row you need — the draw
+     buttons — and gets out of the way of the map you are drawing on. `.drawing` is
+     set on the map host by `render/picker.js` for its own cursor rule; this reads it
+     rather than adding a second state that could disagree with the first. */
+  #picker:has(#catalog-map.drawing) .landing-panel { max-block-size: none; }
+  #picker:has(#catalog-map.drawing) .panel-scroll > :not([data-role='pickerbody']),
+  #picker:has(#catalog-map.drawing) .picker-controls > :not(#picker-toolbar),
+  #picker:has(#catalog-map.drawing) #picker-toolbar > :not(#picker-draw) { display: none; }
+}
 /* `#dropzone` is a <wa-file-input>, so the structure and every behaviour — the
    <label for> that opens the picker, the drag handling, the chosen-file card —
    belong to the component. Only the skin is ours, and it is the skin the
@@ -512,30 +654,67 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
    upgrades them, which costs nothing here: this card is already built from wa-card,
    wa-details, wa-icon and wa-radio-group, so it has never rendered without the kit. */
 
+/* ---- NO MAP ----
+   Two different failures reach the same place: the catalogue never arrived
+   (`app.js`'s `initLanding` catch), or MapLibre did not load (`giveUpOnMap` in
+   render/picker.js). Both hide `#catalog-map`, and that one attribute is the whole
+   signal — a viewport-tall grid with an empty cell and a panel floating on nothing
+   is worse than the centred card this page was before the map became the page.
+   `main` keeps its zeroed padding, so the measure comes back here rather than by
+   un-scoping the rule above. */
+#picker:has(#catalog-map[hidden]) {
+  display: block; block-size: auto; min-block-size: 0;
+}
+#picker:has(#catalog-map[hidden]) .landing-panel {
+  margin: var(--wa-space-3xl) auto;
+  inline-size: min(48rem, calc(100% - var(--wa-space-m) * 2));
+  max-block-size: none;
+  overflow: visible;
+}
+#picker:has(#catalog-map[hidden]) .panel-scroll { overflow: visible; }
+/* …and the sheet is not a sheet when there is nothing to slide it over. */
+@media (max-width: 48rem) {
+  #picker:has(#catalog-map[hidden]) .landing-panel {
+    margin: var(--wa-space-m) auto;
+    border-inline-width: var(--wa-border-width-s);
+    border-block-end-width: var(--wa-border-width-s);
+    border-radius: var(--wa-border-radius-l);
+  }
+  #picker:has(#catalog-map[hidden]) .panel-grip { display: none; }
+}
+
 /* ---- the landing feed picker ----
    The map, the search results and the selected list. Everything here is scoped to
    the picker's own ids so nothing can reach §05's map, which is skinned above. */
 
-/* What keeps the card off the horizontal scrollbar at 360px. A flex item's
+/* What keeps the panel off the horizontal scrollbar at 360px. A flex item's
    `min-inline-size` defaults to `auto`, which is the item's content width — so one
-   long provider name in a row sets a floor the viewport cannot meet, and the whole
-   PAGE scrolls sideways. Scoped to the three flex contexts the picker owns rather
-   than `#picker *`, which would also let Web Awesome's own internals collapse. */
+   long provider name in a row sets a floor the panel cannot meet, and the whole PAGE
+   scrolls sideways. Scoped to the flex contexts the picker owns rather than
+   `#picker *`, which would also let Web Awesome's own internals collapse. */
 #picker .pick-row,
 #picker .pick-row-text,
-#picker-toolbar > *,
+#picker-draw > *,
 #picker-switches > * { min-inline-size: 0; }
-#picker-toolbar .picker-search { flex: 1 1 18rem; }
 #picker-switches wa-switch::part(hint) { max-inline-size: 60ch; }
 #picker-switches wa-switch::part(base) { align-self: start; }
-
-#catalog-map {
-  block-size: clamp(320px, 56vh, 560px);
-  inline-size: 100%;
-  border-radius: var(--wa-border-radius-m);
-  background: var(--surface-2);
-  overflow: hidden;
+/* `giveUpOnMap` hides all three draw buttons at once. An empty row would still take
+   a `wa-stack` gap under the search box, which reads as a missing control. */
+#picker-draw:not(:has(wa-button:not([hidden]))) { display: none; }
+/* The two disclosures in the panel are `appearance="plain"`, which draws no box; all
+   they need is the same left edge as everything above them. */
+#picker-filters::part(header), #byo::part(header), #advanced::part(header) {
+  padding-inline: 0;
 }
+#picker-filters::part(content), #byo::part(content), #advanced::part(content) {
+  padding-inline: 0;
+}
+
+/* The map is sized by the stage's grid, not here (see "the landing stage" above).
+   What is left is the surface it shows before MapLibre has painted a single tile:
+   the same lowered surface every other empty box on the page uses, so a slow style
+   load reads as "loading" rather than as a hole. */
+#catalog-map { background: var(--surface-2); overflow: hidden; }
 /* MapLibre's own min-width would otherwise fight the grid, exactly as #netmap does */
 #catalog-map.maplibregl-map { min-width: 0; }
 /* draw mode. The canvas cursor is set in JS as well, because MapLibre writes its own
@@ -560,9 +739,11 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 #border-row .border-field::part(input) { font-variant-numeric: tabular-nums; }
 #border-row .border-field::part(label) { font-size: var(--wa-font-size-xs); }
 
+/* No inner scroller any more: the panel is itself a scroll container, and a nested
+   one in a 27rem column traps a touch scroll at the point the reader most wants to
+   keep flicking. The list is only ever on screen while a search is running, so it is
+   allowed to be as long as the search made it. */
 #catalog-results {
-  max-block-size: 18rem;
-  overflow-y: auto;
   border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
   border-radius: var(--wa-border-radius-m);
   padding: var(--wa-space-2xs);

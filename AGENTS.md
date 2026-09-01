@@ -10,10 +10,11 @@ RAPTOR travel-time model, map-feature lookups, rules audit, two scoring models �
 a module Web Worker; the feed never leaves the browser. One document, two views: the public report,
 and `#strategy`, the hider's guide, reached only by fragment.
 
-Feeds arrive two ways. The landing page is a world map of the tracked catalogue (`data/feeds.json`)
-where a reader searches, clicks a marker or draws a shape to take every system inside it; the
-original drop-a-zip / paste-a-URL flow is still there, demoted to a disclosure, and the two **add**
-rather than replace. Several picks are merged into one `Feed` inside the worker, so everything
+Feeds arrive two ways. The landing page **is** a world map of the tracked catalogue
+(`data/feeds.json`) — full-bleed and viewport-tall since 2026-09-01, with every control floating on
+it in one panel — where a reader searches, clicks a marker or draws a shape to take every system
+inside it; the original drop-a-zip / paste-a-URL flow is still there, demoted to a disclosure, and
+the two **add** rather than replace. Several picks are merged into one `Feed` inside the worker, so everything
 downstream of `gtfs/merge.js` still sees exactly one feed and cannot tell the difference.
 
 Everything is inferred from the feed. There is no per-city configuration.
@@ -43,8 +44,8 @@ node tools/mdb-snapshot.mjs --counts   # ...and re-measure every feed's size ove
 ```
 
 `smoke.mjs` imports `runPipeline` from `worker.js` directly — no browser, no Worker global — and
-runs it against the reference feed (The Rapid, Grand Rapids) with the OSM layer off, asserting 19
-measured golden numbers: feed metrics, hub, game size, hull area, T90, and the fitness and
+runs it against the reference feed (The Rapid, Grand Rapids) with `worldBaseUrl` pointed at a host
+that cannot resolve, asserting 19 measured golden numbers: feed metrics, hub, game size, hull area, T90, and the fitness and
 zone-score outputs. **Never adjust an assertion to make it pass** — a change to one of those
 numbers means an algorithm moved, which may be correct but must be deliberate. It also prints a
 `BORDER:` line (2026-08-27): shape assertions for the in-play set and the suggested border,
@@ -54,6 +55,15 @@ numbers" stays the true figure.
 
 The reference feed lives at `cache/gtfs/c25d617e4716161f.zip`, which is gitignored — a fresh clone
 doesn't have it. `--feed <path>` points the harness at any local GTFS zip.
+
+**The unreachable world bucket is load-bearing, not a leftover.** The OSM layer lost its off switch
+on 2026-09-01 — `useOsm` is gone from `Options`, the Advanced panel and the provenance argv, and
+`worker.js`'s S2 phase is unconditional — so the only way a harness stays offline and deterministic
+is `worldBaseUrl: 'https://world.invalid/world'`, which fails in DNS and takes CONTRACT.md §(f)1's
+documented failure path. That yields the same empty `GeoData` the old `useOsm: false` produced,
+which is why the 19 numbers did not move when the switch was deleted. Do not "fix" the harness by
+pointing it at the live bucket: every golden number below the feed metrics is measured with the E
+and A axes dropped from the denominator, and a real map layer would change all of them at once.
 
 After the goldens the harness runs its **merge assertions**: the reference feed merged with itself
 (identical bytes, so every single id collides — the strongest collision test available for two
@@ -93,7 +103,20 @@ one formatter from `lib/core.js`.
 The landing map is main-side and splits the same way the strategy view does: `render/landing.js` is
 pure `data → string`, `render/picker.js` owns every DOM mutation, the lazy MapLibre import and the
 draw tool, and `lib/catalog.js` is the DOM-free reader (search, bbox intersection, feed URLs) that
-imports from Node and is testable as data. **Search is wired synchronously, before the map**: it
+imports from Node and is testable as data.
+
+**The layout, since 2026-09-01, is a stage and a panel.** `#picker` is a one-cell grid the height of
+the viewport under the header; `#catalog-map` fills it and `.landing-panel` floats on it — a column
+on the left on a desktop, a bottom sheet under 48rem. Three consequences you will trip over
+otherwise. `#catalog-map` is now **static markup in `index.html`**, a sibling of the panel, because
+`app.js` replaces `[data-role=pickerbody]` wholesale and the map must survive that; every other
+picker id is still built by `renderPickerCard`, and `initPicker`'s root is still `#picker`, so
+`root.querySelector` reaches both. `#picker` no longer ships `hidden` — the panel inside it carries
+the heading, the disclosures and Analyse, none of which need a catalogue — so the ONE signal for
+"there is no map" is `#catalog-map[hidden]`, set by `initLanding`'s catch when the catalogue never
+arrives and by `giveUpOnMap` when MapLibre does not load, and styles.css §7 collapses the stage back
+to a centred card on either. And `cooperativeGestures` is **off**: it existed to stop a 56vh map in
+a scrolling column from eating the wheel, and there is no longer a column to scroll. **Search is wired synchronously, before the map**: it
 works with MapLibre blocked, and a failed catalogue fetch degrades to the bring-your-own card rather
 than to an empty grey box. The polygon tool is **hand-rolled on the map's own events on purpose** —
 `CONTRACT.md` §0 pins an exhaustive five-item external-asset allowlist, and a draw library would
@@ -128,7 +151,7 @@ different stops and a golden moves. `gtfs/infer.js` `inPlayStopIds` is the one p
 such a subset; with no override it threads `null` instead of an array so the no-override path is
 literally the old one.
 
-The **example-map chips** under the lede ("Chicago", "New York", …) are `lib/catalog.js`'s
+The **example-map chips** in the panel ("Chicago", "New York", …) are `lib/catalog.js`'s
 `EXAMPLE_MAPS`: hand-curated lists of catalogue ids, public operators only — no campus loops,
 tourist cruises or private coaches, however close to the centre they sit. A chip replaces the
 catalogue picks through the picker's own `commit()` funnel, so it is not a way in for a
@@ -183,6 +206,15 @@ a week. Merge order is content-addressed (`sha256`, then source, then input inde
 feed is a pure function of the feed bytes. `gtfs/merge.js`'s header is the full statement.
 
 ## The OSM layer
+
+**Every run reads it.** There is no `--no-osm`, no `useOsm` option and no "Skip OpenStreetMap"
+switch since 2026-09-01: the S2 phase in `worker.js` is unconditional, and `geo.available === false`
+means the map files could not be read, never that someone chose to skip them. The arithmetic behind
+the deletion is worth keeping: an unavailable OSM layer drops 37 of the 80 questions, 16 of the 24
+curses and the whole of the `E` and `A` axes — 30 of the 100 score points, removed from the
+denominator rather than scored zero. The switch offered a third of the report as a preference, and
+the page then had to warn about the consequence on every run that used it. A harness that must run
+without the network points `worldBaseUrl` at an unresolvable host instead; see `tools/smoke.mjs`.
 
 OpenStreetMap features come from prebuilt **FlatGeobuf** files in Cloudflare R2
 (`https://map.jltg.herzog.tech/world`, 39 layers — the `rail_line` + `transit_route` rebuild

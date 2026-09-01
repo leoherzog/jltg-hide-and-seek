@@ -10,7 +10,8 @@
   instead of on a laptop.
 
   Three states, driven by one attribute on <body> (see styles.css §7):
-    landing  — pick a city on the feed map, or bring your own .zip / URL
+    landing  — a full-bleed feed map with one floating panel of controls on it
+               (pick a city off the map, or bring your own .zip / URL)
     running  — the eight sections as skeletons, header progress bar live
     ready    — the same eight sections, hydrated
 
@@ -54,7 +55,7 @@
 
   <header slot="header" class="wa-split wa-flex-wrap wa-align-items-center wa-gap-m">
     <!-- `#top` is the hero, which is `data-when="report"` and therefore display:none
-         until a feed exists — so the shipped href points at the landing card and
+         until a feed exists — so the shipped href points at the landing stage and
          app.js swaps it in `setShellState`. verdict.js re-creates `id="top"` (801)
          when the hero hydrates, so the report-state target survives hydration. -->
     <a href="#landing" id="wordmark" class="wa-caption-s wa-text-uppercase wa-cluster wa-gap-2xs wa-link-plain">
@@ -93,7 +94,7 @@
 
     <div class="wa-cluster wa-gap-2xs wa-align-items-center">
       <!-- Report chrome, hence `data-when="report"`: on the landing state there is
-           nothing to reset, and a control that reloaded the landing card into itself
+           nothing to reset, and a control that reloaded the landing stage into itself
            would be the browser's own reload button wearing a costume. In the `running`
            state it IS the cancel button — the only one the page has.
            app.js binds it in `boot()`; `resetToLanding` says why a reset is a document
@@ -245,266 +246,316 @@
   <main class="wa-stack wa-gap-3xl">
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         THE LANDING STATE — the only thing in `main` until a feed is chosen.
+         THE LANDING STATE — a full-bleed map, with everything else floating on it.
+
+         Until 2026-09-01 this was a centred 72rem card: lede, then a picker card
+         holding a 56vh map, then two disclosures, then Analyse — a column several
+         screens tall whose most useful control was the one you had to scroll past
+         prose to reach. The map is the product, so the map is now the page: `#picker`
+         is a one-cell grid the height of the viewport under the header, `#catalog-map`
+         fills it, and `.landing-panel` floats on top of it (a column on the left on a
+         desktop, a bottom sheet on a phone). styles.css §7 is the whole of the
+         geometry; nothing here positions anything.
+
+         THREE THINGS THAT LOOK ODD AND ARE NOT:
+
+         `#catalog-map` is static markup HERE, and every other picker id is built by
+         `render/landing.js`. The map is the page's hero and must exist before — and
+         survive — `app.js` replacing `[data-role=pickerbody]` wholesale, which is the
+         one node the catalogue fetch owns. `initPicker`'s root is `#picker`, so its
+         `root.querySelector` reaches both without caring which door an id came in by.
+
+         `#picker` no longer ships `hidden`. The panel inside it carries the heading,
+         the bring-your-own disclosure, Advanced and Analyse — none of which depend on
+         the catalogue — so hiding the host would take the working half of the page
+         down with the broken half. `#catalog-map[hidden]` is the state instead, and
+         it is the ONE signal for both ways this can fail: `initLanding`'s catch sets
+         it when the catalogue never arrives, `giveUpOnMap` sets it when MapLibre
+         does not load, and styles.css §7 collapses the stage back to a plain centred
+         card either way. A grey box where a map should be is still worse than no map.
+
+         The panel is ONE `<form>`'s worth of controls in two boxes — a scroller and a
+         foot — so the primary action is never scrolled away from the reader. Both are
+         inside `<form id="landing-form">`; a second form anywhere in here would steal
+         `boot()`'s submit listener and `readOptions`' eleven `[data-opt]` lookups.
          ══════════════════════════════════════════════════════════════════ -->
-    <div id="landing" data-when="landing" class="wa-stack wa-gap-l">
-      <header class="wa-stack wa-gap-3xs">
-        <p class="kicker wa-caption-s wa-text-uppercase">Jet Lag: The Game · Hide+Seek</p>
-        <h1 class="wa-heading-4xl">Is your city a good map?</h1>
-        <p id="landing-lede" class="wa-body-l">Pick your city off the map below — or bring your own GTFS feed, the schedule file almost every transit agency publishes — and it works out how many distinct places there are to hide, which of the deck's questions actually split the map, which curses are unplayable here, and what all of that adds up to out of 100. Everything runs in this browser: the feed goes straight from the agency, or from your disk, into this tab, and is never uploaded anywhere.</p>
-      </header>
+    <div id="landing" data-when="landing">
+      <form id="landing-form" data-role="runform">
+        <div id="picker">
 
-      <wa-card>
-        <form id="landing-form" data-role="runform" class="wa-stack wa-gap-l">
+          <!-- The hero. Empty until `render/picker.js` lazily imports MapLibre into
+               it; `tabindex="-1"` because MapLibre's canvas takes focus itself and the
+               map is a convenience, never the only path — the search box does
+               everything the map does, works before MapLibre loads, and works if it
+               never loads. -->
+          <div id="catalog-map" tabindex="-1" aria-label="Map of transit feeds. Every feed on it can also be found with the search box in the panel."></div>
 
-          <!-- THE PICKER. Ships as an EMPTY host on purpose: app.js fills it from
-               `render/landing.js` and unhides it only once `data/feeds.json` has
-               actually loaded, so a failed catalogue fetch leaves the bring-your-own
-               card as the whole of the page rather than an empty grey box that looks
-               broken. Everything inside it is built by render/landing.js and wired by
-               render/picker.js; nothing else on the page reads these ids.
+          <div class="landing-panel">
 
-               It is INSIDE the one <form> deliberately (see the note on #advanced):
-               `boot()` binds a single submit listener and `readOptions` scopes its
-               eleven [data-opt] lookups to this element, so a second <form> anywhere
-               in here would silently steal both. -->
-          <wa-card id="picker" hidden>
-            <div data-role="pickerbody"></div>
-          </wa-card>
+            <!-- The sheet's grab bar, and the only control on this page that is a bare
+                 <button>: it is a 100%-wide 20px strip, which is not a shape any
+                 <wa-button> appearance produces. `display:none` above the sheet
+                 breakpoint, so it is out of the tab order entirely on a desktop.
+                 app.js's `initPanelGrip` owns it. -->
+            <button type="button" class="panel-grip" data-role="panelgrip" aria-expanded="true" aria-controls="panel-scroll">
+              <span class="panel-grip-bar" aria-hidden="true"></span>
+              <span class="wa-visually-hidden" data-role="panelgriplabel">Hide the panel</span>
+            </button>
 
-          <!-- The original one-feed flow, intact and demoted to a disclosure: it is
-               the fallback that works when the catalogue never loads, when MapLibre is
-               blocked, and when the feed you want was never published to the Mobility
-               Database. A pick on the map and a zip from here ADD — app.js's
-               `readSources` concatenates them. -->
-          <wa-details summary="Or bring your own feed" id="byo">
-           <div class="wa-stack wa-gap-l">
+            <div class="panel-scroll" id="panel-scroll">
 
-          <!-- <wa-file-input> is the drop zone. It renders a `<label for>` wrapped
-               around a native file input, so click, tap and keyboard activation are
-               all the browser's own — there is no `fileInput.click()` anywhere in the
-               open path, which is precisely what used to leave this dead on Chrome and
-               Firefox for Android. It also owns the drag handling and renders the
-               chosen file as a card, so app.js no longer draws either.
+              <header class="panel-intro wa-stack wa-gap-3xs">
+                <p class="kicker wa-caption-s wa-text-uppercase">Jet Lag: The Game · Hide+Seek</p>
+                <h1 class="wa-heading-xl">Is your city a good map?</h1>
+                <!-- One sentence and a promise. What a GTFS feed IS belongs to the
+                     bring-your-own disclosure, which is the only place it matters. -->
+                <p id="landing-lede" class="wa-body-s">Pick a transit system for a 100-point read on its hiding places, its questions and its curses. Everything runs in this browser; the feed is never uploaded.</p>
+              </header>
 
-               `accept` deliberately omits `application/x-zip-compressed`: Android
-               resolves the picker intent from these MIME types and that non-standard
-               one is not in its MimeTypeMap. The component re-checks `accept` against
-               the file *name* after the fact (fileMatchesAccept), so a zip the picker
-               hands back typed as application/octet-stream still gets through. -->
-          <wa-file-input id="dropzone" name="file" accept=".zip,application/zip" label="GTFS feed file" class="wa-visually-hidden-label">
-            <div slot="dropzone" class="wa-stack wa-gap-2xs">
-              <wa-icon name="file-zipper"></wa-icon>
-              <span class="wa-heading-s">Drop a GTFS <code>.zip</code> here</span>
-              <span class="wa-caption-s wa-color-text-quiet">or click to choose one from your disk</span>
-            </div>
-            <span slot="hint" class="wa-caption-s wa-color-text-quiet">A GTFS feed is a zip of CSV files — <code>stops.txt</code>, <code>trips.txt</code>, <code>stop_times.txt</code> and friends. Nothing else is read.</span>
-          </wa-file-input>
+              <!-- THE PICKER'S CONTROLS. `app.js` fills this from
+                   `render/landing.js` once `data/feeds.json` has actually loaded.
+                   The line below is what a reader sees until then, and is replaced
+                   by the same sentence from `initLanding` a frame later, so a slow
+                   catalogue reads as loading rather than as a blank. -->
+              <div data-role="pickerbody"><p class="wa-caption-s wa-color-text-quiet" role="status">Loading the list of transit feeds…</p></div>
 
-          <!-- two wa-dividers rather than a bespoke grid with ::before/::after rules.
-               --spacing:0 because the wa-stack parent owns the vertical rhythm; flex:1
-               makes each divider eat the free space either side of the word. -->
-          <div class="wa-cluster wa-gap-s wa-align-items-center">
-            <wa-divider style="--spacing:0;flex:1"></wa-divider>
-            <span class="wa-caption-xs wa-text-uppercase wa-color-text-quiet">or</span>
-            <wa-divider style="--spacing:0;flex:1"></wa-divider>
-          </div>
+              <!-- The original one-feed flow, intact and demoted to a disclosure: it is
+                   the fallback that works when the catalogue never loads, when MapLibre is
+                   blocked, and when the feed you want was never published to the Mobility
+                   Database. A pick on the map and a zip from here ADD — app.js's
+                   `readSources` concatenates them. -->
+              <wa-details summary="Or bring your own feed" id="byo" appearance="plain">
+               <div class="wa-stack wa-gap-l">
 
-          <!-- `data-opt="url"` is load-bearing here, not decoration. `findUrlInput`
-               used to reach this field through a light-DOM fallback,
-               `input[type="url"]` — and a <wa-input>'s real input lives in a shadow
-               root, where that selector cannot see it. There is no bare <input> of any
-               kind in this document, so that fallback and its `#feedurl` sibling were
-               deleted 2026-08-26 and the attribute is now the only address. Without it
-               `readSource` reads no URL at all and Analyse answers a pasted link by
-               claiming nothing was supplied.
+              <!-- <wa-file-input> is the drop zone. It renders a `<label for>` wrapped
+                   around a native file input, so click, tap and keyboard activation are
+                   all the browser's own — there is no `fileInput.click()` anywhere in the
+                   open path, which is precisely what used to leave this dead on Chrome and
+                   Firefox for Android. It also owns the drag handling and renders the
+                   chosen file as a card, so app.js no longer draws either.
 
-               Deliberately NOT `type="url"` any more. This field now ships inside a
-               COLLAPSED <wa-details>, and a typeMismatch on a control the reader
-               cannot see suppresses the submit event with no focusable control to hang
-               the browser's bubble on — the form simply stops working, which is
-               exactly the trap #opt-world-base-url and #opt-zone-radius already
-               describe further down. `inputmode="url"` keeps the phone keyboard, and
-               `readSources` validates with `new URL()` and answers in a sentence. -->
-          <wa-input type="text" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
-          <!-- Page prose, deliberately NOT `slot="hint"`: 72ch of CORS explanation
-               belongs beside the field, not inside its accessible description and
-               not inside its width. -->
-          <!-- Honest, because the failure is not the reader's fault and not fixable
-               from this page. -->
-          <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens, download the zip yourself and drop it in above.</p>
-          <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Looking for a feed? Try the <a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database</a> or <a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland</a>.</p>
+                   `accept` deliberately omits `application/x-zip-compressed`: Android
+                   resolves the picker intent from these MIME types and that non-standard
+                   one is not in its MimeTypeMap. The component re-checks `accept` against
+                   the file *name* after the fact (fileMatchesAccept), so a zip the picker
+                   hands back typed as application/octet-stream still gets through. -->
+              <wa-file-input id="dropzone" name="file" accept=".zip,application/zip" label="GTFS feed file" class="wa-visually-hidden-label">
+                <div slot="dropzone" class="wa-stack wa-gap-2xs">
+                  <wa-icon name="file-zipper"></wa-icon>
+                  <span class="wa-heading-s">Drop a GTFS <code>.zip</code> here</span>
+                  <span class="wa-caption-s wa-color-text-quiet">or click to choose one from your disk</span>
+                </div>
+                <span slot="hint" class="wa-caption-s wa-color-text-quiet">A GTFS feed is a zip of CSV files — <code>stops.txt</code>, <code>trips.txt</code>, <code>stop_times.txt</code> and friends. Nothing else is read.</span>
+              </wa-file-input>
 
-           </div>
-          </wa-details>
-
-          <wa-details summary="Advanced" id="advanced">
-            <div class="wa-stack wa-gap-l">
-              <!-- Two different claims, and only one of them is true of every field:
-                   eight of these are genuinely inferred and ship blank with an
-                   inferring placeholder; departure time, board slack and border shape
-                   ship hardcoded constants (generate.py 207, 214-216) that no
-                   inference produces. Saying "inferred from the feed" of all eleven
-                   tells a reader that 09:00 came from their agency's service span. -->
-              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most of them are inferred from the feed if you leave them alone; departure time, board slack and border shape are fixed defaults instead. Change one and you are saying you know better than the feed, which is sometimes true.</p>
-
-              <div id="landing-fields" class="wa-grid wa-gap-m" style="--min-column-size:220px">
-
-                <!-- "Infer from the map" is the PLACEHOLDER, not a fourth option with
-                     an empty value: `wa-option` documents that values may not contain
-                     spaces because they are space-delimited when `multiple` is set, so
-                     an empty one is a shape the component never promises to round-trip.
-                     Unselected, `.value` is `''`, `orNull` (app.js 407) turns that into
-                     null, and readOptions leaves `sizeOverride` alone — which is what
-                     inferring *is*. `with-clear` is what gets the reader back there
-                     after picking a size; its button only appears once one is set. -->
-                <wa-select id="opt-size" data-opt="sizeOverride" name="size" label="Game size"
-                           placeholder="Infer from the map" with-clear
-                           hint="Sets the deck, the hiding period and the zone radius unless you override those too.">
-                  <wa-option value="small">Small</wa-option>
-                  <wa-option value="medium">Medium</wa-option>
-                  <wa-option value="large">Large</wa-option>
-                </wa-select>
-
-                <!-- `step="any"`, and it matters: HTML's step base is `min`, so
-                     `min="1" step="10"` would validate 1, 11, 21 … and reject 400,
-                     500, 800 and the rulebook's own 402.336. A stepMismatch inside a
-                     collapsed <wa-details> suppresses the submit event with no
-                     focusable control to hang a bubble on, so the form would simply
-                     stop working. app.js 513 already rejects `<= 0` in words.
-                     wa-input declares `step` as a plain property, so the literal
-                     string "any" survives to the inner input untouched. -->
-                <wa-input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" min="1" step="any" inputmode="decimal" placeholder="from the game size" label="Zone radius" hint="Metres. How far from a stop a hider may be."></wa-input>
-
-                <wa-input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" min="1" step="1" inputmode="numeric" placeholder="from the game size" label="Hiding period" hint="Minutes the hider gets before the seekers start."></wa-input>
-
-                <!-- Hint as a slotted span, not the attribute: the attribute is set as
-                     text and would print the <code> tags. -->
-                <wa-input type="text" id="opt-start-stop" data-opt="startStopId" name="start-stop" spellcheck="false" placeholder="stop_id — inferred hub" label="Start stop">
-                  <span slot="hint">A <code>stop_id</code> from the feed. Overrides the inferred round-start station.</span>
-                </wa-input>
-
-                <!-- The group's own `label` is the visible one now, so the field is
-                     labelled once instead of twice — a caption span that labelled
-                     nothing, plus a duplicate label hidden with
-                     `wa-visually-hidden-label`. `hint` puts the sentence in the
-                     fieldset's `aria-describedby`, where it was in no accessible
-                     relationship to the control before. -->
-                <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Out-of-border features do not exist for this game, so this changes real answers.">
-                  <wa-radio value="bbox" appearance="button" size="s">Rectangle</wa-radio>
-                  <wa-radio value="circle" appearance="button" size="s">Circle</wa-radio>
-                </wa-radio-group>
-
-                <!-- A MIRROR of the frame on the landing map since 2026-08-27, and
-                     the bring-your-own flow's only way to set a border. app.js
-                     writes the frame's four numbers here and stamps
-                     `data-border-mode` (`auto` = sent as null, the border inferred;
-                     `custom` = sent as typed) — and makes the field `readonly` WHILE
-                     a frame exists, because then #border-row's fields and the map
-                     are the editor and two inputs for one rectangle could disagree.
-                     With no frame (a dropped zip or a pasted URL, which the picker
-                     has no bounding box for) the field is writable and readOptions
-                     parses it: the ability to give a BYO feed a border predates the
-                     frame and must not be lost to it. -->
-                <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four numbers: south, west, north, east. With a feed picked on the map, edit the frame there instead — this mirrors it. Blank means the border is fitted to the network." data-border-mode="none"></wa-input>
-
-                <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="When the clock starts on the representative day."></wa-input>
-
-                <!-- `step="1"`: the unit is seconds and any non-negative integer is
-                     legal (generate.py 216, `type=int`). `step="30"` would have made
-                     45 a stepMismatch and killed the submit silently, exactly as
-                     described on the zone-radius field above. -->
-                <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Seconds of grace for making a connection. Zero assumes you sprint."></wa-input>
-
-                <!-- Blank is the feed's own start date (feed.js 1282, generate.py
-                     2567; README 265). Nothing anywhere ranks dates by busyness —
-                     `s1Representative` (service.js 309) deliberately breaks a tie
-                     toward the QUIETER day; the hint says so. -->
-                <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Kept within the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
-
-                <!-- Slotted hints again, for the <code> the attribute cannot carry. -->
-                <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops">
-                  <span slot="hint">Out-of-play stations. Comma-separated <code>stop_id</code>s.</span>
-                </wa-input>
-
-                <wa-input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" spellcheck="false" placeholder="route_id, route_id, …" label="Exclude routes">
-                  <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
-                </wa-input>
-
-                <!-- Full width, `#landing-fields .field-wide` in styles.css: a URL is
-                     the one value here that does not fit a 220px column.
-
-                     Deliberately NOT `type="url"`, unlike the feed field above. That
-                     one is the primary control and sits outside <wa-details>; this one
-                     is an override inside a panel that ships collapsed, where a
-                     typeMismatch is precisely the failure the zone-radius note
-                     describes — the submit event is suppressed with no focusable
-                     control to hang the browser's bubble on, so the form appears to
-                     stop working. `readOptions` validates it in words instead, and
-                     says which field is wrong.
-
-                     Blank means the published bucket, named once in
-                     `osm/worldfile.js` as DEFAULT_WORLD_BASE_URL. The placeholder does
-                     not repeat it: two copies of a URL is one copy too many, and the
-                     one that would go stale is this one. -->
-                <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="field-wide" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
-                  <span slot="hint">Where the map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one.</span>
-                </wa-input>
-
+              <!-- two wa-dividers rather than a bespoke grid with ::before/::after rules.
+                   --spacing:0 because the wa-stack parent owns the vertical rhythm; flex:1
+                   makes each divider eat the free space either side of the word. -->
+              <div class="wa-cluster wa-gap-s wa-align-items-center">
+                <wa-divider style="--spacing:0;flex:1"></wa-divider>
+                <span class="wa-caption-xs wa-text-uppercase wa-color-text-quiet">or</span>
+                <wa-divider style="--spacing:0;flex:1"></wa-divider>
               </div>
 
-              <!-- The explanation is the switch's own `hint` slot, not a sibling span:
-                   slotted, it is what the switch's `aria-describedby` points at, so the
-                   prose is finally read out with the control instead of sitting beside
-                   it unassociated. It has to stay a DIRECT child — slot detection is
-                   `:scope > [slot="hint"]` — and it keeps its caption classes so it
-                   matches the ten hints above it; the reading width now comes from
-                   `#advanced wa-switch::part(hint)` in styles.css. -->
-              <wa-switch id="opt-no-osm" data-opt="noOsm" name="no-osm" size="s">Skip OpenStreetMap (much faster)
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Skipping the map files keeps everything the feed alone can answer and excludes every question, curse and sub-score that needs map features — excluded, not guessed at.</span>
-              </wa-switch>
+              <!-- `data-opt="url"` is load-bearing here, not decoration. `findUrlInput`
+                   used to reach this field through a light-DOM fallback,
+                   `input[type="url"]` — and a <wa-input>'s real input lives in a shadow
+                   root, where that selector cannot see it. There is no bare <input> of any
+                   kind in this document, so that fallback and its `#feedurl` sibling were
+                   deleted 2026-08-26 and the attribute is now the only address. Without it
+                   `readSource` reads no URL at all and Analyse answers a pasted link by
+                   claiming nothing was supplied.
 
-              <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore the cached transit feed
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused. Turn this on to download it again — worth doing when the operator has published a new one. It does not affect the map files, which are always read from the network.</span>
-              </wa-switch>
+                   Deliberately NOT `type="url"` any more. This field now ships inside a
+                   COLLAPSED <wa-details>, and a typeMismatch on a control the reader
+                   cannot see suppresses the submit event with no focusable control to hang
+                   the browser's bubble on — the form simply stops working, which is
+                   exactly the trap #opt-world-base-url and #opt-zone-radius already
+                   describe further down. `inputmode="url"` keeps the phone keyboard, and
+                   `readSources` validates with `new URL()` and answers in a sentence. -->
+              <wa-input type="text" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
+              <!-- Page prose, deliberately NOT `slot="hint"`: 72ch of CORS explanation
+                   belongs beside the field, not inside its accessible description and
+                   not inside its width. -->
+              <!-- Honest, because the failure is not the reader's fault and not fixable
+                   from this page. -->
+              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens, download the zip yourself and drop it in above.</p>
+              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Looking for a feed? Try the <a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database</a> or <a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland</a>.</p>
 
-              <!-- `offline` is live end to end — app.js 526, worker.js 244,
-                   cache.js 159 — and CONTRACT §(c) does NOT list it among the options
-                   dropped as meaningless in a browser. Without a control here
-                   `readControl` returns undefined and app.js 560-561 is a dead branch
-                   the reader can never reach. -->
-              <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
-                <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
-              </wa-switch>
+               </div>
+              </wa-details>
 
+              <wa-details summary="Advanced" id="advanced" appearance="plain">
+                <div class="wa-stack wa-gap-l">
+                  <!-- Two different claims, and only one of them is true of every field:
+                       eight of these are genuinely inferred and ship blank with an
+                       inferring placeholder; departure time, board slack and border shape
+                       ship hardcoded constants (generate.py 207, 214-216) that no
+                       inference produces. Saying "inferred from the feed" of all eleven
+                       tells a reader that 09:00 came from their agency's service span. -->
+                  <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most of them are inferred from the feed if you leave them alone; departure time, board slack and border shape are fixed defaults instead. Change one and you are saying you know better than the feed, which is sometimes true.</p>
+
+                  <div id="landing-fields" class="wa-grid wa-gap-m" style="--min-column-size:220px">
+
+                    <!-- "Infer from the map" is the PLACEHOLDER, not a fourth option with
+                         an empty value: `wa-option` documents that values may not contain
+                         spaces because they are space-delimited when `multiple` is set, so
+                         an empty one is a shape the component never promises to round-trip.
+                         Unselected, `.value` is `''`, `orNull` (app.js 407) turns that into
+                         null, and readOptions leaves `sizeOverride` alone — which is what
+                         inferring *is*. `with-clear` is what gets the reader back there
+                         after picking a size; its button only appears once one is set. -->
+                    <wa-select id="opt-size" data-opt="sizeOverride" name="size" label="Game size"
+                               placeholder="Infer from the map" with-clear
+                               hint="Sets the deck, the hiding period and the zone radius unless you override those too.">
+                      <wa-option value="small">Small</wa-option>
+                      <wa-option value="medium">Medium</wa-option>
+                      <wa-option value="large">Large</wa-option>
+                    </wa-select>
+
+                    <!-- `step="any"`, and it matters: HTML's step base is `min`, so
+                         `min="1" step="10"` would validate 1, 11, 21 … and reject 400,
+                         500, 800 and the rulebook's own 402.336. A stepMismatch inside a
+                         collapsed <wa-details> suppresses the submit event with no
+                         focusable control to hang a bubble on, so the form would simply
+                         stop working. app.js 513 already rejects `<= 0` in words.
+                         wa-input declares `step` as a plain property, so the literal
+                         string "any" survives to the inner input untouched. -->
+                    <wa-input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" min="1" step="any" inputmode="decimal" placeholder="from the game size" label="Zone radius" hint="Metres. How far from a stop a hider may be."></wa-input>
+
+                    <wa-input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" min="1" step="1" inputmode="numeric" placeholder="from the game size" label="Hiding period" hint="Minutes the hider gets before the seekers start."></wa-input>
+
+                    <!-- Hint as a slotted span, not the attribute: the attribute is set as
+                         text and would print the <code> tags. -->
+                    <wa-input type="text" id="opt-start-stop" data-opt="startStopId" name="start-stop" spellcheck="false" placeholder="stop_id — inferred hub" label="Start stop">
+                      <span slot="hint">A <code>stop_id</code> from the feed. Overrides the inferred round-start station.</span>
+                    </wa-input>
+
+                    <!-- The group's own `label` is the visible one now, so the field is
+                         labelled once instead of twice — a caption span that labelled
+                         nothing, plus a duplicate label hidden with
+                         `wa-visually-hidden-label`. `hint` puts the sentence in the
+                         fieldset's `aria-describedby`, where it was in no accessible
+                         relationship to the control before. -->
+                    <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Out-of-border features do not exist for this game, so this changes real answers.">
+                      <wa-radio value="bbox" appearance="button" size="s">Rectangle</wa-radio>
+                      <wa-radio value="circle" appearance="button" size="s">Circle</wa-radio>
+                    </wa-radio-group>
+
+                    <!-- A MIRROR of the frame on the landing map since 2026-08-27, and
+                         the bring-your-own flow's only way to set a border. app.js
+                         writes the frame's four numbers here and stamps
+                         `data-border-mode` (`auto` = sent as null, the border inferred;
+                         `custom` = sent as typed) — and makes the field `readonly` WHILE
+                         a frame exists, because then #border-row's fields and the map
+                         are the editor and two inputs for one rectangle could disagree.
+                         With no frame (a dropped zip or a pasted URL, which the picker
+                         has no bounding box for) the field is writable and readOptions
+                         parses it: the ability to give a BYO feed a border predates the
+                         frame and must not be lost to it. -->
+                    <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four numbers: south, west, north, east. With a feed picked on the map, edit the frame there instead — this mirrors it. Blank means the border is fitted to the network." data-border-mode="none"></wa-input>
+
+                    <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="When the clock starts on the representative day."></wa-input>
+
+                    <!-- `step="1"`: the unit is seconds and any non-negative integer is
+                         legal (generate.py 216, `type=int`). `step="30"` would have made
+                         45 a stepMismatch and killed the submit silently, exactly as
+                         described on the zone-radius field above. -->
+                    <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Seconds of grace for making a connection. Zero assumes you sprint."></wa-input>
+
+                    <!-- Blank is the feed's own start date (feed.js 1282, generate.py
+                         2567; README 265). Nothing anywhere ranks dates by busyness —
+                         `s1Representative` (service.js 309) deliberately breaks a tie
+                         toward the QUIETER day; the hint says so. -->
+                    <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Kept within the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
+
+                    <!-- Slotted hints again, for the <code> the attribute cannot carry. -->
+                    <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops">
+                      <span slot="hint">Out-of-play stations. Comma-separated <code>stop_id</code>s.</span>
+                    </wa-input>
+
+                    <wa-input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" spellcheck="false" placeholder="route_id, route_id, …" label="Exclude routes">
+                      <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
+                    </wa-input>
+
+                    <!-- Full width, `#landing-fields .field-wide` in styles.css: a URL is
+                         the one value here that does not fit a 220px column.
+
+                         Deliberately NOT `type="url"`, unlike the feed field above. That
+                         one is the primary control and sits outside <wa-details>; this one
+                         is an override inside a panel that ships collapsed, where a
+                         typeMismatch is precisely the failure the zone-radius note
+                         describes — the submit event is suppressed with no focusable
+                         control to hang the browser's bubble on, so the form appears to
+                         stop working. `readOptions` validates it in words instead, and
+                         says which field is wrong.
+
+                         Blank means the published bucket, named once in
+                         `osm/worldfile.js` as DEFAULT_WORLD_BASE_URL. The placeholder does
+                         not repeat it: two copies of a URL is one copy too many, and the
+                         one that would go stale is this one. -->
+                    <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="field-wide" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
+                      <span slot="hint">Where the map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one.</span>
+                    </wa-input>
+
+                  </div>
+
+                  <!-- The explanation is the switch's own `hint` slot, not a sibling span:
+                       slotted, it is what the switch's `aria-describedby` points at, so the
+                       prose is finally read out with the control instead of sitting beside
+                       it unassociated. It has to stay a DIRECT child — slot detection is
+                       `:scope > [slot="hint"]` — and it keeps its caption classes so it
+                       matches the ten hints above it; the reading width now comes from
+                       `#advanced wa-switch::part(hint)` in styles.css. -->
+                  <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore the cached transit feed
+                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused. Turn this on to download it again — worth doing when the operator has published a new one. It does not affect the map files, which are always read from the network.</span>
+                  </wa-switch>
+
+                  <!-- `offline` is live end to end — app.js 526, worker.js 244,
+                       cache.js 159 — and CONTRACT §(c) does NOT list it among the options
+                       dropped as meaningless in a browser. Without a control here
+                       `readControl` returns undefined and app.js 560-561 is a dead branch
+                       the reader can never reach. -->
+                  <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
+                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
+                  </wa-switch>
+
+                </div>
+              </wa-details>
+
+            </div><!-- /.panel-scroll -->
+
+            <!-- THE FOOT. Outside the scroller on purpose: the page's primary action
+                 and the one sentence that says why it failed must not be reachable
+                 only by scrolling a panel whose length the reader does not control. -->
+            <div class="panel-foot">
+              <!-- The callout is shipped here rather than built as a string: `showFormError`
+                   (app.js 579) now only unhides it and writes the message text.
+                   `role="alert"` is explicit because wa-callout carries no implicit role —
+                   its render() is two bare divs — and without it the primary action of the
+                   page silently does nothing for a screen-reader user. app.js unhides
+                   BEFORE writing, so the region is in the a11y tree when the message
+                   arrives, and blanks the text on clear so re-submitting an unfixed form
+                   is still a mutation the AT can see. It sits ABOVE the button because a
+                   message under the fold of a sticky foot is a message nobody reads. -->
+              <wa-callout id="landing-error" data-role="formerror" role="alert" variant="danger" appearance="filled-outlined" hidden>
+                <wa-icon slot="icon" name="triangle-exclamation"></wa-icon>
+                <p class="wa-body-s" data-role="formerrortext"></p>
+              </wa-callout>
+
+              <!-- Ships `disabled` because on a cold landing there is nothing to
+                   analyse yet. `initLanding` (app.js) wires the enable/disable rule
+                   SYNCHRONOUSLY, before it fetches anything, so the bring-your-own path
+                   is never left holding a dead button if the catalogue fetch fails. -->
+              <wa-button id="analyse" type="submit" variant="brand" appearance="filled" size="m" disabled>
+                <wa-icon slot="start" name="play"></wa-icon><span data-role="analyselabel">Analyse</span>
+              </wa-button>
+              <p class="wa-caption-xs wa-color-text-quiet">Most of a run is spent reading the map files; skipping them under Advanced is much faster.</p>
             </div>
-          </wa-details>
 
-          <div class="wa-cluster wa-gap-s wa-align-items-center">
-            <!-- Ships `disabled` because on a cold landing there is nothing to
-                 analyse yet. `initLanding` (app.js) wires the enable/disable rule
-                 SYNCHRONOUSLY, before it fetches anything, so the bring-your-own path
-                 is never left holding a dead button if the catalogue fetch fails. -->
-            <wa-button id="analyse" type="submit" variant="brand" appearance="filled" disabled>
-              <wa-icon slot="start" name="play"></wa-icon><span data-role="analyselabel">Analyse</span>
-            </wa-button>
-            <span class="wa-caption-s wa-color-text-quiet">Most of a run is spent reading the map files; skipping them above is much faster.</span>
-          </div>
-
-          <!-- The callout is shipped here rather than built as a string: `showFormError`
-               (app.js 579) now only unhides it and writes the message text.
-               `role="alert"` is explicit because wa-callout carries no implicit role —
-               its render() is two bare divs — and without it the primary action of the
-               page silently does nothing for a screen-reader user. app.js unhides
-               BEFORE writing, so the region is in the a11y tree when the message
-               arrives, and blanks the text on clear so re-submitting an unfixed form
-               is still a mutation the AT can see. -->
-          <wa-callout id="landing-error" data-role="formerror" role="alert" variant="danger" appearance="filled-outlined" hidden>
-            <wa-icon slot="icon" name="triangle-exclamation"></wa-icon>
-            <p class="wa-body-s" data-role="formerrortext"></p>
-          </wa-callout>
-        </form>
-      </wa-card>
+          </div><!-- /.landing-panel -->
+        </div><!-- /#picker -->
+      </form>
     </div>
 
     <!-- ══════════════════════════════════════════════════════════════════════

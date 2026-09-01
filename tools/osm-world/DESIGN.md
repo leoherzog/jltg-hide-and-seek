@@ -143,7 +143,8 @@ Measured inflation (rows vs distinct `osm_type:osm_id`):
 Consequences: published counts inflated up to 2×, and each duplicate yields a **second
 POI at a different coordinate** (polygon copy → area-weighted centroid; linestring copy
 → `polylineMidpoint`), feeding the legal-spot shortlist and per-zone distances. The
-suite cannot see it: all 19 golden numbers run `useOsm: false`.
+suite cannot see it: all 19 golden numbers run against an unresolvable world bucket, so
+the OSM layer is unavailable and every number is measured without it.
 
 **Fix.** Per-layer geometry types are not quite enough on their own — `water` is
 legitimately mixed (lake polygons + river linestrings). Two parts:
@@ -786,8 +787,11 @@ All 601 shard manifests landed under `shards/{feature,density}/<id>/manifest.jso
   `features: 0` manifest entries, bbox-diagonal curse layers (R1)~~ **done** — the suite
   grew from 68 to **83 assertions** (path-less manifest entries and the `partial: true`
   refusal rule, below) and the test world builds four layers through `build.py`'s
-  real pipeline. Still open: a golden-number run with `useOsm: true`, so the OSM path
-  remains invisible to `tools/smoke.mjs`'s 19 numbers.
+  real pipeline. Still open: a golden-number run against a readable world, so the OSM
+  path remains invisible to `tools/smoke.mjs`'s 19 numbers. **Sharper since 2026-09-01**,
+  when `useOsm` was deleted and the S2 phase became unconditional: the app has no
+  configuration left in which the OSM layer is skipped, so the 19 numbers now cover a
+  path — `worldBaseUrl` unreachable — that only a harness ever takes.
 - Browser end-to-end against the real bucket (Range + CORS differ between Node fetch
   and browsers; this is the step that catches a bucket that doesn't expose
   `Content-Range`, which presents as a corrupt file, not a CORS error). **Still open.**

@@ -72,7 +72,6 @@ const GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
  * message carries the file or the URL separately.
  */
 const DEFAULT_PIPELINE_OPTIONS = Object.freeze({
-  useOsm: true,
   // Null, not the URL: this is an OVERRIDE, and it has to be distinguishable from
   // "the reader typed the default back in by hand". `openWorld`'s own parameter
   // default is the one place the published bucket is named, and a null here resolves
@@ -106,8 +105,8 @@ const HEADWAY_BUCKETS = Object.freeze([5, 10, 15, 20, 30, 45, 60, 90]);
 // ── progress model ───────────────────────────────────────────────────────────
 //
 // One monotonic 0..1000 bar over weighted phases. Weights are rough measured
-// shares of a `--no-osm` run on the reference feed; the OSM phase dominates when it
-// is enabled, which is why it carries the largest weight. `total` is fixed at 1000
+// shares of the schedule side on the reference feed; the OSM phase dominates every
+// real run, which is why it carries the largest weight. `total` is fixed at 1000
 // and only `done` moves — CONTRACT.md permits a growing `total`, but a bar that
 // only ever advances reads better and the geo layer's own growing estimate is
 // already normalised into this phase's slice.
@@ -742,46 +741,46 @@ export async function runPipeline(options, source, emit) {
 
   // ── S2 geodata ────────────────────────────────────────────────────────────
   //
-  // CONTRACT.md §(f)1: a failed map-file read is not fatal. `--no-osm` is the same
-  // path with a different note.
+  // UNCONDITIONAL since 2026-09-01. There is no longer a switch, a flag or a default
+  // that turns this phase off: every run reads the world files, and the ONLY way to
+  // reach an unavailable OSM layer is the catch below — the files could not be read.
+  // The reason is CONTRACT.md §(f)1's other half: `geo.available === false` costs 37
+  // of the 80 questions, 16 of the 24 curses and the E and A axes (30 of the 100
+  // score points), which is a third of the report. That is a failure to report, not
+  // a mode to offer.
+  //
+  // A caller that must run without the network points `worldBaseUrl` at a host that
+  // cannot resolve and takes this catch deliberately — `tools/smoke.mjs` does exactly
+  // that, which is what keeps the 19 golden numbers offline and reproducible.
   let geo;
   progress.begin(7);
-  if (opts.useOsm) {
-    try {
-      // One manifest fetch, then every category is a Range request against an
-      // immutable file. `opts.worldBaseUrl` exists so a build can be pointed at a
-      // local static server before it is published — the Advanced panel's "Map file
-      // base URL" field sets it, and null means "the published bucket".
-      const baseUrl = opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL;
-      if (opts.worldBaseUrl) log('info', `reading the map files from ${baseUrl}`);
-      // `openWorldOnce`, not a second `openWorld`: an area source has usually opened
-      // this bucket already, and one handle is what keeps `worldStatsLine` a report of
-      // the whole run's map-file budget instead of the geo phase's share of it.
-      const handle = await openWorldOnce();
-      geo = await collectGeodata(handle, opts, border, zones, proj, size.zoneRadiusM, {
-        onProgress: progress.sink(),
-        onLog: (level, message) => log(level === 'warning' ? 'warn' : level, message),
-        // Arms adminInfo's ordinal-1 place rule (Tokyo, Vienna). The primary feed's
-        // agency_timezone — a hint the census cross-checks, never an input it trusts.
-        timezone: feed.timezone,
-      });
-      log('info', worldStatsLine(handle));
-    } catch (err) {
-      const name = (err && err.name) ? err.name : 'Error';
-      log('warn', `OSM layer unavailable: ${err && err.message ? err.message : err}`);
-      nonFatal('geo', err);
-      degrade(`The OpenStreetMap files could not be read (${name}), so every question, `
-        + 'curse and score that needs map features is excluded rather than guessed at.');
-      geo = emptyGeoData(border.bbox,
-        'The map files could not be read; OSM-backed scores are excluded.');
-    }
-  } else {
-    // Not `--no-osm`: there is no command line here. The reader flipped a switch
-    // labelled "Skip OpenStreetMap", so the notice names the thing they did.
-    degrade('OpenStreetMap was skipped, so every question, curse and score that needs '
-      + 'map features is excluded rather than guessed at.');
-    geo = emptyGeoData(border.bbox, 'OpenStreetMap was skipped, so the OSM layer was never '
-      + 'queried.');
+  try {
+    // One manifest fetch, then every category is a Range request against an
+    // immutable file. `opts.worldBaseUrl` exists so a build can be pointed at a
+    // local static server before it is published — the Advanced panel's "Map file
+    // base URL" field sets it, and null means "the published bucket".
+    const baseUrl = opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL;
+    if (opts.worldBaseUrl) log('info', `reading the map files from ${baseUrl}`);
+    // `openWorldOnce`, not a second `openWorld`: an area source has usually opened
+    // this bucket already, and one handle is what keeps `worldStatsLine` a report of
+    // the whole run's map-file budget instead of the geo phase's share of it.
+    const handle = await openWorldOnce();
+    geo = await collectGeodata(handle, opts, border, zones, proj, size.zoneRadiusM, {
+      onProgress: progress.sink(),
+      onLog: (level, message) => log(level === 'warning' ? 'warn' : level, message),
+      // Arms adminInfo's ordinal-1 place rule (Tokyo, Vienna). The primary feed's
+      // agency_timezone — a hint the census cross-checks, never an input it trusts.
+      timezone: feed.timezone,
+    });
+    log('info', worldStatsLine(handle));
+  } catch (err) {
+    const name = (err && err.name) ? err.name : 'Error';
+    log('warn', `OSM layer unavailable: ${err && err.message ? err.message : err}`);
+    nonFatal('geo', err);
+    degrade(`The OpenStreetMap files could not be read (${name}), so every question, `
+      + 'curse and score that needs map features is excluded rather than guessed at.');
+    geo = emptyGeoData(border.bbox,
+      'The map files could not be read; OSM-backed scores are excluded.');
   }
   progress.finish();
 

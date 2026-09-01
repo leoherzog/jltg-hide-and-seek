@@ -243,9 +243,9 @@ export function pts(tenths) {
 /**
  * Axis fill as a 0–100 percentage, guarding a zero denominator. (`_s5_bar`, 13917.)
  *
- * The guard is load-bearing rather than defensive: under `--no-osm` the `E` and `A`
- * axes really do carry `axisMax === 0` (score.js 1004), and the page must say
- * "not measured" rather than draw an empty bar labelled `0 / 0`.
+ * The guard is load-bearing rather than defensive: when the map files could not be
+ * read the `E` and `A` axes really do carry `axisMax === 0` (score.js 1004), and the
+ * page must say "not measured" rather than draw an empty bar labelled `0 / 0`.
  *
  * @param {number|null|undefined} earnedTenths @param {number|null|undefined} maxTenths
  * @returns {number}
@@ -689,8 +689,8 @@ export function poiCategories(report) {
 /**
  * One axis row of the pick card and the dossier: plain name, letter, bar, earned/max.
  *
- * An axis whose maximum is zero was never measurable on this map — under `--no-osm`
- * that is `E` and `A` — and prints the words, never `0.0 / 0`.
+ * An axis whose maximum is zero was never measurable on this map — when the map files
+ * could not be read that is `E` and `A` — and prints the words, never `0.0 / 0`.
  */
 function axisMeter(view, axis) {
   const label = el('span', join(

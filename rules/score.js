@@ -1824,7 +1824,6 @@ function synthArgv(opts, feeds = []) {
     for (const f of feeds) argv.push('--feed', String(f.label || f.source || ''));
   } else if (typeof src === 'string' && src) argv.push(src);
   else if (src && typeof src === 'object' && src.name) argv.push(String(src.name));
-  if (get(opts, 'useOsm') === false) argv.push('--no-osm');
   // No such CLI flag — `generate.py` predates the world files — but §(b) asks what was
   // asked for, not what a shell would accept, and "which copy of the map did these
   // counts come from" is the single most load-bearing thing a reader can check when

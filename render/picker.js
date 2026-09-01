@@ -75,8 +75,6 @@ const SEARCH_LIMIT = 25;
 const CLOSE_PX = 10;
 /** Two clicks of a double-click land on the same point; anything under this is one. */
 const DEDUPE_DEG = 1e-7;
-/** A rough per-feed download, for the "this is a lot of bytes" warning. */
-const EST_MB_PER_FEED = 25;
 /** Half the side of a border handle's hit box: 24 px square, which is the smallest
  *  target a finger reliably lands on, drawn as a 6 px circle so it does not hide
  *  the marker it may sit on. */
@@ -127,12 +125,13 @@ const isDark = () => document.documentElement.classList.contains('wa-dark');
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /**
- * Wire the picker card.
+ * Wire the picker.
  *
  * Idempotent: a second call on the same root returns the same handle and resizes the
  * map, so nothing is double-bound and the reader's selection survives.
  *
- * @param {HTMLElement} root the picker card
+ * @param {HTMLElement} root `#picker`, the landing stage — the map layer and the
+ *        floating panel both live inside it, so every id is one `querySelector` away
  * @param {Object} [handlers]
  * @param {(selected: Map<string, Object>) => void} [handlers.onChange] the ONLY way selection moves
  * @param {(ring: Array<[number, number]>|null) => void} [handlers.onRing]
@@ -140,7 +139,7 @@ const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)'
  *        [handlers.onBorder] the game-border frame, every time it moves or changes mode
  * @param {() => void} [handlers.onRemoveByo] clear the form's file/URL — it is not ours
  * @param {Object} handlers.doc the catalogue snapshot
- * @returns {{setByo: Function, refresh: Function, resize: Function, destroy: Function}}
+ * @returns {{setByo: Function, resize: Function, destroy: Function}}
  */
 export function initPicker(root, handlers = {}) {
   if (root && root.__picker) {
@@ -154,11 +153,6 @@ export function initPicker(root, handlers = {}) {
   // it LIVES in the form, which is outside this root — so removing it is a callback,
   // not a local delete.
   const onRemoveByo = handlers.onRemoveByo || (() => {});
-  // Whether "Skip OpenStreetMap" is ticked RIGHT NOW. The switch lives in the form's
-  // Advanced panel, outside this card, and `app.js` ticks it once and then leaves it
-  // to the reader — so the note has to read its live state or it ends up instructing
-  // someone to do what they have already done.
-  const osmSkipped = handlers.osmSkipped || (() => false);
   // The frame, reported outward every time it changes. One-way like `onChange`:
   // `app.js` reads it into `state.landing.border` and mirrors it into the Advanced
   // panel; nothing pushes a frame back in.
@@ -493,16 +487,6 @@ export function initPicker(root, handlers = {}) {
     return out;
   }
 
-  /** The longitude guess D6 warns about. The worker reads `agency.txt` and decides. */
-  function tzSpread() {
-    const hours = new Set();
-    for (const ref of st.selected.values()) {
-      const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
-      if (row) hours.add(Math.round(centroidOf(row)[1] / 15));
-    }
-    return hours.size > 1;
-  }
-
   function renderPicksAndNote() {
     const views = pickViews();
     picksList.innerHTML = renderPicks(views);
@@ -512,17 +496,9 @@ export function initPicker(root, handlers = {}) {
       : `${num(views.length)} feeds selected`;
     const osm = osmPick();
     noteBox.innerHTML = renderPickerNote({
-      count: views.length,
       capped: slotsUsed() >= PICK_CAP,
-      osmSkipped: views.length > 1 && osmSkipped(),
       blocked: st.blocked,
-      tzSpread: tzSpread(),
       ringEmpty: st.ringEmpty,
-      // The OpenStreetMap area downloads no feed — it is read out of map files the
-      // run would open anyway — so it is not counted into the "this is a lot of
-      // bytes" estimate. Counting it would make the sentence wrong rather than
-      // merely rough, which is the line this note does not cross.
-      estMb: (views.length - (osm ? 1 : 0)) * EST_MB_PER_FEED,
       // Offered only in the moment it answers: a shape is drawn, the catalogue had
       // nothing inside it, there is a slot free, and it has not been taken yet.
       osmOffer: Boolean(st.ring) && st.ringVacant && !osm && slotsUsed() < PICK_CAP,
@@ -1692,10 +1668,11 @@ export function initPicker(root, handlers = {}) {
     });
 
     // Touch: a finger on a HANDLE drags it, and only then is the browser's default
-    // — the page scroll, or under cooperativeGestures the "use two fingers" overlay
-    // — prevented. A finger anywhere else, the fill included, is left to the map
-    // and the page: on a phone the frame fills the screen after a pick, and a fill
-    // that swallowed every touch would be a map that cannot be scrolled past.
+    // prevented. A finger anywhere else, the fill included, is left to the map: on a
+    // phone the frame fills the screen after a pick, and a fill that swallowed every
+    // touch would be a map that cannot be panned. (Before 2026-09-01 the default
+    // being prevented was also cooperativeGestures' "use two fingers" overlay; the
+    // map is the whole page now and that mode is off — see `ensureMap`.)
     map.on('touchstart', (event) => {
       if (st.drawing || !st.border || !event.point) return;
       const h = handleAt(event.point);
@@ -1741,6 +1718,13 @@ export function initPicker(root, handlers = {}) {
    * card says what happened and where the same feeds are, which is the posture
    * `renderNetworkMap` already takes for §05.
    */
+  /**
+   * No map. `mapHost.hidden` is load-bearing beyond hiding the box: it is the ONE
+   * signal styles.css §7 reads to collapse the landing stage back to a centred card,
+   * so a page with no map is not a viewport of empty grid with a panel floating on
+   * it. `app.js` hides the same node when the catalogue itself never arrives, which
+   * is why there is one rule and not two.
+   */
   function giveUpOnMap() {
     st.mapFailed = true;
     if (mapHost) mapHost.hidden = true;
@@ -1783,7 +1767,12 @@ export function initPicker(root, handlers = {}) {
         style: STYLES[st.dark ? 'dark' : 'light'],
         center: [-40, 34],
         zoom: 1.1,
-        cooperativeGestures: true,
+        // OFF since 2026-09-01, and it was on for a good reason before: the map used
+        // to be a 56vh box inside a scrolling column, where a wheel that zoomed
+        // instead of scrolling past was a trap. The map is now the landing page —
+        // full-bleed, viewport-tall, with nothing to scroll past — so requiring
+        // ctrl+wheel and two fingers is friction with nothing left to protect.
+        cooperativeGestures: false,
         attributionControl: { compact: true },
       });
     } catch (err) {
@@ -1850,8 +1839,7 @@ export function initPicker(root, handlers = {}) {
       renderPicksAndNote();
       renderResultsBox();
     },
-    /** Re-read whatever lives outside this card — today, the Skip OpenStreetMap switch. */
-    refresh() { renderPicksAndNote(); },
+    /** The card's box changed under the map — let MapLibre re-read it. */
     resize() { if (st.map) st.map.resize(); },
     destroy() {
       if (st.destroyed) return;

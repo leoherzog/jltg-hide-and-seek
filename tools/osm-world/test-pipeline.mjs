@@ -5,8 +5,9 @@
  *   node tools/osm-world/test-pipeline.mjs /tmp/world
  *
  * WHY THIS EXISTS. `collectGeodata` is ~250 lines of orchestration that nothing else
- * executes: `tools/smoke.mjs` runs with `useOsm: false`, and every other test stops at
- * the FlatGeobuf reader. That gap is not theoretical — the world-file migration shipped
+ * executes: `tools/smoke.mjs` points the world files at a host that cannot resolve, so
+ * it takes the failure path and never enters this function, and every other test stops
+ * at the FlatGeobuf reader. That gap is not theoretical — the world-file migration shipped
  * with `zoneInventory` accidentally deleted out from under its own call site, and the
  * failure was completely invisible, because `worker.js` catches everything from that
  * call and degrades to `emptyGeoData`. A crash inside the OSM layer still reaches the
@@ -118,7 +119,7 @@ try {
   // Exactly what worker.js does: open the world, then hand it to collectGeodata.
   world = await openWorld(baseUrl);
   geo = await collectGeodata(
-    world, { useOsm: true }, border, zones, proj, radiusM,
+    world, {}, border, zones, proj, radiusM,
     {
       onProgress: () => {},
       onLog: (level, message) => logLines.push(`${level}: ${message}`),
@@ -317,7 +318,7 @@ check('the substitution is logged, not silent',
   })));
   const legacyLog = [];
   const legacy = await collectGeodata(
-    await openWorld(baseUrl), { useOsm: true }, border, zones, proj, radiusM,
+    await openWorld(baseUrl), {}, border, zones, proj, radiusM,
     { onProgress: () => {}, onLog: (level, message) => legacyLog.push(`${level}: ${message}`) },
   );
   overrides.delete('manifest.json');
@@ -352,7 +353,7 @@ check('the substitution is logged, not silent',
     overrides.set('manifest.json', Buffer.from(JSON.stringify(manifest)));
     const lines = [];
     const out = await collectGeodata(
-      await openWorld(baseUrl), { useOsm: true }, border, zones, proj, radiusM,
+      await openWorld(baseUrl), {}, border, zones, proj, radiusM,
       { onProgress: () => {}, onLog: (level, message) => lines.push(`${level}: ${message}`) },
     );
     overrides.delete('manifest.json');
@@ -496,7 +497,7 @@ suppressed.add('density.fgb');
 let degraded;
 try {
   degraded = await collectGeodata(
-    await openWorld(baseUrl), { useOsm: true }, border, zones, proj, radiusM,
+    await openWorld(baseUrl), {}, border, zones, proj, radiusM,
     { onProgress: () => {}, onLog: () => {} },
   );
 } catch (err) {

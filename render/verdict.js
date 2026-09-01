@@ -749,7 +749,7 @@ export function renderHero(payload) {
     'Feasibility report',
     window,
     // `place` falls back to the agency name when the admin layer produced no place
-    // name (--no-osm, or an unreadable layer), so guard against "CTA, CTA".
+    // name (an unreadable map layer), so guard against "CTA, CTA".
     (place && place !== agency) ? `${agency}, ${place}` : agency,
   ].filter((x) => x).join(' · ');
 

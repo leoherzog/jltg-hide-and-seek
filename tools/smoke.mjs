@@ -3,9 +3,12 @@
 // tools/smoke.mjs — headless end-to-end harness
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Runs `runPipeline` from worker.js against the cached reference feed with the
-// OSM layer disabled, and asserts generated/generate.py's own golden numbers from
-// `selftest()`. Those numbers are measured, not guessed: a change to
+// Runs `runPipeline` from worker.js against the cached reference feed with the map
+// files pointed at a host that cannot resolve (`DEAD_WORLD_URL`), and asserts
+// generated/generate.py's own golden numbers from `selftest()`. The OSM layer has
+// no off switch — every run reads the world files — so an unreachable bucket is how
+// this harness stays offline, deterministic and identical to the run the numbers
+// were measured on: §(f)1's failure path yields the same empty `GeoData`. Those numbers are measured, not guessed: a change to
 // any of them means an algorithm changed, which may be correct but must be
 // deliberate. Never adjust an assertion to make it pass.
 //
@@ -87,11 +90,23 @@ const BIG_FEED = path.join(REPO, 'cache', 'gtfs', '3e729bcf6f763c38.zip');
 // a real server. `.invalid` is reserved by RFC 2606 and can never be registered.
 const DEAD_FEED_URL = 'https://feed.invalid/dead.zip';
 
+// A world-file host that cannot resolve. The OSM layer has no off switch any more
+// (worker.js S2, 2026-09-01) — every run reads the map files — so the way a harness
+// stays offline and deterministic is to point it at a bucket that is not there and
+// take the documented failure path: CONTRACT.md §(f)1, `nonFatal('geo')` plus a
+// degradation, `emptyGeoData`, `geo.available === false`. That is the SAME GeoData
+// the old `useOsm: false` produced, which is why all 19 golden numbers below are
+// unchanged and still measured with the E and A axes dropped from the denominator.
+// `.invalid` is reserved by RFC 2606, like `DEAD_FEED_URL` above: it fails in DNS
+// rather than reaching a real server, so a machine with a working network and one
+// without produce the same report.
+const DEAD_WORLD_URL = 'https://world.invalid/world';
+
 // Every `runPipeline` call in this file passes these; only `source` differs (a
 // merged run names 'merged', a single-feed run names the zip). Written once so the
 // goldens and the merge assertions cannot drift onto three different option sets.
 const PIPELINE_OPTS = {
-  useOsm: false,               // --no-osm
+  worldBaseUrl: DEAD_WORLD_URL,
   asOf: null,
   sizeOverride: null,
   zoneRadiusM: null,
@@ -469,7 +484,7 @@ async function main() {
     }
   };
 
-  line(`smoke: ${path.relative(REPO, FEED_PATH)}  (--no-osm)`);
+  line(`smoke: ${path.relative(REPO, FEED_PATH)}  (map files: ${DEAD_WORLD_URL})`);
   line('');
 
   let report;
@@ -518,7 +533,9 @@ async function main() {
   ];
 
   // The scoring layer is not covered by generate.py's own selftest, so these are
-  // measured against a real `python3 generate.py <reference feed> --no-osm` run.
+  // measured against a real `python3 generate.py <reference feed> --no-osm` run —
+  // the flag is gone from this codebase, but the run it named is exactly what an
+  // unreachable world bucket reproduces, so the numbers still stand.
   // Every one of them is an exact integer-tenths quantity — a drift of 0.1 here is
   // a bug in a ramp, in `tenths()`, or in the drop-and-renormalise rule.
   const fit = report.fitness || {};

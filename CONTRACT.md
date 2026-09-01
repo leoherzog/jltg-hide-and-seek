@@ -28,7 +28,7 @@ embedded JSON block; it is built from `state.report` in memory.
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
 | External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` directly and have no constant — nothing in module code needs their URLs. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
-| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) has never been in this list even though every `useOsm` run fetches from it, and a `kind:'osm'` source now depends on it with no feed zip in the run at all. Folding it into the row is an explicit amendment someone must make deliberately — do not do it as a side effect of another change, and do not cite this note as having done it. **2026-08-27:** the landing border editor (frame, 8 handles, drag) is hand-rolled on MapLibre's own events for the same reason as the draw tool. Still five. |
+| Still five | The landing-page feed picker added **none**. `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, the same category as a URL a reader pastes today, not a page asset. The polygon draw tool is **hand-rolled on the map's own events on purpose**, so that this list stays exhaustive: do not "improve" it with a pinned CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) has never been in this list even though every run fetches from it, and a `kind:'osm'` source depends on it with no feed zip in the run at all. **2026-09-01 sharpens this and does not resolve it:** with `useOsm` deleted there is no longer any configuration in which a run does not reach that bucket, so the divergence is now unconditional. Folding it into the row is an explicit amendment someone must make deliberately — do not do it as a side effect of another change, and do not cite this note as having done it. **2026-08-27:** the landing border editor (frame, 8 handles, drag) is hand-rolled on MapLibre's own events for the same reason as the draw tool. Still five. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
 | Sorting strings | Python compares strings by code point, JS by UTF-16 code unit. Identical below U+10000. The semantics are exactly `a < b ? -1 : a > b ? 1 : 0`, never `localeCompare` (locale-dependent = non-deterministic). That body now has exactly **one** implementation — `cmpStr`, exported from `lib/core.js` and imported by every module that sorts strings; do not spell a new local copy. Two deliberate hold-outs, so a future reader does not "finish the job": `tools/mdb-snapshot.mjs` keeps a private copy because it is a standalone Node tool that imports nothing from the app, and `lib/geo.js`'s `GridIndex.nearKeys` keeps a local arrow on its hot path. |
@@ -50,8 +50,8 @@ embedded JSON block; it is built from `state.report` in memory.
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field — a tentacle question's own `param`, which `QuestionAudit` does not carry across the wire. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption` (2026-08-27 — the game-border frame's row under the map; the `#border-row` **host** is emitted by `renderPickerCard`, not by `index.html`, because `app.js` replaces the card's `[data-role=pickerbody]` wholesale); the constants `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`), `PICK_WARN`, `BIG_DOWNLOAD_MB`. Pure `data → string`, no DOM — the landing feed picker's markup. `renderBorderCaption` branches on the frame's `mode` FIRST and on the OpenStreetMap flags second: `mode` is the only thing that decides what `readOptions` sends, so an `'auto'` frame must say the border will be inferred even when the pick is a drawn shape. |
-| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, refresh, resize, destroy}` (`handlers.osmSkipped()` reports the live state of the Advanced panel's Skip OpenStreetMap switch, which lives outside this card) — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. **Selection is one-way, outward only** — `commit()` → `handlers.onChange`, and the handle's write-side `setSelection` was deleted 2026-08-26 with no caller in the repo. Do not add one back to push a selection in; `app.js` owns the pick list. The example-map chips are NOT such a setter: they are picker-internal controls that write `st.selected` through the same `commit()` funnel an Add button does, and a chip **replaces** the catalogue picks (the drawn shape and the bring-your-own feed are left alone). **2026-08-27:** the picker also owns the game-border **frame** — `st.border`, the `border` source and its `border-fill` / `border-line` / `border-handle` layers, the eight handles, the pointer and touch drags, the four edge fields and the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons — all hand-rolled on MapLibre's own events, like the draw tool and for the same §0 reason. It reports outward and only outward: `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)`, called every time the frame moves or changes mode. There is no `setBorder` any more than there is a `setSelection`; `app.js` reads the frame, the picker owns it. Two rules the drag code must keep (2026-08-27): the eight handles resize and the frame's OUTLINE (`border-line`, within `EDGE_PX`) moves the whole box, while the FILL belongs to the map — a frame fitted to the picks covers the viewport, and a fill that started a drag took the card's pan gesture away; and a move drag does nothing until the pointer has travelled `MOVE_PX`, so a twitch cannot silently turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region rewritten on every frame of a drag, so it is set `aria-live="off"` while the gesture runs and speaks once, at rest. |
+| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption` (2026-08-27 — the game-border frame's row under the map; the `#border-row` **host** is emitted by `renderPickerCard`, not by `index.html`, because `app.js` replaces the card's `[data-role=pickerbody]` wholesale); the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). **2026-09-01:** `PICK_WARN` and `BIG_DOWNLOAD_MB` are gone with the advisory lines they gated — `renderPickerNote` now prints only the hard cap, an API-keyed feed the page cannot fetch, a shape the catalogue does not cover and the OpenStreetMap offer, so it takes `{capped, blocked, ringEmpty, osmOffer, osmPicked}` and no longer reads the feed count, the download estimate, the Skip OpenStreetMap switch or a time-zone guess. Pure `data → string`, no DOM — the landing feed picker's markup. **2026-09-01:** `renderPickerCard` no longer emits `#catalog-map` or a heading. The map became the page — a full-bleed layer under the floating panel these controls live in — so its host is static markup in `index.html`, a SIBLING of the panel inside `#picker`, and it survives `app.js` replacing `[data-role=pickerbody]` wholesale; the heading and lede are the panel's, because the panel has to read the same on a page whose catalogue never loaded. `initPicker`'s root is unchanged, so `root.querySelector` still reaches every id either way. The card's outermost node carries `.picker-controls`, which styles.css §7's drawing rule reaches through. `renderBorderCaption` branches on the frame's `mode` FIRST and on the OpenStreetMap flags second: `mode` is the only thing that decides what `readOptions` sends, so an `'auto'` frame must say the border will be inferred even when the pick is a drawn shape. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. **2026-09-01:** `refresh` and `handlers.osmSkipped()` were deleted together. Both existed for one reader: a note line that read the Advanced panel's Skip OpenStreetMap switch, outside this card, and so had to be told when `app.js` ticked it through `.checked` (which fires no event). That line is gone, and with it the only state the picker did not already redraw itself on. Do not add a `refresh` back to push outside state in, any more than a `setSelection`. Owns every DOM mutation in the landing picker, the lazy MapLibre import and the hand-rolled draw tool; idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; it must never be merged into `PAGE_RUNTIME_JS`. **Selection is one-way, outward only** — `commit()` → `handlers.onChange`, and the handle's write-side `setSelection` was deleted 2026-08-26 with no caller in the repo. Do not add one back to push a selection in; `app.js` owns the pick list. The example-map chips are NOT such a setter: they are picker-internal controls that write `st.selected` through the same `commit()` funnel an Add button does, and a chip **replaces** the catalogue picks (the drawn shape and the bring-your-own feed are left alone). **2026-08-27:** the picker also owns the game-border **frame** — `st.border`, the `border` source and its `border-fill` / `border-line` / `border-handle` layers, the eight handles, the pointer and touch drags, the four edge fields and the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons — all hand-rolled on MapLibre's own events, like the draw tool and for the same §0 reason. It reports outward and only outward: `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)`, called every time the frame moves or changes mode. There is no `setBorder` any more than there is a `setSelection`; `app.js` reads the frame, the picker owns it. Two rules the drag code must keep (2026-08-27): the eight handles resize and the frame's OUTLINE (`border-line`, within `EDGE_PX`) moves the whole box, while the FILL belongs to the map — a frame fitted to the picks covers the viewport, and a fill that started a drag took the card's pan gesture away; and a move drag does nothing until the pointer has travelled `MOVE_PX`, so a twitch cannot silently turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region rewritten on every frame of a drag, so it is set `aria-live="off"` while the gesture runs and speaks once, at rest. **2026-09-01:** the map is constructed with `cooperativeGestures: false` — the mode existed to stop a 56vh map inside a scrolling column from eating the wheel, and the map is now the page — and `giveUpOnMap`'s `mapHost.hidden` is load-bearing beyond hiding a box: it is the ONE signal styles.css §7 reads to collapse the landing stage back to a centred card, and `app.js` sets the same attribute when the catalogue itself never arrives, so there is one rule for both failures and not two. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
@@ -666,7 +666,7 @@ like OSM `admin_level`s but do not mean the same thing.
  * ABSENT CATEGORIES ARE ABSENT KEYS, and that is load-bearing: a category that was never
  * queried and a category with zero features are different states all the way to the page.
  * Never conflate them.
- * @property {boolean} available                                   // available — false under !useOsm, or when no world-file layer could be read
+ * @property {boolean} available                                   // available — false when no world-file layer could be read (the only way it can be false since 2026-09-01)
  * @property {[number,number,number,number]} bbox                  // bbox
  * @property {Object<string, Poi[]>} pois                          // pois — category key → features, sorted by (osmType, osmId)
  * @property {Object<string, number>} counts                       // counts — category key → in-border feature count
@@ -1099,7 +1099,6 @@ Ported from `class Options`. Dropped as meaningless in a browser: `out_dir`,
 /**
  * @typedef {Object} Options
  * @property {File|string} source        // source — a File picked from disk, or a GTFS URL string
- * @property {boolean} useOsm            // use_osm (CLI `--no-osm` inverted)
  * @property {string|null} worldBaseUrl  // where the prebuilt world files are served from; null = `DEFAULT_WORLD_BASE_URL` (osm/worldfile.js). No CLI equivalent — the CLI predates the world files.
  * @property {string|null} asOf          // as_of — 'YYYYMMDD', clamped into the feed window
  * @property {'small'|'medium'|'large'|null} sizeOverride // size
@@ -1120,7 +1119,6 @@ Ported from `class Options`. Dropped as meaningless in a browser: `out_dir`,
 
 export const DEFAULT_OPTIONS = {
   source: '',
-  useOsm: true,
   worldBaseUrl: null,      // resolved to DEFAULT_WORLD_BASE_URL by worker.js, not here
   asOf: null,
   sizeOverride: null,
@@ -1559,22 +1557,30 @@ CLI's ids, with the `-data` suffixes that avoid colliding with the section ancho
 The rule from `build_report`:
 
 ```
-if useOsm:
-    try   geo = await collectGeodata(...)
-    catch geo = emptyGeoData(border.bbox,
-                'Overpass was unreachable; OSM-backed scores are excluded.')
-          degradations.push(`OpenStreetMap layer unavailable (${err.name})`)
-else:
-    geo = emptyGeoData(border.bbox, 'OSM was not queried.')
-    degradations.push('no-osm: OSM-backed questions, curses and zone axes are excluded')
+try   geo = await collectGeodata(...)
+catch geo = emptyGeoData(border.bbox,
+            'The map files could not be read; OSM-backed scores are excluded.')
+      degradations.push(`OpenStreetMap layer unavailable (${err.name})`)
 ```
+
+**2026-09-01: there is no `else`.** `useOsm` is gone from `Options`, from the Advanced
+panel and from the provenance argv, and the S2 geo phase is unconditional — every run
+reads the world files. The reasoning is rule 1's own arithmetic read forwards: an
+unavailable OSM layer costs 37 of the 80 questions, 16 of the 24 curses and the whole
+of the `E` and `A` axes (30 of the 100 score points). That is a third of the report,
+and a third of the report is a failure to disclose, not a mode to offer. The ONLY way
+to reach `geo.available === false` is now the catch — the files could not be read — so
+a reader who sees the degradation knows something went wrong rather than wondering
+which switch was flipped. A caller that must run without the network points
+`worldBaseUrl` at a host that cannot resolve and takes the catch deliberately;
+`tools/smoke.mjs` does exactly that, which is what keeps its 19 golden numbers offline
+and identical to the ones measured before the switch was removed.
 
 Rules that follow from it, and that every module must obey:
 
 1. **A failed map-file read is not fatal.** The run continues with
-   `geo.available === false`, empty containers, and a degradation string. `--no-osm`
-   (`options.useOsm === false`) is the same path with a different note. The trigger used
-   to be an Overpass failure; it is now `collectGeodata` finding that *not one*
+   `geo.available === false`, empty containers, and a degradation string. The trigger
+   used to be an Overpass failure; it is now `collectGeodata` finding that *not one*
    world-file layer could be read. One unreadable layer degrades that category alone —
    throwing on the first failure would turn a single missing layer into a dead OSM
    section, which is the bug that shape exists to avoid.
@@ -1693,10 +1699,10 @@ only ever visible to someone already inside it.
 8. **The overall score is printed over 100, not over Σ `axisMax`.** `overallTenths` is
    already renormalised (`rules/score.js:1208`, `1000 × earned ÷ max`), so its
    denominator is always 100 — but the CLI prints it against the raw axis maxima
-   (14326, 14361). With OSM the two are the same number; on a `--no-osm` run the E and
-   A axes have `axisMax === 0` and the CLI would print `97.6 / 70.0`, plus a 139%-full
-   progress bar. `ZoneView.max` is fixed at 100 here, which is identical on the OSM path
-   and correct on the other. **File it.**
+   (14326, 14361). With a readable OSM layer the two are the same number; on a run whose
+   map files could not be read the E and A axes have `axisMax === 0` and the CLI would
+   print `97.6 / 70.0`, plus a 139%-full progress bar. `ZoneView.max` is fixed at 100
+   here, which is identical on the OSM path and correct on the degraded one. **File it.**
 
 `render/simulator.js`'s local `cmp` is **not** a stale `cmpStr` copy left behind by the
 2026-08-26 consolidation: it compares the zone table's `sortKey`, which is a **number** for

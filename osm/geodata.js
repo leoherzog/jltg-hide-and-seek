@@ -2048,9 +2048,9 @@ export function emptyGeoData(bbox, note) {
  * (generate.py `collect_geodata`)
  *
  * Order: one bbox query per category → the POI index → per-zone inventory → admin
- * resolution → curse predicates → cuisines → legal spots. Under `--no-osm`, or if not
- * one layer can be read, the CALLER returns `emptyGeoData(...)`; every downstream
- * consumer must degrade rather than crash.
+ * resolution → curse predicates → cuisines → legal spots. If not one layer can be
+ * read, the CALLER returns `emptyGeoData(...)`; every downstream consumer must
+ * degrade rather than crash.
  *
  * Budget on the reference map: ~303 range requests, ~14.7 MB.
  *
