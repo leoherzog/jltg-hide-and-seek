@@ -575,12 +575,11 @@ function onPickerRemoveByo() {
   const form = runForm();
   const fileInput = findFileInput(form);
   if (fileInput) {
-    // `<wa-file-input>.files` is a reactive `File[]`, so assigning re-renders the card;
-    // the inner native input keeps its own value and has to be blanked too or the same
-    // file cannot be chosen again.
+    // `<wa-file-input>.files` is a reactive `File[]`, so assigning an empty array
+    // re-renders the card with nothing in it. The component blanks its own inner
+    // native input after every pick, so the same file stays re-choosable.
     if (fileInput.localName === 'wa-file-input') {
       fileInput.files = [];
-      if (fileInput.input) fileInput.input.value = '';
     } else {
       fileInput.value = '';
     }

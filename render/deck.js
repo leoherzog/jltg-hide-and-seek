@@ -358,9 +358,9 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
     el('div', join(
       s4ChipGroup(`${pagerId}-size`, `${pagerId}-size`, options, { label: groupLabel }),
       nav,
-    ), { className: 'wa-cluster wa-gap-s wa-align-items-center wa-flex-wrap' }),
+    ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
   ), {
-    className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s',
+    className: 'wa-split wa-flex-wrap wa-gap-s',
     id: pagerId,
     dataPagerFor: tableId,
   });
@@ -482,7 +482,7 @@ function s4Funnel(report) {
       }),
     ));
     items.push(el('li', mid + left, {
-      className: 'wa-split wa-align-items-center wa-gap-m',
+      className: 'wa-split wa-gap-m',
     }));
   }
 
@@ -637,7 +637,7 @@ export function renderQuestions(payload) {
       placeholder: 'Search the questions…', label: 'Search the question table',
     }),
   ), {
-    className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s', id: 'qcontrols',
+    className: 'wa-split wa-flex-wrap wa-gap-s', id: 'qcontrols',
   });
 
   const words = waDetails('What these words mean', s4DefinitionList([
@@ -938,7 +938,7 @@ export function renderCurses(payload) {
   // of glossary over the table it is filtering for the whole scroll.
   const controls = el('div',
     s4ChipGroup('cchips', 'cfilter', options, { label: 'Filter curses by action' }), {
-      className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s', id: 'ccontrols',
+      className: 'wa-split wa-flex-wrap wa-gap-s', id: 'ccontrols',
     });
 
   const spendingPresent = curses

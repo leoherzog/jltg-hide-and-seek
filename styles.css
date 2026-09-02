@@ -8,8 +8,7 @@
 :where(:root), .wa-light, .wa-dark .wa-invert {
   /* type */
   --wa-font-family-body:     "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
-  --wa-font-family-heading:  "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
-  --wa-font-family-longform: "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --wa-font-family-longform: var(--wa-font-family-body);   /* -heading already aliases it */
   --wa-font-family-code:     ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --wa-font-size-scale: 1.0625;          /* base 17px, matches the old body */
   --wa-line-height-normal: 1.62;
@@ -33,7 +32,7 @@
   --wa-color-text-normal: #202f40;       /* brand navy */
   --wa-color-text-quiet:  #556577;       /* navy at oklch L .50 · 5.24:1 on the paper */
   --wa-color-text-link:   #b1511e;       /* brand orange darkened to 4.53:1 on the paper */
-  --wa-color-shadow: #202f40;
+  --wa-color-shadow: color-mix(in oklab, #202f40 calc(var(--wa-shadow-blur-scale) * 4% + 8%), transparent);
   --wa-color-focus:  #b1511e;
 
   /* variant colours — the brand family is navy (the logo's pill: navy ground, off-white
@@ -105,7 +104,7 @@
   --wa-color-text-normal: #f0f0f0;       /* brand off-white · 11.95:1 on the navy */
   --wa-color-text-quiet:  #b5bfcb;
   --wa-color-text-link:   #f57a3c;       /* brand orange reads at 5.01:1 on the navy */
-  --wa-color-shadow: #000000;
+  --wa-color-shadow: color-mix(in oklab, #000000 calc(var(--wa-shadow-blur-scale) * 32% + 40%), transparent);
   --wa-color-focus:  #f57a3c;
   /* navy cannot be its own accent on a navy ground, so the brand family lifts to a
      tint of the same hue — the move the old palette made from #2a78d6 to #3987e5 */
@@ -173,19 +172,17 @@ sup[data-cite] { font-family: var(--sans); font-size: 10px; font-weight: 700; }
   font-size: var(--wa-font-size-xs);
   line-height: var(--wa-line-height-condensed);
 }
-/* One field in the grid is a URL, which does not fit a 220px column: `1 / -1` spans
-   whatever number of tracks `repeat(auto-fill, …)` resolved to at this width, so it
-   is full-bleed at every breakpoint without a media query. It stays inside the grid
-   rather than moving out below it so it keeps the label and hint styling above and
-   sits in the reading order its label claims. */
-#landing-fields .field-wide { grid-column: 1 / -1; }
 
 /* ══ 4. PAGE FURNITURE ════════════════════════════════════════════════════ */
 html { scroll-behavior: smooth; scroll-padding-top: 7rem; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 html, body { min-height: 100%; padding: 0; margin: 0; }
-body { background-image: radial-gradient(color-mix(in srgb, var(--ink) 3%, transparent) 1px, transparent 1px);
-       background-size: 22px 22px; }                          /* one rule, both schemes */
+/* The dot grid belongs on <wa-page>, not on <body>: the component's `:host` paints an
+   opaque --wa-color-surface-default and the page is body's only child at min-height
+   100%, so anything drawn on the body is covered. A rule from the outer tree beats
+   `:host`, and a background-image layers over the background-color it does not clear. */
+wa-page { background-image: radial-gradient(color-mix(in srgb, var(--ink) 3%, transparent) 1px, transparent 1px);
+          background-size: 22px 22px; }                       /* one rule, both schemes */
 wa-page { --menu-width: 15rem; --content-width: 1080px; }     /* group headings + icons need the width */
 /* A SEED, not a setting. <wa-page> measures its own header with a ResizeObserver and
    writes `--header-height` as an inline style, which beats this — but only from the
@@ -195,7 +192,6 @@ wa-page { --menu-width: 15rem; --content-width: 1080px; }     /* group headings 
    chrome inside `::slotted([slot='header'])`'s wa-space-m padding. */
 wa-page { --header-height: 4rem; }
 wa-page[view='mobile'] { --menu-width: auto; }
-wa-page::part(main-content) { padding-inline: 0; }
 /* wa-card's :host paints --wa-color-surface-default, i.e. the body colour; every
    panel in this design is a raised surface, as it was before the migration. */
 wa-card { background-color: var(--wa-color-surface-raised); }
@@ -227,7 +223,7 @@ wa-page > [slot='footer'] { padding-inline: 0; }   /* the gutter belongs to the 
 wa-page > header:not([slot]) { padding-block-start: var(--wa-space-3xl); }
 section > header > p:last-child { max-inline-size: 72ch; }    /* the one reading-width rule */
 :where(td, .wa-heading-2xl, .wa-heading-xl, .wa-heading-l) { font-variant-numeric: tabular-nums; }
-main pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
+main pre { font-size: var(--wa-font-size-2xs); line-height: 1.5; white-space: pre-wrap;
            overflow-wrap: anywhere; margin: 0; color: var(--ink-2); }
 #daysel::part(form-control) { display: flex; align-items: center; gap: var(--wa-space-s); flex-wrap: wrap; }
 #daysel wa-radio[value='sat'] { margin-inline-start: var(--wa-space-xs); }  /* replaces .sep */
@@ -235,7 +231,7 @@ main pre { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-
 /* ---- the sticky status strip and the scrollspy rail ---- */
 [slot='subheader'] {
   padding-block: var(--wa-space-2xs);
-  border-block-end: 1px solid var(--wa-color-surface-border);
+  border-block-end: var(--wa-border-width-s) var(--wa-border-style) var(--wa-color-surface-border);
   background: var(--wa-color-surface-raised);
 }
 /* wa-progress-bar's track has no intrinsic width, so as a bare flex item it collapses;
@@ -428,14 +424,14 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 #hydration { flex: 1 1 14rem; min-inline-size: 0; max-inline-size: 28rem; }
 #hydration-progress { inline-size: 100%; --track-height: 6px;
                       --indicator-color: var(--gold); }
-#hydration-status { min-inline-size: 0; white-space: nowrap;
-                    overflow: hidden; text-overflow: ellipsis; }
+#hydration-status { min-inline-size: 0; }
 /* The per-stage note is the thing that keeps a long map-file read from reading as a
    hang, so it gets to wrap onto as many lines as it needs. */
-#hydration-note, #hydration-wait { text-wrap: pretty; max-inline-size: 60ch; }
+#hydration-note, #hydration-wait { max-inline-size: 60ch; }
 /* Below the point where the wordmark, the bar and the two buttons stop fitting on
    one line, the bar takes a line of its own rather than being squeezed to a stub.
-   The header is `wa-split wa-flex-wrap`, so this is a basis change, not a reflow. */
+   The header is a `wa-split`, which wraps by default, so this is a basis change,
+   not a reflow. */
 @media (max-width: 46rem) {
   #hydration { flex: 1 1 100%; max-inline-size: none; order: 1; }
 }
@@ -446,10 +442,12 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
    sentence is in its `title`, and the numbers are also §05's, under the map. On a
    narrow header it takes a line of its own like the progress block does. */
 #run-history { min-inline-size: 0; max-inline-size: 30rem; overflow: hidden; }
-/* The tag is inline-flex with a nowrap base; clipping has to happen on the host
-   AND the base, or the base keeps its intrinsic width and pokes out of the host. */
-#run-history wa-tag { display: inline-flex; max-inline-size: 100%; overflow: hidden; }
-#run-history wa-tag::part(base) { max-inline-size: 100%; min-inline-size: 0; overflow: hidden; }
+/* wa-tag emits no `base` part — only `content` and `remove-button` — so the clipping
+   all lives on the host. `min-inline-size: 0` is the load-bearing half: without it the
+   inline-flex host keeps its intrinsic width as a flex item in the header row and the
+   `max-inline-size` never gets a chance to bite. */
+#run-history wa-tag { display: inline-flex; max-inline-size: 100%; min-inline-size: 0;
+                      overflow: hidden; }
 #run-history wa-tag::part(content) {
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-inline-size: 0;
 }
@@ -534,14 +532,11 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
   padding: var(--wa-space-s) var(--wa-space-m);
   border-block-start: var(--wa-border-width-s) solid var(--wa-color-surface-border);
   background: var(--wa-color-surface-raised);
-  display: flex;
-  flex-direction: column;
-  gap: var(--wa-space-2xs);
 }
-/* The one full-width button on the page. `::part(base)` as well as the host, because
-   the host is inline-flex and only the part carries the button's own box. */
-#analyse, #analyse::part(base) { inline-size: 100%; }
-.panel-intro h1 { text-wrap: balance; }
+/* The one full-width button on the page. The host is the only thing that needs the
+   width: it is `display: inline-block`, and the `button` part inside it is already
+   `width: 100%`. */
+#analyse { inline-size: 100%; }
 
 /* The sheet's grab bar. `display: none` here is also what keeps it out of the tab
    order on a desktop, where the panel is never collapsed. */
@@ -620,7 +615,8 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
   border: var(--wa-border-width-m) dashed var(--wa-color-surface-border);
   border-radius: var(--wa-border-radius-l);
   background: var(--wa-color-surface-lowered);
-  transition: border-color .12s, background-color .12s;
+  transition: border-color var(--wa-transition-fast) var(--wa-transition-easing),
+              background-color var(--wa-transition-fast) var(--wa-transition-easing);
 }
 @media (prefers-reduced-motion: reduce) {
   #dropzone::part(dropzone) { transition: none; }
@@ -637,11 +633,11 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
    the control by `aria-describedby`. Two corrections that buys us: the component hint
    sits 0.5em below the label where the panel's other nine hints sit at wa-gap-3xs (the
    slotted span keeps its caption classes, so only the slot's margin needs pulling
-   back), and `align-self` keeps the host from stretching `base` — which carries
-   `cursor: pointer` — across the whole row now that a paragraph lives inside an
+   back), and `align-self` keeps the host from stretching the `switch` part — which
+   carries `cursor: pointer` — across the whole row now that a paragraph lives inside an
    inline-flex host, turning blank space into a toggle for a real analysis option. */
 #advanced wa-switch::part(hint) { max-inline-size: 72ch; margin-block-start: var(--wa-space-3xs); }
-#advanced wa-switch::part(base) { align-self: start; }
+#advanced wa-switch::part(switch) { align-self: start; }
 /* The slotted icon is light DOM; the card's icon is ::part(file-icon) and is left
    alone, so this only ever hits the one in the zone. */
 #dropzone > [slot="dropzone"] { align-items: center; }
@@ -697,7 +693,7 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
 #picker-draw > *,
 #picker-switches > * { min-inline-size: 0; }
 #picker-switches wa-switch::part(hint) { max-inline-size: 60ch; }
-#picker-switches wa-switch::part(base) { align-self: start; }
+#picker-switches wa-switch::part(switch) { align-self: start; }
 /* `giveUpOnMap` hides all three draw buttons at once. An empty row would still take
    a `wa-stack` gap under the search box, which reads as a missing control. */
 #picker-draw:not(:has(wa-button:not([hidden]))) { display: none; }
@@ -728,16 +724,12 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
 #catalog-map.border-dragging .maplibregl-canvas { cursor: grabbing; user-select: none; touch-action: none; }
 
 /* ---- the game-border frame's row ----
-   Four edge fields on one line where there is room, two by two on a phone. The
-   fields are the keyboard path to the frame — the handles on the map are not
-   focusable — so they never collapse below a readable width. */
-#border-row .border-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
-  gap: var(--wa-space-xs);
-}
+   Four edge fields on one line where there is room, two by two on a phone — that is
+   `wa-grid wa-gap-xs` with `--min-column-size: 7rem` on the container now. The fields
+   are the keyboard path to the frame — the handles on the map are not focusable — so
+   they never collapse below a readable width. */
 #border-row .border-field::part(input) { font-variant-numeric: tabular-nums; }
-#border-row .border-field::part(label) { font-size: var(--wa-font-size-xs); }
+#border-row .border-field::part(form-control-label) { font-size: var(--wa-font-size-xs); }
 
 /* No inner scroller any more: the panel is itself a scroll container, and a nested
    one in a 27rem column traps a touch scroll at the point the reader most wants to
@@ -749,24 +741,25 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
   padding: var(--wa-space-2xs);
 }
 
-/* One row shape for both lists, so a feed looks the same wherever it is named. */
+/* One row shape for both lists, so a feed looks the same wherever it is named. The
+   layout half is `wa-cluster wa-gap-s wa-justify-content-space-between` on the row
+   itself; only the padding and the corner are left here. The class stays either way —
+   `render/picker.js` queries it, and the divider below is an adjacent-sibling rule. */
 .pick-row {
-  display: flex; gap: var(--wa-space-s);
-  align-items: center; justify-content: space-between;
-  flex-wrap: wrap;
   padding: var(--wa-space-2xs) var(--wa-space-xs);
   border-radius: var(--wa-border-radius-s);
 }
 .pick-row + .pick-row { border-block-start: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
 .pick-row-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 14rem; }
-.pick-row-name { font-weight: 600; overflow-wrap: anywhere; }
+.pick-row-name { font-weight: var(--wa-font-weight-bold); overflow-wrap: anywhere; }
 .pick-row-chosen { background: var(--wa-color-surface-lowered); }
 .pick-row-chosen + .pick-row-chosen { border-block-start: none; }
 #picks-count { font-variant-numeric: tabular-nums; }
-/* The example-map chips: a wrapping row of pill buttons under the lede. */
-#example-maps { display: flex; flex-direction: column; gap: var(--wa-space-2xs); }
-#example-maps p { margin: 0; }
-#example-maps wa-button::part(base) { white-space: nowrap; }
+/* The example-map chips: a wrapping row of pill buttons under the lede. The stack is
+   `wa-stack wa-gap-2xs` on the container, which also zeroes the lede's margin. That
+   utility's `display: flex` is an author rule, so it beats the UA's `[hidden]` the
+   same way `#netlayers` below does, and the guard has to be written out. */
+#example-maps[hidden] { display: none; }
 
 /* ---- the skeleton ----
    `wa-skeleton` sized to the thing that is coming, so the layout does not move when
@@ -778,9 +771,7 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
    used to sit in this block and every one of them was inert — every skeleton on the
    page renders as a stadium, including the "ring". Anything that needs a real corner
    has to go through `::part(indicator)`, deliberately not done here. */
-wa-skeleton { --color: var(--wa-color-surface-lowered);
-              --sheen-color: color-mix(in srgb, var(--ink) 7%, var(--surface)); }
-@media (prefers-reduced-motion: reduce) { wa-skeleton { --sheen-color: transparent; } }
+wa-skeleton { --color: var(--wa-color-surface-lowered); }
 
 /* the layout half is `wa-stack wa-gap-xs` on the container; only the child sizing is
    left here, which no utility covers. `.sk-tile` keeps its own `display:grid` — the
@@ -791,7 +782,7 @@ wa-skeleton { --color: var(--wa-color-surface-lowered);
    .sk-title, .sk-ring, .sk-map and .sk-chart, which had one or two uses each and are
    now inline styles at the call site. */
 .sk-chip  { block-size: 1.6rem; }
-.sk-bar   { inline-size: 100%; block-size: 1.25rem; }
+.sk-bar   { block-size: 1.25rem; }
 .sk-meter { display: grid; grid-template-columns: 1fr 4rem;
             align-items: center; gap: var(--wa-space-s); }
 .sk-meter > wa-skeleton:first-child { block-size: 1.5rem; }

@@ -1424,21 +1424,31 @@ function buildInstance(root, report) {
 
     const pager = $('s-pager');
     if (!pager || !paged) return;
-    /* the two buttons are recreated on every render, so they are re-bound on every
-       render; a disabled end-stop is a control that says so rather than one that
-       silently does nothing */
-    pager.innerHTML = join(
-      waButton('Previous', { id: 's-prev', disabled: page === 0 || null }),
-      el('span', `Page ${num(page + 1)} of ${num(pages)}`, { className: 'wa-caption-s' }),
-      waButton('Next', { id: 's-next', disabled: page >= pages - 1 || null }),
-    );
-    const prev = $('s-prev');
-    const next = $('s-next');
-    if (prev) prev.addEventListener('click', () => { if (page > 0) { page -= 1; renderTable(); } });
-    if (next) {
-      next.addEventListener('click', () => {
-        if (page < pages - 1) { page += 1; renderTable(); }
+    /* `wa-pagination format="compact"` is Previous / "1 of 12" / Next with the end-stops
+       disabled for us. It is BUILT ONCE and mutated thereafter, never rewritten: the
+       component restores focus to the current page item in its `updated()`, which runs
+       BEFORE `wa-page-change` fires, so re-creating the element from inside its own
+       handler would tear out the node that was just focused and drop the keyboard to
+       `<body>`. Writing `page` back is safe — setting it programmatically does not
+       re-emit `wa-page-change` (pagination.md 308–310) — and `page` was already clamped
+       to this row set above, so a filter that shrinks the table cannot strand it.
+       `with-summary` is omitted because `#s-tableinfo` above already prints the count
+       with the noun the component's bare "1–20 of 237" leaves out. */
+    let pg = pager.querySelector('wa-pagination');
+    if (!pg) {
+      pager.innerHTML = el('wa-pagination', '', {
+        total: rows.length,
+        pageSize: TABLE_PAGE,
+        page: page + 1,
+        format: 'compact',
+        label: 'Zone table pages',
       });
+      pg = pager.querySelector('wa-pagination');
+      pg.addEventListener('wa-page-change', (e) => { page = e.detail.page - 1; renderTable(); });
+    } else {
+      pg.total = rows.length;
+      pg.pageSize = TABLE_PAGE;
+      pg.page = page + 1;
     }
   }
 

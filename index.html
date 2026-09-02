@@ -53,7 +53,7 @@
 <wa-page mobile-breakpoint="920">
 
 
-  <header slot="header" class="wa-split wa-flex-wrap wa-align-items-center wa-gap-m">
+  <header slot="header" class="wa-split">
     <!-- `#top` is the hero, which is `data-when="report"` and therefore display:none
          until a feed exists — so the shipped href points at the landing stage and
          app.js swaps it in `setShellState`. verdict.js re-creates `id="top"` (801)
@@ -70,7 +70,7 @@
          `jltg.rerun` handoff in `boot()`, once, and only on a re-run — on an
          ordinary run it stays hidden and empty. `data-when="report"` because a
          re-run is never in the landing state. -->
-    <span id="run-history" data-when="report" class="wa-cluster wa-gap-2xs wa-align-items-center" hidden></span>
+    <span id="run-history" data-when="report" class="wa-cluster wa-gap-2xs" hidden></span>
 
     <!-- THE PROGRESS BAR LIVES IN THE HEADER. `total` may grow as the worker
          discovers work (CONTRACT §(d)), so the label carries the words and the
@@ -87,12 +87,12 @@
          stretch of a cold run from reading as a hang. -->
     <div id="hydration" data-role="progress" data-when="running" class="wa-stack wa-gap-3xs">
       <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress"></wa-progress-bar>
-      <span id="hydration-status" data-role="progresslabel" class="wa-caption-xs wa-color-text-quiet" role="status" aria-live="polite">Starting…</span>
-      <span id="hydration-note" data-role="progressnote" class="wa-caption-xs wa-color-text-quiet"></span>
-      <span id="hydration-wait" data-role="progresswait" class="wa-caption-xs wa-color-text-quiet" role="status" aria-live="polite"></span>
+      <span id="hydration-status" data-role="progresslabel" class="wa-caption-xs wa-color-text-quiet wa-text-truncate" role="status" aria-live="polite">Starting…</span>
+      <span id="hydration-note" data-role="progressnote" class="wa-caption-xs wa-color-text-quiet wa-text-pretty"></span>
+      <span id="hydration-wait" data-role="progresswait" class="wa-caption-xs wa-color-text-quiet wa-text-pretty" role="status" aria-live="polite"></span>
     </div>
 
-    <div class="wa-cluster wa-gap-2xs wa-align-items-center">
+    <div class="wa-cluster wa-gap-2xs">
       <!-- Report chrome, hence `data-when="report"`: on the landing state there is
            nothing to reset, and a control that reloaded the landing stage into itself
            would be the browser's own reload button wearing a costume. In the `running`
@@ -110,15 +110,15 @@
     </div>
   </header>
 
-  <div slot="subheader" data-when="report" class="wa-split wa-align-items-center wa-flex-wrap wa-gap-s">
-    <div class="wa-cluster wa-gap-s wa-align-items-center">
+  <div slot="subheader" data-when="report" class="wa-split wa-gap-s">
+    <div class="wa-cluster wa-gap-s">
       <wa-button data-toggle-nav appearance="plain" size="s" variant="neutral" class="wa-mobile-only">
         <wa-icon slot="start" name="bars"></wa-icon>Menu
       </wa-button>
       <!-- `_s4_day_selector` builds `#daysel` in here once the feed's day types
            are known. A feed with one day type gets no control at all: an empty
            selector reads as a bug. -->
-      <div id="dayselect" data-role="dayselector" class="wa-cluster wa-gap-2xs wa-align-items-center"></div>
+      <div id="dayselect" data-role="dayselector" class="wa-cluster wa-gap-2xs"></div>
     </div>
     <!-- the page's one persistent grade readout -->
     <span id="status"></span>
@@ -190,7 +190,7 @@
        it the dial, the budget, the meters and the day tiles. app.js renders it
        twice for that reason. -->
   <header id="top" data-when="report" data-section="hero" data-stage="feed" data-state="pending" aria-busy="true" class="wa-stack wa-gap-l">
-    <div class="wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start">
+    <div class="wa-split wa-gap-2xl wa-align-items-start">
       <div class="wa-stack wa-gap-xs" style="flex:1 1 24rem">
         <p class="kicker wa-caption-s wa-text-uppercase">Feasibility report</p>
         <h1 class="wa-heading-4xl">Can you hide here?</h1>
@@ -210,7 +210,7 @@
         <wa-card>
           <div class="wa-stack wa-gap-m sk-body">
             <!-- tier 1 · the dial and the band word: exactly one grade on the page -->
-            <div class="wa-cluster wa-gap-l wa-align-items-center">
+            <div class="wa-cluster wa-gap-l">
               <wa-skeleton style="inline-size:9rem;block-size:9rem;flex:none"></wa-skeleton>
               <div class="sk-text wa-stack wa-gap-xs" style="flex:1 1 11rem">
                 <wa-skeleton style="inline-size:70%"></wa-skeleton>
@@ -280,7 +280,7 @@
          `boot()`'s submit listener and `readOptions`' eleven `[data-opt]` lookups.
          ══════════════════════════════════════════════════════════════════ -->
     <div id="landing" data-when="landing">
-      <form id="landing-form" data-role="runform">
+      <form id="landing-form" data-role="runform" novalidate>
         <div id="picker">
 
           <!-- The hero. Empty until `render/picker.js` lazily imports MapLibre into
@@ -351,7 +351,7 @@
               <!-- two wa-dividers rather than a bespoke grid with ::before/::after rules.
                    --spacing:0 because the wa-stack parent owns the vertical rhythm; flex:1
                    makes each divider eat the free space either side of the word. -->
-              <div class="wa-cluster wa-gap-s wa-align-items-center">
+              <div class="wa-cluster wa-gap-s">
                 <wa-divider style="--spacing:0;flex:1"></wa-divider>
                 <span class="wa-caption-xs wa-text-uppercase wa-color-text-quiet">or</span>
                 <wa-divider style="--spacing:0;flex:1"></wa-divider>
@@ -438,8 +438,8 @@
                          fieldset's `aria-describedby`, where it was in no accessible
                          relationship to the control before. -->
                     <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Out-of-border features do not exist for this game, so this changes real answers.">
-                      <wa-radio value="bbox" appearance="button" size="s">Rectangle</wa-radio>
-                      <wa-radio value="circle" appearance="button" size="s">Circle</wa-radio>
+                      <wa-radio value="bbox" appearance="button">Rectangle</wa-radio>
+                      <wa-radio value="circle" appearance="button">Circle</wa-radio>
                     </wa-radio-group>
 
                     <!-- A MIRROR of the frame on the landing map since 2026-08-27, and
@@ -478,8 +478,8 @@
                       <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
                     </wa-input>
 
-                    <!-- Full width, `#landing-fields .field-wide` in styles.css: a URL is
-                         the one value here that does not fit a 220px column.
+                    <!-- Full width via the `wa-span-grid` utility (grid-column: 1 / -1): a URL
+                         is the one value here that does not fit a 220px column.
 
                          Deliberately NOT `type="url"`, unlike the feed field above. That
                          one is the primary control and sits outside <wa-details>; this one
@@ -494,7 +494,7 @@
                          `osm/worldfile.js` as DEFAULT_WORLD_BASE_URL. The placeholder does
                          not repeat it: two copies of a URL is one copy too many, and the
                          one that would go stale is this one. -->
-                    <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="field-wide" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
+                    <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="wa-span-grid" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
                       <span slot="hint">Where the map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one.</span>
                     </wa-input>
 
@@ -528,7 +528,7 @@
             <!-- THE FOOT. Outside the scroller on purpose: the page's primary action
                  and the one sentence that says why it failed must not be reachable
                  only by scrolling a panel whose length the reader does not control. -->
-            <div class="panel-foot">
+            <div class="panel-foot wa-stack wa-gap-2xs">
               <!-- The callout is shipped here rather than built as a string: `showFormError`
                    (app.js 579) now only unhides it and writes the message text.
                    `role="alert"` is explicit because wa-callout carries no implicit role —

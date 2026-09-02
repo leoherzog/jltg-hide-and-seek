@@ -364,7 +364,7 @@ export function waAccordion(items, opts = {}) {
     'wa-accordion-item',
     el('div', labelHtml, {
       slot: 'label',
-      className: 'wa-split wa-align-items-center wa-gap-s',
+      className: 'wa-split wa-gap-s',
       style: 'flex:1',
     }) + bodyHtml,
     { id: itemId || null, expanded: expanded ? true : null },
@@ -418,7 +418,7 @@ export function meter(labelHtml, valuePct, rightHtml, opts = {}) {
     className: 'wa-stack wa-gap-3xs',
   });
   return el('div', join(left, rightHtml), {
-    className: 'wa-flank:end wa-gap-s wa-align-items-center',
+    className: 'wa-flank:end wa-gap-s',
     style: `--flank-size:${flank}`,
     ...rest,
   });

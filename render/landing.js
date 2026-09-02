@@ -118,6 +118,7 @@ export function renderPickerCard() {
     id: 'example-maps',
     role: 'group',
     ariaLabel: 'Example maps',
+    className: 'wa-stack wa-gap-2xs',
     hidden: true,
   });
 
@@ -310,7 +311,12 @@ export function renderBorderRow(s) {
     borderField('w', 'West', west),
     borderField('n', 'North', north),
     borderField('e', 'East', east),
-  ), { className: 'border-fields', role: 'group', ariaLabel: 'Game border edges, in decimal degrees' });
+  ), {
+    className: 'wa-grid wa-gap-xs',
+    style: '--min-column-size:7rem',
+    role: 'group',
+    ariaLabel: 'Game border edges, in decimal degrees',
+  });
   const buttons = el('div', join(
     waButton('Fit to feeds', {
       id: 'border-fit', type: 'button', icon: 'arrows-to-dot', dataBorderAction: 'fit',
@@ -391,8 +397,13 @@ function rowWhere(row) {
  * @param {string} textHtml @param {string} controlHtml @param {Object} [opts]
  */
 function pickRow(textHtml, controlHtml, opts = {}) {
+  // The cluster utilities are the row's whole layout — `styles.css` keeps only the
+  // padding and the divider — so a caller's own `className` is appended rather than
+  // allowed to replace them, which a bare `...opts` spread would do.
+  const { className = '', ...rest } = opts;
   return el('div', join(el('div', textHtml, { className: 'pick-row-text' }), controlHtml), {
-    className: 'pick-row', ...opts,
+    className: `pick-row wa-cluster wa-gap-s wa-justify-content-space-between ${className}`.trim(),
+    ...rest,
   });
 }
 
@@ -505,7 +516,7 @@ export function renderPicks(picks) {
     }),
     // `data-row-id` so `render/picker.js` can put focus back on the row next to the
     // one just removed instead of dropping it to `<body>`.
-    { className: 'pick-row pick-row-chosen', dataRowId: p.id },
+    { className: 'pick-row-chosen', dataRowId: p.id },
   )));
 }
 

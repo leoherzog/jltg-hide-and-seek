@@ -742,7 +742,7 @@ function pickCard(report, view) {
     el('span', esc(`${num(view.overall, 1)} / ${num(view.max, 0)}`), {
       className: 'wa-caption-s wa-color-text-quiet',
     }),
-  ), { className: 'wa-split wa-align-items-center' });
+  ), { className: 'wa-split' });
 
   const body = el('div', join(
     el('p', esc(ride), { className: 'wa-body-s' }),
@@ -1001,7 +1001,7 @@ function railAndDossier(report) {
   const head = el('div', join(
     subhead('Ranked candidates', { anchorId: 's-dossier' }),
     el('span', '', { id: 's-count', className: 'wa-caption-s wa-color-text-quiet' }),
-  ), { className: 'wa-split wa-align-items-center' });
+  ), { className: 'wa-split' });
 
   const rail = el('div', '', {
     id: 's-list',
@@ -1024,7 +1024,7 @@ function railAndDossier(report) {
       headerHtml: el('div', join(
         el('span', esc('Zone dossier'), { className: 'wa-heading-s', id: 's-title' }),
         el('span', '', { id: 's-score', className: 'wa-caption-s wa-color-text-quiet' }),
-      ), { className: 'wa-split wa-align-items-center' }),
+      ), { className: 'wa-split' }),
     },
   ), { id: 's-detail' });
 
@@ -1136,7 +1136,7 @@ function sectionWholeField(report, views) {
     el('span', '', { id: 's-tableinfo', className: 'wa-caption-s wa-color-text-quiet' }),
   ), {
     id: 's-controls',
-    className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s',
+    className: 'wa-split wa-flex-wrap wa-gap-s',
   });
 
   // `aria-sort="none"` is set here as well as by `renderTable()` so the header row is
