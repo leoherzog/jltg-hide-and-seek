@@ -3,60 +3,46 @@
 tools/osm-world/ci/merge-plan.py — plan world-merge.yml's matrices from the shard
 manifests actually present in R2.
 
-See DESIGN.md §Phase 6. Consumed by .github/workflows/world-merge.yml's `plan` job,
-which syncs every shard's `manifest.json` (and nothing else) out of R2 into two
-local directories and points this script at them. It answers three questions the
-workflow must not answer for itself:
+See DESIGN.md §Phase 6. world-merge.yml's `plan` job syncs every shard's
+`manifest.json` out of R2 into two local directories and points this script at
+them. It answers three questions:
 
-  1. IS THE SHARD SET COMPLETE AND EXACT? merge.py can detect a *listed* file that
-     is missing, but a shard whose job never ran leaves no trace at all — the merge
-     would publish counts silently short by that region. Worse, a shard DELETED
-     from the cover (shards.json) but still present in R2 would silently merge
-     stale data — and for density that means DOUBLE-COUNTING, because the dropped
-     member's cells were reassigned to later members of the difference chain
-     (DESIGN.md §Phase 6, the lakes-mask five-shard delta). So the manifest set must
-     equal shards.json's id set EXACTLY, both directions, per cover. Failure names
-     every offender; `--skip-cover-check` is the explicit, logged escape hatch for
+  1. IS THE SHARD SET COMPLETE AND EXACT? A shard whose job never ran leaves no
+     trace, and the merge would publish counts silently short. A shard deleted
+     from shards.json but still in R2 would merge stale data, and for density
+     that DOUBLE-COUNTS because its cells were reassigned along the difference
+     chain. So the manifest set must equal shards.json's id set exactly, both
+     directions, per cover. `--skip-cover-check` is the logged escape hatch for
      deliberate partial merges.
 
-  2. HOW MANY DENSITY BANDS? N = ceil(total cells / --cells-per-band), where the
-     total is summed from the fine manifests' `layers.density.features`. Computed
-     here AT RUNTIME, never hard-coded: the measured 2026-08-22 planet gives
-     119,473,135 cells → 4 bands at 30M/band, but the next planet snapshot, or a
-     changed cover, re-derives it. A shard with no density entry contributes 0 and
-     is NOT an error — british-columbia's populated land is claimed by the four
-     smaller admreg sub-extracts that sort ahead of it in the area-ascending
-     cover, so its offshore-only residual legitimately publishes `layers: {}`.
-     ZERO cells overall, though, is the same hard error merge.py enforces.
+  2. HOW MANY DENSITY BANDS? N = ceil(total cells / --cells-per-band), summed at
+     runtime from the fine manifests' `layers.density.features`, never hard-coded.
+     A shard with no density entry contributes 0 and is NOT an error: smaller
+     sub-extracts sorting ahead of british-columbia claim its populated land, so
+     its offshore residual publishes `layers: {}`. Zero cells overall is the same
+     hard error merge.py enforces.
 
-  3. WHICH LAYER JOBS, IN WHAT ORDER? One matrix entry per identity + count_only
-     layer from categories.json (the layer table, NOT the manifests — a layer
-     empty in every shard still needs its `features: 0` staged entry), sorted by
-     pooled shard bytes DESCENDING so the scheduler starts `green` (14.22 GB
-     pooled, the longest merge) in the first wave instead of queueing it behind
-     twenty small layers.
+  3. WHICH LAYER JOBS, IN WHAT ORDER? One entry per identity + count_only layer
+     from categories.json (the layer table, not the manifests, so a layer empty in
+     every shard still gets its `features: 0` entry), sorted by pooled shard bytes
+     DESCENDING so the longest merge starts in the first wave.
 
-CANARY SWITCHES (world-merge.yml's only_layers / skip_density inputs): a merge
-canary — a deliberately restricted run to exercise the upload paths before a full
-rebuild — narrows the plan here, not with jq in the workflow, so the narrowing is
-unit-testable and the plan summary reports what was actually planned:
+CANARY SWITCHES (world-merge.yml's only_layers / skip_density inputs) narrow the
+plan here rather than with jq in the workflow, so the narrowing is unit-testable:
 
-  * `--only-layers a,b` keeps only those layer jobs. A key that is not in the
-    layer table, OR that no shard manifest carries, is a HARD ERROR naming the
-    key — a typo'd canary layer that silently merged nothing would look exactly
-    like a pass, which defeats the canary. (Outside --only-layers, a layer absent
-    from every shard is legitimate and becomes `features: 0` — the error is about
-    a canary SELECTING nothing, not about emptiness.)
-  * `--skip-density` skips the density manifests entirely: no density sync
-    needed, no density cover check, `bands_matrix` empty, `cells`/`bands` 0.
+  * `--only-layers a,b` keeps only those layer jobs. A key not in the layer table,
+    or carried by no shard manifest, is a HARD ERROR naming the key: a typo'd
+    canary layer that merged nothing would look like a pass. (Outside
+    --only-layers, an everywhere-absent layer legitimately becomes `features: 0`.)
+  * `--skip-density` reads no density manifests: no density cover check,
+    `bands_matrix` empty, `cells`/`bands` 0.
 
 Output: one JSON object on stdout —
     {"cells": N, "bands": N, "contributing_density_shards": N,
      "layers_matrix": [{"layer": k, "pooled_bytes": b}, ...],
      "bands_matrix": [{"band": k, "bands": n}, ...]}
 
-No third-party dependencies (stdlib only) so a bare `python3` on the runner can
-run it without an `uv` setup step.
+Stdlib only, so a bare `python3` on the runner can run it without `uv`.
 """
 
 from __future__ import annotations
@@ -73,9 +59,8 @@ HERE = Path(__file__).resolve().parent
 def read_manifests(root: Path) -> dict[str, dict]:
     """id -> parsed manifest, for every manifest.json under root, recursively.
 
-    The id is the manifest's directory relative to root, which is exactly the
-    shard id because the R2 layout is `shards/<kind>/<id>/manifest.json` and ids
-    contain slashes (`us/michigan`).
+    The id is the manifest's directory relative to root: the R2 layout is
+    `shards/<kind>/<id>/manifest.json` and ids contain slashes (`us/michigan`).
     """
     if not root.is_dir():
         sys.exit(f"error: manifest directory not found: {root}")
@@ -170,10 +155,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.skip_cover_check:
             return 1
 
-    # Band count, from what the shards actually built. Path-less or absent
-    # density entries contribute nothing and are legitimate (british-columbia);
-    # zero cells overall is merge.py's hard error, surfaced here before any job
-    # is scheduled.
+    # Path-less or absent density entries are legitimate (british-columbia); zero
+    # cells overall is merge.py's hard error, surfaced before any job is scheduled.
     cells = 0
     contributing = 0
     bands = 0
@@ -205,10 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             sys.exit(f"error: --only-layers key(s) not in the layer table "
                      f"({args.categories}): {', '.join(unknown)}")
-        # A canary layer no shard carries would merge nothing and read as a
-        # pass — refuse it by name instead. (Only under --only-layers: in a
-        # full plan an everywhere-absent layer legitimately merges to
-        # features: 0.)
+        # A canary layer no shard carries would merge nothing and read as a pass;
+        # refuse it by name. In a full plan an absent layer merges to features: 0.
         uncarried = sorted(k for k in wanted if carriers[k] == 0)
         if uncarried:
             sys.exit(f"error: --only-layers key(s) present in NO shard "

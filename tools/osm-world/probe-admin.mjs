@@ -1,39 +1,28 @@
-// ══════════════════════════════════════════════════════════════════════════════
 // probe-admin.mjs — validate an admin.fgb through the app's own reader.
 //
 //   node tools/osm-world/probe-admin.mjs <admin.fgb>
 //
 // Exits 0 when every probe passes, 1 otherwise.
 //
-// WHY THIS EXISTS AND WHY IT IS NOT A SQL SCRIPT. `build-admin.sh` already runs
-// ogrinfo probes, and ogrinfo answers with GEOS: correct, and irrelevant. What
-// ships is `osm/worldfile.js` reading FlatGeobuf over HTTP Range and running its
-// own ray-cast containment in raw degrees. Every interesting failure lives in the
-// gap between those two — a multipolygon whose parts the reader flattens wrong,
-// interior rings dropped so the Vatican answers "Italy", an R-tree bbox hit the
-// client forgets to re-test against real geometry (Canada's bbox contains Grand
-// Rapids). So this harness imports the real reader and feeds it real bytes
-// through a file-backed `fetchImpl` that speaks HTTP 206 + Content-Range.
+// Unlike the ogrinfo probes in build-admin.sh, this imports the real
+// `osm/worldfile.js` reader (HTTP Range + ray-cast containment) and feeds it
+// bytes through a file-backed `fetchImpl`, so it catches reader-side bugs:
+// flattened multipolygons, dropped interior rings, bbox hits not re-tested
+// against geometry.
 //
-// The probes are the ones that actually distinguish a correct build:
-//   Grand Rapids  the home map; country must reach it, and CANADA MUST NOT
-//   Basel         three sovereign countries inside one 10 km box
-//   Vatican       enclave carved as an interior ring — holes are load-bearing
-//   Baarle        BE and NL interleaved at ~100 m; the hardest real case there is
+// Probes: Grand Rapids (US, and NOT Canada), Basel (three countries in one
+// box), Vatican (hole in Italy), Baarle (BE/NL interleaved at ~100 m).
 //
-// Expected values below are ground truth for Overture 2026-07-22.0 divisions.
-// If a future release renames something, fix the expectation — do not relax it.
-// ══════════════════════════════════════════════════════════════════════════════
+// Expected values are ground truth for Overture 2026-07-22.0 divisions. If a
+// release renames something, fix the expectation; do not relax it.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// ── Locate the client reader ─────────────────────────────────────────────────
-// Normally this file sits in tools/osm-world/ and the reader is ../../osm/. The
-// fallbacks exist because this harness is genuinely useful copied next to a
-// multi-GB fgb on a build box, where the repo lives somewhere else entirely.
+// Locate the client reader. Fallbacks let this file run copied next to an fgb
+// on a build box outside the repo.
 function resolveWorldfile() {
   const candidates = [];
   if (process.env.WORLDFILE) candidates.push(path.resolve(process.env.WORLDFILE));
@@ -53,10 +42,8 @@ function resolveWorldfile() {
 
 const { openWorld, worldAdminAreas, adminAreasAt } = await import(pathToFileURL(resolveWorldfile()).href);
 
-// ── A file-backed fetch that behaves like a Range-capable origin ─────────────
-// Deliberately strict: 206 only, a real Content-Range so the reader learns the
-// file size the same way it does over HTTP, and reads clamped to EOF. A lenient
-// stub here would hide exactly the transport bugs this is meant to catch.
+// File-backed fetch behaving like a Range-capable origin. Deliberately strict:
+// 206 only, real Content-Range, reads clamped to EOF.
 function makeFetch(fgbPath, manifestPath) {
   const size = fs.statSync(fgbPath).size;
   return async (url, init = {}) => {
@@ -85,7 +72,6 @@ function makeFetch(fgbPath, manifestPath) {
   };
 }
 
-// ── Probes ───────────────────────────────────────────────────────────────────
 // bbox is the app's [south, west, north, east]. Point specs match a hit when
 // every field given agrees; `reject` specs must match nothing.
 const PROBES = [
@@ -93,9 +79,8 @@ const PROBES = [
     label: 'Grand Rapids, Michigan',
     bbox: [42.87, -85.75, 43.05, -85.55],
     expectIso1: ['US'],
-    // Canada is one relation with one bbox spanning lon -141..-52, lat 41.7..83.1,
-    // which contains Grand Rapids. If it survives into the area list, `adminInfo`
-    // picks it over the US and the whole page renders in kilometres.
+    // Canada's bbox contains Grand Rapids; if it survives into the area list,
+    // `adminInfo` picks it over the US.
     rejectIso1: ['CA'],
     points: [
       {
@@ -141,8 +126,7 @@ const PROBES = [
     expectIso1: ['IT', 'VA'],
     points: [
       {
-        // Inside Italy's OUTER ring and inside one of its interior rings. Passes only
-        // if the reader kept holes and `adminAreasAt` subtracts them.
+        // Inside Italy's outer ring and one of its holes; needs holes kept and subtracted.
         label: "St Peter's Square",
         lat: 41.9029,
         lon: 12.4534,
@@ -150,7 +134,7 @@ const PROBES = [
         reject: [{ level: 2, iso1: 'IT' }],
       },
       {
-        // The control: 3.5 km east, same country polygon, no hole.
+        // Control: same polygon, no hole.
         label: 'Rome centre',
         lat: 41.9028,
         lon: 12.4964,
@@ -172,8 +156,7 @@ const PROBES = [
         reject: [{ level: 2, iso1: 'NL' }],
       },
       {
-        // ~1 km away, back in the Netherlands. Both directions must hold: a build
-        // that returned the union everywhere would pass the first point alone.
+        // Both directions must hold; a union-everywhere build passes the first point alone.
         label: 'Baarle-Nassau NL',
         lat: 51.4306,
         lon: 4.9333,
@@ -200,9 +183,7 @@ async function main() {
     return 2;
   }
 
-  // A synthetic one-layer manifest: the reader only ever needs `layers.admin.path`,
-  // and building it here means the harness runs against a bare fgb straight out of
-  // the build, before merge.py has written the real global manifest.
+  // Synthetic one-layer manifest so a bare fgb works before merge.py writes the real one.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-admin-'));
   const manifestPath = path.join(tmpDir, 'manifest.json');
   fs.writeFileSync(manifestPath, JSON.stringify({

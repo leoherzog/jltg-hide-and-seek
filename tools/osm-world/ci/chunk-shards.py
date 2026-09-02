@@ -2,12 +2,11 @@
 """
 tools/osm-world/ci/chunk-shards.py — turn shards.json into a GitHub Actions matrix.
 
-See DESIGN.md §Phase 4. Consumed by .github/workflows/world-density-shards.yml and
-world-feature-shards.yml, both of which need a dynamic matrix (the shard count is
-decided by cover.py's Geofabrik-derived cover, not known when the workflow is
-authored) that stays under the platform's 256-entry-per-matrix cap.
+See DESIGN.md §Phase 4. Consumed by world-density-shards.yml and world-feature-shards.yml,
+which need a dynamic matrix (cover.py decides the shard count) under the platform's
+256-entry-per-matrix cap.
 
-shards.json (the pinned interface written by cover.py) has the shape:
+shards.json (written by cover.py) has the shape:
 
     {
       "generated_from": "geofabrik index-v1.json <date>",
@@ -15,34 +14,25 @@ shards.json (the pinned interface written by cover.py) has the shape:
       "fine":   [{..same.., "disjoint_neighbors": ["..."]}]
     }
 
-This script reads one of those two arrays, groups it into batches (a GitHub matrix
-*job* runs one batch, looping over its shards sequentially — that is what keeps 514
-fine shards under 256 jobs without raising per-job concurrency), and prints a JSON
-array of `{"batch_id", "shards"}` objects suitable for:
+This reads one of those arrays, groups it into batches (one matrix job loops over
+its batch sequentially, which keeps 514 fine shards under 256 jobs) and prints a JSON
+array of `{"batch_id", "shards"}` objects for:
 
     strategy:
       matrix:
         include: ${{ fromJson(needs.setup.outputs.matrix) }}
 
 A batch closes on whichever cap is hit first: `--batch-size` (shard count) or, when
-given, `--max-batch-bytes` (accumulated `est_bytes`). The byte cap exists because
-the fine shards span ~100 kB to 7.90 GB and the density pass is single-threaded, so
-a batch's wall clock tracks its total bytes, not its shard count: with count-only
-batching, whichever fixed batch drew africa was ~10x the work of a typical one and
-blew the workflow timeout while its neighbours finished in minutes. A single shard
-larger than the byte cap still gets a batch — its own, alone; the cap bounds what a
-shard *shares a job with*, it is not an admission test (dropping the shard would
-silently publish a world without africa).
+given, `--max-batch-bytes` (accumulated `est_bytes`). Fine shards span ~100 kB to
+7.90 GB and the density pass is single-threaded, so a batch's wall clock tracks its
+bytes, not its shard count. A shard larger than the byte cap still gets a batch of
+its own: the cap bounds what a shard shares a job with and is not an admission test.
 
-`disjoint_neighbors` (fine-only) is not consumed here, and it is not a merge input
-either: the density exactness rule is enforced at BUILD time (build-shard.sh passes
-cover.py's cover-geometries/<id>.geojson — the shard's assigned disjoint polygon —
-to `build.py --clip-region`; merge.py just sums cells). `disjoint_neighbors` records
-which fine shards can share a boundary density cell — diagnostic/bookkeeping data,
-not a scheduling input for CI.
+`disjoint_neighbors` (fine-only) is diagnostic only. The density exactness rule is
+enforced at build time (build-shard.sh passes cover-geometries/<id>.geojson to
+`build.py --clip-region`); merge.py just sums cells.
 
-No third-party dependencies (stdlib json/argparse only) so a bare `python3` on the
-runner can run it without an `uv` setup step.
+Stdlib only, so a bare `python3` on the runner can run it without `uv`.
 """
 
 from __future__ import annotations
@@ -54,14 +44,11 @@ from pathlib import Path
 
 
 def chunk(items: list, size: int, max_bytes: int | None = None) -> list[list]:
-    """Greedy, order-preserving batching: close the open batch when adding the next
-    shard would exceed the count cap OR the byte cap, whichever comes first.
+    """Greedy, order-preserving batching: close the open batch when the next shard
+    would exceed the count cap or the byte cap.
 
-    Order-preserving matters only in that it keeps the output stable for a given
-    shards.json — batches have no build-time meaning beyond "these run sequentially
-    on one runner". An oversized shard (est_bytes > max_bytes) opens a fresh batch
-    and the very next shard closes it, so it runs alone rather than being dropped
-    or erroring; every shard appears in exactly one batch either way.
+    An oversized shard opens a fresh batch and the next shard closes it, so it runs
+    alone rather than being dropped; every shard appears in exactly one batch.
     """
     if size < 1:
         raise ValueError("batch size must be >= 1")
@@ -129,10 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.max_batch_bytes is not None:
-        # cover.py --no-sizes writes est_bytes: null (it skips the per-region HEAD
-        # requests). Treating null as 0 would silently pack every shard of such a
-        # run into count-capped batches, which is exactly the failure mode the byte
-        # cap exists to prevent — refuse instead.
+        # cover.py --no-sizes writes est_bytes: null. Treating null as 0 would pack
+        # every shard into count-capped batches, the failure the byte cap prevents.
         unsized = [s["id"] for s in shards if not s.get("est_bytes")]
         if unsized:
             print(

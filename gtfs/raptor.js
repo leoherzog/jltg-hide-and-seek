@@ -4,25 +4,15 @@
  * Port of `generate.py`: `_s1_slack`, `_s1_earliest_trip`,
  * `_s1_latest_trip`, `raptor`, `raptor_reverse` and `build_journey`.
  *
- * This is a real transit routing algorithm over the actual timetable. "35 minutes
- * from the hub" means there is a genuine sequence of buses that gets you there in
- * 35 minutes, including transfer waits. The round structure and the marked-stop
- * bookkeeping are ported exactly; the golden t90 = 76.8 min on the reference feed
- * depends on that faithfulness. There is no target pruning in either implementation —
- * every query fans out to the whole network, because the callers want all arrival
- * times, not one.
+ * Round-based RAPTOR over the real timetable, ported exactly: the golden
+ * t90 = 76.8 min on the reference feed depends on it. No target pruning — every
+ * query fans out to the whole network because callers want all arrival times.
  *
- * The one shape change from the Python is representational, not behavioural:
- * labels, the marked sets and the parent pointers are typed arrays rather than
- * lists of tuples, and `day.patternAtStop` / `day.footpaths` arrive as the CSR
- * triples that `gtfs/service.js` builds. Stop ids are interned to dense
- * integers by `day.stopIndex`; everything below works in integer space and
- * converts back to string ids only at the API boundary.
- *
- * Determinism: the Python iterates `sorted(marked)` and `sorted(queue)`. Here
- * `marked` is a `Uint8Array` scanned in ascending index order and `queue` is an
- * `Int32Array` indexed by pattern, also scanned ascending — the same total order,
- * for free. There is no priority queue and therefore no tie-break nondeterminism.
+ * Labels, marked sets and parent pointers are typed arrays; `day.patternAtStop` /
+ * `day.footpaths` are the CSR triples `gtfs/service.js` builds, and stop ids are
+ * interned to dense integers by `day.stopIndex`. Marked stops and the pattern queue
+ * are scanned in ascending index order, which reproduces the Python's `sorted(...)`
+ * iteration with no priority queue and no tie-break nondeterminism.
  *
  * @module gtfs/raptor.js
  */
@@ -121,14 +111,9 @@ function labelRounds(count, n, fill) {
 /**
  * Round-based RAPTOR, one-to-all earliest arrival. ~8 ms per query.
  *
- * Determinism comes from iterating the marked stops and the pattern queue in
- * ascending index order — there is no priority queue and therefore no tie-break
- * nondeterminism. `TravelTimes.rounds` carries the transfer count of the best
- * journey, which the zone scoring needs and which a CSA implementation would not
- * give for free.
- *
- * Correctness was validated against an independent brute force (15/15 exact
- * matches, zero cases slower than a one-leg journey) — keep that test.
+ * `TravelTimes.rounds` carries the transfer count of the best journey, which the
+ * zone scoring needs. Validated against an independent brute force (15/15 exact
+ * matches) — keep that test.
  *
  * @param {object} day  a `ServiceDay`
  * @param {string[]} originStopIds
@@ -184,16 +169,11 @@ export function raptor(day, originStopIds, departureS) {
   /**
    * One walk hop out of every stop reached in round `k`.
    *
-   * Deliberately **not** transitively closed. `WALK_RADIUS_M` is the transfer
-   * radius; chaining hops would let the model walk the whole map at 1.2 m/s and it
-   * inflates the reference feed's ≤30-minute reach from 768 stops to 792. A second
-   * walk is a strategic decision, not a transfer.
-   *
-   * `seeds` is a snapshot (the Python takes `sorted(seeds)` on entry); `touched` is
-   * returned separately and unioned in by the caller, so a stop reached by this
-   * pass is never itself used as a seed of the same pass. Labels are, however,
-   * mutated live — a seed processed later sees an improved base, exactly as the
-   * Python does.
+   * Deliberately not transitively closed: chaining hops would let the model walk
+   * the whole map, and it inflates the reference feed's ≤30-minute reach from 768
+   * stops to 792. `seeds` is a snapshot and `touched` is unioned in by the caller,
+   * so a stop reached by this pass is never a seed of the same pass; labels mutate
+   * live, exactly as in the Python.
    */
   function relaxFootpaths(k, seeds) {
     const touched = new Uint8Array(n);
@@ -306,10 +286,8 @@ export function raptor(day, originStopIds, departureS) {
 /**
  * Mirrored RAPTOR: per stop, the **latest departure** that still reaches the target.
  *
- * Labels are latest-departure instead of earliest-arrival, patterns are scanned
- * from the end, `max` replaces `min`, footpaths subtract. This is what produces the
- * honest `last_train_home` — strictly earlier than the raw last departure, and the
- * input to the `S2 exit_margin` metric.
+ * Latest-departure labels, patterns scanned from the end, `max` for `min`, footpaths
+ * subtract. Produces the honest `last_train_home`, the input to `S2 exit_margin`.
  *
  * @param {object} day @param {string[]} targetStopIds @param {number} arriveByS
  * @returns {Object<string, number>} stop_id → latest departure seconds

@@ -1,23 +1,16 @@
 /**
  * osm/synth.js — the OSM fallback converter: route relations → a GTFS zip.
  *
- * When a drawn border closes over no catalogued feed, the run can still happen:
- * this module turns the `transit_route` world layer (assembled OSM route
- * relations, read by `./worldfile.js`'s `worldTransitRoutes`) into a real GTFS
- * zip in memory and hands the bytes back. The worker then feeds them to the
- * **untouched** `loadFeed`, so everything downstream — the fatal guards, the
- * `sha256` that is literally the hex of the zip bytes, merge order, id
- * namespacing, `mergeFeeds([f]) === f` — holds by construction rather than by a
- * parallel Feed constructor that would have to re-earn each of those properties.
+ * When a drawn border closes over no catalogued feed, this turns the `transit_route`
+ * world layer (from `worldTransitRoutes`) into a real GTFS zip in memory. The worker
+ * feeds the bytes to the untouched `loadFeed`, so every downstream property (fatal
+ * guards, sha256 of the bytes, merge order, id namespacing) holds by construction.
  *
- * WORKER SIDE ONLY — no DOM. No wall clock, no randomness: the same routes, the
- * same ring and the same `asOf` produce byte-identical zips (stored entries,
- * fixed DOS timestamps, every table sorted by its primary key), which keeps the
- * hash a true content address for the merge order and the provenance page.
+ * WORKER SIDE ONLY — no DOM. No wall clock, no randomness: the same routes, ring and
+ * `asOf` produce byte-identical zips (stored entries, fixed DOS timestamps, every
+ * table sorted by its primary key).
  *
- * ── Input shape ──────────────────────────────────────────────────────────────
- *
- * `routes` is `worldTransitRoutes`' resolved output, verbatim — an array of
+ * Input: `routes` is `worldTransitRoutes`' output verbatim —
  *
  *     {
  *       osmId: number,                      // the relation id
@@ -32,75 +25,40 @@
  *
  * `ring` is the drawn border, `[[lat, lon], …]`, at least three vertices.
  * `asOf` is the analysis date (`'YYYYMMDD'`, dashes tolerated) or absent.
+ * `duration` is unread so one speed source governs all relations of a line.
  *
- * The `duration` tag goes unread on purpose: the final design spaces stop_times
- * from line distance at mode speed constants, and a second, tag-calibrated speed
- * source would make two relations of the same line disagree about physics.
+ * Geometry is measured; everything about time is invented, confined to the named
+ * constants below and restated in `notes` for provenance: a 6:00–22:00 window every
+ * day of a 14-day calendar starting on the Monday of the week containing `asOf` (or
+ * `SYNTH_FALLBACK_ASOF`); headway from the `interval` tag when sane, else a per-mode
+ * default; inter-stop times from line distance at a per-mode speed plus a fixed dwell.
  *
- * ── What the feed asserts, and what it merely assumes ────────────────────────
- *
- * Geometry is measured (OSM's), and everything about time is invented. The
- * invention is confined to named constants so the rules layer can print each one
- * as an interpretation, and `notes` restates them in prose for provenance:
- *
- *   · service window 6:00–22:00, every day of a 14-day calendar
- *   · headway from the relation's `interval` tag when it parses sanely,
- *     else a per-mode default
- *   · inter-stop times from distance along the relation's own line at a
- *     per-mode commercial speed, plus a fixed dwell
- *
- * The calendar starts on the Monday of the week containing `asOf`; with no
- * `asOf` it starts on the Monday of the week containing the fixed fallback date
- * (`SYNTH_FALLBACK_ASOF`), so a run with no override is still a pure function of
- * its inputs. Taking the containing week's Monday in both cases keeps the window
- * aligned the same way whether or not the player picked a date.
- *
- * ── The landmines this module is shaped around ───────────────────────────────
- *
- *   1. `_s1ExpandFrequencies` (gtfs/feed.js) anchors each expansion at
- *      `departure(rows[0]) || arrival(rows[0]) || 0` — a departure of literally
- *      0 is falsy and falls through. Template stop_times therefore start at
- *      8:00:00, never midnight.
- *   2. A frequencies row that fails its validity test still costs the template
- *      its stop_times. So an invalid row is unrepresentable here: headway is
- *      clamped into a sane band or replaced by the mode default, and the window
- *      is a constant with start < end.
- *   3. Every emitted time must stay under `SERVICE_DAY_SECONDS` *after*
- *      expansion — the last slot departs just before 22:00, so a template
- *      longer than eight hours is dropped (with a note) rather than emitted.
+ * Landmines this module is shaped around:
+ *   1. `_s1ExpandFrequencies` (gtfs/feed.js) treats a departure of 0 as falsy, so
+ *      template stop_times start at 8:00:00, never midnight.
+ *   2. An invalid frequencies row costs the template its stop_times, so an invalid
+ *      row is unrepresentable here: headway is banded or defaulted, window is constant.
+ *   3. Every emitted time must stay under `SERVICE_DAY_SECONDS` after expansion, so a
+ *      template longer than eight hours is dropped (with a note).
  *   4. Ids never contain `:` and never match `/^f\d+:/`, so `gtfs/merge.js`
- *      namespaces them at the ordinary depth on a mixed run.
+ *      namespaces them at the ordinary depth.
  *
- * Stop clustering: OSM maps one `stop_position` node per line per platform, so
- * the same physical station arrives 1.10–3.83× over — measured on the design
- * survey's 13-city Overpass corpus (2026-08-23 snapshot), not on the build's own
- * 14-city corpus, which tools/osm-world/build-transit.py documents separately.
- * Nodes merge when they carry the same normalised name within
- * 500 m, or sit within 100 m of each other regardless of name; the surviving
- * stop takes the lowest member node id, the modal member name and the mean
- * member position. Every stop is a plain boarding stop (`location_type` and
- * `parent_station` omitted — never a station hierarchy), which is exactly the
- * shape `loadFeed` keeps.
+ * Stop clustering: OSM maps one `stop_position` per line per platform, so nodes merge
+ * on the same normalised name within 500 m or any pair within 100 m; the survivor
+ * takes the lowest node id, modal name and mean position. Every stop is a plain
+ * boarding stop, no station hierarchy.
  *
- * Border clipping keeps, per relation, the maximal contiguous run of stops
- * inside the drawn ring — contiguous, because a line that leaves and re-enters
- * would otherwise teleport across the gap; maximal, so Seoul Line 1 does not
- * drag Cheonan into a Seoul game. On a circular relation (a repeated endpoint
- * stop, or chained geometry that closes on itself) "contiguous" is read around
- * the loop: the build seeds its walk on the lowest-id segment, so where the stop
- * list starts is arbitrary, and an in-border arc that happens to span that seam
- * must survive whole rather than be truncated to the longer linear fragment. A
- * relation left with fewer than two stops is dropped. The test is against the
- * ring itself, not its bounding box: the ring is the game border the player
- * drew, and the bbox was only ever the read layer's coarse filter.
+ * Border clipping keeps, per relation, the maximal contiguous run of stops inside the
+ * ring (contiguous so a line cannot teleport across a gap; maximal so Seoul Line 1
+ * does not drag Cheonan in). On a circular relation the run is read around the loop,
+ * since the build's list origin is arbitrary. Fewer than two stops drops the relation.
  */
 
 import { SERVICE_DAY_SECONDS, cmpStr, hhmmss, dowOf } from '../lib/core.js';
 import { haversineM, pointInRing, Projection } from '../lib/geo.js';
 
 // ── the assumption constants ──────────────────────────────────────────────────
-// Exported so the rules layer can cite the numbers it is disclosing instead of
-// keeping a second copy that could drift. Every one of these is an
+// Exported so the rules layer can cite the numbers it discloses. Every one is an
 // interpretation, not a measurement.
 
 /** GTFS `route_type` per OSM `route=` value. All rail-family, all inside
@@ -141,8 +99,7 @@ export const SYNTH_CLUSTER_NAME_M = 500;
 /** … and any two nodes within this many metres merge regardless of name. */
 export const SYNTH_CLUSTER_ANY_M = 100;
 
-/** Sanity band for the `interval` tag, seconds. Outside it (the '10:00'
- *  hours-vs-minutes ambiguity, '24:00', 'irregular') falls to the mode default. */
+/** Sanity band for the `interval` tag, seconds; outside it falls to the mode default. */
 export const SYNTH_HEADWAY_MIN_S = 120;
 export const SYNTH_HEADWAY_MAX_S = 7200;
 
@@ -150,21 +107,15 @@ export const SYNTH_HEADWAY_MAX_S = 7200;
 // stop and falls back to chord distance from its predecessor.
 const PROJECTION_LEASH_M = 500;
 
-// Speed, route_type and fallback headway for a mode value outside the build's
-// six. The build's osmium filter should make this unreachable; if it is reached
-// anyway the relation is published under tram's route_type — the conservative
-// rail-family reading — but assumed at these generic constants, which are their
-// own numbers, not tram's, and the note states exactly the numbers used.
+// A mode outside the build's six (should be unreachable) is published under tram's
+// route_type but assumed at these generic constants; the note states them.
 const UNKNOWN_MODE_SPEED_KMH = 25;
 const UNKNOWN_MODE_ROUTE_TYPE = '0';
 const UNKNOWN_MODE_HEADWAY_S = 600;
 
 // ── date arithmetic ───────────────────────────────────────────────────────────
-// lib/core.js keeps its civil-days kernel private (only `dowOf`/`dateRange`
-// escape), and this module needs to step *backwards* to a Monday, which
-// `dateRange` cannot. The kernel is mirrored here rather than exported from
-// core.js so this optional module leaves core.js untouched. Howard Hinnant's
-// days_from_civil, proleptic Gregorian — identical to core.js's private copy.
+// Mirrors lib/core.js's private civil-days kernel (Hinnant's days_from_civil,
+// proleptic Gregorian) because this module must step backwards to a Monday.
 
 function daysFromCivil(y, m, d) {
   const yy = y - (m <= 2 ? 1 : 0);
@@ -198,8 +149,7 @@ function addDays(yyyymmdd, n) {
   return `${String(Y).padStart(4, '0')}${String(M).padStart(2, '0')}${String(D).padStart(2, '0')}`;
 }
 
-/** `asOf` (or the fallback) → the Monday starting its week. Throws on garbage —
- *  `dowOf` validates the date and this keeps its exact error. */
+/** `asOf` (or the fallback) → the Monday starting its week. Throws on garbage. */
 function windowMonday(asOf) {
   const given = String(asOf ?? '').trim().replace(/-/g, '');
   const date = given || SYNTH_FALLBACK_ASOF;
@@ -211,21 +161,17 @@ function windowMonday(asOf) {
 
 // ── stop clustering ───────────────────────────────────────────────────────────
 
-/** NFC, trimmed, internal whitespace collapsed. No case folding: two casings of
- *  one station name inside 500 m still merge via the 100 m rule when they are
- *  the same platform, and case is signal when they are not. */
+/** NFC, trimmed, internal whitespace collapsed. No case folding: case is signal. */
 function normName(text) {
   if (text === null || text === undefined) return '';
   return String(text).normalize('NFC').trim().replace(/\s+/g, ' ');
 }
 
 /**
- * Union-find over the distinct stop nodes. An edge joins two nodes when they sit
- * within `SYNTH_CLUSTER_ANY_M` of each other, or carry the same non-empty
- * normalised name within `SYNTH_CLUSTER_NAME_M`. Bucketing by a 0.02° grid keeps
- * the pair scan linear-ish; the result is independent of scan order because
- * membership is a property of the edge set, and the representative is the
- * minimum member node id, not the first one unioned.
+ * Union-find over the distinct stop nodes. An edge joins two nodes within
+ * `SYNTH_CLUSTER_ANY_M`, or with the same non-empty normalised name within
+ * `SYNTH_CLUSTER_NAME_M`. The result is scan-order independent; the representative
+ * is the minimum member node id.
  *
  * @param {Array<{nodeId:number, name:string|null, nameEn:string|null,
  *                lat:number, lon:number}>} nodes sorted by nodeId
@@ -245,9 +191,8 @@ function clusterNodes(nodes) {
     if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
   };
 
-  // 0.02° of latitude is ~2.2 km and 0.02° of longitude stays over 500 m up to
-  // ~76° latitude, so scanning the 3×3 neighbourhood sees every pair the edge
-  // rules could join.
+  // 0.02° of longitude stays over 500 m up to ~76° latitude, so the 3×3
+  // neighbourhood sees every pair the edge rules could join.
   const CELL = 0.02;
   const grid = new Map();
   for (let i = 0; i < nodes.length; i++) {
@@ -302,14 +247,11 @@ function modal(values) {
  * Positions of the (clipped) stops along the relation's chained line, metres,
  * non-decreasing by construction.
  *
- * The parts are concatenated in the build's order — a disconnected relation
- * carries its gap as line length, which slightly overstates the run across it
- * and is the honest reading of "the track continues somewhere off the map".
- * Each stop takes the nearest point of the line at or after the previous stop's
- * position — monotone, so a loop line's second visit to a shared vertex lands on
- * the second pass, not back at the first. A stop the line never comes within
- * `PROJECTION_LEASH_M` of (or a relation with no usable line at all) falls back
- * to chord distance from its predecessor.
+ * Parts are concatenated in the build's order, so a disconnected relation carries its
+ * gap as line length. Each stop takes the nearest point at or after the previous
+ * stop's position (monotone, so a loop's second visit lands on the second pass). A
+ * stop further than `PROJECTION_LEASH_M` from the line, or a relation with no usable
+ * line, falls back to chord distance from its predecessor.
  *
  * @param {Array<Array<[number, number]>>} lines
  * @param {Array<{lat:number, lon:number}>} stops travel order
@@ -373,12 +315,10 @@ function stopPositionsAlong(lines, stops) {
 // ── tag parsing ───────────────────────────────────────────────────────────────
 
 /**
- * The `interval` tag → headway seconds, or null when it is unusable. The wiki
- * grammar in the wild: bare digits are minutes, one colon is H:MM, two are
- * H:MM:SS. Values outside the sanity band are discarded rather than clamped —
- * '10:00' meaning "every 10 minutes" written in the hours grammar would
- * otherwise become a six-hundred-minute headway, and a wrong default beats a
- * confidently wrong tag.
+ * The `interval` tag → headway seconds, or null when unusable. Bare digits are
+ * minutes, one colon is H:MM, two are H:MM:SS. Values outside the sanity band are
+ * discarded rather than clamped: '10:00' meaning "every 10 minutes" would otherwise
+ * become a ten-hour headway.
  */
 function parseIntervalS(text) {
   if (text === null || text === undefined) return null;
@@ -393,9 +333,8 @@ function parseIntervalS(text) {
   return (s >= SYNTH_HEADWAY_MIN_S && s <= SYNTH_HEADWAY_MAX_S) ? s : null;
 }
 
-// The colour tag is overwhelmingly '#RRGGBB' in the build corpus, with a short
-// tail of CSS names (Tokyo, Berlin). The basic CSS keywords cover that tail;
-// anything else is omitted rather than guessed.
+// The colour tag is mostly '#RRGGBB' with a tail of CSS names; anything else is
+// omitted rather than guessed.
 const CSS_COLOURS = Object.freeze({
   aqua: '00FFFF', black: '000000', blue: '0000FF', brown: 'A52A2A', cyan: '00FFFF',
   darkblue: '00008B', darkgreen: '006400', darkred: '8B0000', fuchsia: 'FF00FF',
@@ -447,17 +386,14 @@ function crc32(bytes) {
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
-// The one fixed timestamp every entry carries: the DOS epoch, 1980-01-01 00:00.
-// A timestamp of "now" would make two identical synth runs hash differently and
-// break every content-addressed thing downstream.
+// The fixed timestamp every entry carries (DOS epoch, 1980-01-01 00:00); "now"
+// would make identical runs hash differently.
 const DOS_TIME = 0x0000;
 const DOS_DATE = 0x0021;
 
 /**
- * A stored-entry (method 0) zip of UTF-8 text files. `gtfs/feed.js`'s reader
- * takes the central directory as authoritative and accepts method 0, so this is
- * the smallest archive it round-trips; deflate would buy nothing but a
- * dependency on a compressor's byte-for-byte stability.
+ * A stored-entry (method 0) zip of UTF-8 text files, the smallest archive
+ * `gtfs/feed.js`'s reader round-trips; deflate would only add a stability dependency.
  *
  * @param {Array<{name:string, text:string}>} files sorted by name by the caller
  * @returns {Uint8Array}
@@ -529,8 +465,7 @@ function buildZip(files) {
 
 // ── the converter ─────────────────────────────────────────────────────────────
 
-/** The maximal contiguous run of `true` in `flags` — `[start, length]`, first
- *  such run on a tie so the answer is deterministic. */
+/** The maximal contiguous run of `true` in `flags` — `[start, length]`, first on a tie. */
 function longestRun(flags) {
   let bestStart = 0;
   let bestLen = 0;
@@ -546,10 +481,8 @@ function longestRun(flags) {
   return [bestStart, bestLen];
 }
 
-/** True when the relation's chained geometry closes on itself — the parts,
- *  concatenated in the build's order, end where they began. The stop list has
- *  its own closure test (a repeated endpoint node) at the call site; either
- *  reading makes the relation circular. */
+/** True when the concatenated parts end where they began. The stop list has its own
+ *  closure test at the call site; either reading makes the relation circular. */
 function lineClosed(lines) {
   const pts = [];
   for (const part of lines || []) for (const p of part) pts.push(p);
@@ -561,11 +494,9 @@ function lineClosed(lines) {
 /**
  * Synthesize a GTFS zip from OSM route relations clipped to a drawn border.
  *
- * Pure and synchronous: the same `routes`, `ring` and `asOf` produce
- * byte-identical output. Both return fields are structured-clone-safe. Throws
- * when nothing survives clipping — the worker's per-source failure path already
- * knows how to say "this source produced no feed", and an empty zip would fail
- * inside `loadFeed` with a worse message.
+ * Pure and synchronous; both return fields are structured-clone-safe. Throws when
+ * nothing survives clipping, since an empty zip would fail inside `loadFeed` with a
+ * worse message.
  *
  * @param {{routes: Array<Object>, ring: Array<[number, number]>, asOf?: string|null}} input
  *   `routes` — `worldTransitRoutes` output (shape in the module header);
@@ -588,18 +519,15 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
   let clippedStops = 0;
   for (const rel of considered) {
     const listed = Array.isArray(rel.stops) ? rel.stops : [];
-    // A circular relation has no honest list origin — the build seeds its walk on
-    // the lowest-id segment — so its maximal contiguous run is found around the
-    // loop, where it may wrap the list seam. Circular means the stop list repeats
-    // its endpoint (the PTv2 shape; the duplicate comes off so the loop is one
-    // visit per stop) or the chained geometry closes on itself.
+    // A circular relation's list origin is arbitrary, so its run is found around the
+    // loop. Circular means the list repeats its endpoint (PTv2; the duplicate comes
+    // off) or the chained geometry closes on itself.
     const loops = listed.length >= 3 && listed[0].nodeId === listed[listed.length - 1].nodeId;
     const stops = loops ? listed.slice(0, -1) : listed;
     const circular = loops || (stops.length >= 3 && lineClosed(rel.lines));
     const inside = stops.map((s) => pointInRing([s.lat, s.lon], ring));
-    // The circular run comes from `longestRun` over the flags doubled, capped at
-    // one lap; the doubled array is periodic, so the leftmost winner starts in the
-    // first copy and the answer stays deterministic.
+    // The circular run is `longestRun` over the flags doubled, capped at one lap; the
+    // leftmost winner starts in the first copy, so the answer is deterministic.
     let [runStart, runLen] = longestRun(circular ? inside.concat(inside) : inside);
     if (circular) {
       runLen = Math.min(runLen, stops.length);
@@ -611,8 +539,7 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
     let clipped = wraps
       ? Array.from({ length: runLen }, (_, i) => stops[(runStart + i) % stops.length])
       : stops.slice(runStart, runStart + runLen);
-    // A loop whose every stop survives keeps its closing return to the first stop,
-    // exactly as the list wrote it — the trip rides the full circle.
+    // A loop whose every stop survives keeps its closing return to the first stop.
     if (loops && runLen === stops.length) clipped = clipped.concat([clipped[0]]);
     kept.push({ rel, clipped, wraps });
   }
@@ -680,9 +607,8 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
     }
     if (seq.length < 2) { droppedCollapsed++; continue; }
 
-    // A wrapped run rides across the list seam, so the closed line is laid out
-    // twice and the post-seam stops project onto the second lap instead of
-    // falling back to chord distance across the join.
+    // A wrapped run crosses the list seam, so the closed line is laid out twice and
+    // the post-seam stops project onto the second lap.
     const positions = stopPositionsAlong(
       wraps ? [...(rel.lines || []), ...(rel.lines || [])] : rel.lines,
       seq.map((e) => e.stop));
@@ -693,13 +619,11 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
       times.push(times[i - 1] + travel + SYNTH_DWELL_S);
     }
 
-    // Landmine 3: the last frequency slot departs just before the window end, so
-    // the whole template duration must fit between there and the 30-hour day.
+    // Landmine 3: the whole template must fit between the window end and the day end.
     const duration = times[times.length - 1] - SYNTH_TEMPLATE_ANCHOR_S;
     if (windowEndS + duration >= SERVICE_DAY_SECONDS) { droppedTooLong++; continue; }
 
-    // Counted only past both drop checks: the note below discloses a treatment,
-    // and a relation that was dropped instead was not treated at all.
+    // Counted only past both drop checks; a dropped relation was not treated.
     if (!known) unknownModes++;
 
     const routeId = `r${rel.osmId}`;
@@ -822,10 +746,8 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
   files.sort((a, b) => cmpStr(a.name, b.name));
 
   // ── the assumptions, in prose, for the provenance page ──────────────────────
-  // The clustering note counts numerator and denominator over the same
-  // population — the clusters some emitted trip actually serves. A relation
-  // dropped after clustering takes its nodes out of both sides, or the stated
-  // ratio would call a drop a merge.
+  // The clustering note counts both sides over the clusters some emitted trip
+  // serves, or a drop would read as a merge.
   let servedNodes = 0;
   for (const rep of usedClusters) servedNodes += members.get(rep).length;
   const notes = [

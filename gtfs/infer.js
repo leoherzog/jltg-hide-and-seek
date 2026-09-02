@@ -1,11 +1,11 @@
 /**
- * gtfs/infer.js — S1 · inference — hub, border, game size — and the
- * question-layer inputs.
+ * gtfs/infer.js — S1 · inference: hub, border, game size, and the question-layer
+ * inputs.
  *
- * Port of `generate.py`. Worker side: no DOM, no clock, no
- * randomness. Everything here is pure over `(feed, days, zones, options)`.
+ * Port of `generate.py`. Worker side: no DOM, no clock, no randomness; everything
+ * is pure over `(feed, days, zones, options)`.
  *
- * Five public entry points, in the order `build_report` calls them:
+ * Public entry points, in the order `build_report` calls them:
  *
  *   inferHub(feed, day, proj, inPlay)             → Hub
  *   inferGameSize(metrics, options)               → [GameSize, SizeInference]
@@ -13,38 +13,23 @@
  *   gtfsQuestionFacts(feed, days, zones, stations)→ the GTFS-only question inputs
  *   travelTimeSamples(days, zones, …)             → TravelSampleRow[]  (runs LAST;
  *                                                    see worker.js's reordering note)
- *
- * Plus two helpers the map's reach layer added on 2026-08-23, which share the RAPTOR
- * passes `travelTimeSamples` was already making:
- *
  *   dayRaptorRuns(days, originStopId, departureS) → Map<dayKey, run|null>
  *   zoneReachMinutes(days, zones, runs, …)        → ZoneReach
- *
- * And the in-play set (2026-08-27, CONTRACT.md §(b) Metrics "Stop set"), which
- * is what makes `Options.borderBbox` / `excludeStops` / `excludeRoutes` honest —
- * before it they trimmed the border rectangle and nothing else:
- *
  *   excludedStopSet(feed, day, opts)              → Set<stopId>
  *   inPlayStopIds(feed, day, opts)                → {ids, fallback}
  *   hubRun(feed, day, originId, departS)          → the memoised RAPTOR run
- *
- * And the suggested border (same date, CONTRACT.md §(b) SuggestedBorder), which
- * the worker computes after `inferBorder` and only ever OFFERS — applying it is
- * the reader's cached second run, never this module's decision:
- *
  *   suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, events)
  *                                                 → SuggestedBorder | null
  *
- * `inPlay` is an optional trailing parameter everywhere it is threaded, and
- * `null` means "every served stop, exactly as before" — the worker passes null
- * whenever no override narrows the set, so a plain run's memo keys, sample
- * strides and iteration orders are literally the pre-2026-08-27 ones. The
- * smoke goldens rest on that.
+ * `inPlay` is an optional trailing parameter wherever it is threaded; `null` means
+ * every served stop. The worker passes null whenever no override narrows the set,
+ * so a plain run's memo keys, sample strides and iteration orders are unchanged;
+ * the smoke goldens rest on that. `suggestBorder` only OFFERS a border (CONTRACT.md
+ * §(b) SuggestedBorder); applying it is the reader's cached second run.
  *
- * ── determinism ────────────────────────────────────────────────────────────────
- * Every `Map`/`Set`/plain object is sorted before it is iterated anywhere the
+ * Determinism: every `Map`/`Set`/object is sorted before iteration wherever the
  * result can reach output. String order is code-point order (`cmpStr`), never
- * `localeCompare`. Numeric sorts always pass an explicit comparator.
+ * `localeCompare`; numeric sorts always pass an explicit comparator.
  */
 
 import {
@@ -61,20 +46,17 @@ import {
 import { s1Cache, s1Median, s1Share } from './feed.js';
 import { busiestDay, s1Positions, s1Extras } from './service.js';
 import { raptor, raptorReverse, buildJourney } from './raptor.js';
-// `S1_SIZE_PARAMS` / `S1_SIZE_ORDER` / `s1AxisScores` live in `network.js` because
-// `_s1_provisional_size` (which network_metrics needs) uses the same thresholds.
-// One source of truth; re-exported here so a caller can reach them from either.
-// `networkMetrics` is what `suggestBorder` votes each candidate core with; the
-// module cycle this closes (network.js imports `hubRun` from here) is function-only
-// on both sides and resolves under ESM hoisting. Do not add a top-level use.
+// `S1_SIZE_PARAMS` / `S1_SIZE_ORDER` / `s1AxisScores` live in `network.js` (shared
+// with `_s1_provisional_size`). The module cycle this closes (network.js imports
+// `hubRun`) is function-only on both sides and resolves under ESM hoisting. Do not
+// add a top-level use.
 import {
   zoneCover, networkMetrics, S1_SIZE_PARAMS, S1_SIZE_ORDER, s1AxisScores,
 } from './network.js';
 
 // ── logging ───────────────────────────────────────────────────────────────────
-// `generate.py` logs through the stdlib `log`. In the worker there is no console
-// worth writing to, so the sink is injectable and defaults to silence. The worker
-// wires it to `postMessage({type:'log', …})`.
+// The sink is injectable and defaults to silence; the worker wires it to
+// `postMessage({type:'log', …})`.
 
 let LOG = { info() {}, warn() {} };
 
@@ -102,9 +84,8 @@ function dist(a, b) {
 }
 
 /**
- * Python's `len(str)` counts **code points**; JS `.length` counts UTF-16 code
- * units. Station names are the one place the difference reaches a number the
- * page prints, so count code points.
+ * Python's `len(str)` counts code points; JS `.length` counts UTF-16 units. Station
+ * name lengths reach the page, so count code points.
  */
 function nameLen(name) {
   return Array.from(String(name === null || name === undefined ? '' : name)).length;
@@ -154,15 +135,12 @@ function s1TripsTouching(day, stopId) {
 
 /**
  * The stops an `Options` object excludes outright: `excludeStops` verbatim, plus
- * every served stop whose routes are ALL in `excludeRoutes` (a stop that keeps
- * one live route stays — excluding a route is not excluding its shared poles).
+ * every served stop whose routes are ALL in `excludeRoutes` (a stop that keeps one
+ * live route stays). Shared by `inferBorder` and `inPlayStopIds` so the border and
+ * the metrics never disagree about what an exclusion removes.
  *
- * Lifted from `inferBorder`, which used to be the only reader of the two lists
- * and now shares the set with `inPlayStopIds` so the border and the metrics can
- * never disagree about which stops an exclusion removes.
- *
- * @param {object} feed a `Feed` (unused today; kept so a future route-level
- *   rule has the feed without a signature change)
+ * @param {object} feed a `Feed` (unused; kept so a route-level rule needs no
+ *   signature change)
  * @param {object} day a `ServiceDay`
  * @param {object} opts an `Options`
  * @returns {Set<string>}
@@ -183,20 +161,15 @@ export function excludedStopSet(feed, day, opts) {
 }
 
 /**
- * The in-play stop set: the day's served stops inside `opts.borderBbox` (when one
- * is given) minus `excludedStopSet`. Everything measured — hub candidates, the
- * metric table, the size vote, zones, the stop table and the border trim — runs
- * over this set, so a box the reader drew on the landing map is the game, not a
- * decoration on it.
+ * The in-play stop set: the day's served stops inside `opts.borderBbox` (when given)
+ * minus `excludedStopSet`. Everything measured — hub candidates, metrics, size vote,
+ * zones, stop table and border trim — runs over this set.
  *
- * FILTERS `servedStopIds`, never re-sorts it: `buildServiceDay` sorts that array
- * with `cmpStr` once, `s1DayMetrics`' T90 origin sample is a fixed stride over it,
- * and a subset produced any other way would shift which stops the stride lands on.
+ * FILTERS `servedStopIds`, never re-sorts it: `s1DayMetrics`' T90 origin sample is a
+ * fixed stride over that array, and any other subset would shift where it lands.
  *
- * The 50 % floor (`IN_PLAY_MIN_SHARE`) mirrors `inferBorder`'s own fallbacks: a box
- * that keeps under half the system has missed the city, and the honest answer is
- * to measure the whole system and say so (`Metrics.inPlayFallback`) rather than
- * print a report about a suburb.
+ * Below the `IN_PLAY_MIN_SHARE` floor the box has missed the city, so the whole
+ * system is measured and `Metrics.inPlayFallback` says so.
  *
  * @param {object} feed a `Feed`
  * @param {object} day the best `ServiceDay`
@@ -223,11 +196,9 @@ export function inPlayStopIds(feed, day, opts) {
 }
 
 /**
- * One forward RAPTOR run from `originId` at `departS` on `day`, memoised on the
- * feed. `inferBorder`, `s1DayMetrics` (network.js) and `suggestBorder` all want
- * exactly this run from the hub at the default departure, and the memo means the
- * three share one object rather than recomputing it — the SAME object, so nothing
- * numeric can move; callers must therefore treat the result as read-only.
+ * One forward RAPTOR run from `originId` at `departS` on `day`, memoised on the feed.
+ * `inferBorder`, `s1DayMetrics` and `suggestBorder` share the SAME object, so callers
+ * must treat the result as read-only.
  *
  * @param {object} feed a `Feed` @param {object} day a `ServiceDay`
  * @param {string} originId @param {number} departS
@@ -244,13 +215,12 @@ export function hubRun(feed, day, originId, departS) {
  * Scores every served stop by `(distinct routes, stop events, stop_id)` and snaps
  * the winner to the busiest member of its `HUB_SNAP_M` cluster so a directional
  * pair does not split the score. `routeShare ≥ 0.50` ⇒ radial-hub, `≥ 0.25` ⇒
- * semi-radial, below ⇒ polycentric — and in the polycentric case `dominant` is
- * false and the pages must *not* name a single hub, using the min-enclosing-circle
- * centre as the map centre and the top three stops as start suggestions.
+ * semi-radial, below ⇒ polycentric, where `dominant` is false and the pages must
+ * *not* name a single hub (min-enclosing-circle centre as map centre, top three
+ * stops as start suggestions).
  *
- * With an in-play set the candidates (and the snap cluster and the alternatives)
- * are restricted to it, so a hub outside the reader's box is never named; an empty
- * restriction falls back to every served stop rather than to no hub at all.
+ * With an in-play set the candidates, snap cluster and alternatives are restricted
+ * to it; an empty restriction falls back to every served stop.
  *
  * @param {object} feed a `Feed`
  * @param {object} day  the best `ServiceDay`
@@ -274,9 +244,8 @@ export function inferHub(feed, day, proj, inPlay = null) {
   ));
   let winner = ranked[0];
 
-  // Snap to the busiest pole of the winner's cluster, but only among the members
-  // that carry the cluster's full route count — snapping is there to resolve a
-  // directional pair, and it must never *lower* the hub-dominance index.
+  // Snap to the busiest pole of the winner's cluster, only among members carrying
+  // the cluster's full route count: snapping must never lower the hub-dominance index.
   const near = served.filter((sid) => dist(pos[sid], pos[winner]) <= HUB_SNAP_M);
   let topRoutes = -Infinity;
   for (const sid of near) if (routes[sid] > topRoutes) topRoutes = routes[sid];
@@ -372,18 +341,16 @@ function s1CircleGeojson(lat, lon, radiusM) {
 /**
  * Derive the map border: the padded bbox of in-map stops, plus the circle.
  *
- * In-map means reachable from the hub within `3 × hidingPeriod` *and* able to
- * reach the hub within the same (forward and reverse RAPTOR). This travel-time
- * criterion replaces a geometric outlier trim on purpose: trimming the farthest
- * 0.5% of stops on the reference feed shrinks the enclosing circle 20% and the
- * stops it deletes are the airport and the university campus — all excellent game
- * locations. Padding is one zone radius, so every legal zone lies wholly inside.
+ * In-map means reachable from the hub within `3 × hidingPeriod` *and* able to reach
+ * the hub within the same (forward and reverse RAPTOR). This replaces a geometric
+ * outlier trim on purpose: trimming the farthest 0.5% of stops deletes the airport
+ * and the university campus, both excellent game locations. Padding is one zone
+ * radius, so every legal zone lies wholly inside.
  *
  * `options.borderBbox` overrides the derivation entirely (`derivation: 'option'`,
  * no padding, `rawBbox === bbox`); `options.borderShape === 'circle'` only changes
- * which shape is presented as canonical. `trimmedStopIds` names the in-play stops
- * the reach test dropped, after the two fallbacks — the list §05 explains the
- * border with, and the one `suggestBorder` attributes to feeds.
+ * which shape is canonical. `trimmedStopIds` names the in-play stops the reach test
+ * dropped after the two fallbacks; §05 and `suggestBorder` read it.
  *
  * @param {object} feed @param {object} day @param {object} hub @param {object} size
  * @param {Projection|{lat0:number,lon0:number}} projLike
@@ -396,12 +363,10 @@ export function inferBorder(feed, day, hub, size, projLike, options, inPlay = nu
   const opts = options || {};
   const pos = s1Positions(feed, proj);
   const served = inPlay ? Array.from(inPlay) : Array.from(day.servedStopIds);
-  // Already applied inside an in-play set, and a no-op on it then; kept so a
-  // null `inPlay` behaves exactly as it did before the set existed.
+  // Already applied inside an in-play set; kept so a null `inPlay` behaves as before.
   const excluded = excludedStopSet(feed, day, opts);
 
-  // Python's `or` chain: `hms_to_s('00:00:00')` is 0, which is falsy, so a
-  // midnight departure falls through to the default. Kept.
+  // Python's `or` chain: a midnight departure (0) falls through to the default. Kept.
   const depart = hmsToS(opts.departure) || hmsToS(DEFAULT_DEPARTURE) || 32400;
   const budget = 3 * size.hidingPeriodMin * 60;
   const forward = hubRun(feed, day, hub.stopId, depart);
@@ -413,10 +378,9 @@ export function inferBorder(feed, day, hub, size, projLike, options, inPlay = nu
     && forward.arrivalS[sid] - depart <= budget);
   let inMap = reachable.filter((sid) => has(backward, sid) && backward[sid] >= depart);
 
-  // The travel-time criterion is a scalpel for a genuine outlier, not a way to
-  // redraw the map. On a one-way or weakly connected network the round-trip test
-  // can delete most of the system; if it does, fall back rather than print a border
-  // that excludes the city. The reachability metrics report the problem instead.
+  // The reach test is for a genuine outlier, not for redrawing the map. On a one-way
+  // or weakly connected network it can delete most of the system; fall back rather
+  // than print a border that excludes the city.
   if (inMap.length < 0.5 * allowed.length) {
     LOG.warn(`border: the there-and-back test kept only ${inMap.length} of `
       + `${allowed.length} stops; falling back to one-way reachability`);
@@ -427,8 +391,7 @@ export function inferBorder(feed, day, hub, size, projLike, options, inPlay = nu
       + `${allowed.length} stops; using every served stop`);
     inMap = allowed;
   }
-  // `len(set(served) - set(in_map))` — only the count is used, so the difference is
-  // counted rather than materialised and sorted.
+  // `len(set(served) - set(in_map))` — only the count is used.
   const inMapSet = new Set(inMap);
   let trimmedCount = 0;
   for (const sid of new Set(served)) if (!inMapSet.has(sid)) trimmedCount++;
@@ -493,13 +456,9 @@ export function inferBorder(feed, day, hub, size, projLike, options, inPlay = nu
  * (<100 / 100–1000 / >1000 sq mi), distinct ¼-mile zones (<100 / 100–500 / >500),
  * T90 traversal time (≤45 / 45–180 / >180 min), straight-line diameter (<15 / 15–60
  * / >60 mi). Combine with `floor(median(scores))` so ties round **down** to the
- * smaller game, then clamp to within one step of the area axis.
- *
- * Validated against all eight of the rulebook's own examples, including the one
- * genuinely marginal case (Winston-Salem), which the round-down tie-break puts on
- * the correct side. `options.sizeOverride` / `hidingPeriodMin` / `zoneRadiusM`
- * override, and a non-unanimous vote must be reported as borderline on the page
- * rather than hidden.
+ * smaller game, then clamp to within one step of the area axis. Validated against
+ * all eight rulebook examples. `options.sizeOverride` / `hidingPeriodMin` /
+ * `zoneRadiusM` override; a non-unanimous vote is reported as borderline, not hidden.
  *
  * @param {object} metrics the `networkMetrics()` table
  * @param {object} options an `Options`
@@ -582,46 +541,37 @@ export function inferGameSize(metrics, options) {
 }
 
 /**
- * Offer a tighter, reachability-aware game border — or nothing.
+ * Offer a tighter, reachability-aware game border, or nothing.
  *
- * The inferred border (`inferBorder`) keeps every stop the hub can reach there
- * and back within three hiding periods, which on a metro-plus-commuter-rail merge
- * is the whole region: Chicago + Pace measures LARGE because the outer Metra and
- * Pace stops stretch the hull, though the game most readers mean to play is the
- * CTA core. This asks a narrower question: is there a size `s` whose one-way
- * hiding-period core — the stops reachable from the run origin within
- * `S1_SIZE_PARAMS[s].hidingPeriodMin`, the SAME rule `zoneReachMinutes` colours
- * the map with — measures as an `s`-sized game when everything is re-measured on
- * those stops alone? The smallest such `s` is the suggestion.
+ * `inferBorder` keeps every stop reachable there and back within three hiding
+ * periods, which on a metro-plus-commuter-rail merge is the whole region (Chicago +
+ * Pace measures LARGE though most readers mean the CTA core). This asks instead: is
+ * there a size `s` whose one-way hiding-period core — the stops reachable from the
+ * origin within `S1_SIZE_PARAMS[s].hidingPeriodMin`, the same rule
+ * `zoneReachMinutes` colours the map with — measures as an `s`-sized game when
+ * re-measured on those stops alone? The smallest such `s` is the suggestion.
  *
- * What it costs: the memoised hub run (`hubRun`, already made) plus at most three
- * `networkMetrics` passes, one per candidate core. Because the hiding periods are
- * 30 < 60 < 180 min, `core(small) ⊆ core(medium) ⊆ core(large)`, and the memo key
- * carries the set's hash so two candidates with the same core pay once.
+ * Cost: the memoised hub run plus at most three `networkMetrics` passes, one per
+ * candidate core. `core(small) ⊆ core(medium) ⊆ core(large)`, and the memo key
+ * carries the set's hash, so equal cores pay once.
  *
- * What it refuses to do (`null`):
- *   * when the reader has already decided — `opts.sizeOverride` or
- *     `opts.borderBbox` set — a suggestion would be second-guessing them;
- *   * when the origin sees no departure on the best day (no run to read);
- *   * when the core at the voted size trims under `SUGGEST_MIN_TRIM_SHARE` of the
- *     in-play stops — the whole-feed border is close enough to say nothing;
- *   * when no candidate is self-consistent: a core is `degenerate` under
+ * Returns `null` when:
+ *   * `opts.sizeOverride` or `opts.borderBbox` is set (the reader has decided);
+ *   * the origin sees no departure on the best day;
+ *   * the core at the voted size trims under `SUGGEST_MIN_TRIM_SHARE` of the
+ *     in-play stops;
+ *   * no candidate is self-consistent: `degenerate` under
  *     `max(SUGGEST_MIN_CORE_STOPS, SUGGEST_MIN_CORE_SHARE × |inPlay|)` stops,
- *     `sparse` under `SUGGEST_MIN_EVENT_SHARE` of the day's departures (weighted by
- *     departures so a ring of one-bus stops cannot veto a dense core), and
- *     `outvoted` when `inferGameSize` on its metrics names a different size.
+ *     `sparse` under `SUGGEST_MIN_EVENT_SHARE` of the day's departures (weighted so
+ *     a ring of one-bus stops cannot veto a dense core), `outvoted` when
+ *     `inferGameSize` on its metrics names a different size.
  *
- * What it does NOT refuse: a core that votes the run's own size. That is a tighter
- * box for the SAME game — the trim-share gate above has already established it is at
- * least `SUGGEST_MIN_TRIM_SHARE` smaller — and it is worth offering. The renderer,
- * not this function, is the place that must not print "a MEDIUM game rather than
- * MEDIUM". (The spec's second emission guard was dead code; see the note at the
- * acceptance below.)
+ * A core that votes the run's own size IS offered: it is a tighter box for the same
+ * game, already at least `SUGGEST_MIN_TRIM_SHARE` smaller. The renderer owns the
+ * same-size sentence.
  *
- * Every candidate is recorded in `candidatesTried` in the order tried, so the
- * page can say why nothing was offered. All iteration is over cmpStr-sorted
- * arrays produced by FILTERING `inPlay` — never re-sorted, for the same T90
- * stride reason `inPlayStopIds` gives — and nothing reads a clock.
+ * Every candidate is recorded in `candidatesTried` in the order tried. All iteration
+ * is over cmpStr-sorted arrays produced by FILTERING `inPlay` (see `inPlayStopIds`).
  *
  * @param {object} feed a `Feed`
  * @param {object[]} days every `ServiceDay` (the metric passes are per day)
@@ -644,8 +594,7 @@ export function suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, e
   // The same `or` chain as `inferBorder`: a literal midnight falls through.
   const depart = hmsToS(o.departure) || hmsToS(DEFAULT_DEPARTURE) || 32400;
 
-  // Already in `servedStopIds` order when threaded; re-filtered against the day so
-  // a caller handing in a stale set cannot index a missing `stopDays` row.
+  // Re-filtered against the day so a stale set cannot index a missing `stopDays` row.
   const pool = (inPlay ? inPlay : best.servedStopIds).filter((sid) => has(best.stopDays, sid));
   if (!pool.length) return null;
   const run = hubRun(feed, best, origin, depart);
@@ -708,15 +657,10 @@ export function suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, e
       .map((r) => `${r.sizeName}:${r.reason}`).join(', ')})`);
     return null;
   }
-  // No emission guard here, deliberately (2026-08-27). The spec's guard was "emit only
-  // if the accepted size differs OR the trim share is at least SUGGEST_MIN_TRIM_SHARE",
-  // which is dead code as written: when the search accepts `s === size.name`,
-  // `acceptedCore` IS the `votedCore` the gate above already measured, and that gate
-  // returned null unless its trim share cleared the same threshold. So a same-size
-  // suggestion always cleared it and always shipped — correctly, because "the same
-  // size on a box under half the area" is a real offer. It is the SENTENCE that has to
-  // know: `s4SuggestCallout` (render/map.js) has a same-size branch, because
-  // "a MEDIUM game rather than MEDIUM" is what the comparison degenerates to.
+  // No emission guard here, deliberately: when the search accepts `s === size.name`,
+  // `acceptedCore` IS the `votedCore` the gate above measured, so a same-size
+  // suggestion has already cleared the trim threshold. `s4SuggestCallout`
+  // (render/map.js) has a same-size branch for the sentence.
 
   const params = S1_SIZE_PARAMS[accepted];
   const coreSet = new Set(acceptedCore);
@@ -730,9 +674,8 @@ export function suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, e
   const ne = p.xy(bbox[2], bbox[3]);
   const areaSqM = Math.abs(ne[0] - sw[0]) * Math.abs(ne[1] - sw[1]);
 
-  // Which feeds the trimmed stops belong to. Merged ids are `f<k>:` namespaced
-  // (gtfs/merge.js) and `feed.sources[k].tag` names the prefix; a single feed's
-  // ids are bare and all of it is feed 0.
+  // Which feeds the trimmed stops belong to: merged ids are `f<k>:` namespaced
+  // (gtfs/merge.js), `feed.sources[k].tag` names the prefix; a single feed is feed 0.
   const sources = Array.isArray(feed.sources) ? feed.sources : [];
   /** @type {Map<string, number>} */ const tagIndex = new Map();
   if (sources.length > 1) sources.forEach((row, i) => tagIndex.set(String(row.tag), i));
@@ -784,11 +727,9 @@ export function suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, e
 }
 
 /**
- * Recover the radius a zone set was built at, from the zones themselves.
- *
- * Every member stop lies inside its centre's circle, so the largest centre-to-member
- * distance is a lower bound on the radius; snap that up to the rulebook radius that
- * contains it. Needed because `travelTimeSamples` is handed zones, not a radius.
+ * Recover the radius a zone set was built at: the largest centre-to-member distance
+ * is a lower bound, snapped up to the rulebook radius that contains it.
+ * `travelTimeSamples` is handed zones, not a radius.
  *
  * `_s1_zone_radius`, generate.py.
  * @param {object[]} zones `Zone` records
@@ -800,9 +741,8 @@ function s1ZoneRadius(zones) {
   for (const z of zones) byId.set(z.zoneId, z);
   for (const zone of zones) {
     for (const sid of zone.stopIds) {
-      // NOTE (kept from the Python): this looks a member *stop* id up in a map of
-      // *zone* ids, so only members that are themselves zone centres widen the
-      // bound. That is the reference behaviour and the bound is still valid.
+      // Kept from the Python: this looks a member *stop* id up in a map of *zone*
+      // ids, so only members that are themselves centres widen the bound. Still valid.
       const other = byId.get(sid);
       if (other !== undefined) {
         widest = Math.max(widest, dist([zone.x, zone.y], [other.x, other.y]));
@@ -810,8 +750,8 @@ function s1ZoneRadius(zones) {
     }
   }
 
-  // No two centres are within one radius of each other (that is what the greedy
-  // cover guarantees), so the true radius is in [widest, closest_pair).
+  // No two centres are within one radius (the greedy cover guarantees it), so the
+  // true radius is in [widest, closest_pair).
   let closest = Infinity;
   const points = zones.map((z) => [z.x, z.y]).sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
   /** @type {Map<string, Array<[number, number]>>} */ const grid = new Map();
@@ -830,8 +770,7 @@ function s1ZoneRadius(zones) {
         const bucket = grid.get(`${gx + dx},${gy + dy}`);
         if (bucket === undefined) continue;
         for (const other of bucket) {
-          // Python compares tuples by value: an exactly coincident centre is
-          // skipped, not counted as a zero-distance pair.
+          // Python tuple compare: a coincident centre is skipped, not a zero pair.
           if (other[0] === x && other[1] === y) continue;
           const d = dist([x, y], other);
           if (d < closest) closest = d;
@@ -847,14 +786,9 @@ function s1ZoneRadius(zones) {
 }
 
 /**
- * One RAPTOR run per service day, from the round-start station.
- *
- * Lifted out of `travelTimeSamples`, which built exactly this Map and then threw
- * everything away but fourteen picks. `zoneReachMinutes` wants the same runs for
- * every zone, so the loop moved here and both callers are handed the one result:
- * the map's reach layer costs zero extra RAPTOR passes. A day whose `stopDays` has
- * no row for the origin gets `null` — there is no journey to model from a stop that
- * sees no departure. (Extracted 2026-08-23 for the map's reach layer.)
+ * One RAPTOR run per service day, from the round-start station. Shared by
+ * `travelTimeSamples` and `zoneReachMinutes`, so the map's reach layer costs no
+ * extra RAPTOR passes. A day whose `stopDays` has no row for the origin gets `null`.
  *
  * @param {object[]} days @param {string} originStopId @param {number} departureS
  * @returns {Map<string, object|null>} `dayType.key` → run
@@ -869,15 +803,12 @@ export function dayRaptorRuns(days, originStopId, departureS) {
 }
 
 /**
- * Travel minutes from the round-start station to **every** hiding zone, per day.
+ * Travel minutes from the round-start station to every hiding zone, per day.
  *
- * The same runs `travelTimeSamples` uses — same origin, same departure — so
- * `perDay[bestDay].minutes[z]` is `rhu(ZoneScore.metrics.R1.raw × hidingPeriodMin, 1)`
- * by construction and the map can never disagree with the hider's dossier.
- *
- * The counts are computed here rather than left to the page because a renderer may
- * count and filter but may not do arithmetic on a measured quantity: `reachableZones`
- * is a subtraction and `unreachableZoneIds` is a comparison against the hiding period.
+ * Same runs as `travelTimeSamples`, so `perDay[bestDay].minutes[z]` equals
+ * `rhu(ZoneScore.metrics.R1.raw × hidingPeriodMin, 1)` by construction and the map
+ * cannot disagree with the hider's dossier. The counts are computed here because a
+ * renderer may count and filter but not do arithmetic on a measured quantity.
  *
  * @param {object[]} days @param {object[]} zones
  * @param {Map<string, object|null>} runs from `dayRaptorRuns`
@@ -894,8 +825,8 @@ export function zoneReachMinutes(days, zones, runs, originStopId, departureS, hi
     /** @type {string[]} */ const unreachable = [];
     let furthestZoneId = null;
     let furthestMinutes = null;
-    // `zoneIds` is sorted, so `unreachable` comes out sorted and a tie for furthest
-    // is broken by the smaller zone id. No second sort, and no set iteration.
+    // `zoneIds` is sorted, so `unreachable` is sorted and a furthest tie goes to the
+    // smaller zone id.
     for (const zid of zoneIds) {
       const value = (run !== null && has(run.arrivalS, zid))
         ? rhu((run.arrivalS[zid] - departureS) / 60.0, 1)
@@ -921,12 +852,10 @@ export function zoneReachMinutes(days, zones, runs, originStopId, departureS, hi
 /**
  * A deterministic destination sample for the ride-time chart.
  *
- * Re-runs the zone cover at `3 × zoneRadius` to get well-spread destinations, takes
- * the `count` highest-`stopEvents` picks, and reports travel time and transfers from
- * `originStopId` **on every day type**, so the chart can re-render when the reader
- * switches days. Rows are sorted by travel time on the best day; a destination with
- * no service that day carries `minutes: null`, which the chart draws hollow-dashed
- * rather than omitting.
+ * Re-runs the zone cover at `3 × zoneRadius` for well-spread destinations, takes the
+ * `count` highest-`stopEvents` picks, and reports travel time and transfers from
+ * `originStopId` on every day type. Rows are sorted by travel time on the best day;
+ * a destination with no service that day carries `minutes: null` (drawn hollow-dashed).
  *
  * @param {object[]} days @param {object[]} zones
  * @param {string} originStopId @param {number} departureS
@@ -956,8 +885,7 @@ export function travelTimeSamples(days, zones, originStopId, departureS, count, 
     .sort((a, b) => ((-events[a]) - (-events[b])) || cmpStr(a, b))
     .slice(0, wanted);
   if (picks.length < wanted) {
-    // A small network can collapse to a handful of well-spread picks; top the
-    // chart up with the busiest remaining zones rather than draw three bars.
+    // A small network can yield few well-spread picks; top up with the busiest zones.
     const chosen = new Set(picks);
     const byBusy = zoneIds.slice()
       .sort((a, b) => ((-events[a]) - (-events[b])) || cmpStr(a, b));
@@ -1015,15 +943,13 @@ export function travelTimeSamples(days, zones, originStopId, departureS, count, 
 /**
  * The GTFS-only inputs the question layer needs, in one bundle.
  *
- * Keys: `has_rail` (any `route_type` in the rail-ish set — a pure-GTFS
- * determination that kills four questions on a bus-only feed), `routes`,
- * `routes_by_zone`, `station_name_lengths`, `metro_route_ids`, and `u_turn` (the
- * fraction of stops with ≥2 routes and the median wait for a *different* route
- * inside the U-Turn card's 0.5/0.5/1-hour window — that curse is decided by GTFS,
- * not OSM).
+ * Keys: `has_rail` (any `route_type` in the rail-ish set; kills four questions on a
+ * bus-only feed), `routes`, `routes_by_zone`, `station_name_lengths`,
+ * `metro_route_ids`, and `u_turn` (share of stops with ≥2 routes and the median wait
+ * for a *different* route inside the U-Turn card's 0.5/0.5/1-hour window).
  *
- * The key names are **snake_case, exactly as in the Python**: the question audit
- * looks these up by name and this bundle is a lookup table, not a typed record.
+ * Key names are **snake_case, exactly as in the Python**: the question audit looks
+ * them up by name.
  *
  * @param {object} feed @param {object[]} days @param {object[]} zones @param {object[]} stations
  * @returns {Object<string, *>}
@@ -1054,9 +980,8 @@ export function gtfsQuestionFacts(feed, days, zones, stations) {
     const lo = hmsToS(HEADWAY_WINDOW[0]) || 0;
     const hi = hmsToS(HEADWAY_WINDOW[1]) || SERVICE_DAY_SECONDS;
 
-    // `extras.routeDirStop` is already the Python's `sorted(...items())`; bucket it
-    // by stop so the per-stop scan is O(entries) rather than O(stops × entries).
-    // Bucket order is the array's order, which is the sorted order.
+    // `extras.routeDirStop` is already sorted; bucket it by stop so the per-stop scan
+    // is O(entries). Bucket order is the sorted order.
     /** @type {Map<string, Array<[string, number[]]>>} */ const rdsByStop = new Map();
     for (const [[routeId, , stopId], values] of extras.routeDirStop) {
       let bucket = rdsByStop.get(stopId);

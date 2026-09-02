@@ -1,54 +1,26 @@
 # .github/workflows/feed-catalogue.yml — refresh data/feeds.json from the Mobility
-# Database, and measure how big each feed is while it is there.
+# Database and measure each feed's size. The only workflow here that is not part
+# of the OSM world build: one checkout, one Node, two commands, about four minutes.
 #
-# This is the ONLY workflow in this repo that is not part of the OSM world build, and
-# it is the cheap one: no planet extract, no osmium, no R2 credential, no disk
-# pressure. One `actions/checkout`, one Node, two commands, about four minutes.
+#   node tools/mdb-snapshot.mjs --counts     rewrite data/feeds.json, then measure every feed
+#   node tools/mdb-snapshot.mjs --check      re-validate the file from disk
 #
-# WHAT IT RUNS, AND WHY IN THAT ORDER
+# The second command re-reads the written file, which catches serialisation bugs the
+# in-memory check would miss.
 #
-#   node tools/mdb-snapshot.mjs --counts     rewrite data/feeds.json from the CSV, then
-#                                            measure every feed over the mirror
-#   node tools/mdb-snapshot.mjs --check      re-validate the file that was just written
+# It opens a pull request; it never pushes to main. `data/feeds.json` is reviewed as a
+# diff, and `--check`'s example-map assertions exist to fail in front of a human. `gh`
+# is preinstalled on the runner and is the whole PR mechanism.
 #
-# The build already ends with its own `checkSnapshot` and exits non-zero when that
-# fails, so the second command is belt and braces — it re-reads the file FROM DISK,
-# which catches a serialisation bug the in-memory check would sail past. It costs a
-# second.
+# Cadence: monthly on the 6th, clear of the 1st and of the world shard workflows (3rd
+# and 4th). Nothing breaks if a month is missed.
 #
-# IT OPENS A PULL REQUEST. IT DOES NOT PUSH TO main.
+# `--counts` reads three HTTP ranges per feed from MobilityData's mirror (~135 MB, ~2
+# min for ~3,300 feeds). It is opt-in in the tool, so this workflow is what keeps the
+# numbers current. A feed the mirror will not serve keeps its previous numbers and is
+# marked `q`; the job fails only when `--check` does.
 #
-# AGENTS.md: "`data/feeds.json` is generated, tracked, and read as a diff." A workflow
-# that committed straight to the default branch would keep the file fresh and quietly
-# delete the review step that makes it trustworthy — the diff summary the tool prints
-# is written to be READ, and `--check`'s example-map assertions exist to fail in front
-# of a human when a refresh drops an operator a landing-page chip names. So the run
-# ends at a PR with that summary in the body, and a person merges it.
-#
-# `gh` is preinstalled on the runner and is the whole PR mechanism here; no
-# third-party action is involved in moving these bytes.
-#
-# CADENCE. Monthly, on the 6th — deliberately not the 1st, which is when every other
-# repo's monthly cron fires, and clear of world-density-shards (the 3rd) and
-# world-feature-shards (the 4th) so a human reviewing catalogue diffs is not also
-# reviewing a world rebuild. The upstream catalogue moves at the pace of transit
-# agencies publishing, which is to say slowly; nothing breaks if a month is missed.
-#
-# THE COUNTS ARE A MEASUREMENT, AND THAT IS WHY THEY LIVE IN CI. `--counts` reads
-# three HTTP ranges per feed out of MobilityData's mirror — about 135 MB and two
-# minutes for 3,309 feeds, with `stop_times.txt` never touched. It is the one part of
-# this tool that is not a pure function of the CSV (see the tool's header), so it is
-# opt-in there and explicit here: a human refreshing the catalogue by hand gets the
-# old numbers carried forward untouched, and this workflow is what keeps them current.
-#
-# A feed the mirror will not serve is NOT a failure. It keeps its previous numbers and
-# is marked `q`; 19 of 3,309 were unmeasurable on the calibration run — empty archives,
-# two zero-byte objects, three mirror objects that are HTML error pages. The job fails
-# only when `--check` does, which means the FILE is wrong rather than the internet.
-#
-# NOT verified by running this file: I cannot execute GitHub Actions from here. The
-# two commands were run locally against the live catalogue; the YAML is unverified
-# until dispatched.
+# YAML is unverified until dispatched.
 
 name: feed-catalogue
 
@@ -66,7 +38,7 @@ on:
         type: string
         default: "250"
   schedule:
-    # 06:00 UTC on the 6th. See §Cadence above for why not the 1st.
+    # 06:00 UTC on the 6th.
     - cron: "0 6 6 * *"
 
 concurrency:
@@ -87,28 +59,24 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # The tool is zero-dependency and ESM, and uses `AbortSignal.timeout` and
-          # `Buffer.readBigUInt64LE`. 24 is what tools/ is documented against.
+          # tools/ is documented against Node 24.
           node-version: "24"
 
       - name: rebuild the catalogue
         id: build
         env:
-          # A dispatch with counts unchecked skips the measurement pass; a scheduled
-          # run always measures, which is the entire reason this is scheduled.
+          # Scheduled runs always measure; a dispatch may opt out.
           COUNTS: ${{ github.event_name == 'schedule' && 'true' || inputs.counts }}
           REGIONAL_KM: ${{ inputs.regional_km || '250' }}
         run: |
           set -euo pipefail
           args=(--regional-km "$REGIONAL_KM")
-          # `[ ... ] && ...` would exit the whole step under `set -e` when the test is
-          # false, silently skipping the build. An `if` is the only safe spelling here.
+          # `[ ... ] && ...` would exit the step under `set -e` when false; use `if`.
           if [ "$COUNTS" = "true" ]; then args+=(--counts); fi
           echo "::group::mdb-snapshot ${args[*]}"
           node tools/mdb-snapshot.mjs "${args[@]}" | tee /tmp/snapshot.log
           echo "::endgroup::"
-          # The summary the tool prints IS the review aid; carry it into the PR body
-          # and the job summary rather than making a reviewer open the log.
+          # The printed summary is the review aid; carry it into the PR body.
           sed -n '/feeds,.*bytes, snapshot/,$p' /tmp/snapshot.log > /tmp/summary.txt
           cat /tmp/summary.txt >> "$GITHUB_STEP_SUMMARY"
 
@@ -125,8 +93,7 @@ jobs:
             exit 0
           fi
 
-          # One long-lived branch, force-pushed. A monthly job that opened a new branch
-          # every run would leave a year of stale catalogue PRs behind it.
+          # One long-lived branch, force-pushed, so stale PRs do not pile up.
           branch=chore/feed-catalogue
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

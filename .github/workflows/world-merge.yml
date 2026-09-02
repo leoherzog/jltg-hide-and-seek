@@ -1,100 +1,66 @@
-# .github/workflows/world-merge.yml — Phase 6 (see tools/osm-world/DESIGN.md §Phase 6).
-# Merges the per-shard outputs in R2 (shards/feature/<id>/, shards/density/<id>/ —
-# written by world-feature-shards.yml and world-density-shards.yml) plus the Overture
-# admin build (admin/ — written by world-admin.yml) and the global transit build
-# (transit/ — written by world-transit.yml) into THE world the client reads:
-# content-addressed layer files under world/, and world/manifest.json as the one
-# mutable object, uploaded strictly last.
+# .github/workflows/world-merge.yml — Phase 6 (DESIGN.md §Phase 6). Merges the
+# per-shard outputs in R2 (shards/feature/<id>/, shards/density/<id>/), the Overture
+# admin build (admin/) and the global transit build (transit/) into the world the
+# client reads: content-addressed layer files under world/, and world/manifest.json
+# as the one mutable object, uploaded strictly last.
 #
-# Shape (DESIGN.md §Phase 6 — the 14-agent investigation's design, sized against the
-# 2026-08-22 measured shard totals):
+# Shape (sized against the 2026-08-22 measured shard totals):
 #
 #   plan ──► merge-layer (one job per layer, 36 jobs, pooled-bytes-descending so
 #        │    green's ~1.7 h merge starts in the first wave)
-#        └─► merge-density-band (N jobs, N = ceil(cells / 30M) computed AT RUNTIME
-#             by ci/merge-plan.py from the fine manifests — 119,473,135 measured
-#             cells → 4 bands today; never hard-coded) ──► assemble-density
-#   merge-layer + assemble-density ──► finalize (admin + manifest, LAST)
+#        └─► merge-density-band (N = ceil(cells / 30M), computed at runtime by
+#             ci/merge-plan.py from the fine manifests; 4 bands today) ──► assemble-density
+#   merge-layer + assemble-density ──► finalize (admin + manifest, last)
 #
-# WHY A MATRIX AND NOT ONE SERIAL JOB: the serial merge measured ~5.4 h against the
-# 6 h job cap with no checkpointing — an hour-5 failure would discard the admin
-# build and 36 finished layers. Per-layer jobs also let a single transient failure
-# retry one layer instead of the world.
+# Why a matrix: the serial merge measured ~5.4 h against the 6 h job cap with no
+# checkpointing. Per-layer jobs also let one transient failure retry one layer.
 #
-# WHY DENSITY IS BANDED: GDAL's FGB writer holds ~166 MB + 100 B/feature in RAM at
-# close() (S1, measured to 87M features). One global write at the measured
-# 119.47M cells is ~12.1 GB against a 15 GB public runner — under the MEASURED law,
-# over it at the investigation's pessimistic 162 B/feature. Band jobs stay ~3 GB
-# RSS; the one place the full-grid write still happens is assemble-density, whose
-# RAM math is documented on that job. If it ever OOMs, the durable fix is
-# client-side multi-band density (osm/worldfile.js reads exactly one density
-# layer today), not a bigger runner — larger runners need an org account.
+# Why density is banded: GDAL's FGB writer holds ~166 MB + 100 B/feature in RAM at
+# close(); one global write at 119.47M cells is ~12.1 GB against a 15 GB runner.
+# Band jobs stay ~3 GB RSS; the full-grid write happens once, in assemble-density.
+# If that OOMs, the durable fix is client-side multi-band density, not a bigger runner.
 #
-# INTERMEDIATES MOVE THROUGH R2, NEVER ACTIONS ARTIFACTS (no documented artifact
-# size ceiling, and a known 4.29 GB failure report): per-layer partial manifests
-# and density band files stage under merge/staging/<run_id>/, cleaned up by
-# finalize. Staging is keyed by run_id (not run_attempt) ON PURPOSE: "re-run
-# failed jobs" then reuses the succeeded jobs' staged output instead of starting
-# a new, incomplete staging area.
+# Intermediates move through R2, never Actions artifacts: per-layer partial
+# manifests and density bands stage under merge/staging/<run_id>/, cleaned up by
+# finalize. Staging is keyed by run_id on purpose so "re-run failed jobs" reuses
+# the succeeded jobs' staged output.
 #
-# /vsis3 IS DELIBERATELY NOT USED for merge output: merge.py's publish_layer does
-# sha256(temp) then rename(final), a rename over /vsis3 is a server-side
-# CopyObject, and R2 caps single-part copy at 5 GiB — which water (5.44 GB,
-# measured 2026-08-22) exceeds. Layers are written locally and uploaded through
-# build.py's boto3 uploader (merge.py --upload; gap B4, closed).
+# /vsis3 is not used for merge output: publish_layer renames after hashing, a
+# rename over /vsis3 is a CopyObject, and R2 caps single-part copy at 5 GiB, which
+# water exceeds. Layers are written locally and uploaded via merge.py --upload.
 #
-# UPLOAD ORDER IS LOAD-BEARING: every layer file is content-addressed and goes up
+# Upload order is load-bearing: every layer file is content-addressed and goes up
 # before the manifest that names it; finalize HeadObject-verifies every referenced
-# object (name AND byte size) before the manifest upload. A manifest naming a
-# missing layer is a live-site break, not a retry.
+# object (name and byte size) before the manifest upload.
 #
-# COVER EXACTNESS: the plan job refuses to merge unless the manifest set in R2
-# EQUALS shards.json's id set, both directions, per cover. A missing manifest is a
-# shard job that never ran (silently short counts); an EXTRA manifest is a stale
-# shard from an older cover, and merging it DOUBLE-COUNTS density (its cells were
-# reassigned along the difference chain — DESIGN.md §Phase 6, the lakes-mask
-# five-shard delta). The `skip_cover_check` input is the explicit escape hatch.
+# Cover exactness: the plan job refuses to merge unless the manifest set in R2
+# equals shards.json's id set, both directions. A missing manifest is a shard job
+# that never ran; an extra one is a stale shard whose cells were reassigned, and
+# merging it double-counts density. `skip_cover_check` is the explicit escape hatch.
 #
-# CANARY SWITCHES — `only_layers`, `skip_density`, `skip_finalize` exist so a
-# restricted merge can be dispatched to exercise the never-yet-run upload paths
-# (merge.py's boto3 upload, aws-cli against R2) for minutes instead of hours,
-# BEFORE trusting a full ~245-job rebuild. They are for canaries, not routine
-# use: a full merge passes none of them. Guard rails, because a restricted run
-# must be structurally incapable of publishing a broken world:
-#   - the layer filter lives in ci/merge-plan.py (--only-layers), which HARD
-#     ERRORS on a key the table does not know OR that no shard manifest carries
-#     — a typo'd canary layer that merged nothing would look like a pass;
-#   - the plan job REFUSES `only_layers`/`skip_density` without
-#     `skip_finalize: true` — finalize can never succeed on a restricted layer
-#     table (merge.py --assemble-manifests refuses an incomplete one), so
-#     failing at plan time beats failing after the merge jobs ran; it also
-#     keeps the needs-chain honest (finalize never waits on a skipped
-#     assemble-density);
-#   - the live `<world_prefix>/manifest.json` is written by finalize alone.
-#     Matrix jobs always pass --manifest-dest (a staging key), and merge.py's
-#     upload_published refuses a `partial: true` manifest at the DEFAULT
-#     manifest destination — so even a hand-run canary merge cannot clobber the
-#     live manifest without saying so explicitly, whatever world_prefix is.
-# A canary with skip_finalize leaves its (tiny, JSON-only) staged manifests
-# under merge/staging/<run_id>/ — finalize's cleanup never ran; delete by hand
-# or let the next full run's finalize ignore them (staging is per-run_id).
+# Canary switches `only_layers`, `skip_density`, `skip_finalize` let a restricted
+# merge exercise the upload paths in minutes. A full merge passes none of them.
+# Guard rails:
+#   - ci/merge-plan.py --only-layers hard-errors on an unknown key or one no shard
+#     manifest carries;
+#   - the plan job refuses `only_layers`/`skip_density` without `skip_finalize: true`,
+#     since finalize cannot succeed on a restricted layer table;
+#   - the live `<world_prefix>/manifest.json` is written by finalize alone. Matrix
+#     jobs always pass --manifest-dest (a staging key), and merge.py refuses a
+#     `partial: true` manifest at the default destination.
+# A canary with skip_finalize leaves its staged manifests under
+# merge/staging/<run_id>/; delete by hand or ignore (staging is per-run_id).
 #
-# R2 secrets required (repo or environment secrets):
+# R2 secrets required:
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
 #
-# `jlumbroso/free-disk-space` is MANDATORY on the merge jobs, not conditional
-# (DESIGN.md §Phase 6): the 86.2 GB measured free disk is undocumented headroom
-# (GitHub documents 14 GB), and green's merge peaks ~60 GB of transient disk.
-# swap-storage is deliberately KEPT — 4 GB of swap is the difference between slow
-# and OOM-killed if the FGB writer's per-feature cost runs above the measured law.
+# `jlumbroso/free-disk-space` is mandatory on the merge jobs: the 86.2 GB measured
+# free disk is undocumented headroom, and green's merge peaks ~60 GB of transient
+# disk. swap-storage is kept as insurance against the FGB writer's RAM law.
 #
-# NOT verified by running this file: I cannot execute GitHub Actions from here.
-# Dispatched and proven: run 32599689118 published the live world in 37m42s with
-# 42/42 jobs green. Two earlier runs failed in `finalize` (a missing gdal-bin, then
-# a cleanup flag `aws s3 rm` does not accept) and both are fixed; because the merge
-# is deterministic, the reruns produced byte-identical files with identical content
-# hashes. What is still unexercised is a merge that has to re-run a FAILED per-layer
-# job and reuse another job's staging, which is why staging keys on run_id.
+# Proven: run 32599689118 published the live world in 37m42s with 42/42 jobs green.
+# Still unexercised: re-running a failed per-layer job that reuses another job's
+# staging, which is why staging keys on run_id.
 
 name: world-merge
 
@@ -191,10 +157,9 @@ env:
   ONLY_LAYERS: ${{ inputs.only_layers || '' }}
   SKIP_DENSITY: ${{ inputs.skip_density || 'false' }}
   SKIP_FINALIZE: ${{ inputs.skip_finalize || 'false' }}
-  # run_id, NOT run_attempt — see the header's re-run-failed-jobs note.
+  # run_id, not run_attempt, so re-run failed jobs reuse staged output.
   STAGING: merge/staging/${{ github.run_id }}
-  # aws-cli v2.23+ defaults to CRC checksums some S3-compatibles reject;
-  # when_required is the compatibility setting and harmless where unneeded.
+  # aws-cli v2.23+ defaults to CRC checksums some S3-compatibles reject.
   AWS_REQUEST_CHECKSUM_CALCULATION: when_required
   AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
   AWS_DEFAULT_REGION: auto
@@ -216,11 +181,8 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
@@ -233,10 +195,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          # A restricted run can never finalize: merge.py --assemble-manifests
-          # refuses an incomplete layer table by design. Refuse the combination
-          # NOW, by name, instead of after hours of merge jobs — and so the
-          # finalize needs-chain never has to reason about skipped dependencies.
+          # A restricted run can never finalize (merge.py --assemble-manifests
+          # refuses an incomplete layer table); refuse now, not after hours of jobs.
           if [ "$SKIP_FINALIZE" != "true" ] && { [ -n "$ONLY_LAYERS" ] || [ "$SKIP_DENSITY" = "true" ]; }; then
             echo "::error::only_layers/skip_density are canary switches and require skip_finalize=true — a restricted merge cannot produce the full layer table finalize insists on, so it would fail there after all the merge jobs ran"
             exit 1
@@ -251,8 +211,7 @@ jobs:
           fi
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-          # Manifests only — ~600 small JSONs, the complete picture of what the
-          # shard workflows actually produced.
+          # Manifests only: ~600 small JSONs describing what the shard workflows produced.
           aws s3 sync "s3://$R2_BUCKET/$SHARDS_PREFIX/feature/" mf/feature/ \
             --endpoint-url "$EP" --no-progress \
             --exclude '*' --include '*/manifest.json'
@@ -315,15 +274,12 @@ jobs:
     name: merge (${{ matrix.layer }})
     needs: plan
     runs-on: ubuntu-latest
-    # green is the bound: ~14.22 GB pooled (measured 2026-08-22), merge ~1.7 h on
-    # a public runner per the Phase 6 investigation, plus ~15 min of sync — and
-    # the in-script retry is a FULL re-sync + re-merge, so the worst case is two
-    # of those. 330 min covers retried-green with margin under the 6 h cap.
+    # green is the bound (~14.22 GB pooled, ~1.7 h merge + ~15 min sync), doubled
+    # by the retry-once wrapper. 330 min covers that under the 6 h cap.
     timeout-minutes: 330
     strategy:
       fail-fast: false
-      # 20 keeps headroom under the 40-concurrent account ceiling so a
-      # concurrently dispatched shard workflow is not starved.
+      # 20 keeps headroom under the 40-concurrent account ceiling.
       max-parallel: 20
       matrix:
         include: ${{ fromJson(needs.plan.outputs.layers_matrix) }}
@@ -335,28 +291,22 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
       - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
-          # +~31 GB in ~3 min. green's merge peaks ~60 GB of transient disk
-          # (pooled inputs + GPKG + the FGB writer's hidden in-dir temp at ~2×
-          # the final layer) against 86 GB of measured-but-undocumented free.
+          # +~31 GB in ~3 min. green's merge peaks ~60 GB of transient disk.
           tool-cache: false
           android: true
           dotnet: true
           haskell: true
           large-packages: true
           docker-images: true
-          # KEEP swap: 4 GB of swap is cheap insurance against the FGB writer
-          # running above its measured ~100 B/feature RAM law.
+          # Keep swap: insurance against the FGB writer exceeding its RAM law.
           swap-storage: false
 
       - name: install gdal, uv
@@ -364,11 +314,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends gdal-bin
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. These four are what merge.py's paths read/write; plain
-          # grep, not -q: under pipefail, -q's early exit kills ogrinfo with
-          # SIGPIPE and fails the pipeline on success.
+          # Driver preflight: these four are what merge.py reads/writes; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GPKG CSV GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -403,11 +350,9 @@ jobs:
           merge_layer() {
             rm -rf "$TREE" "$OUT"
             mkdir -p "$TREE"
-            # Only this layer's file per shard, plus every manifest. The '/'
-            # anchor in the include matters: '*/water.fgb' must not also match
-            # curse_water.fgb. Downloads go through the S3 API, never the public
-            # CDN domain — shard files are not content-addressed, and the CDN
-            # may hold a stale immutable-cached copy.
+            # Only this layer's file per shard, plus every manifest. The '/' anchor
+            # matters: '*/water.fgb' must not match curse_water.fgb. Downloads use
+            # the S3 API, never the CDN, which may hold a stale cached copy.
             aws s3 sync "s3://$R2_BUCKET/$SHARDS_PREFIX/feature/" "$TREE/" \
               --endpoint-url "$EP" --no-progress \
               --exclude '*' \
@@ -418,9 +363,8 @@ jobs:
               echo "::error::synced $found feature shard manifests but shards.json expects $expected — the shard set changed since the plan job's cover check, or the sync was cut short"
               return 1
             fi
-            # merge.py: schema-union + dedup + assert, layer file straight to
-            # the world prefix (content-addressed, safe before the manifest),
-            # partial manifest to STAGING — never the live manifest.json.
+            # Layer file straight to the world prefix (content-addressed, safe before
+            # the manifest); partial manifest to STAGING, never the live manifest.json.
             uv run tools/osm-world/merge.py \
               --shards "$TREE" \
               --out "$OUT" \
@@ -430,10 +374,8 @@ jobs:
               --manifest-dest "$STAGING/manifests/${LAYER}.manifest.json"
           }
 
-          # A retry is a FULL re-sync + re-merge — nothing survives between
-          # attempts. It exists for transient network/runner failures; a
-          # deterministic merge failure (a failed rows==distinct assert) will
-          # simply fail twice, loudly.
+          # A retry is a full re-sync + re-merge, for transient failures only; a
+          # deterministic merge failure fails twice.
           attempt=1
           max_attempts=2
           until merge_layer; do
@@ -450,12 +392,11 @@ jobs:
   merge-density-band:
     name: density band (${{ matrix.band }}/${{ matrix.bands }})
     needs: plan
-    # Canary switch: with skip_density the plan emits an empty bands_matrix,
-    # which an expanded matrix job would reject — so the whole job is skipped.
+    # With skip_density the plan emits an empty bands_matrix, which a matrix job
+    # would reject, so the whole job is skipped.
     if: ${{ (inputs.skip_density || 'false') != 'true' }}
     runs-on: ubuntu-latest
-    # ~35 min/band at 30M cells (DESIGN.md §Phase 6) plus ~10 min syncing the
-    # 15.06 GB density tree; doubled by the retry-once wrapper.
+    # ~35 min/band at 30M cells plus ~10 min of sync, doubled by the retry-once wrapper.
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -470,20 +411,15 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
       - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
-          # Band jobs peak ~45 GB (15 GB of shard grids + sort spill + the band
-          # FGB and its hidden write temp) — fits without this, but the margin
-          # is undocumented headroom, hence mandatory.
+          # Band jobs peak ~45 GB; the margin is undocumented headroom, hence mandatory.
           tool-cache: false
           android: true
           dotnet: true
@@ -497,11 +433,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends gdal-bin
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. These four are what merge.py's paths read/write; plain
-          # grep, not -q: under pipefail, -q's early exit kills ogrinfo with
-          # SIGPIPE and fails the pipeline on success.
+          # Driver preflight: these four are what merge.py reads/writes; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GPKG CSV GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -547,9 +480,8 @@ jobs:
               echo "::error::synced $found density shard manifests but shards.json expects $expected — the shard set changed since the plan job's cover check, or the sync was cut short"
               return 1
             fi
-            # Band file first, sidecar last (the sidecar is the completeness
-            # marker assemble-density trusts), both into staging — a band is an
-            # intermediate, never part of the published world.
+            # Band file first, sidecar last (the completeness marker assemble-density
+            # trusts), both into staging.
             uv run tools/osm-world/merge.py \
               --shards "$TREE" \
               --out "$OUT" \
@@ -576,15 +508,10 @@ jobs:
     needs: [plan, merge-density-band]
     if: ${{ (inputs.skip_density || 'false') != 'true' }}
     runs-on: ubuntu-latest
-    # THE one full-grid FGB write. RAM: ~166 MB + 100 B/feature (S1's measured
-    # law) → ~12.1 GB at the measured 119.47M cells, against 15 GB — fits under
-    # the measured law, does NOT at the investigation's pessimistic
-    # 162 B/feature; swap is kept above as the buffer, and an OOM here means
-    # client-side multi-band density is due, not a bigger timeout. Wall: a pure
-    # VRT append (no dedup, no re-aggregation), bounded well under the serial
-    # merge's measured 11,588 cells/s ≈ 2.9 h; NO in-script retry — a retry
-    # could not fit twice under the 6 h cap, and the failure modes here
-    # (OOM, band-set validation) are not transient.
+    # The one full-grid FGB write: ~12.1 GB RAM at 119.47M cells against 15 GB.
+    # An OOM here means client-side multi-band density is due. Wall is a pure VRT
+    # append, under ~2.9 h; no in-script retry, since two would not fit under the
+    # 6 h cap and the failure modes here are not transient.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v7
@@ -594,11 +521,8 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
@@ -619,11 +543,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends gdal-bin
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. These four are what merge.py's paths read/write; plain
-          # grep, not -q: under pipefail, -q's early exit kills ogrinfo with
-          # SIGPIPE and fails the pipeline on success.
+          # Driver preflight: these four are what merge.py reads/writes; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GPKG CSV GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -670,16 +591,13 @@ jobs:
 
   finalize:
     needs: [plan, merge-layer, assemble-density]
-    # skip_finalize is the canary switch; nothing else may skip this job. The
-    # needs-chain stays plain (no always()): the plan job refuses
-    # skip_density/only_layers without skip_finalize, so when this job is
-    # enabled its dependencies always actually ran — and if any of them FAILED,
-    # this job is skipped and the live manifest stays untouched, which is the
-    # correct failure mode.
+    # skip_finalize is the only switch that skips this job. The needs-chain stays
+    # plain (no always()): if any dependency failed, this job is skipped and the
+    # live manifest stays untouched.
     if: ${{ (inputs.skip_finalize || 'false') != 'true' }}
     runs-on: ubuntu-latest
-    # Downloads 2.29 GB of admin, ~40 HeadObjects, uploads admin + one manifest.
-    # No free-disk-space: this job merges nothing and peaks ~5 GB of disk.
+    # Downloads admin and transit, ~40 HeadObjects, uploads them + one manifest.
+    # No free-disk-space: this job peaks ~5 GB of disk.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -689,30 +607,20 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
-      # GDAL IS NEEDED HERE TOO: merge.py --assemble-manifests shells out to
-      # ogrinfo for the admin layer's feature count and bbox (place_admin →
-      # feature_count / layer_extent). Its absence is what failed run
-      # 32597356160's finalize — AFTER 41 merge jobs succeeded, though safely
-      # before the manifest upload. merge.py now also preflights the binaries
-      # its mode will invoke, so this class dies in the first second either way.
+      # GDAL is needed here too: merge.py --assemble-manifests shells out to
+      # ogrinfo for the admin layer's feature count and bbox.
       - name: install gdal, uv
         run: |
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends gdal-bin
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. These four are what merge.py's paths read/write; plain
-          # grep, not -q: under pipefail, -q's early exit kills ogrinfo with
-          # SIGPIPE and fails the pipeline on success.
+          # Driver preflight: these four are what merge.py reads/writes; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GPKG CSV GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -749,8 +657,7 @@ jobs:
           aws s3 sync "s3://$R2_BUCKET/$STAGING/manifests/" "$STAGED/" \
             --endpoint-url "$EP" --no-progress
 
-          # The Overture admin build (world-admin.yml's stable prefix), verified
-          # against its own sha256 sidecar before it can enter the world.
+          # The Overture admin build, verified against its sha256 sidecar.
           if ! aws s3 cp "s3://$R2_BUCKET/$ADMIN_PREFIX/admin.fgb" \
               "$ADMIN_DIR/admin.fgb" --endpoint-url "$EP" --no-progress; then
             echo "::error::no admin build at s3://\$R2_BUCKET/$ADMIN_PREFIX/admin.fgb — dispatch world-admin.yml first"
@@ -760,10 +667,8 @@ jobs:
             "$ADMIN_DIR/admin.fgb.sha256" --endpoint-url "$EP" --no-progress
           (cd "$ADMIN_DIR" && sha256sum -c admin.fgb.sha256)
 
-          # The global transit_route build (world-transit.yml's stable prefix),
-          # verified the same way. merge.py requires --transit on exactly the
-          # runs it requires --admin, so a world without it cannot be published
-          # by accident — a missing build fails here, by name.
+          # The global transit_route build, verified the same way. merge.py requires
+          # --transit wherever it requires --admin, so a missing build fails by name.
           if ! aws s3 cp "s3://$R2_BUCKET/$TRANSIT_PREFIX/transit_route.fgb" \
               "$TRANSIT_DIR/transit_route.fgb" --endpoint-url "$EP" --no-progress; then
             echo "::error::no transit build at s3://\$R2_BUCKET/$TRANSIT_PREFIX/transit_route.fgb — dispatch world-transit.yml first"
@@ -773,9 +678,8 @@ jobs:
             "$TRANSIT_DIR/transit_route.fgb.sha256" --endpoint-url "$EP" --no-progress
           (cd "$TRANSIT_DIR" && sha256sum -c transit_route.fgb.sha256)
 
-          # merge.py refuses an incomplete layer table, HeadObject-verifies
-          # every staged layer's object (name AND bytes) in R2, uploads admin
-          # and transit, then — strictly last — the live manifest.
+          # merge.py refuses an incomplete layer table, HeadObject-verifies every
+          # staged layer in R2, uploads admin and transit, then the live manifest last.
           uv run tools/osm-world/merge.py \
             --assemble-manifests "$STAGED" \
             --admin "$ADMIN_DIR/admin.fgb" \
@@ -800,20 +704,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          # The world is already live; a failed cleanup must not fail the run —
-          # but it must be SAID, orphaned band files are ~15 GB a pop.
+          # The world is already live; a failed cleanup must warn, not fail the run.
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          # NO --no-progress here: it is valid on `aws s3 sync`/`cp` but NOT on
-          # `aws s3 rm`, which rejects it as an unknown option. Run 32599689118
-          # left 15.05 GB of bands behind exactly this way.
+          # No --no-progress here: `aws s3 rm` rejects it as an unknown option.
           aws s3 rm "s3://$R2_BUCKET/$STAGING/" --recursive --endpoint-url "$EP" \
             || echo "::warning::staging cleanup failed — orphaned intermediates remain under $STAGING/ in R2; delete them by hand"
-          # Verify rather than trust the exit code: a cleanup that silently
-          # removes nothing and returns 0 is the failure we would not notice.
-          # The `|| true` is not optional: `aws s3 ls` exits 1 on an EMPTY
-          # listing, so verifying a successful cleanup is exactly the case
-          # where it "fails" — under pipefail that marked run 32783767219 red
-          # AFTER the world was live. An empty listing is the success case.
+          # Verify rather than trust the exit code. The `|| true` is required:
+          # `aws s3 ls` exits 1 on an empty listing, which is the success case.
           left=$( (aws s3 ls "s3://$R2_BUCKET/$STAGING/" --recursive \
                    --endpoint-url "$EP" || true) | wc -l)
           [ "$left" -eq 0 ] \

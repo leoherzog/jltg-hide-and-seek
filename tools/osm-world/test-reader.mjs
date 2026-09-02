@@ -1,18 +1,14 @@
 /**
  * tools/osm-world/test-reader.mjs — exercise `osm/flatgeobuf.js` against a real file.
  *
- * `osm/flatgeobuf.js` is a hand-written reader for a binary format: FlatBuffers vtable
- * arithmetic, a packed Hilbert R-tree walk, and a packed property blob whose field
- * widths come from the header rather than from the blob. Every one of those is the kind
- * of code that is either exactly right or silently returns plausible garbage, so it is
- * checked against a file GDAL wrote rather than reasoned about.
+ * The hand-written FlatGeobuf reader either is exactly right or silently returns
+ * plausible garbage, so it is checked against a file GDAL wrote.
  *
  *   uv run tools/osm-world/make-fixture.py /tmp/fixture.fgb
  *   node tools/osm-world/test-reader.mjs /tmp/fixture.fgb
  *
- * The reader takes an injected `fetchImpl`, so this serves the fixture out of the local
- * filesystem and answers `Range` with a 206 exactly as R2 does — no server needed, and
- * the range handling itself gets tested rather than stubbed out.
+ * The fixture is served through an injected `fetchImpl` that answers `Range` with a
+ * 206 as R2 does, so range handling is tested rather than stubbed.
  */
 
 import { readFileSync } from 'node:fs';
@@ -48,8 +44,7 @@ function fileFetch(url, init = {}) {
   return Promise.resolve({
     ok: true,
     status: 206,
-    // R2 answers a 206 with Content-Range; the reader learns the file size from it and
-    // clamps its tail reads, so serving it here tests that path rather than stubbing it.
+    // The reader learns the file size from Content-Range and clamps tail reads.
     headers: {
       get: (name) => (name.toLowerCase() === 'content-range'
         ? `bytes ${start}-${end - 1}/${BYTES.length}`
@@ -59,7 +54,7 @@ function fileFetch(url, init = {}) {
   });
 }
 
-// ── the tiny assertion harness ───────────────────────────────────────────────
+// Assertion harness.
 
 let passed = 0;
 const failures = [];
@@ -76,23 +71,21 @@ function near(a, b, tolerance = 1e-9) {
   return Math.abs(a - b) <= tolerance;
 }
 
-// ── level bounds, checked against the shape the format specifies ─────────────
+// Level bounds, checked against the shape the format specifies.
 
 {
-  // Pure arithmetic, independent of the fixture: 68 items at the default branching
-  // factor of 16 is 68 leaves → 5 → 1, so 74 nodes laid out root first.
+  // 68 items at branching factor 16 is 68 leaves → 5 → 1, so 74 nodes root first.
   const bounds = levelBounds(68, 16);
   check('levelBounds levels', bounds.length === 3, `got ${bounds.length}`);
   check('levelBounds shape', JSON.stringify(bounds) === '[[6,74],[1,6],[0,1]]',
     JSON.stringify(bounds));
-  // The regression that put `dataStart` inside the index: this must be the LEAF
-  // level's end (74), not the root level's (1).
+  // Must be the LEAF level's end (74), not the root's (1), or `dataStart` lands inside the index.
   check('nodeCount counts every level', nodeCount(68, 16) === 74, `got ${nodeCount(68, 16)}`);
   check('levelBounds root is one node',
     bounds[bounds.length - 1][1] - bounds[bounds.length - 1][0] === 1, JSON.stringify(bounds));
 }
 
-// ── header ───────────────────────────────────────────────────────────────────
+// Header.
 
 const reader = new FlatGeobufReader('file://fixture.fgb', { fetchImpl: fileFetch });
 const head = await reader.open();
@@ -105,11 +98,11 @@ check('header column names',
   head.columns.map((c) => c.name).join(',') === 'osm_type,osm_id,name,rank',
   head.columns.map((c) => c.name).join(','));
 
-// ── a bbox query over the interesting features ───────────────────────────────
+// A bbox query over the interesting features.
 
 const rect = { minX: -85.70, minY: 42.94, maxX: -85.65, maxY: 42.99 };
 const features = await reader.query(rect);
-// Identity is two columns now; recompose the short form for readability.
+// Identity is two columns; recompose the short form for readability.
 const shortId = (f) => `${String(f.properties.osm_type || '?')[0]}${f.properties.osm_id}`;
 const byId = new Map(features.map((f) => [shortId(f), f]));
 
@@ -125,7 +118,7 @@ check('identity arrives as two properties, not a Feature-level id',
   && Number.isFinite(byId.get('w3').properties.osm_id),
   JSON.stringify({ t: byId.get('w3').properties.osm_type, i: byId.get('w3').properties.osm_id }));
 
-// ── geometry decoding, shape by shape ────────────────────────────────────────
+// Geometry decoding, shape by shape.
 
 {
   const point = byId.get('n1');
@@ -139,7 +132,7 @@ check('identity arrives as two properties, not a Feature-level id',
   const polygon = byId.get('w3');
   check('polygon type', polygon.type === GEOMETRY_TYPE.POLYGON, `got ${polygon.type}`);
   check('polygon part count', polygon.polygons.length === 1, `got ${polygon.polygons.length}`);
-  // THE case a flattened ring list gets wrong.
+  // The case a flattened ring list gets wrong.
   check('polygon kept its hole', polygon.polygons[0].inners.length === 1,
     `got ${polygon.polygons[0].inners.length} inner rings`);
   check('polygon outer ring is closed',
@@ -175,7 +168,7 @@ check('identity arrives as two properties, not a Feature-level id',
   check('multipoint point count', multi.points.length === 2, `got ${multi.points.length}`);
 }
 
-// ── property decoding ────────────────────────────────────────────────────────
+// Property decoding.
 
 check('string property', byId.get('w3').properties.name === 'Ah-Nab-Awen Park',
   String(byId.get('w3').properties.name));
@@ -185,14 +178,12 @@ check('integer property', byId.get('w3').properties.rank === 3,
 check('absent property is absent', !('name' in byId.get('n2').properties),
   JSON.stringify(byId.get('n2').properties));
 
-// ── the range reads were actually ranged ─────────────────────────────────────
-
-// The whole point of the exercise: a bbox query must read a small fraction of the file.
+// A bbox query must read a small fraction of the file.
 check('reader used Range requests, not a full download',
   reader.bytesFetched < BYTES.length / 2,
   `read ${reader.bytesFetched} of ${BYTES.length} bytes in ${requests} requests`);
 
-// ── featuresToPois: the representative-point rule and the dedup ──────────────
+// featuresToPois: the representative-point rule and the dedup.
 
 {
   const proj = new Projection(42.96, -85.67);
@@ -232,17 +223,10 @@ check('reader used Range requests, not a full download',
     order.join('|'));
 }
 
-// ── the range gate ───────────────────────────────────────────────────────────
-
-// The module-global gate in `osm/flatgeobuf.js` bounds how many Range requests are in
-// flight across every reader at once, and `geodata.js` runs its categories in parallel
-// on the strength of that promise. Its failure mode is the reason it is tested here
-// rather than trusted: a permit that is taken and never given back does not throw and
-// does not corrupt anything — it silently shrinks the ceiling, and enough of them hang
-// the OSM layer with no error anywhere. Nothing else in this repo executes the error
-// paths under contention, so this drives them deliberately: a third of the requests
-// fail, half of those by throwing and half by answering 500, which are the two shapes
-// that leak a permit if the `finally` is ever moved or dropped.
+// The range gate. The module-global gate in `osm/flatgeobuf.js` bounds in-flight
+// Range requests across all readers. A leaked permit silently shrinks the ceiling
+// and eventually hangs the OSM layer with no error, so the error paths are driven
+// under contention: a third of requests fail, half by throwing and half by 500.
 {
   const SIZE = 1 << 20;
   let live = 0;
@@ -274,8 +258,7 @@ check('reader used Range requests, not a full download',
   const gated = new FlatGeobufReader('https://example.invalid/gate.fgb', {
     fetchImpl: failingFetch,
   });
-  // Set the size directly: this fixture is never opened, so there is no header read to
-  // learn it from, and `read` clamps against it.
+  // Never opened, so set the size `read` clamps against directly.
   gated.reader.size = SIZE;
 
   const spans = Array.from({ length: 200 }, (_, i) => [i * 512, i * 512 + 256]);
@@ -287,27 +270,22 @@ check('reader used Range requests, not a full download',
   check('the failing third really failed', fulfilled > 0 && fulfilled < spans.length,
     `${fulfilled}/${spans.length} fulfilled`);
 
-  // The leak check. A permit lost on an error path shows up as a read that never
-  // settles at all, so the timeout — not a rejection — is the failure being caught.
+  // Leak check: a lost permit shows up as a read that never settles, so the timeout is the failure.
   const outcome = await Promise.race([
     gated.reader.read(900000, 900100).then(() => 'settled', () => 'settled'),
     new Promise((resolve) => { setTimeout(() => resolve('never settled'), 5000); }),
   ]);
   check('a read after 66 failures still settles', outcome === 'settled', outcome);
 
-  // A rejected span must not be remembered: the in-flight map is keyed by span, and a
-  // rejection left in it would hand the same stale error to every later read forever.
-  // Whether the retry SUCCEEDS is not the point and cannot be asserted — this fake
-  // origin fails by a counter, so the retry's fate is arithmetic. What must be true is
-  // that the retry reaches the origin at all: a remembered rejection would be handed
-  // back from the map without a request, and the count below is what catches that.
+  // A rejected span must not stay in the in-flight map, or every later read gets the
+  // stale error. Only that the retry reaches the origin is asserted; its fate is arithmetic.
   const before = served;
   await gated.reader.read(1024, 1280).then(() => {}, () => {});
   check('a span that failed is retried, not remembered', served > before,
     `${served - before} requests issued on retry`);
 }
 
-// ── report ───────────────────────────────────────────────────────────────────
+// Report.
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {

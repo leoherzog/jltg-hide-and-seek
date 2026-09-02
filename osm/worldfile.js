@@ -1,40 +1,16 @@
 /**
  * osm/worldfile.js — the world-file semantic layer.
  *
- * This is to `./flatgeobuf.js` what `./geodata.js` is to `./overpass.js`: the file that
- * knows what a park is. `./flatgeobuf.js` reads bytes; this turns them into the `Poi`
- * records the rest of the pipeline already consumes, so `./geodata.js` downstream of
- * the fetch does not know or care which transport produced them.
+ * `./flatgeobuf.js` reads bytes; this turns them into the `Poi` records the rest of the
+ * pipeline consumes, plus the transit-route, density and admin layers.
  *
  * WORKER SIDE ONLY — no DOM.
  *
- * ── What replaced what ───────────────────────────────────────────────────────
- *
- *   Overpass, before                        world files, now
- *   ─────────────────────────────────────   ──────────────────────────────────
- *   one bbox query per category group       one Range-request query per category
- *   `out count;` audit in one request       index-only count, no feature bytes read
- *   ≤0.1° tiling when a fetch is too big    never — the index bounds the read
- *   mirror failover, 3 s courtesy sleeps    one immutable origin, no rate limit
- *   `is_in` for admin containment           the `admin` polygon layer
- *   `out center qt` building density        the `density` grid layer
- *
- * The count audit is the interesting one. `overpassCounts` existed because asking
- * Overpass for a count was enormously cheaper than asking it for features, so the
- * pipeline spent a whole request learning what it could afford to fetch. The same
- * asymmetry exists here for a better reason: a count is answered by walking the R-tree
- * alone, reading tens of kilobytes of index and not one feature byte. See `worldCount`.
- *
- * ── The two ways this can silently disagree with Overpass ────────────────────
- *
+ * Two things to keep in mind:
  *   1. The R-tree indexes bounding boxes, so `search` returns a SUPERSET. `worldPois`
- *      filters it down by real geometry; `worldCount` does not and is an upper bound.
- *      See `worldCount`'s own docstring, which is where that contract is stated.
- *
- *   2. The build applies its predicate ONCE, offline, against a planet snapshot. An
- *      Overpass run reflects OSM as of minutes ago. Every count is therefore as-of the
- *      manifest's `planet_timestamp`, which is why that field exists and why it reaches
- *      the provenance rows rather than being replaced with the wall clock.
+ *      filters it by real geometry; `worldCount` does not and is an upper bound.
+ *   2. The build ran once against a planet snapshot, so every count is as-of the
+ *      manifest's `planet_timestamp`, which is why provenance rows cite it.
  */
 
 import { cmpStr, num } from '../lib/core.js';
@@ -45,12 +21,8 @@ import {
 import { FlatGeobufReader } from './flatgeobuf.js';
 
 /**
- * Where the world files live. An R2 bucket served from a custom domain — public,
- * immutable, `Cache-Control: max-age=31536000`, and CORS-configured to expose
- * `content-range` so a browser can actually read a 206. `tools/osm-world/build.py`
- * writes the matching CORS document next to itself.
- *
- * Overridable so a build can be tested from a local static server before publishing.
+ * Where the world files live: a public, immutable R2 bucket whose CORS exposes
+ * `content-range` so a browser can read a 206. Overridable for local testing.
  */
 export const DEFAULT_WORLD_BASE_URL = 'https://map.jltg.herzog.tech/world';
 
@@ -58,11 +30,9 @@ export const DEFAULT_WORLD_BASE_URL = 'https://map.jltg.herzog.tech/world';
 export const MANIFEST_TIMEOUT_S = 20;
 
 /**
- * The two identity columns `osmium export -c` is configured to write, via the config's
- * `attributes: {type: 'osm_type', id: 'osm_id'}`. They must be PROPERTIES, not the
- * GeoJSON Feature-level `id` member that `--add-unique-id` alone would produce — a
- * feature whose identity is not in `properties` is dropped silently by `featuresToPois`.
- * See `export_config` in tools/osm-world/build.py.
+ * The two identity columns the build writes (see `export_config` in
+ * tools/osm-world/build.py). They must be PROPERTIES: a feature whose identity is not in
+ * `properties` is dropped silently by `featuresToPois`.
  */
 const TYPE_PROPERTY = 'osm_type';
 const ID_PROPERTY = 'osm_id';
@@ -78,14 +48,6 @@ function cmpTypeId(a, b) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // The rulebook's "map icon" rule
 // ═══════════════════════════════════════════════════════════════════════════════
-//
-// Moved here from `./overpass.js` when that file was deleted. It was the last live
-// thing in it: the Overpass transport and `parseOverpass` both became unreachable when
-// the pipeline switched to world files, and keeping a whole module alive for one
-// function was worse than moving the function.
-//
-// It lives next to `featuresToPois` on purpose — that is its only caller, and the two
-// together are what decide where a park's icon sits.
 
 /**
  * Project a geographic ring into planar metres.
@@ -100,23 +62,12 @@ function planar(ring, proj) {
 /**
  * The rulebook's "map icon" rule, applied to bare geometry — specs/osm.md §3.2.
  *
- * Closed rings → area-weighted shoelace centroid over the outers, minus the inners,
- * with an interior fallback when the centroid lands outside the shape (a crescent-
- * shaped park's centroid is not in the park). Open lines → length-weighted midpoint.
- * A lone point → itself. Never `out center`, which is the bbox centre and diverges by
- * a measured p90 of 88 m on real park polygons.
+ * Closed rings → area-weighted centroid over the outers minus the inners, with an
+ * interior fallback when the centroid lands outside the shape. Open lines →
+ * length-weighted midpoint. A lone point → itself. Never the bbox centre.
  *
- * This is what the rulebook measures distance to: for a large park the relevant point
- * is the label in the middle, which can be a mile from where a player is standing
- * inside it.
- *
- * THIS IS THE ONE IMPLEMENTATION. `representativeLatlon` reaches it from an Overpass
- * element and `osm/worldfile.js` reaches it from a decoded FlatGeobuf feature. The two
- * data paths must place a park's icon on the same coordinate or the world-file
- * migration silently moves every measured distance, so they share this function rather
- * than each having their own copy of the rule.
- *
- * Every coordinate in and out is geographic `[lat, lon]`.
+ * This is the one implementation; every data path must place an icon on the same
+ * coordinate. Every coordinate in and out is geographic `[lat, lon]`.
  *
  * @param {import('../lib/geo.js').Projection} proj
  * @param {ReadonlyArray<ReadonlyArray<[number, number]>>} outers
@@ -168,9 +119,8 @@ export function representativeFromGeometry(proj, outers, inners, lines, points) 
   }
 
   if (lines.length) {
-    // An Overpass way has exactly one line, so this loop is a no-op on that path. A
-    // FlatGeobuf MultiLineString can have several (a river split into segments), and
-    // the longest is chosen so the answer cannot depend on member order.
+    // A MultiLineString can have several parts; the longest is chosen so the answer
+    // cannot depend on member order.
     let longest = lines[0];
     let longestLength = -1;
     for (const line of lines) {
@@ -220,11 +170,8 @@ export function representativeFromGeometry(proj, outers, inners, lines, points) 
 /**
  * Fetch `manifest.json` and return a handle every other function here takes.
  *
- * The manifest is the availability contract: a layer absent from it is a layer the
- * build did not produce, and `./geodata.js` degrades that category rather than throwing
- * — same first-class degradation path Overpass had, for the same reason. It is served
- * with a short max-age while the `.fgb` files are immutable, so publishing a new build
- * flips every layer atomically as far as a client is concerned.
+ * The manifest is the availability contract: a layer absent from it was not built, and
+ * `./geodata.js` degrades that category rather than throwing.
  *
  * @param {string} [baseUrl]
  * @param {{fetchImpl?: typeof fetch}} [opts]
@@ -234,9 +181,7 @@ export async function openWorld(baseUrl = DEFAULT_WORLD_BASE_URL, opts = {}) {
   const doFetch = opts.fetchImpl || ((...args) => fetch(...args));
   const base = String(baseUrl).replace(/\/+$/, '');
 
-  // Same abort-based timeout the layer reads use. This one matters more, not less: it
-  // is the first request of the run, and a stall here means the page never gets as far
-  // as reporting which layer was the problem.
+  // Same abort-based timeout the layer reads use; a stall here would hang the run.
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, MANIFEST_TIMEOUT_S * 1000);
   let response;
@@ -287,16 +232,10 @@ export function worldLayerInfo(world, key) {
 /**
  * Is this manifest entry a present-but-EMPTY layer — an entry with no `path`?
  *
- * `tools/osm-world/merge.py` writes `{"features": 0}` for a layer whose selector
- * matched nothing anywhere in the merged region, so the manifest can say "this layer
- * exists and its answer is zero" without shipping a zero-feature file. That is a
- * different statement from ABSENT (no entry at all), which means the build did not
- * produce the layer and the category degrades to unavailable.
- *
- * An empty layer answers 0 / [] and never gets a reader: there is no file to read,
- * and building `new FlatGeobufReader(base + '/undefined')` would throw on its first
- * Range request — aborting, for one path-less curse term, the entire curse-predicate
- * loop that was otherwise answerable.
+ * `tools/osm-world/merge.py` writes `{"features": 0}` for a layer whose selector matched
+ * nothing, so the manifest can say "exists, answer is zero" without shipping a file.
+ * ABSENT (no entry) means the build did not produce the layer and the category degrades.
+ * An empty layer answers 0 / [] and never gets a reader.
  */
 function layerEmpty(info) {
   return info !== null && typeof info === 'object'
@@ -304,9 +243,7 @@ function layerEmpty(info) {
 }
 
 /**
- * A reader for one layer, or null when there is nothing to read: the layer is not in
- * the manifest, or its entry is path-less (a present-but-empty layer — see
- * `layerEmpty`; the query functions answer those as 0 / [] without ever getting here).
+ * A reader for one layer, or null when the layer is absent or empty (see `layerEmpty`).
  * Readers are memoised so a layer's header costs one request per run, not per query.
  */
 export function worldReader(world, key, opts = {}) {
@@ -332,17 +269,12 @@ function rectOf(bbox) {
 /**
  * How many features of `key` have a bounding box touching `bbox`.
  *
- * Walks the R-tree and stops — no feature bytes are read at all, which is what makes
- * this cheap enough to run over every category before deciding what to fetch. It is the
- * direct replacement for the one-request `out count;` audit.
- *
- * UPPER BOUND, not a count. The index stores bounding boxes, so a feature whose bbox
- * clips the map while its geometry does not is included here and excluded by
+ * Walks the R-tree only; no feature bytes are read. UPPER BOUND, not a count: a feature
+ * whose bbox clips the map while its geometry does not is included here and excluded by
  * `worldPois`. Use it to decide affordability; never publish it as a count.
  *
  * @returns {Promise<number|null>} null when the layer is not in the manifest;
- *   0 — a genuine, trustworthy zero — when the manifest lists it as a path-less
- *   empty layer
+ *   0 (a genuine zero) when the manifest lists it as a path-less empty layer
  */
 export async function worldCount(world, key, bbox, opts = {}) {
   const info = worldLayerInfo(world, key);
@@ -359,12 +291,8 @@ export async function worldCount(world, key, bbox, opts = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * `{osm_type: 'way', osm_id: 1234}` → `['way', 1234]`. The build writes both columns;
- * nothing downstream can reconstruct OSM identity without them.
- *
- * Tolerates the prefixed single-column form ("w1234") too, so a world file built before
- * the two-column config still reads rather than silently yielding zero features — which
- * is exactly the failure this shape exists to make impossible.
+ * `{osm_type: 'way', osm_id: 1234}` → `['way', 1234]`. Also tolerates the prefixed
+ * single-column form ("w1234") so an older build still reads.
  *
  * @returns {[string, number]|null}
  */
@@ -389,25 +317,12 @@ function osmIdentity(props) {
 /**
  * Does a decoded feature genuinely intersect `bbox`?
  *
- * THE R-TREE ANSWERS WITH BOUNDING BOXES, so `search` returns a superset and this is
- * what narrows it back to the truth. Both halves of that narrowing were wrong before:
+ * The R-tree answers with bounding boxes, so this narrows the superset back to the
+ * truth. A vertex-only test drops a polygon larger than the map (no vertex inside), and
+ * an extent-only test accepts any country whose bbox covers the map. So: a vertex inside
+ * the rect, OR any segment crossing any rect edge, OR the rect centre inside a ring.
  *
- *   - A vertex-only test DROPS a feature that crosses the map without a vertex inside
- *     it. Measured against live Overpass, that is 2-3% of canals on small Flevoland
- *     maps and — far worse — `landuse=forest` polygons covering 52-71% of a Tomsk map,
- *     because a polygon larger than the map rarely has a vertex in it. The published
- *     count then silently disagrees with `worldCount` computed in the same run.
- *
- *   - An extent-based "does it swallow the map" test ACCEPTS a feature that merely has
- *     a large bounding box. Canada is one relation whose bbox spans lat 41.7-83.1 and
- *     contains Grand Rapids; every country is one such relation. That is how a Michigan
- *     map came back with `countryCode: 'ca'`.
- *
- * So: a vertex inside the rect, OR a rect corner inside a ring (the feature swallows
- * the map), OR any segment crossing any rect edge. Rings are closed implicitly, and
- * open lines are walked as segments — a line and a ring differ only in that.
- *
- * Coordinates in and out are (lon, lat), matching the decoder.
+ * Coordinates are (lon, lat), matching the decoder.
  */
 
 /** Do segments p1→p2 and p3→p4 properly intersect or touch? Orientation test. */
@@ -465,11 +380,8 @@ function intersectsBbox(feature, bbox) {
   }
   for (const polygon of feature.polygons) {
     for (const [lon, lat] of polygon.outer) if (bboxContains(bbox, lat, lon)) return true;
-    // Inner rings too, or stage 3's invariant is false: a hole lying WHOLLY inside the
-    // map has no vertex outside to make it cross an edge, so stage 2 cannot see it, and
-    // stage 3 then finds the centre inside the hole and rejects the whole feature. That
-    // is the silent count/feature disagreement this file exists to prevent — observed on
-    // `green` relation 7911045, where worldCount said 1 and worldPois said 0.
+    // Inner rings too: a hole lying wholly inside the map crosses no edge, and stage 3
+    // would then find the centre inside the hole and reject the whole feature.
     for (const ring of polygon.inners) {
       for (const [lon, lat] of ring) if (bboxContains(bbox, lat, lon)) return true;
     }
@@ -488,9 +400,8 @@ function intersectsBbox(feature, bbox) {
     }
   }
 
-  // 3. the map sits wholly inside the feature — a lake bigger than the game, a country.
-  //    Testing the centre is enough: with no vertex inside and no crossing edge, the
-  //    rectangle is entirely in or entirely out of every ring.
+  // 3. the map sits wholly inside the feature. With no vertex inside and no crossing
+  //    edge, the rectangle is entirely in or out of every ring, so the centre suffices.
   const centre = [(w + e) / 2, (s + n) / 2];
   for (const polygon of feature.polygons) {
     if (!pointInRing(centre, polygon.outer)) continue;
@@ -508,18 +419,11 @@ function toLatLon(run) {
 /**
  * Decoded FlatGeobuf features → sorted, deduplicated `Poi` records.
  *
- * The exact analogue of `parseOverpass`, and deliberately so: it applies the same
- * representative-point rule (through the shared `representativeFromGeometry`), the same
- * node-inside-same-category-area dedup, and the same `(osmType, osmId)` sort. A `Poi`
- * from here and a `Poi` from Overpass are indistinguishable to everything downstream,
- * which is the property that makes the migration safe to reason about.
- *
- * The dedup implements specs/osm.md §3.2 step 6 and only that: a NODE inside an area
- * feature of the same category is the same real-world thing mapped twice (a museum node
- * inside the museum building) and the area wins. It is deliberately not extended to
- * area-inside-area — measured on the reference bbox that would delete 25 pitches that
- * sit inside recreation grounds, which are genuinely separate features a player can
- * stand on.
+ * Applies `representativeFromGeometry`, the node-inside-same-category-area dedup, and
+ * the `(osmType, osmId)` sort. The dedup is specs/osm.md §3.2 step 6 only: a NODE inside
+ * an area of the same category is the same thing mapped twice and the area wins. It is
+ * deliberately not extended to area-inside-area (pitches inside recreation grounds are
+ * separate features).
  *
  * @param {Array<import('./flatgeobuf.js').FgbFeature>} features
  * @param {string} category
@@ -535,8 +439,7 @@ export function featuresToPois(features, category, proj, bbox, opts) {
   const records = [];
 
   for (const feature of features) {
-    // The R-tree answered with bounding boxes; this is where the superset is filtered
-    // back down to features that really do reach the map.
+    // Narrow the R-tree's bbox superset to features that really reach the map.
     if (!intersectsBbox(feature, bbox)) continue;
 
     const identity = osmIdentity(feature.properties);
@@ -633,12 +536,8 @@ export function featuresToPois(features, category, proj, bbox, opts) {
 }
 
 /**
- * Fetch one category from its world file and reduce it to `Poi` records.
- *
- * The direct replacement for `fetchCategory`. There is no tiling fallback and no
- * per-tile degradation because there is nothing to degrade: the read is bounded by the
- * index rather than by a server's patience, so it either succeeds or the origin is
- * down.
+ * Fetch one category from its world file and reduce it to `Poi` records. No tiling
+ * fallback: the read is bounded by the index, so it succeeds or the origin is down.
  *
  * @param {World} world
  * @param {string} layerKey the world-file layer (usually the category key)
@@ -684,10 +583,7 @@ export async function worldPois(world, layerKey, category, bbox, proj, opts = {}
 
 /**
  * The nine tag columns `tools/osm-world/build-transit.py` promises for this layer, and
- * the key each lands under. A fixed table rather than `featuresToPois`'s "every
- * property that is not identity" sweep, because these nine are read BY NAME downstream:
- * a tenth column would arrive as a tag nothing reads, and a renamed one would arrive as
- * an absent tag nothing notices. Pinning the set is what makes the second failure loud.
+ * the key each lands under. Pinned by name because downstream reads them by name.
  */
 const TRANSIT_ROUTE_TAG_COLUMNS = Object.freeze([
   Object.freeze(['name', 'name']),
@@ -706,11 +602,7 @@ const STOPS_PROPERTY = 'stops';
 
 /**
  * A decoded property → a tag string, or null when the build carried nothing there.
- *
- * The empty string collapses to null on purpose. `ref=""` is not a route number and
- * `interval=""` is not a headway; every consumer of these tags asks "is there a value"
- * rather than "is the key present", and giving it one answer for both spellings of
- * absence is what keeps it from having to ask twice.
+ * The empty string collapses to null on purpose: `ref=""` is not a route number.
  */
 function tagOrNull(value) {
   if (value === undefined || value === null) return null;
@@ -719,20 +611,12 @@ function tagOrNull(value) {
 }
 
 /**
- * The `stops` column: a JSON array of `[nodeId, name, nameEn, lat, lon]` rows, in
- * TRAVEL ORDER — the order the build recovered by projecting each stop node onto the
- * chained line, because OSM's member order is not a sequence and cannot be trusted as
- * one.
- *
- * One JSON string rather than a parallel set of delimited columns because a FlatGeobuf
- * column is a scalar: there is no repeated field to put a stop list in, and encoding it
- * as `"names;lats;lons"` is the same idea with a worse escaping story for a stop called
- * `Champs-Élysées ; Clemenceau`.
+ * The `stops` column: a JSON array of `[nodeId, name, nameEn, lat, lon]` rows in TRAVEL
+ * ORDER, which the build recovered by projecting each stop onto the chained line
+ * (OSM member order is not a sequence). JSON because a FlatGeobuf column is a scalar.
  *
  * @returns {Array<TransitRouteStop>|null} null when the column is missing or will not
- *   parse. The caller then drops the whole feature: a route with no stops and a route
- *   whose stop list was mangled are different facts, and only the first is safe to hand
- *   on as one.
+ *   parse; the caller then drops the whole feature rather than report a route with no stops.
  */
 function parseTransitStops(raw) {
   if (raw === undefined || raw === null) return null;
@@ -752,9 +636,7 @@ function parseTransitStops(raw) {
     const nodeId = Number.parseInt(String(rawId), 10);
     const lat = Number(rawLat);
     const lon = Number(rawLon);
-    // A stop the reader cannot place is skipped and the rest of the line kept, the same
-    // judgement `featuresToPois` makes about a feature with no usable identity. Losing
-    // one stop shortens a line; refusing the line loses the whole system.
+    // A stop the reader cannot place is skipped and the rest of the line kept.
     if (!Number.isFinite(nodeId) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     stops.push({
       nodeId,
@@ -770,25 +652,13 @@ function parseTransitStops(raw) {
 /**
  * Read the `transit_route` layer — assembled route relations, with their stop lists.
  *
- * The one read in this file that does not end in a `Poi`, and the reason is the shape
- * of a `Poi` rather than a preference. A `Poi` carries a representative point and, for
- * two categories, polygon outers; it has no field for linework and none for an ordered
- * list of stops. A metro line reduced to the midpoint of its longest chain is a fine
- * answer to "how far is the nearest rail line" — it is not an answer to "what would
- * this line's timetable look like", which is the only question this layer exists to
- * answer. Growing `Poi` a line field to carry it would put every existing category's
- * measured representative point through `representativeFromGeometry` again for the sake
- * of one consumer, so the route records go around `featuresToPois` instead.
+ * The one read here that does not end in a `Poi`: a `Poi` has no field for linework or
+ * an ordered stop list, so route records go around `featuresToPois`. The only consumer
+ * is the OSM fallback converter, which is why `transit_route` is not a `GEO_CATEGORIES`
+ * member and `collectGeodata` never touches it.
  *
- * That one consumer is the OSM fallback converter, which is also why `transit_route` is
- * not a `GEO_CATEGORIES` member and is never touched by `collectGeodata`: a run whose
- * sources are all real GTFS feeds pays not one byte for it.
- *
- * ABSENT, EMPTY AND ZERO REMAIN THREE DIFFERENT ANSWERS, as everywhere else here. `null`
- * says the build did not produce the layer at all, which is the caller's signal to
- * refuse the source rather than to report a city with no railway; `[]` says the layer
- * shipped and has nothing to say about this map. Neither is a count of zero routes that
- * anything downstream may publish.
+ * `null` (layer not built) tells the caller to refuse the source; `[]` (layer shipped,
+ * nothing on this map) does not. Neither is a publishable count of zero.
  *
  * @param {World} world
  * @param {[number, number, number, number]} bbox
@@ -807,11 +677,7 @@ export async function worldTransitRoutes(world, bbox, opts = {}) {
   /** @type {Array<TransitRoute>} */
   const routes = [];
   for (const feature of features) {
-    // The R-tree answered with bounding boxes, and a route relation is exactly the
-    // shape that needs narrowing back down: a commuter line's envelope covers every
-    // town between its termini, including the ones it passes without a rail in them.
-    // The segment test in stage 2 is also what keeps a through-running line that clips
-    // the corner of the map without a vertex inside it.
+    // A commuter line's bbox covers every town between its termini; narrow it down.
     if (!intersectsBbox(feature, bbox)) continue;
 
     const identity = osmIdentity(feature.properties);
@@ -829,16 +695,13 @@ export async function worldTransitRoutes(world, bbox, opts = {}) {
     routes.push({
       osmId: identity[1],
       tags,
-      // MultiLineString parts, flipped to geographic order like every other geometry
-      // that leaves this file. The parts are the build's chaining result: more than one
-      // means the relation's ways do not form a single connected run, which is a real
-      // property of the route and not an error to paper over here.
+      // MultiLineString parts in geographic order. More than one part means the
+      // relation's ways do not form a single connected run; that is a real property.
       lines: feature.lines.map(toLatLon),
       stops,
     });
   }
-  // The build writes one feature per relation, so the relation id alone is already a
-  // total order — no `cmpTypeId` needed, since every row here is a relation.
+  // One feature per relation, so the relation id alone is a total order.
   routes.sort((a, b) => a.osmId - b.osmId);
   return routes;
 }
@@ -848,18 +711,12 @@ export async function worldTransitRoutes(world, bbox, opts = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Read the sparse density grid over `bbox`.
+ * Read the sparse density grid over `bbox`: a FlatGeobuf of points, one per populated
+ * cell, with an integer column per count-only category.
  *
- * Replaces both `out center qt` for buildings and the five other count-only categories
- * (bridge, car_street, footpath, street, tree). The grid is a FlatGeobuf of points — one per
- * populated cell, with an integer column per category — so it is read with exactly the
- * same index walk as everything else.
- *
- * Returns map-wide totals and the raw cells. The totals are EXACT: the build attributes
- * each feature to exactly one cell, so summing cells cannot double-count. The cells are
- * what `./geodata.js` attributes to zones, and that attribution is approximate — a cell
- * lands wholly inside or wholly outside a zone circle depending on where its centre
- * falls. See `_density_comment` in tools/osm-world/categories.json.
+ * Returns map-wide totals and the raw cells. The totals are EXACT (each feature lands in
+ * one cell). Zone attribution of cells in `./geodata.js` is approximate: a cell is wholly
+ * in or out of a zone by its centre. See `_density_comment` in tools/osm-world/categories.json.
  *
  * @returns {Promise<{counts: Object<string, number>,
  *                    cells: Array<{lat: number, lon: number, counts: Object<string, number>}>,
@@ -906,24 +763,15 @@ export async function worldDensity(world, bbox, opts = {}) {
  * @typedef {Object} AdminArea
  * @property {number} level OSM `admin_level`, 2–10
  * @property {string} name
- * @property {string|null} nameEn `name:en` where the build carries it — the ladder
- *   prefers it, so Switzerland renders as "Switzerland" and not the four-language
- *   `name` string
+ * @property {string|null} nameEn `name:en` where the build carries it; the ladder prefers it
  * @property {string|null} iso1 ISO3166-1 — present on level 2, the country-code fallback
  * @property {string|null} iso2 ISO3166-2
  * @property {Array<Array<[number, number]>>} rings outer rings, `[lat, lon]`
  */
 
 /**
- * Every administrative area overlapping `bbox`, outer rings retained.
- *
- * Replaces the batched Overpass `is_in` — which cost one request per 150 zone centres
- * and could not be cached usefully, since the batch key changed with the zone set. Here
- * the areas are fetched once for the map and every zone centre is tested against them
- * locally, so zone count stops mattering entirely.
- *
- * Rings are always kept: containment is the whole question this layer answers, and a
- * representative point cannot answer it.
+ * Every administrative area overlapping `bbox`, rings retained. Fetched once per map;
+ * every zone centre is then tested locally via `adminAreasAt`.
  *
  * @returns {Promise<Array<AdminArea>|null>} null when the layer is not in the manifest
  */
@@ -939,16 +787,9 @@ export async function worldAdminAreas(world, bbox, opts = {}) {
   const areas = [];
   for (const feature of features) {
     if (!feature.polygons.length) continue;
-    // THE R-TREE ANSWERS WITH BOUNDING BOXES, AND FOR THIS LAYER THAT IS DANGEROUS.
-    // `featuresToPois` filters the superset down; this function used to skip that step,
-    // and administrative geometry is exactly where it bites hardest. A country is one
-    // relation with one bbox: Canada's spans roughly lat 41.7–83.1, lon −141..−52,
-    // which contains Grand Rapids, Michigan. `adminInfo` takes the first area carrying
-    // ISO3166-1 in (level, name) order, and 'Canada' sorts before 'United States of
-    // America' — so an unfiltered superset silently renders the whole page in
-    // kilometres, changes the Unguided Tourist decision, drops the wrong country's
-    // restaurants from Distant Cuisine, and reports an international border on a map
-    // 250 km from one.
+    // The bbox superset MUST be filtered here: Canada's bbox contains Grand Rapids, and
+    // `adminInfo` takes the first ISO3166-1 area in (level, name) order, so an
+    // unfiltered list silently gives a Michigan map `countryCode: 'ca'`.
     if (!intersectsBbox(feature, bbox)) continue;
     const props = feature.properties;
     const level = Number.parseInt(String(props.admin_level), 10);
@@ -962,11 +803,8 @@ export async function worldAdminAreas(world, bbox, opts = {}) {
       iso1: iso1 === null ? null : String(iso1),
       iso2: props['ISO3166-2'] === undefined ? null : String(props['ISO3166-2']),
       rings: feature.polygons.map((p) => toLatLon(p.outer)),
-      // Holes are load-bearing here and were being discarded. OSM maps enclaves as
-      // `inner` rings — San Marino and the Vatican inside Italy, Lesotho inside South
-      // Africa, incorporated cities inside US townships — so a zone centre in the
-      // Vatican falls in Italy's outer ring and inside its hole. Kept so containment
-      // can subtract them.
+      // OSM maps enclaves (the Vatican inside Italy, cities inside US townships) as
+      // `inner` rings, so containment must subtract them.
       holes: feature.polygons.flatMap((p) => p.inners.map(toLatLon)),
     });
   }
@@ -978,17 +816,9 @@ export async function worldAdminAreas(world, bbox, opts = {}) {
 /**
  * The administrative areas containing one point, outermost first.
  *
- * The local analogue of one `is_in` result. A point-in-ring test against every outer
- * ring, which is correct for administrative boundaries because they do not have holes
- * a zone centre could fall into — an enclave is mapped as its own area at its own level,
- * not as a hole in its neighbour.
- *
- * The test runs on raw degrees rather than projected metres. Ray casting is a purely
- * topological test and does not care about the units, as long as both the point and the
- * ring are in the same ones — and skipping the projection keeps a whole-country ring
- * from being reprojected on every zone. The exception is a boundary crossing the
- * antimeridian, where a ring's longitudes wrap and the test is wrong; Russia and Fiji
- * are the real cases. A game map that straddles ±180° would need this projected.
+ * Point-in-ring on raw degrees: ray casting is topological and unit-agnostic, and this
+ * avoids reprojecting a whole-country ring per zone. It is wrong for a ring crossing the
+ * antimeridian (Russia, Fiji); a map straddling ±180° would need this projected.
  *
  * @param {Array<AdminArea>} areas @param {number} lat @param {number} lon
  * @returns {Array<AdminArea>} outermost (lowest `admin_level`) first
@@ -997,10 +827,8 @@ export function adminAreasAt(areas, lat, lon) {
   const point = [lon, lat];
   const hits = [];
   for (const area of areas) {
-    // `rings` and `holes` are [lat, lon]; flip so ring and point agree. Flipped here
-    // rather than stored flipped only because every other consumer wants [lat, lon];
-    // if this ever shows up in a profile, flip once in `worldAdminAreas` instead —
-    // this allocates per vertex per zone.
+    // `rings` and `holes` are [lat, lon]; flip so ring and point agree. This allocates
+    // per vertex per zone; if it shows in a profile, flip once in `worldAdminAreas`.
     const flip = (ring) => ring.map(([ringLat, ringLon]) => [ringLon, ringLat]);
     if (!area.rings.some((ring) => pointInRing(point, flip(ring)))) continue;
     // An enclave is inside its neighbour's outer ring AND inside one of its holes.
@@ -1015,21 +843,15 @@ export function adminAreasAt(areas, lat, lon) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The provenance line a world-file-backed count carries, in place of an Overpass URL.
- *
- * A player could re-run an Overpass query from the selector printed on the page. They
- * cannot re-run this one by hand, so the row says what it actually is: which file,
- * which planet snapshot, and how many bytes the browser read to answer it. Printing the
- * old Overpass selector next to a world-file count would be a lie about where the number
- * came from.
+ * The provenance line a world-file-backed count carries: which file, which planet
+ * snapshot, and how big it is.
  */
 export function worldProvenance(world, key) {
   const info = worldLayerInfo(world, key);
   const stamp = world.manifest.planet_timestamp || 'unknown';
   if (info === null) return `world file ${key}: not built (planet ${stamp})`;
   if (layerEmpty(info)) {
-    // A path-less entry: the layer exists and is empty, so there is no file, no
-    // bytes and no sha256 to cite — only the snapshot the zero is as-of.
+    // An empty layer has no file, bytes or sha256 to cite; only the snapshot.
     return `world file ${key}: empty layer, no file shipped `
       + `(planet snapshot ${stamp})`;
   }

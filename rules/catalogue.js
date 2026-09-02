@@ -2,22 +2,17 @@
 // S3 · THE CATALOGUE — the rulebook as data
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Transcribed from specs/rules.json, which was itself read off GUIDE.md / HIDING.md
-// / SEEKING.md and the 24 curse card faces. Question text is verbatim.
+// Transcribed from specs/rules.json (itself read off GUIDE.md / HIDING.md /
+// SEEKING.md and the 24 curse card faces). Question text is verbatim. Ids follow
+// contract.md §5.1/§5.2 (`radar.5mi`, `matching.admin_1`, `tentacle.metro_line`).
 //
-// Ids differ from rules.json's in three families, to match contract.md §5.1/§5.2:
-// `radar.5mi` not `radar.5_miles`, `matching.admin_1` not
-// `matching.1st_administrative_division`, `tentacle.metro_line` not
-// `tentacle.metro_lines_within_15_miles`. Nothing else was renamed.
-//
-// The catalogue below is *data*. The literal must be complete — 80 questions,
-// 24 curses, 3 sizes — and its counts are asserted at import time.
+// This is data: the literal must be complete (80 questions, 24 curses, 3 sizes)
+// and its counts are asserted at import time.
 
 /**
- * One of the rulebook's 80 questions, as the engine needs it.
- * Positional parameters mirror `class QuestionDef` (generate.py), minus the
- * rulebook's own `group` label, which nothing in this pipeline reads.
- * @param {string} id                 'matching.park'
+ * One of the rulebook's 80 questions. Positional parameters mirror generate.py's
+ * `QuestionDef`, minus the unused `group` label.
+ * @param {string} id                'matching.park'
  * @param {'matching'|'measuring'|'radar'|'thermometer'|'photo'|'tentacle'} category
  * @param {string} label              'Park'
  * @param {string} text               the full question sentence
@@ -44,9 +39,8 @@ function Q(id, category, label, text, sizes, draw, keep, geodataRef, extra = {})
 
 /**
  * One of the 24 curses, with the predicate that decides whether it stays in.
- * Positional parameters mirror `class CurseDef` (generate.py), minus the
- * card face itself — its text, its casting cost, what it blocks and the verbatim
- * rulebook trigger — none of which this pipeline reads.
+ * Positional parameters mirror generate.py's `CurseDef`, minus the card face,
+ * which this pipeline never reads.
  * @param {string} id
  * @param {string} name
  * @param {1|2|3|4} tier              1 rulebook-explicit … 4 not map-contingent
@@ -64,13 +58,8 @@ function C(id, name, tier, predicateKey, removalRule) {
 }
 
 /**
- * The catalogue size of each of the three game sizes, and nothing else.
- *
- * The rest of the rulebook's size table — hiding period, zone radius, the cumulative
- * thermometer ladder, tentacle reach, the answer limits and the INFERRED
- * `requiredHours` — lives in `S1_SIZE_PARAMS` (gtfs/network.js), which is the copy the
- * pipeline actually runs on. These three numbers stay here because the shape assertions
- * below check them against the QUESTIONS rows.
+ * Catalogue size per game size, kept here for the shape assertions below. The
+ * rest of the size table lives in `S1_SIZE_PARAMS` (gtfs/network.js).
  */
 const SIZES = Object.freeze({
   small: Object.freeze({ catalogueSize: 58 }),
@@ -322,10 +311,8 @@ export const QUESTIONS = Object.freeze([
     ['large'], 4, 2, 'amusement_park', { param: 15.0 }),
 ]);
 
-// `removalRule` is plain words for the page. On tier 1 it paraphrases the rulebook's
-// own removal instruction, tier 1 being the tier the rulebook itself decides. The card
-// faces (www.lifack.ch/img/cards) are the only place the card text and casting costs
-// exist, and nothing in this pipeline prints them, so they are not carried here.
+// `removalRule` is plain words for the page; on tier 1 it paraphrases the
+// rulebook's own instruction. Card text lives only on the faces (www.lifack.ch/img/cards).
 export const CURSES = Object.freeze([
   // ── tier 1 · the rulebook says to remove it ───────────────────────────────
   C('bridge_troll', 'Curse of the Bridge Troll', 1, 'bridge',
@@ -411,8 +398,7 @@ export const CURSES = Object.freeze([
     'the curse hurts most on a map where only two categories are any good.'),
 ]);
 
-// ── shape assertions, run at import ───────────────────────────────────────────
-// They assert the catalogue counts and they have caught real transcription errors.
+// ── shape assertions, run at import; they have caught real transcription errors ──
 
 /** @param {boolean} cond @param {string} msg */
 function assert(cond, msg) {
@@ -453,12 +439,11 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// S3 · INTERPRETATIONS — everywhere the rulebook is silent and this code decides
+// S3 · INTERPRETATIONS — where the rulebook is silent and this code decides
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Every entry here is printed verbatim in §Provenance and is the reason a page may
-// say "interpretation" next to a number. Adding a judgement call to the engine
-// without adding a row here is a bug.
+// Printed verbatim in §Provenance. A judgement call in the engine without a row
+// here is a bug.
 
 /** @type {ReadonlyArray<{id: string, affects: string[], text: string}>} */
 export const INTERPRETATIONS = Object.freeze([
@@ -467,11 +452,9 @@ export const INTERPRETATIONS = Object.freeze([
           'not existing, so every instance count here is measured inside the drawn border. ' +
           'The border therefore decides most of this audit, which is why questions that would ' +
           'change status under a slightly larger border are flagged as borderline.' },
-  // The one row whose sentence depends on the run: `text` is the inferred
-  // ('reach') derivation, and `byDerivation` carries the alternatives for a run
-  // whose border was the reader's own box — honoured ('option') or thrown away by
-  // the in-play fallback ('option_fallback'). `buildProvenance` picks; the row
-  // stays plain data so the main thread can still read it without a border in hand.
+  // The one run-dependent row: `text` is the inferred derivation, `byDerivation`
+  // the reader's-own-box alternatives. `buildProvenance` picks; the row stays
+  // plain data so the main thread can read it without a border in hand.
   { id: 'map_border_derivation', affects: Object.freeze(['border', 'every instance count']),
     text: 'The border is the bounding box of the in-map stops padded by one hiding-zone ' +
           'radius, so that every legal zone lies wholly inside the map. The rulebook leaves ' +
@@ -480,11 +463,8 @@ export const INTERPRETATIONS = Object.freeze([
       option: 'The border is the box you set on the landing map, with no padding: every ' +
               'stop, zone and instance count on this page is measured inside it. The ' +
               'rulebook leaves borders entirely to the players; this one is yours.',
-      // The third sentence is the honest one for a run where the box was DRAWN but
-      // not APPLIED: `inPlayStopIds` kept under `IN_PLAY_MIN_SHARE` of the served
-      // stops and fell back to the whole network, so the 'option' sentence above
-      // would assert the opposite of what was measured. worker.js stamps the
-      // derivation and also degrades, so the reader sees it twice. (2026-08-27.)
+      // Box drawn but not applied: it kept under `IN_PLAY_MIN_SHARE` of served
+      // stops, so worker.js fell back to the whole network and degraded.
       option_fallback: 'The border is the box you set on the landing map, with no padding — ' +
               'but it kept fewer than half the stops this network serves, so it was not ' +
               'used to filter anything: every stop, zone and instance count on this page ' +
@@ -602,12 +582,8 @@ export const INTERPRETATIONS = Object.freeze([
           '“publicly accessible during all game hours” test cannot be automated. Endgame spot ' +
           'counts are a shortlist for a human to check, never a verdict.' },
   // ── the OSM fallback tier ─────────────────────────────────────────────────
-  // Three rows for one decision: where no GTFS feed exists, a source can be
-  // synthesized from OpenStreetMap route relations (osm/synth.js). The synthesis is
-  // a stack of assumptions, and each constant below is quoted from that module so a
-  // player can check the call against the code that made it. Like every other row
-  // here, these are phrased to be true on any run: on a run with no synthesized
-  // source, nothing they describe happened and nothing they affect was touched.
+  // Three rows for one decision: a source synthesized from OSM route relations
+  // (osm/synth.js). Each constant below is quoted from that module; keep them in step.
   { id: 'osm_synth_feed',
     affects: Object.freeze(['matching.transit_line', 'tentacle.metro_line',
       'photo.train_platform', 'u_turn', 'C2', 'X3']),
@@ -638,11 +614,8 @@ export const INTERPRETATIONS = Object.freeze([
 ].map(Object.freeze));
 
 /**
- * The question catalogue for one game size: 58 / 71 / 80 questions.
- *
- * SMALL drops the **tentacle** category (confirmed twice in the rulebook — the
- * tentacle section says so outright, and the Spotty Memory note says a d6 roll of
- * six is a reroll "for small-sized games, which only include five categories").
+ * The question catalogue for one game size: 58 / 71 / 80 questions. SMALL drops
+ * the tentacle category (the tentacle section and the Spotty Memory note both say so).
  *
  * @param {{name: string, catalogueSize: number}} size
  * @returns {Array<Object>}

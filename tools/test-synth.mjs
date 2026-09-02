@@ -1,35 +1,20 @@
 #!/usr/bin/env node
-// ═══════════════════════════════════════════════════════════════════════════════
 // tools/test-synth.mjs — the OSM fallback converter, checked without a network
-// ═══════════════════════════════════════════════════════════════════════════════
 //
 // `osm/synth.js` is a pure function from (route relations, ring, asOf) to zip
-// bytes, so it is the one piece of the fallback tier that can be proven correct
-// from an inline fixture: no world files, no HTTP, no cache. The fixture is a
-// small Berlin-shaped system chosen to hit every rule with a hand-checkable
-// answer — a loop line (first and last stop are the same node), a plain branch,
-// a line whose tail runs out of the border (the Seoul-Line-1 clip case), a
-// colour-less tram with a junk `interval` tag, one relation entirely outside the
-// ring and one with a single stop inside, plus two stop-node pairs that must
-// cluster (same name within 500 m; different names within 100 m).
+// bytes, so it can be proven correct from an inline fixture: no world files, no
+// HTTP, no cache. The fixture is a small Berlin-shaped system that hits every
+// rule with a hand-checkable answer: a loop line, a plain branch, a line whose
+// tail runs out of the border, a colour-less tram with a junk `interval` tag,
+// one relation entirely outside the ring, one with a single stop inside, and
+// two stop-node pairs that must cluster.
 //
-// What is asserted, in order:
-//   1  determinism — two runs over fresh fixture copies are byte-identical
-//   2  acceptance — the untouched `loadFeed` loads the zip and reports the
-//      hand-computed stop/route/trip counts, agency, timezone and window
-//   3  clipping — the out-of-border tail is gone, the in-border run survives,
-//      and a loop's in-border arc survives even across its list seam
-//   4  clustering — merged nodes share one stop_id across relations
-//   5  the time rules — every emitted time is H:MM:SS, under the 30-hour day
-//      (before AND after frequency expansion), the template anchors at 8:00:00,
-//      and each trip's times strictly increase
-//   6  frequencies — `normaliseTimes` expands each template into exactly
-//      (window ÷ headway) concrete trips, headway from the interval tag when it
-//      parses and from the mode default when it does not
-//   7  the failure paths — nothing inside the ring, a bad ring, a bad asOf
-//
-// These are SHAPE assertions on a fixture this file owns, never golden numbers:
-// the synthesized feed is not a stable reference and must never grow one.
+// Asserted, in order: determinism, `loadFeed` acceptance with hand-computed
+// counts, clipping (including a loop across its list seam), clustering, the
+// time rules before and after frequency expansion, headway selection, and the
+// failure paths. These are SHAPE assertions on a fixture this file owns, never
+// golden numbers: the synthesized feed is not a stable reference and must never
+// grow one.
 //
 //   node tools/test-synth.mjs [--quiet]
 
@@ -67,10 +52,9 @@ function eq(actual, expected, label) {
 }
 
 // ── the fixture ─────────────────────────────────────────────────────────────────
-// Built fresh per call so a determinism check cannot be satisfied by shared
-// object identity. Coordinates are Berlin-ish; the ring is a rectangle
-// lat 52.35–52.65, lon 13.20–13.65, and every "inside" point is comfortably
-// interior so the ray-cast's undefined boundary never decides a test.
+// Built fresh per call so the determinism check cannot pass on shared object
+// identity. The ring is lat 52.35–52.65, lon 13.20–13.65, and every "inside"
+// point is comfortably interior so the ray-cast boundary never decides a test.
 
 const RING = () => [[52.35, 13.20], [52.35, 13.65], [52.65, 13.65], [52.65, 13.20]];
 
@@ -89,9 +73,8 @@ function fixture() {
     stop(4, 'Südkreuz', 52.480, 13.320),
     stop(1, 'Westkreuz', 52.500, 13.300),
   ];
-  // r200 — the branch. Its 'Hauptbahnhof' node must cluster with r300's (same
-  // name, ~130 m apart), and its 'Zoologischer Garten' with r300's differently
-  // named node ~65 m away.
+  // r200 — the branch. 'Hauptbahnhof' must cluster with r300's (same name,
+  // ~130 m apart); 'Zoologischer Garten' with r300's differently named node ~65 m away.
   const branchStops = [
     stop(10, 'Hauptbahnhof', 52.525, 13.369),
     stop(11, 'Zoologischer Garten', 52.507, 13.332),
@@ -110,8 +93,7 @@ function fixture() {
     stop(26, 'Outside B', 52.250, 13.240),
     stop(27, 'Outside C', 52.200, 13.230),
   ];
-  // r400 — the colour-less tram; its interval tag is the wiki's 'irregular',
-  // which must fall through to the tram default.
+  // r400 — the colour-less tram; interval 'irregular' must fall through to the tram default.
   const tramStops = [
     stop(30, 'Alexanderplatz', 52.522, 13.413),
     stop(31, 'Landsberger Allee', 52.529, 13.455),
@@ -254,10 +236,8 @@ async function main() {
   ok('n24' in feed.stops, 'the last in-border stop of the clipped line survives');
 
   // ── 3b · a loop clipped across its list seam ─────────────────────────────────
-  // The Ringbahn case: the border covers an arc that crosses the relation's
-  // arbitrary list origin. The maximal contiguous run is circular — it wraps the
-  // seam — and a linear reading would keep only the longer fragment and silently
-  // drop in-border stations.
+  // The Ringbahn case: the border covers an arc crossing the relation's list
+  // origin. The maximal run wraps the seam; a linear reading would drop in-border stations.
   const seamStops = [
     stop(61, 'Loop North', 52.550, 13.400),
     stop(62, 'Loop North-East', 52.525, 13.450),
@@ -365,9 +345,8 @@ async function main() {
     `expanded times stay under the 30-hour day (max ${maxTime})`);
 
   // ── the unknown-mode path ────────────────────────────────────────────────────
-  // A route value outside the six modes is assumed at the generic constants, and
-  // the note must state the numbers actually used — quoted from the note itself
-  // here, so the disclosure and the feed cannot drift apart.
+  // A route outside the six modes takes the generic constants, and the note must
+  // state the numbers used; they are read back from the note so it cannot drift from the feed.
   const odd = synthesizeFeedZip({
     routes: [{
       osmId: 800,
@@ -393,9 +372,8 @@ async function main() {
   ok(Math.abs(oddGap - (oddDist / (notedSpeed / 3.6) + SYNTH_DWELL_S)) <= 2,
     `the note's speed reproduces the emitted stop_times (gap ${oddGap} s)`);
 
-  // A relation that is DROPPED (here: overrunning the eight-hour template cap on
-  // a zigzag ~240 km long) was never treated at all, so it must not be counted
-  // into the unknown-mode disclosure.
+  // A DROPPED relation (here: a ~240 km zigzag overrunning the eight-hour template
+  // cap) was never treated, so it must not count into the unknown-mode disclosure.
   const zig = [];
   for (let k = 0; k <= 9; k++) zig.push([k % 2 ? 52.62 : 52.38, 13.25 + k * 0.04]);
   const mixed = synthesizeFeedZip({

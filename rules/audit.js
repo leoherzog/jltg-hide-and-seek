@@ -1,28 +1,22 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// S3 · QUESTION AND CURSE AUDIT — the intellectual core
+// S3 · QUESTION AND CURSE AUDIT
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Ported from generate.py. Three things live here:
 //
-//   1. THE SIX VERDICTS. Every question gets exactly one of `functional`, `weak`,
-//      `degenerate`, `dead`, `unknown`. (`unaskable` is a value the port no longer
-//      returns — see the note above `auditQuestions`.) The distinctions are
-//      load-bearing: `degenerate` (exactly one of the thing on the map, so the
-//      answer never varies) is a different and more interesting failure than
-//      `dead` (there are none), and `unknown` (not evaluated) is never a zero. A
-//      dead question still costs the seekers a question and still pays the hider a
-//      card, which is why it is reported rather than silently dropped.
+//   1. THE VERDICTS. Every question gets one of `functional`, `weak`, `degenerate`
+//      (exactly one instance, so the answer never varies), `dead` (none) or
+//      `unknown` (not evaluated, never a zero). `unaskable` is in the vocabulary
+//      but no map earns it. A dead question still pays the hider a card, so it is
+//      reported rather than dropped.
 //
-//   2. INFORMATION RESISTANCE. `answerSignature` computes what every zone on the
-//      map *would* answer for a given question; `survivalFractions` then computes,
-//      for each zone, how many other zones give the same answer. A zone sharing its
-//      answer vector with a crowd survives interrogation; a zone with a unique
-//      vector gets named by one cheap question.
+//   2. INFORMATION RESISTANCE. `answerSignature` computes what every zone would
+//      answer; `survivalFractions` computes how many other zones answer the same.
 //
-//   3. THE CURSE DECK. Which of the 24 curses this map can actually support.
+//   3. THE CURSE DECK. Which of the 24 curses this map can support.
 //
-// Everything in this file is worker-side: no DOM, no wall clock, no entropy. Maps
-// and Sets are iterated only after their keys have been sorted.
+// Worker-side: no DOM, no wall clock, no entropy. Maps and Sets are iterated only
+// after their keys have been sorted.
 
 import {
   M_PER_MILE, QUARTER_MILE_M, SEEKER_SAMPLE_CAP, SURV_FULL_UNIVERSE_MAX,
@@ -36,9 +30,8 @@ const RAD = Math.PI / 180.0;
 
 // ── subject resolution: what data answers each question ───────────────────────
 //
-// `geodataRef` on a QuestionDef names a GEO_CATEGORIES key when one exists. These
-// are the questions whose subject is something else — GTFS, an admin ladder, a
-// boundary line, or a datum this pipeline does not carry.
+// Questions whose subject is not a GEO_CATEGORIES key (`geodataRef`): GTFS, an
+// admin ladder, a boundary line, or a datum this pipeline does not carry.
 
 const S3_SPECIAL_SUBJECT = Object.freeze({
   'matching.transit_line': Object.freeze(['gtfs_transit_line', null]),
@@ -57,13 +50,9 @@ const S3_SPECIAL_SUBJECT = Object.freeze({
 });
 
 /**
- * Photo questions this engine treats as answerable from anywhere.
- *
- * The first four genuinely are. The last two are a judgement call, disclosed as one in
- * `rules/catalogue.js`'s `photo_always_answerable` row: the rulebook conditions both on
- * the mapping app ("Street/path must be visible on mapping app", "Streets must appear
- * on mapping app"), and this engine never checks that the zone has such a street. Keep
- * the two lists in step — a judgement call the catalogue does not carry is a bug.
+ * Photo questions treated as answerable from anywhere. The last two are a
+ * judgement call disclosed in catalogue.js's `photo_always_answerable` row;
+ * keep the two lists in step.
  */
 const S3_ALWAYS_PHOTOS = Object.freeze([
   'photo.you',
@@ -100,9 +89,8 @@ const S3_BEARINGS = Object.freeze([0, 45, 90, 135, 180, 225, 270, 315].map(
   (b) => Object.freeze([Math.cos((90.0 - b) * RAD), Math.sin((90.0 - b) * RAD)]),
 ));
 
-// Module-level memos. Keyed on the zone universe, which is fixed for a whole run, so
-// `auditQuestions` (which needs a signature to score quality) and the worker's
-// pipeline (which needs the same signature again) never compute one twice.
+// Module-level memos, keyed on the zone universe (fixed for a run), so the audit
+// and the pipeline never compute the same signature twice.
 /** @type {Map<string, *>} */
 const S3_MEMO = new Map();
 
@@ -113,11 +101,8 @@ function universeKey(zones) {
 }
 
 /**
- * Recover the run's projection from a zone's (lat, lon) and (x, y).
- *
- * `auditQuestions` is not handed the projection but needs one to reuse
- * `answerSignature`. `Projection` is an exactly invertible affine map, so the
- * reference point can be read straight back off any zone.
+ * Recover the run's projection from a zone's (lat, lon) and (x, y); `Projection`
+ * is an exactly invertible affine map. `auditQuestions` is not handed one.
  */
 function projFromZones(zones) {
   if (!zones.length) return new Projection(0.0, 0.0);
@@ -129,11 +114,9 @@ function projFromZones(zones) {
 }
 
 /**
- * The seeker index sample `S`, identical to the one the worker builds.
- *
- * At or below `SURV_FULL_UNIVERSE_MAX` the seeker set is every zone; above it, a
- * strided sample capped at `SEEKER_SAMPLE_CAP`. The stride arithmetic is exact —
- * an off-by-one changes published numbers.
+ * The seeker index sample `S`, identical to the worker's: every zone at or below
+ * `SURV_FULL_UNIVERSE_MAX`, else a strided sample capped at `SEEKER_SAMPLE_CAP`.
+ * An off-by-one in the stride changes published numbers.
  * (generate.py `_s3_seeker_sample`)
  * @param {Array<Object>} zones
  * @returns {number[]}
@@ -151,9 +134,8 @@ export function seekerSample(zones) {
 }
 
 /**
- * `d[zoneIndex * m + seekerPosition]` in metres, computed once per run.
- * Flat `Float64Array` rather than a list of lists — this is the matrix every radar
- * question shares and it is the CPU peak of the audit.
+ * `d[zoneIndex * m + seekerPosition]` in metres, computed once per run. A flat
+ * `Float64Array`: every radar question shares it and it is the audit's CPU peak.
  * (generate.py `_s3_zone_seeker_dists`)
  * @returns {{n: number, m: number, d: Float64Array}}
  */
@@ -179,10 +161,8 @@ function zoneSeekerDists(zones, seekers) {
 }
 
 /**
- * The radius the Choose radar is modelled at: the median distance between zones.
- *
- * That is the radius which, averaged over seeker positions, splits this map most
- * evenly — the strongest single radar the seekers can name here.
+ * The radius the Choose radar is modelled at: the median distance between zones,
+ * which splits this map most evenly averaged over seeker positions.
  * (generate.py `_s3_choose_radius_m`)
  */
 function chooseRadiusM(zones) {
@@ -224,8 +204,7 @@ function geoLabel(category) {
   return String(category).split('_').join(' ');
 }
 
-// English plurals the naive "+ s" rule gets wrong. Small, explicit, and only for the
-// category labels this section actually prints.
+// English plurals the naive "+ s" rule gets wrong, for the labels printed here.
 const S3_PLURAL = Object.freeze({
   library: 'libraries',
   water: 'bodies of water',
@@ -245,10 +224,8 @@ function s3Noun(category, count) {
 
 /**
  * The exact Overpass selector behind a question, or a plain-words GTFS note.
- *
- * Every kind `subjectOf` can return is answered here, and inside the photo arm the four
- * rule tables partition all 18 photo ids exactly (6 always-answerable, 7 counted, 2
- * polygon, 3 named below), so every question comes back with a real selector.
+ * Every kind `subjectOf` returns is answered here; the photo tables partition all
+ * 18 photo ids (6 always-answerable, 7 counted, 2 polygon, 3 named below).
  * (generate.py `_s3_selector_for`)
  */
 function selectorFor(question) {
@@ -306,10 +283,9 @@ function selectorFor(question) {
 }
 
 /**
- * `[kind, argument]` naming the data that answers this question.
- *
- * The six categories are closed — rules/catalogue.js asserts their counts at import —
- * so the last arm is the last word: every question resolves to a kind.
+ * `[kind, argument]` naming the data that answers this question. The six
+ * categories are closed (catalogue.js asserts their counts), so every question
+ * resolves to a kind.
  * (generate.py `_s3_subject`)
  */
 function subjectOf(question) {
@@ -325,11 +301,8 @@ function subjectOf(question) {
 
 /**
  * `[features whose icon is inside the border, was this category queried]`.
- *
- * The in-border rule is applied to the **representative point**, not to the raw
- * Overpass result: Overpass returns anything intersecting the bbox, so a large
- * polygon straddling the edge comes back with its icon outside the map. That is
- * exactly the commercial-airport case the border sensitivity report is about.
+ * The in-border test is on the representative point, not the raw Overpass
+ * result: a polygon straddling the edge can have its icon outside the map.
  * (generate.py `_s3_in_border_pois`)
  */
 function inBorderPois(geo, category, bbox) {
@@ -340,11 +313,8 @@ function inBorderPois(geo, category, bbox) {
 }
 
 /**
- * How many features of a category sit inside a *modestly* larger border.
- *
- * "Modestly" is two zone radii, or 250 m, whichever is larger — small enough that
- * a player would call it the same map, large enough to catch an icon that fell a
- * few metres outside a padded edge.
+ * How many features of a category sit inside a modestly larger border: two zone
+ * radii or 250 m, whichever is larger.
  * (generate.py `_s3_margin_count`)
  */
 function marginCount(geo, category, bbox, radiusM) {
@@ -359,13 +329,10 @@ function marginCount(geo, category, bbox, radiusM) {
 }
 
 /**
- * Total order over heterogeneous signature values, and their hash key.
- *
- * The Python uses `repr(value)`, which doubles as a sort key and a dict key. JS has
- * no `repr`, so this is the canonical spelling: a type tag, then the value, with
- * strings JSON-quoted so no separator can be forged from inside one. The *order* it
- * induces differs from Python's `repr` order, which only affects the order floats
- * are summed in — never a published class or count.
+ * Total order over heterogeneous signature values, and their hash key: a type
+ * tag then the value, strings JSON-quoted so no separator can be forged. Its
+ * order differs from Python's `repr` order, which only affects float summation
+ * order, never a published class or count.
  * (generate.py `_s3_sort_key`)
  */
 function sigKey(v) {
@@ -438,12 +405,9 @@ function bisectRight(arr, x) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Distance from each zone to the nearest zone carrying a *different* label.
- *
- * An x-sweep, not an O(n²) scan: sort by x, walk outward from each zone and stop
- * as soon as the horizontal gap alone exceeds the best distance found. This is the
- * proxy behind the administrative-border measuring questions, and it is an upper
- * bound on the true distance to the boundary line.
+ * Distance from each zone to the nearest zone with a different label, by x-sweep.
+ * The proxy behind the administrative-border measuring questions; an upper bound
+ * on the true distance to the boundary line.
  * (generate.py `_s3_nearest_other_label_m`)
  */
 function nearestOtherLabelM(zones, labels) {
@@ -480,11 +444,9 @@ function nearestOtherLabelM(zones, labels) {
 }
 
 /**
- * The candidate set a tentacle question names, as `{label, xs, ys}` records.
- *
- * A point feature carries one point. A metro line carries the projected positions
- * of the zones its route serves, capped at 64 by a fixed stride — a line is not a
- * point and its distance is the distance to the nearest part of it.
+ * The candidate set a tentacle question names, as `{label, xs, ys}` records. A
+ * point feature carries one point; a metro line carries the positions of the
+ * zones its route serves, capped at 64 by a fixed stride.
  * (generate.py `_s3_tentacle_features`)
  */
 function tentacleFeatures(question, zones, geo, gtfsFacts, proj) {
@@ -554,9 +516,7 @@ function featureWithinSq(f, x, y, reachSq) {
 
 /**
  * Can the hider in this zone answer this photo question? `null` = not evaluable.
- *
- * The always-answerable list, the two rule tables and the three ids named at the end
- * partition all 18 photo questions, so every id is decided here.
+ * The tables and the three ids at the end partition all 18 photo questions.
  * (generate.py `_s3_photo_answer`)
  */
 function photoAnswer(questionId, zone, geo, gtfsFacts) {
@@ -587,9 +547,8 @@ function photoAnswer(questionId, zone, geo, gtfsFacts) {
     return Boolean((inv.tree || 0) || (inv.green || 0) || hits.park);
   }
   if (questionId === 'photo.train_platform') {
-    // OSM tags public_transport=platform on bus stops too, so the platform count
-    // alone would call every bus shelter a train platform. The gate is the feed's
-    // own route types: no rail mode, no train platform.
+    // OSM tags bus stops public_transport=platform too, so gate on the feed's
+    // route types: no rail mode, no train platform.
     if (!gtfsFacts.has_rail) return false;
     if (!Object.prototype.hasOwnProperty.call(inv, 'platform')) return null;
     return inv.platform >= 1;
@@ -601,18 +560,12 @@ function photoAnswer(questionId, zone, geo, gtfsFacts) {
 }
 
 /**
- * The per-zone answer signature for one question, in `zones` order.
- *
- * Seeker-independent questions (the photo set) return the answer itself. Seeker-
- * dependent ones return the *invariant* the answer is computed from — the nearest-
- * feature class for matching, the distance to the nearest instance for measuring,
- * the projected position for radar and thermometer, and position-plus-candidate-set
- * for tentacles — so `survivalFractions` can use the closed forms instead of an
- * O(n²·|S|) pairwise computation.
- *
- * A `null` entry means "this zone cannot answer": the question is dead there. The
- * result is memoised on the zone universe, because `auditQuestions` needs a
- * signature to score quality and the pipeline asks for the same one again.
+ * The per-zone answer signature for one question, in `zones` order. Photo
+ * questions return the answer itself; seeker-dependent ones return the invariant
+ * the answer is computed from (nearest-feature class, distance to nearest
+ * instance, projected position, position plus candidate set) so
+ * `survivalFractions` can use closed forms. `null` means the zone cannot answer.
+ * Memoised on the zone universe.
  * (generate.py `answer_signature`)
  *
  * @param {Object} question   QuestionDef
@@ -661,8 +614,7 @@ function buildSignature(question, zones, geo, gtfsFacts, proj) {
   }
 
   if (kind === 'street') {
-    // One class per zone: streets are counted map-wide but not downloaded, so the
-    // honest model is that your nearest street is your own.
+    // Streets are counted map-wide but not downloaded, so one class per zone.
     return zones.map((z) => ['street', z.zoneId]);
   }
 
@@ -772,24 +724,19 @@ function radiusM(question, zones) {
 }
 
 /**
- * `surv(q, z)` for every zone — the hider's anonymity under one question.
+ * `surv(q, z)` for every zone: the hider's anonymity under one question.
  *
  *     surv(q, z) = (1/|S|) · Σ_s |{z' : a_q(z', s) == a_q(z, s)}| / n
  *
- * `surv = 1` means the question never separates you from anyone; `surv = 1/n` means
- * it identifies you outright. One definition for all six categories, none of them
- * computed pairwise:
+ * 1 means the question never separates you from anyone; 1/n identifies you
+ * outright. One definition, six closed forms, none pairwise:
  *
- *   * matching    — from the nearest-feature class sizes and the seeker sample's
- *     distribution across them, in closed form.
- *   * measuring   — prefix sums over distance ranks; a zone at exactly the
- *     seeker's distance answers neither closer nor further and forms its own class.
+ *   * matching    — nearest-feature class sizes and the seeker distribution over them.
+ *   * measuring   — prefix sums over distance ranks; an exact tie is its own class.
  *   * radar       — `(1/|S|) Σ_s [k_s if within else n − k_s] / n`.
- *   * thermometer — the perpendicular bisector of the seeker's leg, averaged over
- *     eight fixed bearings (an interpretation: the rulebook does not constrain the
- *     seekers' direction).
- *   * tentacle    — `(in_reach, nearest candidate)` with **both** reach tests
- *     anchored on the seeker.
+ *   * thermometer — the perpendicular bisector of the seeker's leg over eight
+ *     fixed bearings (an interpretation).
+ *   * tentacle    — `(in_reach, nearest candidate)`, both reach tests on the seeker.
  *   * photo       — seeker-independent: `surv = block_size / n`.
  *
  * (generate.py `survival_fractions`)
@@ -814,13 +761,9 @@ export function survivalFractions(question, signature, zones, seekers) {
 }
 
 /**
- * Closed form for a same-or-different question over equality classes.
- *
- * With class sizes `c_j`, seeker counts `s_j` and `|S| = Σ s_j`, a seeker in class
- * `j` answering "no" agrees with every zone outside `j`, and answering "yes" agrees
- * with every zone inside it. Collecting terms gives
- * `surv_i = [T + s_i·(2c_i − n)] / (|S|·n)` with `T = Σ_j s_j·(n − c_j)`, so the
- * whole map costs one pass instead of |S|·n comparisons.
+ * Closed form for a same-or-different question over equality classes. With class
+ * sizes `c_j` and seeker counts `s_j`:
+ * `surv_i = [T + s_i·(2c_i − n)] / (|S|·n)`, `T = Σ_j s_j·(n − c_j)`.
  * (generate.py `_s3_surv_matching`)
  */
 function survMatching(signature, n, seekers) {
@@ -846,13 +789,10 @@ function survMatching(signature, n, seekers) {
 }
 
 /**
- * Prefix sums over distance ranks.
- *
- * Three answer classes, not two: a zone sitting at *exactly* the seeker's distance
- * answers neither closer nor further, so it agrees only with the other zones at that
- * same distance. That is the `measuring_ties_are_their_own_answer` interpretation,
- * and it is what makes this closed form agree exactly with the concrete answers the
- * dossiers and the funnel print — verified against a literal O(n²·|S|) brute force.
+ * Prefix sums over distance ranks. Three answer classes: a zone at exactly the
+ * seeker's distance is its own class (`measuring_ties_are_their_own_answer`),
+ * which keeps this in step with the concrete answers the dossiers print.
+ * Verified against an O(n²·|S|) brute force.
  * (generate.py `_s3_surv_measuring`)
  */
 function survMeasuring(signature, n, seekers) {
@@ -922,10 +862,8 @@ function survRadar(question, zones, n, seekers) {
 
 /**
  * Perpendicular-bisector half-planes, eight bearings, one sort per bearing.
- *
- * "Hotter" means the hider is nearer the seeker's destination than their origin,
- * which is exactly `z·u < s·u + L/2` for a unit travel vector `u`. Projecting every
- * zone onto `u` once turns the whole question into a prefix sum.
+ * "Hotter" is `z·u < s·u + L/2` for unit travel vector `u`, so projecting every
+ * zone onto `u` turns the question into a prefix sum.
  * (generate.py `_s3_surv_thermometer`)
  */
 function survThermometer(question, zones, n, seekers) {
@@ -959,10 +897,7 @@ function survThermometer(question, zones, n, seekers) {
   return Array.from(totals, (t) => t / denom);
 }
 
-/**
- * Flatten a list of in-reach features into parallel typed arrays plus a
- * feature-index map, so the nearest-candidate scan is one tight loop.
- */
+/** Flatten in-reach features into parallel typed arrays plus an owner index. */
 function flattenFeatures(feats) {
   let total = 0;
   for (const f of feats) total += f.xs.length;
@@ -1117,10 +1052,9 @@ export function s3ReferenceSeeker(zones) {
 }
 
 /**
- * Renumber a partition: `[groupId, classKey]` pairs → dense group ids, plus the
- * class sizes. Equivalent to the Python's growing tuples — the tuple is a bijection
- * of `(previous group, this answer)`, so the block sizes are identical — but it
- * keeps the greedy search out of O(k) string concatenation per zone per candidate.
+ * Renumber a partition: `[groupId, classKey]` pairs → dense group ids plus class
+ * sizes. Same block sizes as the Python's growing tuples, without O(k) string
+ * concatenation per zone per candidate.
  */
 function refine(joint, classKeys, n) {
   /** @type {Map<string, number>} */
@@ -1143,19 +1077,13 @@ function refine(joint, classKeys, n) {
 
 /**
  * Greedily pick the k questions that break this map, and the resulting funnel.
+ * Each step takes the question minimising the mean block size over `Z` once
+ * appended to the picks, ties by `(cost, questionId)`. Answers are evaluated for
+ * one standing seeker, the zone nearest the centre of mass, so the funnel names a
+ * concrete sequence (`funnel_reference_seeker`).
  *
- * At each step take the question minimising the mean block size over all of `Z`
- * once its answer is appended to the already-picked ones; break ties by
- * `(cost, questionId)`. The criterion is map-wide expected narrowing rather than
- * targeted narrowing, because the seekers do not know which zone they are hunting.
- *
- * Answers are evaluated for one standing seeker — the zone nearest the map's centre
- * of mass — because a funnel has to name a concrete sequence of answers, and a
- * survival number (which averages over every seeker) cannot. That is the
- * `funnel_reference_seeker` interpretation.
- *
- * Returns `[questionIds, funnel]` where `funnel[0]` is `n` and `funnel[i]` is the
- * surviving block size after the i-th question: `319 → 84 → 31 → 12 → 7`.
+ * Returns `[questionIds, funnel]`: `funnel[0]` is `n`, `funnel[i]` the surviving
+ * block size after the i-th question.
  * (generate.py `global_question_order`)
  *
  * @param {Array<Object>} questions   QuestionAudit rows
@@ -1276,15 +1204,10 @@ export function s3JointBlockShare(questionIds, signatures, zones) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Quality in [0, 1], normalised per category (contract.md §5.1).
- *
- * Binary-answer categories — matching, radar, thermometer, photo — score the
- * balance of the yes/no split: a 50/50 question scores 1.0 and a constant answer
- * scores 0.0. Measuring always splits close to evenly, so scoring its split balance
- * would rate every measuring question perfect; it scores *narrowing* instead — how
- * much of the map its answer removes on average, renormalised so a clean halving is
- * 1.0. Tentacles have a multi-class answer and score Shannon entropy over the
- * classes they realise.
+ * Quality in [0, 1], normalised per category (contract.md §5.1). Binary
+ * categories score the balance of the yes/no split. Measuring always splits near
+ * evenly, so it scores narrowing instead, renormalised so a clean halving is 1.0.
+ * Tentacles score Shannon entropy over the classes they realise.
  * (generate.py `_s3_quality`)
  */
 function s3Quality(question, signature, zones, seekers) {
@@ -1301,11 +1224,7 @@ function s3Quality(question, signature, zones, seekers) {
   }
 
   if (cat === 'measuring') {
-    // A measuring question always splits the map close to evenly, so a split-balance
-    // score would rate every one of them 1.0 and tell you nothing. Score how much of
-    // the map the answer actually removes instead: the mean survival across zones,
-    // renormalised so a perfect halving is 1.0. A question whose distances are all
-    // equal survives at 1.0 and scores 0.
+    // Mean survival across zones, renormalised so a perfect halving is 1.0.
     if (signature.some((v) => v === null || v === undefined)) return 0.0;
     const values = survivalFractions(question, signature, zones, seekers);
     const meanSurv = values.length ? sumSorted(values) / n : 1.0;
@@ -1387,7 +1306,7 @@ function s3Quality(question, signature, zones, seekers) {
   }
 }
 
-/** `min(values)` / `max(values)` without a spread — the zone universe can be large. */
+/** `min` / `max` without a spread; the zone universe can be large. */
 function minOf(values) {
   let m = Infinity;
   for (const v of values) if (v < m) m = v;
@@ -1420,35 +1339,20 @@ function blockSpan(signature) {
 }
 
 /**
- * Give every question in the catalogue a status and a quality score.
+ * Give every question in the catalogue a status and a quality score. The status
+ * rule differs per category:
+ *   * matching  — N=0 dead, N=1 degenerate (always "yes"), N≥2 functional.
+ *   * measuring — N=0 dead, N≥1 functional; one instance still cuts a clean ring.
+ *   * radar     — never dead as a category. Degenerate at or above the station-set
+ *     diameter, weak below the zone radius.
+ *   * thermometer — dead above the map diameter, degenerate above 0.7× it (interpretation).
+ *   * photo     — coverage over Z; dead only at 0 map-wide.
+ *   * tentacle  — N=0 dead, N=1 degenerate, N≥2 with median in-reach ≥2 functional.
  *
- * The status rule differs per category and this is the part that resists a single
- * formula:
- *   * matching  — N=0 dead, N=1 **degenerate** (one instance ⇒ always "yes", zero
- *     bits), N≥2 functional.
- *   * measuring — N=0 dead, N≥1 **functional**. Measuring never degenerates on
- *     instance count: one instance still cuts a clean distance ring. Weakness comes
- *     from an extreme split.
- *   * radar     — never dead as a category (the "Choose" radar). A radius is
- *     degenerate at or above the station-set diameter, and trivial below the zone
- *     radius.
- *   * thermometer — dead above the map diameter, degenerate above 0.7× it. An
- *     interpretation, and labelled as one.
- *   * photo     — per *zone*. The metric is coverage over Z; dead only when that is
- *     0 map-wide, because "I cannot answer" still pays the hider and still leaks.
- *   * tentacle  — N=0 dead at the game's priciest cost, N=1 degenerate, N≥2 with a
- *     median in-reach count ≥2 functional.
- *
- * Nothing here returns `unaskable` any more: it means "the rules of the question
- * itself cannot be satisfied here", and no question in the catalogue is barred by
- * the map alone. *Transit Line* used to claim it on the strength of a curse that
- * might be drawn; see the branch for why that is prose, not a verdict. The status
- * stays in the vocabulary at the head of this file, but no map can earn it, so no
- * consumer downstream branches on it.
- *
- * Every count is measured **inside the border**, applied to the feature's own map
- * icon rather than to whatever Overpass returned for the bbox, and any question
- * whose status would flip under a modestly larger border is marked `borderline`.
+ * Nothing returns `unaskable`: no question is barred by the map alone, and no
+ * consumer branches on it. Every count is measured inside the border on the
+ * feature's own icon, and a status that would flip under a modestly larger
+ * border is marked `borderline`.
  * (generate.py `audit_questions`)
  *
  * @param {Object} size @param {Object} geo @param {Object} gtfsFacts
@@ -1529,16 +1433,10 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
           status = 'degenerate';
           why = "One route serves the whole map, so everyone's nearest transit line is it.";
         } else {
-          // Scored like every other matching question, because nothing about THIS MAP
-          // stops the question being asked. The rulebook attaches only a timing
-          // precondition — "In order to ask this question, seekers must be on the form
-          // of transit, and it must be moving" (seeking/matching_questions) — which
-          // seekers on a multi-route network can satisfy whenever they choose. Curse of
-          // the Urban Explorer can end that, but it has to be drawn, paid for and
-          // played, so it is advice for the row's prose, not a property of the map, and
-          // it does not earn `unaskable` ("the rules of the question itself cannot be
-          // satisfied here"). Deliberate divergence from generate.py, which hard-codes
-          // `unaskable` here.
+          // Scored like any matching question: the rulebook's only precondition is
+          // timing (aboard and moving), and Curse of the Urban Explorer must be
+          // drawn and played, so it is prose, not `unaskable`. Deliberate
+          // divergence from generate.py, which hard-codes `unaskable` here.
           quality = s3Quality(q, sig, zones, seekers);
           status = quality < 0.12 ? 'weak' : 'functional';
           const sharp = quality >= 0.12
@@ -1593,9 +1491,8 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
           why = 'No coastline inside the border, so the whole map is one landmass and '
             + 'the answer is always yes.';
         } else if (pois.every((p) => (p.tags || {}).derived)) {
-          // Every shore here was derived from a water body larger than the
-          // map, so the water bounds the map rather than cutting through it
-          // — the land is still one piece and the answer is still always yes.
+          // Every shore was derived from a water body larger than the map, so
+          // the water bounds the map rather than splitting it.
           status = 'degenerate';
           instances = 1;
           why = 'The only shore inside the border belongs to a water body larger than '
@@ -1817,9 +1714,7 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       why,
       survMean: null,
       borderline,
-      // The card price rides along from the catalogue definition this row was built
-      // from, so the published `#questions` block carries real numbers rather than
-      // nulls. (generate.py resolves the same two fields from the catalogue.)
+      // Card price from the catalogue definition, so `#questions` carries real numbers.
       draw: q.draw,
       keep: q.keep,
     });
@@ -2017,8 +1912,7 @@ function tentacleVerdict(q, sig, feats, zones, seekers, n, reach, label) {
 // S3 · CURSE DECK AUDIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Plain-words description of what decides each curse. Printed next to the count, so
-// a player can disagree with the predicate rather than with the verdict.
+// Plain-words predicate for each curse, printed next to the count.
 const S3_CURSE_PREDICATE_WORDS = Object.freeze({
   bridge: 'OSM: way["bridge"]["bridge"!="no"] carrying ["highway"] or ["railway"], '
     + 'covered ones included (BBOX)',
@@ -2042,18 +1936,11 @@ const S3_CURSE_PREDICATE_WORDS = Object.freeze({
 /**
  * Decide keep / warn / remove / player-choice for all 24 curses.
  *
- * Tier 1 (4 curses) is what the rulebook itself says to remove; tier 2 (5) is
- * map-contingent and hard enough to auto-remove; tier 3 (10) warns only and is
- * never auto-removed; tier 4 (5) is not map-contingent at all. Two predicates are
- * not OSM: Unguided Tourist reads `LOW_STREETVIEW_COUNTRIES`, and U-Turn reads
- * `gtfsFacts.u_turn`.
- *
- * `metrics` is a trailing addition, default null, because this is the one scoring
- * entry point the metrics table does not already reach: U-Turn is the only curse
- * decided by the timetable, and on a run whose timetable was synthesized from
- * OpenStreetMap (`metrics.assumedSchedule`) its wait-based verdict would be the
- * assumption read back. Null means the flag is unknowable here and the audit runs
- * exactly as it always has, so every existing caller is untouched.
+ * Tier 1 (4 curses) the rulebook itself removes; tier 2 (5) is map-contingent and
+ * auto-removed; tier 3 (10) warns only; tier 4 (5) is not map-contingent. Two
+ * predicates are not OSM: Unguided Tourist reads `LOW_STREETVIEW_COUNTRIES`,
+ * U-Turn reads `gtfsFacts.u_turn`. `metrics` (optional) supplies
+ * `assumedSchedule`, which only U-Turn's wait-based verdict depends on.
  * (generate.py `audit_curses`)
  *
  * @param {Object} size @param {Object} geo @param {Object} gtfsFacts
@@ -2098,13 +1985,8 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
         ? null : uTurn.median_wait_other_route_min;
       count = null;
       if (metrics && metrics.assumedSchedule) {
-        // The wait for another route is computed from a timetable this run
-        // synthesized from OpenStreetMap, so both branches below — "expect it to
-        // fizzle" and "usually bites" — would be schedule judgements with no
-        // schedule behind them. `player-choice` is the vocabulary the deck section
-        // already has for exactly this: what the data cannot settle is a
-        // conversation, not a measurement. The route-share half of the predicate
-        // is real geometry and is still quoted.
+        // The wait comes from a synthesized timetable, so neither branch below
+        // is a measurement; the route-share half is real geometry and still quoted.
         action = 'player-choice';
         why = `${pct(share)} of stops carry a second route — that much is real mapped `
           + 'geometry — but the wait for a departure on a different route comes from a '
@@ -2148,9 +2030,7 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
         why = 'No bridges on the game map. The rulebook says outright to remove this '
           + 'curse in that case.';
       } else {
-        // The card defines a bridge as "any elevated structure, acting as a path, road
-        // or railway, intended to be crossed by pedestrians, cars, or other vehicles",
-        // so rail and covered bridges are inside the count and the wording says so.
+        // The card's definition of a bridge includes rail and covered ones.
         why = `${num(count)} bridges on the map — road, path and rail — so the curse `
           + 'stays in. Check that some of them are ones a seeker can physically stand '
           + 'under.';

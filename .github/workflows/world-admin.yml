@@ -1,54 +1,33 @@
-# .github/workflows/world-admin.yml — Phase 2 in CI (see tools/osm-world/DESIGN.md
-# §Phase 2 and §Phase 6). Builds the global `admin` layer from Overture
-# `division_area` — NOT from OSM: admin boundaries are relations, and a relation
-# only assembles into a polygon when it fits entirely inside an extract, so a
-# per-shard OSM build can never produce a country polygon (confirmed on 17 builds,
-# §Why Option B). Overture ships the polygons already assembled.
+# .github/workflows/world-admin.yml — Phase 2 in CI (DESIGN.md §Phase 2, §Phase 6).
+# Builds the global `admin` layer from Overture `division_area`, not OSM: admin
+# relations only assemble into polygons when they fit inside an extract, so a
+# per-shard OSM build never yields a country polygon. Overture ships them assembled.
 #
-# This drives tools/osm-world/build-admin.sh unchanged — the same script that
-# built the shipped 2.29 GB / 984,219-feature admin layer on kadro (spike S2) —
-# then runs BOTH validation gates before anything uploads:
+# Drives tools/osm-world/build-admin.sh unchanged, then runs both validation gates
+# before anything uploads:
 #   1. build-admin.sh's own ogrinfo probes (Grand Rapids → US, Basel → CH+DE+FR),
-#   2. probe-admin.mjs: 39 assertions through the REAL client reader, including
-#      the Vatican enclave (interior rings are load-bearing) and Baarle.
-# A file that fails either gate never reaches R2.
+#   2. probe-admin.mjs: 39 assertions through the real client reader, including
+#      the Vatican enclave and Baarle.
 #
-# Output goes to a STABLE prefix (default `admin/`): admin.fgb, its sha256
-# sidecar (uploaded after the fgb — a torn upload then fails the finalize job's
-# `sha256sum -c` instead of merging a corrupt file), and admin.meta.json
-# recording the pinned Overture release. world-merge.yml's finalize job is the
-# consumer: it verifies the sidecar, then merge.py's place_admin content-addresses
-# the file into the world. These uploads use aws-cli deliberately — they are
-# PIPELINE INTERMEDIATES fetched over the S3 API, like the shard→merge handoff;
-# the published world objects go through build.py's boto3 uploader (in merge.py).
+# Output goes to a stable prefix (default `admin/`): admin.fgb, its sha256 sidecar
+# (uploaded after the fgb so a torn upload fails world-merge's `sha256sum -c`), and
+# admin.meta.json recording the pinned release. These are pipeline intermediates
+# uploaded with aws-cli; published world objects go through merge.py's uploader.
 #
-# Sizing (S2, measured on kadro 16-core/31 GB; runner is 4-core/15 GB):
-#   - DuckDB peak RSS 6.3 GB at SIMPLIFY=0.0001. MEMORY_LIMIT is set to 10GB
-#     below the 15 GB runner; the script spills to $OUT/duckdb-tmp (budget
-#     ~10 GB of scratch), so a tighter limit slows rather than kills.
-#   - Disk: the 4.47 GB source parquet is STREAMED over httpfs (never stored;
-#     the old admin.parquet intermediate is gone with the direct FGB write) —
-#     2.29 GB fgb + its writer temp + spill ≈ ~15 GB, far under the 86 GB
-#     measured free; no free-disk-space step needed (that mandate is for the
-#     MERGE jobs).
-#   - Wall: 56 s + 11 s on kadro's 16 cores with fast S3 (parquet-era figures);
-#     a runner's 4 cores and network make this minutes-to-tens-of-minutes.
-#     Timeout is generous.
-#   - Cadence: rarely, by hand. Boundaries move on a timescale of years
-#     (DESIGN.md §Phase 2); this build is deliberately outside the shard cadence,
-#     which is why world-rebuild.yml runs it but nothing schedules it.
+# Sizing (measured on kadro 16-core/31 GB; runner is 4-core/15 GB): DuckDB peak RSS
+# 6.3 GB at SIMPLIFY=0.0001, MEMORY_LIMIT 10GB with spill to $OUT/duckdb-tmp. The
+# source parquet is streamed over httpfs; disk use is ~15 GB, so no free-disk step.
+# Wall is minutes to tens of minutes on a runner. Run rarely, by hand; nothing
+# schedules it, world-rebuild.yml calls it.
 #
-# Overture PRUNES old releases (only ~2 live on S3 at a time). build-admin.sh
-# checks the listing first and fails loudly naming what still exists — re-pin
-# the `release` input when that fires, and expect the probe expectations in
-# probe-admin.mjs to need review on a release bump (they are ground truth for
-# 2026-07-22.0).
+# Overture prunes old releases. build-admin.sh checks the listing first and fails
+# naming what still exists; re-pin `release` when that fires and review the
+# probe-admin.mjs expectations (ground truth for 2026-07-22.0).
 #
-# R2 secrets required (repo or environment secrets):
+# R2 secrets required:
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
 #
-# NOT verified by running this file: I cannot execute GitHub Actions from here.
-# YAML syntax was checked with PyYAML; behavior is unverified until dispatched.
+# Behaviour is unverified until dispatched.
 
 name: world-admin
 
@@ -94,15 +73,9 @@ env:
   AWS_REQUEST_CHECKSUM_CALCULATION: when_required
   AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
   AWS_DEFAULT_REGION: auto
-  # Pinned: bump deliberately, with a look at the release notes — this binary
-  # reads a 4.47 GB remote parquet scan whose behavior we want reproducible.
-  # 1.4.x is the LTS bugfix line and is DELIBERATELY preferred over 1.5.x
-  # (latest 1.5.5, checked 2026-08-22): 1.5.0 ships "GEOMETRY Rework: Part 1"
-  # and 1.5.4's notes fix "native geometry parquet stats pruning" — i.e.
-  # 1.5.0–1.5.3 could prune parquet row groups WRONGLY on geometry stats,
-  # which in this build would silently drop division polygons, the invisible
-  # failure class. Revisit 1.5.x once the geometry rework has a few more
-  # patch releases behind it.
+  # Pinned to the 1.4.x LTS line on purpose: 1.5.0–1.5.3 could wrongly prune
+  # parquet row groups on geometry stats, silently dropping division polygons.
+  # Bump deliberately, with the release notes in hand.
   DUCKDB_VERSION: "1.4.5"
 
 jobs:
@@ -117,11 +90,8 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
@@ -157,11 +127,8 @@ jobs:
       - name: build admin.fgb from Overture (build-admin.sh, probes included)
         run: |
           set -euo pipefail
-          # MEMORY_LIMIT 10GB on a 15 GB runner: S2 verified 8GB completes by
-          # spilling to $OUT/duckdb-tmp. DuckDB writes admin.fgb DIRECTLY
-          # (build-admin.sh header; the parquet+ogr2ogr handoff died in run
-          # 32591161893 — apt GDAL ships no Parquet driver), and the script
-          # preflights both FlatGeobuf drivers it needs before any data moves.
+          # MEMORY_LIMIT 10GB on a 15 GB runner; DuckDB spills to $OUT/duckdb-tmp and
+          # writes admin.fgb directly (apt GDAL ships no Parquet driver).
           OUT="$RUNNER_TEMP/admin-build" \
           REL="$REL" \
           SIMPLIFY="$SIMPLIFY" \
@@ -171,9 +138,7 @@ jobs:
       - name: validate through the real client reader (probe-admin.mjs)
         run: |
           set -euo pipefail
-          # 39 assertions incl. the Vatican enclave and Baarle — the failures
-          # ogrinfo cannot see (module header of probe-admin.mjs). Exit 1 here
-          # means DO NOT PUBLISH, and nothing has been uploaded yet.
+          # Exit 1 here means do not publish; nothing has been uploaded yet.
           node tools/osm-world/probe-admin.mjs "$RUNNER_TEMP/admin-build/admin.fgb"
 
       - name: upload to the stable handoff prefix (fgb, then sidecar, then meta)
@@ -187,10 +152,7 @@ jobs:
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           OUT="$RUNNER_TEMP/admin-build"
 
-          # Meta first, locally: the release id is what lets the served page
-          # render the ODbL attribution without guessing (DESIGN.md §Phase 2 —
-          # "© OpenStreetMap contributors, ODbL 1.0 — via Overture Maps
-          # Foundation").
+          # Meta first, locally: the release id drives the served ODbL attribution.
           python3 - "$OUT" "$REL" "$SIMPLIFY" <<'PY'
           import json, sys, time
           from pathlib import Path
@@ -205,10 +167,8 @@ jobs:
           }, indent=2, sort_keys=True) + "\n")
           PY
 
-          # Order matters: fgb, THEN the sha sidecar. An upload torn between the
-          # two leaves a new fgb with the old sidecar, and world-merge.yml's
-          # finalize runs `sha256sum -c` — the tear fails loudly there instead
-          # of merging a half-replaced file.
+          # Order matters: fgb, then the sha sidecar, so a torn upload fails
+          # world-merge's `sha256sum -c` instead of merging a half-replaced file.
           for name in admin.fgb admin.fgb.sha256 admin.meta.json; do
             aws s3 cp "$OUT/$name" "s3://$R2_BUCKET/$ADMIN_PREFIX/$name" \
               --endpoint-url "$EP" --no-progress

@@ -22,62 +22,42 @@ Downloads https://download.geofabrik.de/index-v1.json and computes:
     shards (runner disk is the constraint; overlap between coarse shards is fine, the
     Phase-3 merge dedups on `(osm_type, osm_id)`).
 
-THE `parent` FIELD IS DISPLAY-ONLY. Geofabrik's index is not a tree: `us`,
-`us-midwest` and `us/michigan` are all siblings in it, and combination regions (dach,
-alps, britain-and-ireland) overlap their "siblings" wholesale. Both partitions are
-therefore computed GEOMETRICALLY:
+THE `parent` FIELD IS DISPLAY-ONLY. Geofabrik's index is not a tree (`us`, `us-midwest`
+and `us/michigan` are siblings; dach, alps, britain-and-ireland overlap wholesale), so
+both partitions are computed GEOMETRICALLY:
 
-  * Containment: region A is inside region B when area(A ∩ B) ≥ 98% of area(A) and B
-    is strictly larger. (Geofabrik's cutting polygons are buffered, so exact `covers`
-    would never fire; 98% absorbs the buffer.)
+  * Containment: A is inside B when area(A ∩ B) ≥ 98% of area(A) and B is strictly
+    larger (Geofabrik's cutting polygons are buffered, so exact `covers` never fires).
 
-  * FINE MEMBERSHIP: a region is a member when its RESIDUAL — itself minus the
-    members already kept, in the difference order below — still contains LAND. One
-    greedy pass, one question, and the question is the real one rather than a proxy
-    for it. Land comes from vendored Natural Earth 1:50m polygons (see LAND_PATH);
-    the mask decides membership only, while a member's assigned clip stays the full
-    Geofabrik residual, so nothing near a coastline is lost.
+  * FINE MEMBERSHIP: a region is a member when its RESIDUAL (itself minus the members
+    already kept, in the difference order below) still contains LAND. Land comes from
+    vendored Natural Earth 1:50m polygons (LAND_PATH); the mask decides membership
+    only, while a member's assigned clip stays the full Geofabrik residual, so nothing
+    near a coastline is lost. Area-based proxies ("contains no other region", "at
+    least 70% uncovered") both shipped holes (London, Kyiv, San Marino, the Lesser
+    Antilles); asking about land needs no threshold, and main() refuses to write a
+    cover that leaves land to no shard.
 
-    TWO PROXIES WERE TRIED HERE AND BOTH SHIPPED HOLES, which is why the rule is
-    worth stating plainly. "A region that contains no other region" drops every
-    region containing an ENCLAVE and takes its non-enclave territory with it: London,
-    Hanover, Marseille, Casablanca, Guangzhou, Sydney, Kyiv and Lviv were in no shard
-    at all, and Ukraine had no feature shard either. "A region at least 70%
-    uncovered" then dropped one that is 62.9% uncovered, losing central-america's
-    Lesser Antilles and italy's San Marino. Both asked about AREA when the question
-    is about TERRITORY, so both needed a threshold, and a threshold on the wrong
-    quantity always has a wrong side. Asking about land needs no threshold beyond
-    "is there any", and it makes the cover's guarantee assertable: main() refuses to
-    write a cover that leaves land to no shard.
-
-  * THE FINE COVER'S DIFFERENCE ORDER, fixed and documented here because the density
-    builds must reproduce it exactly: ALL regions sorted by ASCENDING polygon area
-    (lon/lat square degrees, as shipped in index-v1.json), ties broken by region id
-    ascending. Membership and assignment are decided in that one pass, so a member's
-    assigned geometry is its polygon MINUS the union of the ORIGINAL polygons of the
-    members KEPT before it:
+  * THE DIFFERENCE ORDER, which the density builds must reproduce exactly: ALL regions
+    sorted by ASCENDING polygon area (square degrees, as in index-v1.json), ties by
+    region id ascending. A member's assigned geometry is its polygon MINUS the union of
+    the ORIGINAL polygons of the members KEPT before it:
 
         assigned(i) = geom(i) − ∪ geom(j)   for all KEPT MEMBERS j before i
 
-    "Kept members", not "all earlier regions": a region the pass rejected as already
-    subdivided contributes nothing to any difference, and subtracting one would hand
-    its territory to no shard at all.
-
-    The `fine` array in shards.json is written IN THIS ORDER, so a consumer holding
-    the index can rebuild every assigned geometry from the member list alone.
+    Kept members only: subtracting a rejected region would hand its territory to no
+    shard. The `fine` array in shards.json is written IN THIS ORDER, so a consumer
+    holding the index can rebuild every assigned geometry from the member list alone.
 
   * `disjoint_neighbors` on each fine entry: the other fine members whose assigned
-    geometries touch or intersect it — the shards that can share a boundary density
-    cell.
+    geometries touch or intersect it (the shards that can share a boundary cell).
 
   * The coarse set: for every fine member, the LARGEST region with `est_bytes` ≤ the
-    cap that geometrically contains it (falling back to the member itself); the
-    coarse partition is the set of those containers. This picks germany over its 16
-    states, and splits europe/asia/north-america into children instead of shipping a
-    35 GB extract, exactly the PLAN rule — without ever trusting `parent`.
+    cap that geometrically contains it (falling back to the member itself). This picks
+    germany over its 16 states and splits europe/asia/north-america into children.
 
-`est_bytes` comes from a HEAD request per chosen region's `-latest.osm.pbf` (the
-index carries no sizes). `--no-sizes` skips that for a fast structural run.
+`est_bytes` comes from a HEAD request per region's `-latest.osm.pbf`; `--no-sizes`
+skips that for a fast structural run.
 
 Output (tools/osm-world/shards.json, the pinned cross-agent interface):
 
@@ -87,21 +67,14 @@ Output (tools/osm-world/shards.json, the pinned cross-agent interface):
                  "disjoint_neighbors": [ids...]}, ...]}
 
 SECOND OUTPUT — tools/osm-world/cover-geometries/ (--geometries-dir): one GeoJSON
-Feature per FINE shard holding its ASSIGNED DISJOINT polygon (the `assigned(i)`
-difference above), full coordinate precision, filename `<id with '/' -> '__'>.geojson`
-(e.g. `us__michigan.geojson`). This is the BUILD-TIME input that makes the density
-exactness rule real: `ci/build-shard.sh` passes it to `build.py --clip-region` for
-density-kind shards, so each shard counts only the ways whose first node falls inside
-its assigned disjoint region — without it, every way in Geofabrik's overlap buffers is
-counted by both neighbouring shards and the merged density grid double-counts. The
-directory is regenerated wholesale on every run (stale files are deleted first) and is
-committed alongside shards.json — the two are one interface and must come from the
-same run. Both outputs are written at the very end of the run, adjacent, after every
-computation and network request (index fetch, size HEADs) has completed, and
-shards.json itself is written atomically (temp file + rename). That shrinks the
-desync window to the geometry-directory rewrite itself — it does not eliminate it: a
-crash mid-way through the ~500 geometry writes still leaves the pair mixed. If a run
-is interrupted there, rerun it before committing either output.
+Feature per FINE shard holding its ASSIGNED DISJOINT polygon at full precision, named
+`<id with '/' -> '__'>.geojson` (e.g. `us__michigan.geojson`). `ci/build-shard.sh`
+passes it to `build.py --clip-region` for density shards; without it every way in
+Geofabrik's overlap buffers is counted by both neighbours. The directory is regenerated
+wholesale on every run and is committed alongside shards.json: the two are one
+interface and must come from the same run. Both are written last and adjacent, and
+shards.json atomically, but a crash mid-way through the geometry writes still leaves
+the pair mixed; rerun before committing either.
 """
 
 from __future__ import annotations
@@ -129,37 +102,25 @@ INDEX_URL = "https://download.geofabrik.de/index-v1.json"
 # "contained" for both partitions.
 CONTAINMENT_RATIO = 0.98
 
-# Fine membership asks one question: does this region still cover LAND that no
-# member already covers? Natural Earth 1:50m land polygons (public domain, vendored
-# so a rebuild cannot drift) are the signal. 1:110m was measured first and drops ten
-# of the twelve Caribbean places this rule exists to keep, so 50m is the floor.
-#
-# The mask is a DECISION input, not the definition of coverage: a member's assigned
-# clip is still its full-precision Geofabrik residual, sea included, so nothing near
-# a coastline is lost. The mask only decides WHICH regions become members, which is
-# why a coarse-ish outline is good enough.
+# Fine membership asks one question: does this region still cover LAND no member
+# already covers? Natural Earth 1:50m land polygons (public domain, vendored) are the
+# signal; 1:110m drops ten of the twelve Caribbean places this rule exists to keep.
+# The mask decides WHICH regions become members; a member's assigned clip is still its
+# full-precision Geofabrik residual, sea included.
 LAND_PATH = HERE / "land-50m.geojson"
 
-# Natural Earth's coastlines and Geofabrik's cutting polygons do not agree to the
-# metre, so every residual picks up a fringe of thin slivers along its coasts —
-# `england`'s is 473 pieces totalling 0.0127 deg², none of them a place. Eroding by
-# ~550 m deletes anything narrower than that while leaving a real one intact:
-# San Marino, the smallest thing this rule must keep, is 0.0053 deg² in ONE piece
-# and survives at 0.0038. What is left after erosion is land; the rest is slop.
+# Natural Earth's coastlines and Geofabrik's cutting polygons disagree by metres, so
+# every residual picks up coastal slivers (`england`: 473 pieces, 0.0127 deg²). Eroding
+# by ~550 m deletes those while San Marino, the smallest thing this rule must keep
+# (0.0053 deg² in one piece), survives at 0.0038.
 LAND_SLOP_DEG = 0.005
 LAND_EPSILON_DEG2 = 1e-4
 
-# Can this shard be built on a runner at all? Density RSS scales with the cells
-# INSIDE the clip, not with extract size, so a big extract clipped to a sliver is
-# cheap in memory — what bounds it is disk: a density shard cannot use
-# --unlink-source (stage 4 reads the raw extract), so peak is roughly extract +
-# stage-1 intermediate against ~22 GB of runner. Hence the same 8 GB the coarse cap
-# uses, for the same reason.
-#
-# The number matters more than it looks: at 1.5 GB — sized off quebec, the largest
-# ORDINARY member — San Marino, Saint-Pierre-et-Miquelon, South Georgia and Kerguelen
-# all fell out of the cover, because the only extract reaching each of them is a
-# country or continent file. Their clips are tiny; only their sources are large.
+# Can this shard be built on a runner at all? Density RSS scales with cells inside the
+# clip, not extract size; disk is the bound (a density shard cannot --unlink-source, so
+# peak is extract + stage-1 intermediate against ~22 GB), hence the coarse cap's 8 GB.
+# At 1.5 GB San Marino, Saint-Pierre-et-Miquelon, South Georgia and Kerguelen fell out
+# of the cover, because the only extract reaching each is a country or continent file.
 MAX_FINE_BYTES = 8 * (1 << 30)
 
 
@@ -182,12 +143,10 @@ def fetch_index(url: str) -> tuple[dict, str]:
     return json.loads(raw), date
 
 
-# A pbf response must actually be a pbf. Geofabrik lists regions whose extract does
-# not exist — `enfield` is one — and serves the DIRECTORY LISTING for them: 200,
-# text/html, Content-Length 9609. Taken at face value that is a 9.6 kB "extract",
-# which is how a phantom region became fine shard #3, carved its polygon out of
-# greater-london's clip, and left ~330,000 people in a permanent zero-density hole
-# that no shard could ever fill. Any response that is not an octet-stream is a miss.
+# A pbf response must actually be a pbf. Geofabrik lists regions with no extract
+# (`enfield`) and serves the DIRECTORY LISTING for them: 200, text/html, 9609 bytes.
+# Taken at face value, that phantom became fine shard #3, carved its polygon out of
+# greater-london's clip and left ~330,000 people in a permanent zero-density hole.
 PBF_CONTENT_TYPES = ("application/octet-stream", "application/x-protobuf",
                      "application/x-osm-pbf", "binary/octet-stream")
 
@@ -282,32 +241,17 @@ def compute_fine(regions: list[Region], land) -> tuple[list[Region], dict[str, o
     geometries, and the area (deg²) of LAND no member covers.
 
     ONE greedy pass over every region, ascending area, ties by id. A region becomes a
-    member when its residual — itself minus the members already kept — still contains
-    LAND, and its extract is small enough to build (MAX_FINE_BYTES). Two clauses,
-    both asking the real question rather than a proxy for it: does this shard cover
-    ground nobody else does, and can it be built at all.
-
-    Land no member covers is therefore not silently lost — main() lists it and
-    refuses to publish unless told to. That residue is where Geofabrik has no extract
-    small enough to reach some island, and it is a decision to take deliberately.
-
-    Two proxies were tried and both shipped holes. "A region that contains no other
-    region" drops every region containing an ENCLAVE, which put London, Hanover,
-    Marseille, Casablanca, Guangzhou, Sydney, Kyiv and Lviv in no shard at all.
-    "A region at least 70% uncovered" drops one that is 62.9% uncovered, which is
-    how central-america's Lesser Antilles and italy's San Marino went missing. Both
-    were asking about AREA when the question is about TERRITORY, so both had a
-    threshold, and a threshold on the wrong quantity always has a wrong side.
+    member when its residual still contains LAND and its extract is small enough to
+    build (MAX_FINE_BYTES). Land no member covers is not silently lost: main() lists
+    it and refuses to publish unless told to.
 
     Two details are load-bearing:
 
-    * SUBTRACT ONLY KEPT MEMBERS. Differencing against a region that was itself
-      skipped would carve territory out of a member's assigned polygon and hand it
-      to nobody.
-    * Each region is differenced only against the earlier kept members whose BBOX
-      intersects it — identical to the full sequential difference, since a
-      non-intersecting region subtracts nothing, and it is what keeps the pass
-      affordable at 555 regions.
+    * SUBTRACT ONLY KEPT MEMBERS. Differencing against a skipped region would carve
+      territory out of a member's assigned polygon and hand it to nobody.
+    * Each region is differenced only against earlier kept members whose BBOX
+      intersects it, which is identical to the full sequential difference and keeps
+      the pass affordable at 555 regions.
     """
     ordered = sorted(regions, key=lambda r: (r.area, r.id))
     tree = STRtree([r.geom for r in ordered])
@@ -331,9 +275,7 @@ def compute_fine(regions: list[Region], land) -> tuple[list[Region], dict[str, o
         f"({len(covered)} cover no land a smaller member does not already cover)")
 
     # THE INVARIANT, asserted rather than estimated: every piece of land inside the
-    # region union belongs to exactly one member. `uncovered` is what is left over,
-    # and main() refuses to publish a cover with a non-trivial amount of it — that
-    # is the whole guarantee, and it is why this function needs no other guard.
+    # region union belongs to exactly one member; main() refuses to publish otherwise.
     all_land = unary_union([r.geom for r in regions]).intersection(
         unary_union(land[0]))
     uncovered = all_land.difference(unary_union([assigned[m.id] for m in members]))
@@ -420,11 +362,10 @@ def write_geometries(members: list[Region], assigned: dict[str, object],
                      directory: Path) -> None:
     """One GeoJSON per fine shard: its assigned disjoint polygon, full precision.
 
-    Full precision is deliberate — the assigned geometries partition the member union
-    exactly, and rounding each file independently could open slivers of overlap or
-    gap along shared boundaries, which is precisely the double/zero-count the clip
-    exists to prevent. Stale files (shards gone from the cover) are removed so the
-    directory always mirrors shards.json's `fine` array exactly.
+    Full precision is deliberate: the assigned geometries partition the member union
+    exactly, and rounding each file independently could open slivers of overlap or gap
+    along shared boundaries. Stale files are removed so the directory mirrors
+    shards.json's `fine` array exactly.
     """
     directory.mkdir(parents=True, exist_ok=True)
     expected = {geometry_filename(m.id) for m in members}
@@ -482,13 +423,9 @@ def main(argv: list[str] | None = None) -> int:
     regions = load_regions(index)
     log(f"{len(regions)} regions in the index")
 
-    # Sizes BEFORE membership, not after. An unavailable extract must not reach the
-    # partition at all, because a phantom region is not merely a shard that fails to
-    # build — it is a POLYGON, and the difference order subtracts it from the real
-    # region that contains it. `enfield` (see head_size) was fine member #3 at a
-    # 9.6 kB HTML directory listing, and its polygon was cut out of greater-london's
-    # clip: ~330,000 people in a hole no shard could ever fill. Excluding it here is
-    # what lets greater-london's residual absorb Enfield.
+    # Sizes BEFORE membership. A phantom region is not merely a shard that fails to
+    # build: it is a POLYGON the difference order subtracts from the real region
+    # containing it (`enfield`, see head_size, was cut out of greater-london's clip).
     if not args.no_sizes:
         fill_sizes(regions, args.workers)
         absent = sorted(r.id for r in regions if r.est_bytes is None)
@@ -498,13 +435,11 @@ def main(argv: list[str] | None = None) -> int:
             regions = [r for r in regions if r.est_bytes is not None]
 
     fine_members, assigned, uncovered = compute_fine(regions, load_land())
-    # THE ONE CHECK THIS FILE NEEDS. compute_fine's rule is "a member is a region
-    # that still covers land nobody else covers", so its guarantee is that no land is
-    # left over — and that is asserted here rather than estimated, before either
+    # THE ONE CHECK THIS FILE NEEDS: no land is left over, asserted before either
     # output is written. Land with no density shard is the silent failure: the coarse
-    # cover still reaches it, so parks and water render normally, while worldDensity
-    # returns no cells and geodata.js reads that as a real zero and DELETES Bridge
-    # Troll, Luxury Car and Right Turn from the deck.
+    # cover still reaches it, so parks and water render, while worldDensity returns no
+    # cells and geodata.js reads that as a real zero and DELETES Bridge Troll, Luxury
+    # Car and Right Turn from the deck.
     pieces = [g for g in getattr(uncovered, "geoms", [uncovered])
               if g.area > LAND_EPSILON_DEG2]
     if pieces:
@@ -543,14 +478,9 @@ def main(argv: list[str] | None = None) -> int:
         "fine": [entry(r, neighbor_map) for r in fine_members],
     }
 
-    # BOTH outputs are written HERE, last and adjacent, after every computation and
-    # every network request (the index fetch and the ~500 size HEADs) has finished.
-    # cover-geometries/ and shards.json are one interface and must come from the
-    # same run — writing the geometries before the size fetches (the old order)
-    # meant any interrupt in between left the two desynchronized on disk. The
-    # shards.json write is atomic (temp + rename); the geometry-directory rewrite
-    # is not — a crash inside write_geometries still desynchronizes the pair, so
-    # an interrupted run must be rerun before committing (see module docstring).
+    # BOTH outputs are written last and adjacent, after every computation and network
+    # request. shards.json is written atomically (temp + rename); the geometry
+    # directory rewrite is not, so an interrupted run must be rerun before committing.
     write_geometries(fine_members, assigned, args.geometries_dir)
     tmp_out = args.out.with_name(args.out.name + ".tmp")
     tmp_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

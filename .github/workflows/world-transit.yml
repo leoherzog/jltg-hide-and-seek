@@ -1,60 +1,35 @@
 # .github/workflows/world-transit.yml — the global `transit_route` layer in CI
-# (see tools/osm-world/DESIGN.md §Phase 7 and §Phase 6). Builds the one layer that
-# carries route relations — assembled urban-rail lines with their ordered stops —
-# which is what lets a city with no GTFS feed at all be played from OSM alone.
+# (DESIGN.md §Phase 7, §Phase 6): assembled urban-rail route relations with their
+# ordered stops, which lets a city with no GTFS feed be played from OSM alone.
 #
-# It is a sibling of world-admin.yml in every structural way, and for the same
-# reason: a relation only assembles when it fits ENTIRELY inside the extract being
-# read, so neither admin boundaries nor route relations can come from the 87
-# Geofabrik shards. Both are built globally, once, and join the world at merge time
-# (`merge.py --admin` / `merge.py --transit`). Everything below — stable handoff
-# prefix, fgb-then-sidecar-then-meta upload order, probes before publish — is
-# world-admin.yml's shape, deliberately.
+# A sibling of world-admin.yml for the same reason: a relation only assembles when
+# it fits entirely inside the extract being read, so route relations cannot come
+# from the Geofabrik shards. Built globally, once; joins the world via
+# `merge.py --transit`. Stable handoff prefix, fgb-then-sidecar-then-meta upload
+# order and probes before publish all follow world-admin.yml.
 #
-# WHAT MAKES THIS ONE DIFFERENT: it reads the planet. That is the whole risk.
+# What makes this one different: it reads the planet (~94 GB).
+#   * build-transit.py runs `osmium tags-filter` for the six rail route types, which
+#     reads the planet twice; after that the job works on hundreds of MB.
+#   * Disk: the measured 86.2 GB envelope alone does not fit the planet, so
+#     `jlumbroso/free-disk-space` (+31 GB) is mandatory, and the gate below refuses
+#     the run by name rather than hitting ENOSPC mid-download.
+#   * RAM: pass B holds every path way's coordinates at once, a few GB at planet
+#     scale against 16 GB. build-transit.py's header says what to change if it bites.
+#   * Wall clock is unmeasured; the timeout is generous. Nothing is published until
+#     the probes pass, so a timeout costs time and no correctness.
 #
-#   * `tools/osm-world/build-transit.py` runs `osmium tags-filter <planet>
-#     r/route=subway,train,light_rail,tram,monorail,funicular`, and tags-filter
-#     reads its input TWICE when it must also collect the members it references.
-#     After that first cut everything works on a file measured in hundreds of
-#     megabytes and the job is minutes of work.
-#   * Disk, against the MEASURED envelope (canary run 32566905248: `disk: 86.2 GB
-#     free of 144.3 GB`, against the 14 GB GitHub documents): the planet is ~94 GB.
-#     86.2 alone does not fit it, which is why `jlumbroso/free-disk-space` (+31 GB,
-#     ~3 min) is MANDATORY here rather than optional — 117 GB against 94 GB leaves
-#     roughly 23 GB, and the intermediate needs a fraction of that. The envelope is
-#     undocumented headroom that could shrink without notice, so the gate below
-#     REFUSES the run by name instead of discovering it as ENOSPC an hour into a
-#     download.
-#   * RAM is the other unmeasured part, and it is the one that would show up as an OOM
-#     kill rather than as a timeout: pass B holds every path way's coordinates at once,
-#     which is a few GB of Python tuples at planet scale against this runner's 16 GB.
-#     Berlin measured 1.85 GB peak RSS, but almost all of that is pyosmium's fixed cost
-#     and it does not extrapolate. `build-transit.py`'s header says what to change if it
-#     ever does bite.
-#   * Wall clock is the unmeasured part: a ~94 GB download plus two streaming passes
-#     over it, against the 6 h job cap. The timeout is set generously and the job is
-#     resumable in the only sense that matters — nothing is published until the
-#     probes pass, so a timeout costs time and no correctness.
+# Stage 0b (replication diffs) never runs here: `--no-update` is passed explicitly.
+# Applying diffs needs ~2.1× the planet in free space; a fresh download is the update.
 #
-# Stage 0b (replication diffs) never runs here: `--no-update` is passed explicitly,
-# and build.py would skip it anyway for a freshly downloaded file. Applying diffs
-# rewrites the whole PBF and transiently needs ~2.1× the planet in free space, which
-# no runner has; a fresh download IS the update.
+# Cadence: with the rest of a rebuild, chained from world-rebuild.yml beside admin.
+# Route relations change constantly, unlike admin boundaries.
 #
-# Cadence: with the rest of a rebuild. Unlike admin (whose boundaries move on a
-# timescale of years) route relations change constantly — new lines, new stops,
-# re-tagged colours — so this is not a "run it once a year" layer. It is chained
-# from world-rebuild.yml beside admin.
-#
-# R2 secrets required (repo or environment secrets):
+# R2 secrets required:
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
 #
-# NOT verified by running this file: I cannot execute GitHub Actions from here.
-# YAML syntax was checked with PyYAML; build-transit.py itself was run for real
-# against a Berlin extract (237 relations, byte-identical on a re-run), but the
-# planet-scale disk, RAM and wall-clock numbers above are arithmetic on measurements
-# taken elsewhere and are unverified until this is dispatched.
+# build-transit.py was run for real against a Berlin extract; the planet-scale disk,
+# RAM and wall-clock numbers are arithmetic and unverified until dispatched.
 
 name: world-transit
 
@@ -104,9 +79,8 @@ env:
 jobs:
   build-transit:
     runs-on: ubuntu-latest
-    # A ~94 GB download plus two passes over it. The job cap is 6 h and this is
-    # the one workflow in the set whose wall clock is a guess rather than a
-    # measurement, so it asks for all of it.
+    # A ~94 GB download plus two passes over it; wall clock is a guess, so this
+    # asks for nearly the whole 6 h job cap.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v7
@@ -148,8 +122,7 @@ jobs:
       - name: free disk space (MANDATORY here — the planet does not fit without it)
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
-          # +~31 GB in ~3 min, taking the measured 86.2 GB envelope to ~117 GB
-          # against a ~94 GB planet. Same knobs as the merge jobs; swap stays.
+          # +~31 GB in ~3 min. Same knobs as the merge jobs; swap stays.
           tool-cache: false
           android: true
           dotnet: true
@@ -163,9 +136,7 @@ jobs:
           set -euo pipefail
           df -Pk "$RUNNER_TEMP" | awk 'NR==2{printf "after cleanup: %.1f GB free\n", $4/1048576}'
           free_gb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2{print int($4/1048576)}')
-          # 100 GB: a ~94 GB planet, the filtered intermediate, and enough slack
-          # that a slightly larger snapshot does not turn into a mid-download
-          # failure. Below this the run cannot succeed and must not be started.
+          # 100 GB: the planet, the filtered intermediate, and slack for a larger snapshot.
           if [ "$free_gb" -lt 100 ]; then
             echo "::error::only ${free_gb} GB free after cleanup; this job needs ~100 GB"
             echo "::error::for the planet plus its filtered intermediate. The 86 GB"
@@ -181,10 +152,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin aria2
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. Plain grep, not -q: under pipefail, -q's early exit kills
-          # ogrinfo with SIGPIPE and fails the pipeline on success.
+          # Driver preflight: a GDAL can lack a driver this needs; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -198,10 +167,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/transit-build"
           args=(--planet "$RUNNER_TEMP/planet-latest.osm.pbf"
                 --out "$RUNNER_TEMP/transit-build"
-                # Explicit, though build.py would skip stage 0b for a freshly
-                # downloaded file anyway: applying replication diffs rewrites the
-                # whole PBF and transiently wants ~2.1x the planet in free space,
-                # which no runner has. A fresh download IS the update.
+                # Replication diffs want ~2.1x the planet in free space; a fresh
+                # download is the update.
                 --no-update)
           if [ -n "$PLANET_URL" ]; then
             args+=(--planet-url "$PLANET_URL")
@@ -214,9 +181,7 @@ jobs:
           FGB="$RUNNER_TEMP/transit-build/transit_route.fgb"
           FAIL=0
 
-          # Structural: the count, the geometry class, and a parseable stops
-          # column. All three are invisible in a build log and all three are what
-          # osm/synth.js reads.
+          # Structural: count, geometry class, stops column. All are what osm/synth.js reads.
           FEATURES="$(ogrinfo -so -al "$FGB" | sed -n 's/^Feature Count: //p')"
           [ "${FEATURES:-0}" -gt 0 ] \
             || { echo "   FAIL layer is empty"; FAIL=1; }
@@ -224,12 +189,9 @@ jobs:
             || { echo "   FAIL layer geometry is not Multi Line String"; FAIL=1; }
           ogrinfo -so -al "$FGB" | sed -n '/^osm_type/,$p'
 
-          # Berlin's U8. Verified against a Berlin extract on 2026-08-24: two
-          # relations, ref U8, colour #224F86, 24 stops each, running in OPPOSITE
-          # directions — which is the assembly's hardest property (the chainer
-          # seeds on a node id and cannot know which way trains run, so the stop
-          # members decide). A bbox probe here catches a build that produced
-          # plausible linework with the columns shifted by one.
+          # Berlin's U8 (verified 2026-08-24: two relations, colour #224F86, 24 stops
+          # each, opposite directions). Catches plausible linework with columns
+          # shifted by one.
           got="$(ogrinfo -ro -q -al -geom=NO -spat 13.40 52.50 13.44 52.54 \
                    -where "ref = 'U8'" "$FGB" \
                  | sed -n 's/.*colour (String) = //p' | sort -u | tr '\n' ' ')"
@@ -239,21 +201,15 @@ jobs:
                  "Berlin U8" "${got:-(nothing)}"; FAIL=1 ;;
           esac
 
-          # The stops column carries the whole timetable-shaped payload; an empty
-          # or unparseable one degrades the fallback tier to nothing, silently.
+          # The stops column is the whole timetable-shaped payload; an unparseable
+          # one silently degrades the fallback tier to nothing.
           #
-          # Two probes with two different quantifiers, on purpose. `-spat` is an
-          # ENVELOPE test: on a planet build the window returns every relation
-          # whose bounding box crosses central Berlin, including continent-spanning
-          # route=train services whose geometry never enters the city — a
-          # population no tuning run against an extract can see. Over that
-          # unbounded population only the emitter's actual contract is asserted:
-          # every stops value parses as a list of 5-field entries (which is what a
-          # shifted column cannot survive). Single-stop lists are the emitter's
-          # documented output (build-transit.py drops only ZERO-stop relations), so
-          # they are a reported statistic, not a failure. The >= 2 cardinality is
-          # asserted only over the pinned fixture — the Berlin U8 relations, scoped
-          # by `-where` like the colour probe — whose drift a human should review.
+          # Two quantifiers on purpose. `-spat` is an envelope test that on a planet
+          # build also returns continent-spanning route=train services, so over that
+          # population only the emitter's contract is asserted: every stops value is
+          # a list of 5-field entries. Single-stop lists are documented output
+          # (build-transit.py drops only zero-stop relations) and are reported, not
+          # failed. The >= 2 cardinality is asserted only over the Berlin U8 fixture.
           python3 - "$FGB" <<'PY' || FAIL=1
           import json, re, subprocess, sys
 
@@ -312,11 +268,8 @@ jobs:
           set -euo pipefail
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           OUT="$RUNNER_TEMP/transit-build"
-          # Order matters, and it is world-admin.yml's rule: fgb, THEN the sha
-          # sidecar, THEN the meta. An upload torn between the first two leaves a
-          # new fgb with the old sidecar, and world-merge.yml's finalize runs
-          # `sha256sum -c` — so the tear fails loudly there instead of merging a
-          # half-replaced file.
+          # Order matters: fgb, then the sha sidecar, then meta, so a torn upload
+          # fails world-merge's `sha256sum -c` instead of merging a half-replaced file.
           for name in transit_route.fgb transit_route.fgb.sha256 transit_route.meta.json; do
             aws s3 cp "$OUT/$name" "s3://$R2_BUCKET/$TRANSIT_PREFIX/$name" \
               --endpoint-url "$EP" --no-progress

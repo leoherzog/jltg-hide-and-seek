@@ -1,84 +1,47 @@
-# .github/workflows/world-density-shards.yml — Phase 4 (see tools/osm-world/DESIGN.md
-# §Phase 4). Builds the DENSITY grid only (build.py --only density) for every "fine"
-# shard in tools/osm-world/shards.json (the 514-member finest Geofabrik cover, written
-# by cover.py — Phase 3) and uploads each shard's output to R2 under
+# .github/workflows/world-density-shards.yml — Phase 4 (DESIGN.md §Phase 4). Builds
+# the density grid only (build.py --only density) for every "fine" shard in
+# tools/osm-world/shards.json and uploads each shard's output to R2 under
 # shards/density/<id>/.
 #
-# DENSITY EXACTNESS: build-shard.sh passes each shard's ASSIGNED DISJOINT polygon
-# (tools/osm-world/cover-geometries/<id with '/' -> '__'>.geojson, committed next to
-# shards.json and present via actions/checkout) to build.py --clip-region, so a way
-# is counted only where its first node falls inside the shard's disjoint region.
-# Geofabrik extracts overlap (buffered cutting polygons); without the clip, merge.py's
-# cell sums double-count every way in the buffers. cover-geometries/ and shards.json
-# come from the same cover.py run — regenerate and commit them together.
+# Density exactness: build-shard.sh passes each shard's assigned disjoint polygon
+# (tools/osm-world/cover-geometries/<id with '/' -> '__'>.geojson) to build.py
+# --clip-region, so a way is counted only where its first node falls inside that
+# region. Geofabrik extracts overlap; without the clip, merge.py's cell sums
+# double-count every way in the buffers. cover-geometries/ and shards.json come from
+# the same cover.py run — regenerate and commit them together.
 #
-# This workflow does NOT merge shards into the global density grid. DESIGN.md §Phase 4:
-# "the merge does not fit a runner today" (transient disk ~2x layer bytes, and the
-# pre-reduction global numbers are tens of GB) — merge runs by hand on kadro:
+# This workflow does not merge shards. Merge runs on kadro:
 #
 #   uv run tools/osm-world/merge.py --shards <dir with one subdir per shard build> \
 #     --admin <overture admin.fgb> --out <dir>
 #
-# To get shard outputs from R2 into the shape merge.py wants (one local subdir per
-# shard build), something like the following on kadro after a run of this workflow,
-# using the same R2 credentials as CI:
+# To pull shard outputs from R2 into that shape:
 #
 #   aws s3 sync s3://$R2_BUCKET/shards/density/ ./shards/density/ \
 #     --endpoint-url https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com
 #
-# (the prefix shards/density/<id>/... syncs down to a local ./shards/density/<id>/
-# subdir per shard for free, because that's what an S3 prefix sync does). Not
-# implemented here — out of this workflow's scope, called out so the handoff is
-# written down somewhere.
-#
-# R2 secrets required (repo or environment secrets — see "Secrets" below):
+# R2 secrets required:
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
+# The .dev.vars token lacks R2 write; a CI-scoped R2 token must be minted and stored
+# as those four secrets. Without them a dispatch builds and fails at upload.
 #
-# ASSUMPTION, stated because it matters and I could not verify it: the token
-# currently in .dev.vars (used for local/dev runs) does NOT have R2 write access
-# (README.md / build.py header). A CI-scoped R2 API token with write must be minted
-# in the Cloudflare dashboard and stored as the four secrets above before this
-# workflow can do anything but fail at the upload step. Until then, `workflow_dispatch`
-# is still safe to run — it will download/build/fail-at-upload, which at least
-# exercises the density path — but the monthly `schedule` trigger will fail every
-# time and should probably stay disabled (comment it out) until the token exists.
-#
-# Cost model (DESIGN.md §Phase 4), calibrated against world-canary.yml's measured
-# runner envelope and since confirmed by a full-scale run — 113/113 jobs, zero
-# failures, 2026-08-22:
-#   - Density shards fit easily: <=~5 GB RSS worst case (quebec), ~1.2 GB disk,
-#     "minutes each" on kadro-class hardware. CI-class wall time is unmeasured.
-#   - Public repos get unlimited included Actions minutes; private repos on the Pro
-#     plan get 3,000 min/mo then $0.005/min (2-core arm64 runner rate cited in
-#     DESIGN.md — this workflow uses ubuntu-latest/x64, check current pricing before
-#     relying on that number). If overage becomes real, DESIGN.md's fallback is
-#     splitting tools/osm-world/ + these workflows into a separate public repo.
-#   - Matrix hard cap is 256 jobs/workflow, hence the batching below. Batches are
-#     capped BOTH by count (5) and by accumulated est_bytes (2 GB): the fine shards
-#     span ~100 kB to 7.90 GB and the density pass is single-threaded, so a batch's
-#     wall clock tracks its bytes — a fixed batch of 5 that happened to draw africa
-#     was ~10x a typical batch's work and blew the old 90-min timeout. Against the
-#     committed shards.json the two caps give 514 fine shards -> 113 jobs (was 103
-#     count-only), comfortably under the 256 cap with headroom for cover.py's count
-#     changing between runs. Only the five shards individually over 2 GB (africa,
-#     canada, south-america, us-midwest, italy) exceed the byte cap, and
-#     chunk-shards.py gives each of those a job of its own.
-#   - Concurrency: 20 (Free tier) / 40 (Pro). Defaults to 20 below; raise
-#     max-parallel if this repo is on a plan with more concurrent-job headroom.
-#
-# Proven at full scale on 2026-08-22: 113/113 matrix jobs, zero failures.
+# Cost model (DESIGN.md §Phase 4), confirmed by a full-scale run on 2026-08-22
+# (113/113 jobs, zero failures):
+#   - Density shards fit easily: <=~5 GB RSS worst case (quebec), ~1.2 GB disk.
+#   - Public repos get unlimited included Actions minutes; check pricing for private.
+#   - Matrix hard cap is 256 jobs/workflow, hence batching. Batches are capped by
+#     count (5) and by accumulated est_bytes (2 GB): the density pass is
+#     single-threaded, so wall clock tracks bytes. 514 fine shards -> 113 jobs; the
+#     five shards over 2 GB (africa, canada, south-america, us-midwest, italy) each
+#     get a job of their own.
+#   - Concurrency: 20 (Free tier) / 40 (Pro). Raise max-parallel if there is headroom.
 
 name: world-density-shards
 
 on:
-  # Schedule DISABLED until the R2_* secrets exist. Armed, it fires 103 jobs a
-  # month, every one of which fails at build.py's --upload preflight — no output,
-  # and no notification anybody reads. README §CI: "disable schedule: and
-  # keep workflow_dispatch until then." Re-arm by uncommenting the two live lines.
+  # Schedule disabled until the R2_* secrets exist; every job would fail at upload.
+  # Re-arm by uncommenting the two live lines (monthly, 06:00 UTC on the 3rd).
   # schedule:
-  #   # Monthly cadence (DESIGN.md §Phase 4: "parks and libraries do not move weekly").
-  #   # 06:00 UTC on the 3rd of the month, offset from the 1st to dodge whatever else
-  #   # piles onto midnight-on-the-1st across every other repo's monthly cron.
   #   - cron: "0 6 3 * *"
   workflow_dispatch:
     inputs:
@@ -90,10 +53,8 @@ on:
         description: "Max accumulated est_bytes per matrix job (default 2 GB; a single larger shard still runs, alone)"
         required: false
         default: "2000000000"
-  # Callable from world-rebuild.yml (the Phase 6 orchestrator), same inputs. The
-  # `inputs` context covers both triggers, hence `inputs.*` below rather than
-  # `github.event.inputs.*` (which, under workflow_call, would read the CALLER's
-  # dispatch inputs).
+  # Callable from world-rebuild.yml, same inputs. `inputs.*` covers both triggers;
+  # `github.event.inputs.*` would read the caller's dispatch inputs under workflow_call.
   workflow_call:
     inputs:
       batch_size:
@@ -123,11 +84,8 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
@@ -165,21 +123,12 @@ jobs:
     name: build (${{ matrix.batch_id }})
     needs: setup
     runs-on: ubuntu-latest
-    # Sized off S3's public-runner measurement: 944 MB through the full pipeline in
-    # 13.8 min at 115% CPU — the density pass is single-threaded, so wall clock
-    # scales with bytes, ~15 min/GB. A byte-capped 2 GB batch is ~30 min plus
-    # toolchain setup; the bound is the largest single-shard batch, africa at
-    # 7.90 GB ≈ 2 h, doubled by the retry-once wrapper below on a late transient
-    # failure. 350 min covers retried-africa with margin and stays under the
-    # platform's 6-hour job cap.
+    # ~15 min/GB measured; the bound is africa (7.90 GB ≈ 2 h) doubled by the
+    # retry-once wrapper. 350 min covers that and stays under the 6-hour job cap.
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      # 20 = GitHub Free-tier concurrent-job ceiling for private repos (DESIGN.md
-      # §Phase 4). Public repos aren't limited this way, but 20 is also just a
-      # reasonable default so a bad shard's retries don't monopolize the runner
-      # pool this repo shares with everything else it builds. Raise to 40 if this
-      # repo is confirmed on a plan/tier where that's real headroom.
+      # 20 = Free-tier concurrent-job ceiling; raise to 40 where there is headroom.
       max-parallel: 20
       matrix:
         include: ${{ fromJson(needs.setup.outputs.matrix) }}
@@ -191,11 +140,8 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
@@ -205,11 +151,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin time
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. build.py's export path writes GeoJSONSeq and FlatGeobuf.
-          # Plain grep, not -q: under pipefail, -q's early exit kills ogrinfo
-          # with SIGPIPE and fails the pipeline on success.
+          # Driver preflight: a GDAL can lack a driver build.py needs; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -242,11 +185,8 @@ jobs:
             pbf_url="$(echo "$shard" | jq -r '.pbf_url')"
             md5_url="$(echo "$shard" | jq -r '.md5_url')"
             echo "::group::$id"
-            # A retry is a FULL re-download + rebuild of the shard, NOT a resume:
-            # build-shard.sh rm -rf's its work dir on entry and passes --force, so
-            # nothing survives between attempts. The retry exists for transient
-            # network/runner failures; its cost is one extra full shard build —
-            # cheap here (density shards are ~minutes each).
+            # A retry is a full re-download + rebuild, not a resume: build-shard.sh
+            # wipes its work dir on entry. It exists for transient failures.
             attempt=1
             max_attempts=2
             until tools/osm-world/ci/build-shard.sh \

@@ -8,33 +8,18 @@ tools/osm-world/test-update.py — build.py/merge.py internals no other harness 
 
     uv run tools/osm-world/test-update.py
 
-Eight checks, all about code that runs in the middle of an eight-hour job where a
-wrong answer is invisible: the replication-diff loop (stage 0b), the `where` rewriter
-that keeps `ogr2ogr` from silently discarding an attribute filter, the per-layer
-geometry classes that decide whether an open way is exported at all, the density
-`--clip-region` exactness rule and its skip-if-exists cache, build-transit.py's
-relation assembly (member re-chaining, role filtering, stop order, determinism),
-merge.py's shard discovery (symlink/duplicate hardening, root-as-shard), and
-merge.py's manifest rules (the density features:0 refusal, `--only` merge-into
-stale keys, timestamps and cell_deg).
+Eight checks on code that runs mid-way through an eight-hour job where a wrong answer
+is invisible: the replication-diff loop (stage 0b), the `where` rewriter, the
+per-layer geometry classes, the density `--clip-region` rule and its cache,
+build-transit.py's relation assembly, merge.py's shard discovery, merge.py's manifest
+rules, and cover.py's fine membership.
 
-WHY A STUB AND NOT THE REAL UPDATER. Exercising `pyosmium-up-to-date` for real means
-pulling days of diffs off OSM's replication servers and rewriting the PBF — minutes to
-hours, hundreds of megabytes, and a different answer every day. None of that tests the
-part that can actually be wrong, which is `stage_update_planet`'s control flow. So the
-updater is replaced by a stub whose exit codes and reported progress are scripted, and
-the assertions are about how many times the loop calls it.
-
-THE CASE THIS EXISTS FOR is scenario B. `pyosmium-up-to-date --help` documents its exit
-status as: "returns 0, if updates have been successfully applied up to the newest data
-or no new data was available. It returns 1, if some updates could not be resolved. Any
-other error results in a return code larger than 1."
-
-`1` is therefore ambiguous — it covers both "stopped at the --size limit, more to do"
-(retry) and "could not resolve" (do not retry), and the exit code alone cannot tell them
-apart. Looping blindly on `1` would re-download a gigabyte of diffs on every one of 24
-passes against a persistently failing server. The loop watches the file's own
-replication timestamp instead and stops the moment a pass fails to advance it.
+The updater is a stub with scripted exit codes and progress, because the real
+`pyosmium-up-to-date` pulls days of diffs and the part that can be wrong is
+`stage_update_planet`'s control flow. Its exit status 1 is ambiguous: it means both
+"stopped at --size, more to do" and "could not resolve". Looping blindly on 1 would
+re-download gigabytes against a failing server, so the loop watches the file's
+replication timestamp and stops when a pass fails to advance it (scenario B).
 """
 
 from __future__ import annotations
@@ -78,18 +63,12 @@ def load_build():
 
 def check_where_rewriter(build, failures: list[str]) -> None:
     """
-    `rewrite_where` — the guard that stops an absent column from killing a `where`.
+    `rewrite_where`: the guard that stops an absent column from killing a `where`.
 
-    `ogr2ogr` refuses an attribute filter naming a field the source lacks, and with
-    `-skipfailures` (which the build passes) it refuses it while exiting 0 and copying
-    every feature through UNFILTERED. `osmium export` only writes the `include_tags` a
-    layer's features actually carry, so this is not an edge case: any extract where a
-    layer's cut happens to contain no `landuse` triggers it.
-
-    The rewriter substitutes NULL for every absent column and constant-folds, which is
-    the answer ogr2ogr would have given for a column full of nulls. What follows pins
-    both halves of that: the folds, and — the invariant that matters more — that a
-    clause with nothing to fold comes back BYTE-IDENTICAL.
+    With `-skipfailures`, ogr2ogr rejects a filter naming a missing field while
+    exiting 0 and copying every feature unfiltered. The rewriter substitutes NULL for
+    absent columns and constant-folds. This pins the folds and, more importantly,
+    that a clause with nothing to fold comes back byte-identical.
     """
     print("\n=== where-rewriter ===")
     table_raw = json.loads((HERE / "categories.json").read_text(encoding="utf-8"))
@@ -100,9 +79,7 @@ def check_where_rewriter(build, failures: list[str]) -> None:
     water = next(e for e in table_raw["categories"] if e["key"] == "water")
 
     cases = [
-        # THE case: animal_delta on a cut with no landuse anywhere. The landuse half is
-        # true for every feature once landuse is NULL, so it disappears; the half that
-        # selects the features must survive untouched.
+        # animal_delta with no landuse: that half folds away, the rest survives.
         ("animal_delta without landuse", animal_delta["where"],
          [c for c in every_column if c != "landuse"],
          "(leisure IN ('park', 'nature_reserve') OR (\"natural\" = 'water' "
@@ -116,14 +93,12 @@ def check_where_rewriter(build, failures: list[str]) -> None:
          [c for c in every_column if c not in ("water", "leisure")],
          "(\"natural\" = 'water' AND name IS NOT NULL) OR "
          "(waterway IN ('river', 'canal') AND name IS NOT NULL)"),
-        # The whole selector rests on the missing column: nothing can match, and the
-        # layer is legitimately absent rather than empty-or-everything.
+        # The whole selector rests on the missing column: the layer is absent.
         ("green_recreation_ground without landuse", "landuse = 'recreation_ground'",
          ["osm_type", "osm_id"], None),
         ("advertising without advertising", "advertising IS NOT NULL",
          ["osm_type", "osm_id"], None),
-        # IS NULL is the one predicate an absent column makes TRUE — a clause made only
-        # of those is unconditionally true and must be dropped, not inverted.
+        # IS NULL is the one predicate an absent column makes TRUE: drop, not invert.
         ("only IS NULL terms", "golf IS NULL AND (water IS NULL OR water <> 'pool')",
          ["osm_type", "osm_id"], ""),
     ]
@@ -134,12 +109,8 @@ def check_where_rewriter(build, failures: list[str]) -> None:
         else:
             print(f"  ok  {name} -> {got!r}")
 
-    # The invariant. Every `where` the build table ships must survive a full-schema
-    # rewrite unchanged, character for character — the rewriter parses SQL, and a parser
-    # that reformats what it does not need to touch would rewrite clauses on the planet
-    # build for no reason and hide a real change in the diff.
-    # No admin entry: categories.json deliberately carries none (its `_admin_comment`
-    # — the shipped admin layer is Overture's, via merge.py --admin, never built here).
+    # Every shipped `where` must survive a full-schema rewrite character for
+    # character. No admin entry: categories.json carries none (admin is Overture's).
     layers = [*table_raw["categories"], *table_raw["curse_layers"],
               *table_raw["density"]["layers"]]
     for entry in layers:
@@ -150,9 +121,8 @@ def check_where_rewriter(build, failures: list[str]) -> None:
                 f"rewrite_where round-trip on {key}: {entry['where']!r} -> {got!r}")
     print(f"  ok  {len(layers)} build-table clauses round-trip unchanged")
 
-    # A prefix NOT is where SQL's UNKNOWN stops behaving like FALSE, so the fold is not
-    # proven sound there. Nothing in the table uses one; if something ever does, the
-    # build must stop rather than quietly invert a clause.
+    # Under a prefix NOT, SQL's UNKNOWN stops behaving like FALSE, so the fold is
+    # unsound there and the build must stop rather than invert a clause.
     try:
         build.rewrite_where("NOT (landuse = 'forest')", ["osm_type"], key="synthetic")
     except SystemExit:
@@ -163,14 +133,9 @@ def check_where_rewriter(build, failures: list[str]) -> None:
 
 def check_geometry_classes(build, failures: list[str]) -> None:
     """
-    The `point,polygon` class is a claim about OSM tagging, and getting it wrong is
-    silent: an open way carrying the layer's tag is simply never exported.
-
-    Every key below has a DOCUMENTED linear form — a billboard face, a platform edge, a
-    shore segment, a river, a rail line — so its layer must keep `linestring` in the
-    export and drop the closed-way duplicates in the dedup pass instead. `advertising`
-    is on this list because it was NOT, and lost 7.3% of Michigan's and 2.3% of
-    Germany's entities before anyone measured it (see the audit in categories.json).
+    A `point,polygon` class silently drops every open way carrying the layer's tag.
+    Every key below has a documented linear form, so its layer must keep `linestring`
+    and dedup the closed-way duplicates instead (see the audit in categories.json).
     """
     print("\n=== geometry classes ===")
     table = build.load_table(build.TABLE_PATH)
@@ -191,19 +156,13 @@ def check_geometry_classes(build, failures: list[str]) -> None:
 
 def check_density_clip(build, failures: list[str]) -> None:
     """
-    `--clip-region` — the sharded-density exactness rule (DESIGN.md §Phase 3).
+    `--clip-region`: the sharded-density exactness rule (DESIGN.md §Phase 3).
 
-    Geofabrik extracts overlap their neighbours (buffered cutting polygons), so a
-    density shard that bins EVERY way of its extract double-counts the buffers once
-    merge.py sums cells. The rule: a way counts iff its FIRST NODE falls inside the
-    shard's assigned disjoint region — and a tree node iff its own location does.
-
-    The fixture is four entities against a unit-square clip region (lon/lat 0..1):
-    a building way whose first node is inside, a building way whose first node is in
-    the "buffer" outside, and one tree node on each side. Unclipped, everything
-    counts (the unchanged-behaviour contract for builds without --clip-region);
-    clipped, exactly the inside pair does. `build.run` is stubbed to capture the
-    geojsonl grid before ogr2ogr would consume it, so the test needs no GDAL.
+    Geofabrik extracts overlap their neighbours, so a way counts iff its first node
+    falls inside the shard's assigned region, and a tree node iff its location does.
+    Fixture: two building ways and two tree nodes, one of each inside a unit-square
+    region. Unclipped everything counts; clipped, exactly the inside pair does.
+    `build.run` is stubbed to capture the geojsonl grid, so no GDAL is needed.
     """
     print("\n=== density --clip-region ===")
     table = build.load_table(build.TABLE_PATH)
@@ -254,8 +213,7 @@ def check_density_clip(build, failures: list[str]) -> None:
         real_run = build.run
 
         def fake_run(cmd, **kwargs):
-            # stage_density's single `run` call is the ogr2ogr geojsonl->fgb
-            # conversion; grab the grid instead of converting it.
+            # stage_density's single `run` is ogr2ogr geojsonl->fgb; grab the grid.
             grid = tmp / "work" / "density.geojsonl"
             captured["lines"] = grid.read_text(encoding="utf-8").splitlines()
 
@@ -288,10 +246,8 @@ def check_density_clip(build, failures: list[str]) -> None:
         finally:
             build.run = real_run
 
-    # The CLI gate: --unlink-source deletes stage 4's only input, so combining it
-    # with a density build must be refused up front — and refused for THAT reason,
-    # not because of some later missing-file accident. (--out/--work point into a
-    # scratch dir because main() mkdirs them before the gate runs.)
+    # --unlink-source deletes stage 4's only input, so it must be refused with a
+    # density build up front, for that reason. (main() mkdirs --out/--work first.)
     with tempfile.TemporaryDirectory() as gate_tmp:
         base = ["--planet", str(Path(gate_tmp) / "does-not-exist.osm.pbf"),
                 "--no-fetch", "--out", str(Path(gate_tmp) / "out"),
@@ -315,8 +271,7 @@ def check_density_clip(build, failures: list[str]) -> None:
                     "--unlink-source with --skip-density must pass the gate "
                     f"(it failed with: {exc})")
             else:
-                # Fails later, on the deliberately-missing planet file — the gate
-                # let the legitimate combination through.
+                # Fails later on the missing planet file: the gate let it through.
                 print("  ok  --unlink-source with --skip-density passes the gate")
         else:
             failures.append(
@@ -325,14 +280,10 @@ def check_density_clip(build, failures: list[str]) -> None:
 
 def check_density_cache(build, failures: list[str]) -> None:
     """
-    stage 4's skip-if-exists cache must be keyed on the `--clip-region` STATE, not
-    just on the output file existing: a cached grid was counted inside one polygon
-    (or none), and silently reusing it under a different clip ships the wrong
-    shard's tallies. The state (sha256 of the region file, or "none") lives in a
-    sidecar in the work dir; the skip fires only on a match.
-
-    `build.run` is stubbed to count builds and to touch the output fgb (so the
-    exists-check is real), which keeps the whole thing GDAL-free.
+    stage 4's skip-if-exists cache must be keyed on the `--clip-region` state (sha256
+    of the region file, or "none", in a work-dir sidecar), or a grid counted under one
+    clip is silently reused under another. `build.run` is stubbed to count builds and
+    touch the output fgb, so no GDAL is needed.
     """
     print("\n=== density clip-state cache ===")
     table = build.load_table(build.TABLE_PATH)
@@ -369,8 +320,7 @@ def check_density_cache(build, failures: list[str]) -> None:
         real_run = build.run
 
         def fake_run(cmd, **kwargs):
-            # stage_density's single `run` call is ogr2ogr geojsonl -> fgb;
-            # cmd[3] is the output path. Touch it so the cache has a file to see.
+            # cmd[3] is ogr2ogr's output path; touch it so the cache sees a file.
             builds["n"] += 1
             Path(cmd[3]).touch()
 
@@ -394,8 +344,7 @@ def check_density_cache(build, failures: list[str]) -> None:
                 else:
                     print(f"  ok  {label}")
 
-            # A CHANGED clip file (same path, different bytes) is a different
-            # state — the sha256 in the sidecar is what must notice.
+            # Same path, different bytes: the sidecar's sha256 must notice.
             unit_square["geometry"]["coordinates"] = \
                 [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]
             clip_path.write_text(json.dumps(unit_square), encoding="utf-8")
@@ -414,39 +363,21 @@ def check_density_cache(build, failures: list[str]) -> None:
 
 def check_route_assembly(transit, failures: list[str]) -> None:
     """
-    build-transit.py's relation assembly — the part of the transit_route stage that
-    no other harness can see and that fails silently when it fails.
+    build-transit.py's relation assembly, which fails silently when it fails.
+    Each fixture is a shape from the 14-city corpus reduced to its pathology:
 
-    Every fixture here is a shape the 14-city corpus actually contains, reduced to
-    the smallest thing that still has the pathology:
-
-      * member ways stored out of order, one of them against its own direction
-        (52/162 Seoul relations, 50/131 NYC) — the re-chain must recover one
-        continuous line, and it must start at the smallest degree-1 node id rather
-        than at whichever member happened to be listed first;
-      * a circle line with no degree-1 endpoint at all (22 corpus relations) —
-        seeded from the smallest way id instead, and still one part;
-      * a relation disconnected into two pieces (17 corpus relations, Berlin 11) —
-        a MultiLineString, longest part first, and NEVER a fabricated segment
-        joining them;
-      * a junction (3 corpus relations) — the branch spills into its own part
-        rather than being dropped or spliced onto the trunk;
-      * legacy `forward` / `backward` path roles (Seoul carries 957; filtering on
-        the empty role alone empties 8 relations outright), platform WAY members
-        that must stay out of the geometry (Berlin 2,609), stops interleaved after
-        the ways (Beijing 2, Tokyo 2), and junk roles — `inactive`, a `"station "`
-        with a trailing space — that must be ignored without crashing;
-      * one stop out of sequence (Berlin 10/148, Tokyo 10/94 — the through
-        services), which must come back in travel order because the projection
-        onto the line says so, not because the relation did;
-      * a relation whose stops run the other way, which must come back running the
-        other way: the chainer seeds on a node id and has no idea which direction
-        the trains go, so if the projection alone decided, a line's two direction
-        relations would both list their stops southbound and a feed built from
-        them would have no northbound service at all;
-      * and determinism: reordering the WAY members must produce byte-identical
-        output, since member order is exactly the thing the assembly is not
-        allowed to depend on.
+      * member ways out of order, one reversed: re-chain into one line, seeded at
+        the smallest degree-1 node id, not the first-listed member;
+      * a circle line with no degree-1 endpoint: seeded from the smallest way id;
+      * a disconnected relation: a MultiLineString, longest first, never bridged;
+      * a junction: the branch spills into its own part;
+      * legacy `forward`/`backward` roles kept as path ways, platform way members
+        kept out of the geometry, stops interleaved after ways, and junk roles
+        (`inactive`, `"station "`) ignored without crashing;
+      * one stop out of sequence: back in travel order by projection;
+      * a relation whose stops run the other way stays the other way, since the
+        chainer cannot know direction and a feed needs both direction relations;
+      * determinism: reordering way members gives byte-identical output.
     """
     print("\n=== transit route assembly ===")
 
@@ -458,9 +389,8 @@ def check_route_assembly(transit, failures: list[str]) -> None:
         return [(round(lon0 + span * i, 7), lat) for i in range(steps + 1)]
 
     # ── 1. out-of-order members, one reversed ──────────────────────────────
-    # Four consecutive 0.01° pieces of one line, listed 3, 1, 4, 2 with piece 4
-    # stored backwards. Node ids ascend along the line, so the walk must start at
-    # node 1 and finish at node 5.
+    # Four 0.01° pieces listed 3, 1, 4, 2 with piece 4 backwards; node ids ascend
+    # along the line, so the walk runs node 1 → 5.
     pieces = [
         segment(203, [3, 4], straight(13.02, 13.03)),
         segment(201, [1, 2], straight(13.00, 13.01)),
@@ -603,8 +533,7 @@ def check_route_assembly(transit, failures: list[str]) -> None:
         else:
             print("  ok  absent tags ship as empty strings, schema pinned")
 
-        # The same relation walked the other way. Its stops are the same four
-        # nodes on the same track; only the member sequence says southbound.
+        # The same relation walked the other way; only the member order says so.
         opposite = dict(relation, id=4243, members=[
             member for member in members if member[0] != "n"
         ] + [("n", node_id, "stop") for node_id in (104, 103, 102, 101)])
@@ -650,14 +579,10 @@ def check_route_assembly(transit, failures: list[str]) -> None:
 
 def check_merge_discovery(merge, failures: list[str]) -> None:
     """
-    find_shards hardening: symlinked directories ARE followed (out-of-tree shard
-    links are a supported layout) under a visited-realpath guard — a symlink cycle
-    over a non-shard directory terminates cleanly with the shard found exactly
-    once (pre-guard, one loop yielded 41 discoveries, ended only by the kernel's
-    ELOOP), while a SHARD reached twice by any route is a hard error naming both
-    paths (duplicated shards double-count density ADDITIVELY). --shards itself is
-    a shard candidate (manifest.json at the root = single-shard merge; stray root
-    .fgb without a manifest = the usual incomplete-build error).
+    find_shards hardening: symlinked directories are followed under a visited-realpath
+    guard, so a cycle terminates with the shard found once, while a shard reached
+    twice is a hard error naming both paths (density double-counts). --shards itself
+    is a shard candidate; stray root .fgb without a manifest is the usual error.
     """
     print("\n=== merge.py shard discovery ===")
 
@@ -710,10 +635,7 @@ def check_merge_discovery(merge, failures: list[str]) -> None:
         else:
             print("  ok  nested shards still found in sorted relative order")
 
-        # THE loop case: a symlink back to an ancestor. Pre-guard this discovered
-        # the shard dozens of times before ELOOP; the visited-realpath guard cuts
-        # the cycle with a log line, so the shard is found exactly once and the
-        # walk terminates.
+        # A symlink back to an ancestor: the guard cuts the cycle, shard found once.
         loopy = tmp / "loopy"
         shard = manifest_dir(loopy / "shard1")
         (loopy / "loop").symlink_to(loopy, target_is_directory=True)
@@ -730,9 +652,7 @@ def check_merge_discovery(merge, failures: list[str]) -> None:
                 print("  ok  symlink loop: cycle cut, shard discovered "
                       "exactly once")
 
-        # Symlinks TO shards are followed: a merge tree assembled from links to
-        # out-of-tree builds must discover them (silently skipping symlinked dirs
-        # is how a world comes up short).
+        # Symlinks to out-of-tree shard builds are followed.
         outside = manifest_dir(tmp / "outside-build")
         linktree = tmp / "linktree"
         linktree.mkdir()
@@ -745,8 +665,7 @@ def check_merge_discovery(merge, failures: list[str]) -> None:
         else:
             print("  ok  a symlink to an out-of-tree shard build is followed")
 
-        # Two routes to the SAME shard (the real dir plus a symlink alias) is the
-        # duplicate the hard error exists for.
+        # Two routes to the same shard (real dir plus symlink alias): hard error.
         dup2 = tmp / "dup2"
         real_shard = manifest_dir(dup2 / "shard1")
         (dup2 / "alias").symlink_to(real_shard, target_is_directory=True)
@@ -762,11 +681,8 @@ def check_merge_discovery(merge, failures: list[str]) -> None:
                 "a shard reachable twice (real dir + symlink alias) was not "
                 "an error")
 
-        # The guard itself: two distinct paths resolving to one realpath where
-        # that realpath is a SHARD is a hard error naming both paths. Simulated
-        # by collapsing two real dirs to one realpath. (Note the guard resolves
-        # symlinks only — true bind-mount duplicates keep distinct realpaths and
-        # are documented as undetectable.)
+        # The guard itself: two paths resolving to one shard realpath must error
+        # naming both. Simulated by collapsing two real dirs to one realpath.
         dup = tmp / "dup"
         a = manifest_dir(dup / "dup-a")
         b = manifest_dir(dup / "dup-b")
@@ -795,25 +711,21 @@ def check_merge_discovery(merge, failures: list[str]) -> None:
 
 def check_merge_manifest(merge, failures: list[str]) -> None:
     """
-    merge.py's manifest rules, exercised through main() with empty-layer shards so
-    no GDAL ever runs (place_admin is stubbed):
+    merge.py's manifest rules, through main() with empty-layer shards so no GDAL runs
+    (the out-of-band placers are stubbed):
 
-      * a merge in which NO shard contributes density is a HARD ERROR — a
-        features:0 density entry would be trusted by the client as a real zero and
-        silently lift the density curses; `--allow-missing-density` publishes with
-        the density layer OMITTED instead (absent = the client degrades, safe);
+      * zero density contributions is a hard error (a features:0 entry would be
+        trusted as a real zero); `--allow-missing-density` omits the layer instead;
       * feature layers keep their explicit features:0 entries;
-      * an --only merge-into drops existing manifest keys the current layer table
-        no longer contains, keeps planet_timestamp = the OLDEST of the existing
-        manifest's and this run's, and hard-errors on a cell_deg mismatch.
+      * an --only merge-into drops stale keys, keeps the oldest planet_timestamp,
+        and hard-errors on a cell_deg mismatch.
     """
     print("\n=== merge.py manifest rules ===")
     table = merge.load_table()
     cell = table["cell_deg"]
     shard_ts = "2026-03-01T00:00:00Z"
 
-    # Both out-of-band layers are stubbed: they are hardlink-and-ogrinfo, and this
-    # check is about the manifest rules around them, not about GDAL.
+    # Both out-of-band placers are hardlink-and-ogrinfo; stub them.
     real_place_admin = merge.place_admin
     real_place_transit = merge.place_transit
     merge.place_admin = lambda src, out: {
@@ -933,10 +845,8 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
             else:
                 failures.append(
                     "--only merged into a manifest with a DIFFERENT cell_deg")
-            # --transit is required on exactly the runs --admin is, and for the
-            # same reason: a route relation is no more shardable than an admin
-            # boundary, so a full merge that omits it would publish a world in
-            # which the OSM fallback tier silently does not exist.
+            # --transit is required on exactly the runs --admin is: without it a
+            # full merge would publish a world with no OSM fallback tier.
             out6 = tmp / "out-no-transit"
             try:
                 merge.main(["--shards", str(shards), "--admin", str(admin),
@@ -951,9 +861,7 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
                 failures.append("a full merge published without a transit_route "
                                 "layer")
 
-            # And when it IS placed it reaches the manifest as a real entry with
-            # a path, beside admin — layer presence is the whole capability
-            # signal the client reads for the OSM fallback tier.
+            # When placed it is listed with a path: presence is the capability signal.
             out7 = tmp / "out-with-transit"
             merge.main([*base, "--out", str(out7), "--allow-missing-density"])
             written = json.loads((out7 / "manifest.json").read_text())
@@ -971,20 +879,14 @@ def check_merge_manifest(merge, failures: list[str]) -> None:
 def check_cover(cover, failures: list[str]) -> None:
     """
     cover.py's fine-membership rule: a region is a member when its residual still
-    contains LAND that no member already covers.
-
-    Two proxies preceded it and both shipped holes. "Contains no other region" drops
-    every region containing an ENCLAVE, taking its non-enclave territory along —
-    London, Hanover, Marseille, Casablanca, Guangzhou, Sydney, Kyiv, Lviv. "At least
-    70% uncovered" then dropped one that is 62.9% uncovered — central-america's
-    Lesser Antilles, italy's San Marino. The fixture below is built so that ONE extra
-    region flips the continent in or out, which is the whole rule in one comparison.
+    contains land no member already covers. The earlier proxies ("contains no other
+    region", "at least 70% uncovered") both shipped holes. The fixture is built so
+    one extra region flips the continent in or out.
     """
     print("\n=== cover.py fine membership ===")
     from shapely.geometry import box, mapping, Point  # noqa: PLC0415
 
-    # Land: a mainland the countries sit on, an island, and a far archipelago that
-    # only the continent-sized region reaches.
+    # Land: a mainland, an island, and a far archipelago only the continent reaches.
     land = [box(0, 0, 100, 50), box(0, 60, 10, 70), box(70, 60, 72, 62)]
     land_mask = (land, cover.STRtree(land))
 
@@ -1032,8 +934,7 @@ def check_cover(cover, failures: list[str]) -> None:
         failures.append(
             f"cover: the continent did not yield to the archipelago: {sorted(got2)}")
 
-    # Members must partition, not overlap: two shards counting one density cell is
-    # exactly what --clip-region exists to prevent.
+    # Members must partition, not overlap (--clip-region's whole purpose).
     overlap, ids = 0.0, [m.id for m in members]
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
@@ -1053,9 +954,8 @@ def check_cover(cover, failures: list[str]) -> None:
         else:
             failures.append(f"cover: point {label} -> {owners}, want [{want}]")
 
-    # ── the two guards, through main(), with the network and the land mask stubbed.
-    # Both must refuse BEFORE writing: a rejected cover that already replaced
-    # cover-geometries/ is worse than none, because the next density build reads it.
+    # ── the two guards, through main(), network and land mask stubbed. Both must
+    # refuse before writing: the next density build reads cover-geometries/.
     real_fetch, real_fill, real_land = cover.fetch_index, cover.fill_sizes, cover.load_land
 
     def run_main(shapes, extra=(), fat=None, blind=False):
@@ -1070,9 +970,8 @@ def check_cover(cover, failures: list[str]) -> None:
             for r in regions_]
         saved = cover.land_area
         if blind:
-            # Simulate the membership rule going wrong WITHOUT touching the check's
-            # own threshold: a rule that sees no land keeps nothing, and every piece
-            # of land must then show up in the assertion.
+            # A rule that sees no land keeps nothing; every piece must then show
+            # up in the assertion, without touching the check's own threshold.
             cover.land_area = lambda geom, land: 0.0
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -1087,8 +986,7 @@ def check_cover(cover, failures: list[str]) -> None:
             cover.land_area = saved
 
     try:
-        # A rule that stops keeping enough regions must be caught by the assertion,
-        # not shipped. Raising the land threshold above every residual simulates it.
+        # A rule that keeps too few regions must be caught, not shipped.
         outcome, wrote = run_main(with_arch, blind=True)
         if isinstance(outcome, SystemExit) and "belong to no density shard" in str(outcome):
             print("  ok  land belonging to no density shard is a hard error")
@@ -1097,9 +995,8 @@ def check_cover(cover, failures: list[str]) -> None:
         if any(wrote):
             failures.append("cover: the uncovered-land assertion wrote before refusing")
 
-        # The two clauses interacting: make the continent — the archipelago's only
-        # source — too big to build, and that land must surface as uncovered rather
-        # than as an oversized shard nobody could run.
+        # The archipelago's only source too big to build: its land must surface as
+        # uncovered, not as an oversized shard.
         outcome, wrote = run_main(base, fat="continent")
         if isinstance(outcome, SystemExit) and "belong to no density shard" in str(outcome):
             print("  ok  land whose only source is unbuildable is reported, not shipped")
@@ -1139,8 +1036,7 @@ def main() -> int:
         os.environ["STUB_PLAN"] = str(plan_file)
         os.environ["PATH"] = f"{bindir}{os.pathsep}{os.environ['PATH']}"
 
-        # The loop's progress guard is driven entirely by this, so point it at whatever
-        # the stub last claimed rather than at a real PBF header.
+        # The progress guard reads this; point it at whatever the stub last claimed.
         build.planet_timestamp = lambda _p: (
             ts_file.read_text().strip() if ts_file.exists() else None)
 
@@ -1165,8 +1061,7 @@ def main() -> int:
             {"rc": 0, "ts": "2026-08-01T00:00:00Z"},
         ], want_changed=True, want_calls=3)
 
-        # B — THE ONE THAT MATTERS. rc 1 forever, no progress. Must stop at one call;
-        # blind retrying would be 24 gigabyte-sized downloads for nothing.
+        # B — the one that matters: rc 1 forever, no progress. Must stop at one call.
         scenario("stuck: rc 1 without advancing", [{"rc": 1, "ts": None}],
                  want_changed=False, want_calls=1)
 
@@ -1174,8 +1069,7 @@ def main() -> int:
         scenario("hard failure (rc 2)", [{"rc": 2, "ts": None}],
                  want_changed=False, want_calls=1)
 
-        # D — nothing to do. Must report unchanged, so downstream stages keep their
-        # cached intermediates instead of rebuilding for no reason.
+        # D — nothing to do: report unchanged so downstream stages keep their caches.
         scenario("already current (rc 0, no change)", [{"rc": 0, "ts": None}],
                  want_changed=False, want_calls=1)
 
@@ -1196,8 +1090,7 @@ def main() -> int:
     check_density_clip(build, failures)
     check_density_cache(build, failures)
 
-    # build-transit.py imports build.py and defers osmium to the function bodies,
-    # so its assembly is plain data in, plain data out — no PBF, no GDAL, no I/O.
+    # build-transit.py defers osmium to function bodies: assembly is pure data.
     check_route_assembly(load_module("build-transit"), failures)
 
     merge = load_module("merge")

@@ -1,49 +1,23 @@
-// render/deck.js — §07 The Questions, §08 The Curse Deck, §09 The Receipts,
-// the page footer, and the interactive behaviour of the two deck tables.
+// render/deck.js — §07 The Questions, §08 The Curse Deck, §09 The Receipts, the page
+// footer, and the sort/filter/search/paging behaviour of the two deck tables.
 //
-// Ported from generate.py S4:
-//   index_questions   + _s4_status_tag, _s4_question_categories,
-//                       _s4_funnel, _s4_definition_list        → §07 `#questions`
-//   index_curses      + _s4_action_tag, _s4_curse_rows,
-//                       _s4_deck_strip                         → §08 `#curses`
-//   index_provenance  + _s4_fact_rows, _s4_sources_index       → §09 `#sources`
-//   _s4_footer                                                 → the page footer
-//   _S4_INDEX_JS      — `bindFilter`, `bindSearch`, `bindSpending`, plus the
-//                       sort and paging the browser build adds on top
+// Ported from generate.py S4: index_questions, index_curses, index_provenance,
+// _s4_footer, _S4_INDEX_JS (bindFilter/bindSearch/bindSpending), plus `_s4_table` and
+// `_s4_chip_group`. Unit and value formatting comes from `./verdict.js`.
 //
-// Also ported here because nothing else owns them yet: `_s4_table` and
-// `_s4_chip_group`. Everything under "unit and value formatting" comes from
-// `./verdict.js`; none of it is redefined below.
+// Invariants:
+// 1. §07 prints every question. The paging control defaults to "All" and never hides
+//    the tail unasked; the dead list is the useful half of the section.
+// 2. §07 prints "fully functional" and "work at all" as two labelled counts. They are
+//    different numbers and must never be conflated.
+// 3. §08 keeps `remove` (a query returned zero: an instruction) visibly distinct from
+//    `player-choice` (no data can settle it: a conversation) — different word, icon,
+//    variant and definition entry.
 //
-// THREE THINGS THIS FILE IS OPINIONATED ABOUT, and they are the reason it exists.
-//
-// 1. §07 PRINTS EVERY QUESTION. 58 rows on a Small map, 71 on Medium, 80 on Large. The
-//    table is not paginated by default and the categories are not collapsed: the dead
-//    list is the useful half of this section, and it is routinely longer than the list
-//    of features the map is missing, because one absent feature kills two questions.
-//    The paging control exists, defaults to "All", and never hides the tail unasked.
-//
-// 2. §07 PRINTS TWO COUNTS AND LABELS THEM APART. "Fully functional" (questions that
-//    split the map) and "work at all" (which adds the weak ones that barely narrow
-//    anything) are different numbers. Conflating them is the specific mistake this
-//    section exists to prevent, so both appear, side by side, in words.
-//
-// 3. §08 KEEPS MEASUREMENT AND PREFERENCE APART. A curse removed because the rulebook
-//    says "if there are no bridges on the game map, this curse should be removed" and
-//    a real query returned zero is `remove` — an instruction. A curse nobody can
-//    settle with data is `player-choice` — a conversation. Different word, different
-//    icon, different variant, different definition-list entry. They must not look
-//    alike, and a reader must be able to tell which is which without hovering.
-//
-// PROGRESSIVE HYDRATION. Every renderer takes the partial report app.js has
-// accumulated and degrades: a piece the worker has not sent yet is simply not printed,
-// and a section with nothing to show returns '' so app.js can drop it and its nav
-// entry. That is the only structural difference from the CLI — the sentences, the
-// thresholds and the wording are the CLI's.
-//
-// FORMATTING DISCIPLINE. Every number on the page goes through exactly one formatter
-// from `../lib/core.js`. No `toFixed`, no `Math.round`, no arithmetic inside a
-// template literal.
+// Every renderer takes the partial report app.js has accumulated: a piece the worker
+// has not sent is not printed, and an empty section returns '' so app.js drops it and
+// its nav entry. Every number goes through one formatter from `../lib/core.js`: no
+// `toFixed`, `Math.round` or arithmetic inside a template literal.
 //
 // @module render/deck
 
@@ -61,27 +35,21 @@ import {
   s4CardHeader, sortedBy, fnum,
 } from './verdict.js';
 
-// The catalogue is pure frozen data — it imports nothing but `lib/core.js` and touches
-// neither the DOM nor the worker globals, so reading `draw` / `keep` off it on the
-// main thread is safe. The funnel needs the card cost of each question and
-// `QuestionAudit` does not carry it; the alternative is inventing a wire field the
-// contract does not have.
+// The catalogue is frozen data that imports only `lib/core.js`, so reading `draw` /
+// `keep` off it on the main thread is safe. The funnel needs each question's card cost
+// and `QuestionAudit` does not carry it.
 import { QUESTIONS } from '../rules/catalogue.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Rulebook presentation constants (read, never recomputed)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Question status → (plain phrase, icon, wa-tag variant, appearance). Colour is never
-// the only channel and the plain phrase is never the only wording: the one-word status
-// rides in the chip's `title`, in `data-status` (which the filter keys on) and in §07's
-// "What these words mean" list.
+// Question status → (plain phrase, icon, wa-tag variant, appearance). The one-word
+// status always rides in the chip's `title`, in `data-status` (the filter key) and in
+// §07's "What these words mean" list, so colour is never the only channel.
 //
-// These words are this generator's, not the rulebook's: a case-insensitive search of
-// the whole rulebook finds no "functional", "weak" or "degenerate" anywhere.
-// rules/audit.js declares them ("THE SIX VERDICTS"), so nothing on the page may present
-// them as rules — they are analysis, and a reader who mistakes a judgement call for a
-// rule will argue the wrong thing at the table.
+// These words are this generator's, not the rulebook's (rules/audit.js "THE SIX
+// VERDICTS"); nothing on the page may present them as rules.
 const S4_STATUS_TAG = Object.freeze({
   functional: Object.freeze(['works', 'circle-check', 'success', 'accent']),
   weak: Object.freeze(['barely helps', 'circle-half-stroke', 'warning', 'accent']),
@@ -90,9 +58,8 @@ const S4_STATUS_TAG = Object.freeze({
   unknown: Object.freeze(['not checked', 'circle-question', 'neutral', 'outlined']),
 });
 
-// The statuses in the order the deck itself degrades, with the sentence §07's
-// definition list prints. An ordered array rather than an object so the list is stable
-// and so `Object.keys()`'s integer-key hoisting can never reach it.
+// The statuses in the order the deck degrades, with §07's definition sentence. An
+// ordered array so `Object.keys()` integer-key hoisting can never reorder it.
 const S4_STATUS_DEF = Object.freeze([
   Object.freeze(['functional', 'It splits the map into groups, so the answer narrows the search.']),
   Object.freeze(['weak', 'It can be asked and answered, but it barely splits the map.']),
@@ -103,8 +70,7 @@ const S4_STATUS_DEF = Object.freeze([
     + 'score rather than guessed at.']),
 ]);
 
-// The same statuses as a counting phrase: "7 work · 3 barely help". The chip label
-// is a noun ("works"), a count needs a verb, and "7 works" reads as a bug.
+// The same statuses as a counting phrase ("7 work · 3 barely help"): a count needs a verb.
 const S4_STATUS_COUNT = Object.freeze({
   functional: 'work',
   weak: 'barely help',
@@ -113,8 +79,8 @@ const S4_STATUS_COUNT = Object.freeze({
   unknown: 'not checked',
 });
 
-// The status order every count, chip row and sort key uses. This is the order the deck
-// degrades in, not alphabetical, and it is the same order `S4_STATUS_DEF` prints.
+// The status order every count, chip row and sort key uses: degradation order, not
+// alphabetical, and the order `S4_STATUS_DEF` prints.
 const S4_STATUS_ORDER = Object.freeze([
   'functional', 'weak', 'degenerate', 'dead', 'unknown',
 ]);
@@ -126,8 +92,7 @@ const S4_ACTION_TAG = Object.freeze({
   'player-choice': Object.freeze(['your call', 'scale-balanced', 'brand', 'outlined']),
 });
 
-// `remove` and `player-choice` are the pair this section exists to keep apart: the
-// first is what a query settled, the second is what no query can settle.
+// `remove` (a query settled it) and `player-choice` (no query can) must stay apart.
 const S4_ACTION_DEF = Object.freeze([
   Object.freeze(['keep', 'The curse works exactly as printed on this map.']),
   Object.freeze(['warn', 'It still works, but it is weaker or stranger here than the rulebook '
@@ -140,8 +105,8 @@ const S4_ACTION_DEF = Object.freeze([
 
 const S4_ACTION_ORDER = Object.freeze(['keep', 'warn', 'remove', 'player-choice']);
 
-// Curse tier → (the rulebook's label, the plain phrase, what it means). "tier N" itself
-// stays on every row and in `data-tier`; this is what the number means.
+// Curse tier → (rulebook label, plain phrase, meaning). "tier N" stays on every row
+// and in `data-tier`.
 const S4_TIER_DEF = Object.freeze([
   Object.freeze(['tier 1', 'the rulebook says so',
     'The rulebook itself tells you to take this one out.']),
@@ -168,10 +133,8 @@ const S4_CATEGORY_ORDER = Object.freeze([
 ]);
 
 // The three purchase curses the "no spending" switch toggles together. The rulebook
-// names the first two and is silent on the third; rules.md files that silence as the
-// ambiguity `spending_curse_inconsistency`, and the page surfaces it rather than
-// quietly resolving it. A sorted Array, not a Set — the same clone-safety habit the
-// rest of the port keeps, and `.includes()` on three items costs nothing.
+// names the first two and is silent on the third (rules.md `spending_curse_inconsistency`);
+// the page surfaces that rather than resolving it quietly. A sorted Array, not a Set.
 const S4_SPENDING_CURSES = Object.freeze([
   'egg_partner', 'impressionable_consumer', 'lemon_phylactery',
 ]);
@@ -183,10 +146,7 @@ const PAGE_SIZES = Object.freeze(['all', '25', '50']);
 // Tiny deterministic primitives
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * `collections.Counter(…)` as a plain object with a zero default.
- * Read it through `count(c, k)`; never iterate it without sorting the keys.
- */
+/** `collections.Counter(…)` as a plain object. Read it through `count(c, k)`; never iterate it unsorted. */
 function counter(items, keyFn) {
   /** @type {Object<string, number>} */
   const out = {};
@@ -210,10 +170,9 @@ function count(c, k) {
 /**
  * A filter chip row: a `wa-radio-group` of button-appearance radios.
  *
- * The selection is the group's `value`, and the option VALUES are always the one-word
- * terms — `bindFilter` keys on them and so does every row's `data-status` /
- * `data-action`. Only the labels are plain English. An option may carry a third
- * element, its icon name; the word always stays.
+ * Option VALUES are always the one-word terms — `bindFilter` and every row's
+ * `data-status` / `data-action` key on them; only the labels are plain English. An
+ * option may carry a third element, its icon name.
  *
  * (generate.py `_s4_chip_group`.)
  *
@@ -242,16 +201,11 @@ function s4ChipGroup(groupId, name, options, opts) {
 }
 
 /**
- * A `<table>` whose rows can carry attributes (the filters need `data-status`).
+ * A `<table>` whose rows can carry attributes (the filters need `data-status`). Cells
+ * are pre-escaped markup, headers plain text, as in `dataTable`.
  *
- * Cells are pre-escaped markup, headers are plain text — the same contract as
- * `dataTable`, which cannot attach per-row attributes.
- *
- * The browser build adds one thing the CLI's `_s4_table` has no use for: a header may
- * be given as `[text, sortKey, sortType]`, which turns it into a real `<button>` with
- * `aria-sort` on its `<th>`. A button is keyboard-operable for free — Enter and Space
- * both fire `click` — which is the whole reason it is a button and not a `<span>` with
- * a listener. Plain-string headers render exactly as the CLI's do.
+ * A header given as `[text, sortKey, sortType]` becomes a real `<button>` with
+ * `aria-sort` on its `<th>`, so Enter and Space fire `click` for free.
  *
  * (generate.py `_s4_table`.)
  *
@@ -289,11 +243,8 @@ function s4Table(headers, rows, opts = {}) {
 }
 
 /**
- * A `<dl>` of `(plain phrase, the precise term, what it means)`.
- *
- * This is where the precise vocabulary lives once the chips speak plain English — a
- * definition list on the page, not a tooltip: tooltips do not exist on a phone, and
- * this reader is on a phone.
+ * A `<dl>` of `(plain phrase, the precise term, what it means)` — a list on the page,
+ * not a tooltip, because this reader is on a phone.
  *
  * (generate.py `_s4_definition_list`.)
  *
@@ -316,15 +267,9 @@ function s4DefinitionList(rows) {
 }
 
 /**
- * The paging strip that sits under a deck table.
- *
- * Rendered inert: the page-size group opens on "All", so every row of the deck is on
- * the page from the first paint and nothing has to be clicked to see the tail. The
- * pager itself is `hidden` until a finite page size is chosen — a Previous/Next pair
- * that can never do anything is noise, and a disabled control still takes a tab stop.
- *
- * `initDeckTables` owns every string in here after the first paint; the initial text
- * is what a reader with scripting off sees, and it is true.
+ * The paging strip under a deck table. Rendered inert: the size group opens on "All"
+ * and the Previous/Next pair stays `hidden` until a finite page size is chosen.
+ * `initDeckTables` owns every string in here after the first paint.
  *
  * @param {string} pagerId @param {string} tableId @param {number} total
  * @param {string} noun @param {string} groupLabel
@@ -371,14 +316,9 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * A question's status as a plain phrase with its icon.
- *
- * The one-word status survives in the chip's `title`, in the row's `data-status`
- * and in §07's definition list — the phrase is the UI, the term is the record.
- *
- * The `title` says whose word it is. These statuses are this report's vocabulary
- * (see `S4_STATUS_TAG`), and calling them the rulebook's turned judgement calls
- * into rules ~98 times per report.
+ * A question's status as a plain phrase with its icon. The one-word status survives in
+ * the chip's `title` and the row's `data-status`; the `title` says whose word it is,
+ * because calling these the rulebook's turned judgement calls into rules.
  *
  * (generate.py `_s4_status_tag`.)
  *
@@ -393,11 +333,9 @@ function s4StatusTag(status) {
 }
 
 /**
- * Per-category health, the presentation aggregate pages.md §3.6 asks for by name.
- *
- * `health = (functional + 0.5 · weak) / count`, and `randomize risk` is the share of
- * the category that is dead or degenerate — which is exactly the chance that a
- * Randomize redraw, which stays inside the category, hands the hider a free card.
+ * Per-category health (pages.md §3.6): `health = (functional + 0.5 · weak) / count`,
+ * and `risk` is the share that is dead or degenerate — the chance a Randomize redraw,
+ * which stays inside the category, hands the hider a free card.
  *
  * (generate.py `_s4_question_categories`.)
  *
@@ -486,10 +424,8 @@ function s4Funnel(report) {
     }));
   }
 
-  // The CLI's caption closes by pointing at strategy.html's simulator. That page is
-  // out of scope for the browser build, so the dangling half-sentence is dropped
-  // rather than left promising a page that does not exist. Everything before it is
-  // the CLI's, word for word.
+  // The CLI's caption ends by pointing at the strategy simulator; that clause is
+  // dropped here. The rest is the CLI's, word for word.
   const caption = 'Greedy order: at each step, the question that leaves the smallest average '
     + `group of identical answers across all ${num(start)} zones. It is the seekers' best line `
     + 'of play if they knew nothing about you. '
@@ -508,16 +444,9 @@ function s4Funnel(report) {
 }
 
 /**
- * The two counts, side by side, labelled apart.
- *
- * "Fully functional" and "works at all" are different questions about the same deck
- * and the gap between them is the weak pile — questions that can be asked, can be
- * answered, and buy the seekers almost nothing while still paying the hider a card.
- * A single "N of M work" headline hides that pile, which is why both numbers are
- * printed here in words before the table starts.
- *
- * This block has no counterpart in the CLI, which prints the same two numbers in the
- * title and the answer strip and trusts the reader to notice they differ.
+ * The two counts, side by side, labelled apart. "Fully functional" and "works at all"
+ * differ by the weak pile — askable, answerable, and nearly useless to the seekers —
+ * and a single "N of M work" headline would hide it. No CLI counterpart.
  *
  * @param {Object} report @returns {string}
  */
@@ -563,13 +492,8 @@ function s4LiveCounts(report) {
 
 /**
  * §07 — the narrowing funnel, category health, the filterable question table, and
- * every question's exact test collected into one appendix at the foot.
- *
- * Order is deliberate: the funnel answers "how fast does this map narrow?" before any
- * taxonomy, the six health cards are the table's visual summary, and the 71 Overpass
- * selectors — which used to be 71 separate disclosure widgets interleaved with the
- * reading — are collected below the table, one row each, still one click and one
- * permalink from the row they belong to.
+ * every question's exact test collected into one appendix at the foot, each one click
+ * and one permalink from the row it belongs to.
  *
  * (generate.py `index_questions`.)
  *
@@ -680,10 +604,9 @@ export function renderQuestions(payload) {
     }));
     why += el('div', extras.join(''), { className: 'wa-cluster wa-gap-2xs' });
 
-    // Sort keys ride on the row so the click handler never has to re-parse a cell.
-    // `found` prefers the instance count and falls back to the coverage share; the two
-    // are different quantities and a mixed column can only ever be a rough grouping,
-    // which is why the printed cell keeps saying which one it is.
+    // Sort keys ride on the row so the click handler never re-parses a cell. `found`
+    // prefers the instance count and falls back to the coverage share, so that column
+    // is only a rough grouping; the printed cell says which quantity it is.
     const statusRank = S4_STATUS_ORDER.indexOf(String(q.status));
     const found = instancesN !== null ? instancesN : (coverageN !== null ? coverageN : -1);
     rows.push([{
@@ -743,11 +666,10 @@ export function renderQuestions(payload) {
   const counts = counter(questions, (q) => q.status);
   const live = s4LiveQuestions(report);
   const title = `${num(live)} of the ${num(questions.length)} questions work here`;
-  let lede = 'Every question in the deck, checked against this map. “Found on the map” is how '
-    + 'many qualifying things the question has to work with inside the border; “how much it '
-    + "narrows the search” is the information the answer carries. Each status has a "
-    + "one-word name of this report's own, not the rulebook's, defined under “what these "
-    + 'words mean”.';
+  let lede = 'Every question in the deck, checked against this map. “Found on the map” counts '
+    + 'the qualifying things inside the border; “how much it narrows the search” is the '
+    + "information the answer carries. The one-word status names are this report's, not "
+    + "the rulebook's, and are defined under “what these words mean”.";
   if (!geoAvailable) {
     lede += ' OpenStreetMap was not available for this run, so only the questions '
       + 'answerable from the feed alone are evaluated.';
@@ -771,17 +693,12 @@ export function renderQuestions(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * A curse's verdict as an instruction, with its icon.
+ * A curse's verdict as an instruction, with its icon. `data-action` and the chip's
+ * `title` keep the one-word action. `take it out` (a measurement the page defends) and
+ * `your call` (an argument it refuses to have for the group) must never read alike.
  *
- * `data-action` — which the filter keys on — keeps the one-word action, and so does
- * the chip's `title`. `take it out` and `your call` are the pair that must never read
- * alike: the first is a measurement the page is willing to defend, the second is an
- * argument the page refuses to have on the group's behalf.
- *
- * The four actions are this report's verdict on a curse, not rulebook terms — the
- * rulebook has no `keep` / `warn` / `remove` / `player-choice` vocabulary. What it does
- * prescribe is which specific curses to take out, and that is what tier 1 records
- * (`S4_TIER_DEF`).
+ * The four actions are this report's vocabulary, not the rulebook's; what the rulebook
+ * prescribes is which curses to take out, and tier 1 records that (`S4_TIER_DEF`).
  *
  * (generate.py `_s4_action_tag`.)
  *
@@ -853,16 +770,9 @@ function s4CurseRows(report, curses) {
 }
 
 /**
- * The whole deck's shape in one bar — the table's visual summary.
- *
- * Labelled "as printed": it is static and deliberately does not follow `#nospend`,
- * because the callout above it already says in words how many curses that switch
- * moves.
- *
- * Each segment carries its action's own variant. The four actions are *state* — the
- * chips directly below the bar read as its legend — and a legend whose colours do not
- * appear in the thing it labels is worse than no legend. (The Points Budget is the
- * opposite case: its six sub-scores are identity, so it stays one hue.)
+ * The whole deck's shape in one bar. Labelled "as printed": it is static and does not
+ * follow `#nospend`, because the callout above already says what that switch moves.
+ * Each segment carries its action's variant so the chips below read as its legend.
  *
  * (generate.py `_s4_deck_strip`.)
  *
@@ -896,14 +806,10 @@ function s4DeckStrip(report, curses) {
 }
 
 /**
- * §08 — the 24-row curse audit, filterable by action, with the one "no-spending"
- * `wa-switch` that toggles Egg Partner, Impressionable Consumer and Lemon Phylactery
- * together (the rulebook flags the first two and is silent on the third, which is an
- * inconsistency worth surfacing rather than papering over).
- *
- * The 24 deciding predicates, which used to be 24 disclosure widgets inside the
- * table's cells, are collected into one appendix at the foot; every row links to its
- * own by permalink.
+ * §08 — the curse audit, filterable by action, with the one "no-spending" `wa-switch`
+ * that toggles Egg Partner, Impressionable Consumer and Lemon Phylactery together (the
+ * rulebook flags the first two and is silent on the third). The deciding predicates
+ * are collected into one appendix at the foot; every row links to its own.
  *
  * (generate.py `index_curses`.)
  *
@@ -918,9 +824,8 @@ export function renderCurses(payload) {
   const main = curses.filter((c) => c.tier <= 3);
   const tier4 = curses.filter((c) => c.tier >= 4);
 
-  // The chip counts are over the rows the table actually holds, not over all 24 — a
-  // filter that promises eight rows and shows five is worse than no filter. The chip
-  // VALUES stay the one-word actions: `bindFilter` reads them.
+  // Chip counts are over the rows the table holds, not all 24. Chip VALUES stay the
+  // one-word actions: `bindFilter` reads them.
   const shown = counter(main, (c) => c.action);
   const present = S4_ACTION_ORDER.filter((a) => count(shown, a));
   const options = [['all', `All ${num(main.length)}`, 'list']];
@@ -933,9 +838,8 @@ export function renderCurses(payload) {
     ...S4_TIER_DEF.map(([term, plain, meaning]) => [plain, term, meaning]),
   ]), { appearance: 'plain' });
 
-  // `words` sits *outside* #ccontrols, exactly as §07 places its own: #ccontrols is
-  // `position: sticky`, and an open 8-term definition list inside it would pin ~500px
-  // of glossary over the table it is filtering for the whole scroll.
+  // `words` sits outside #ccontrols, which is `position: sticky`: an open definition
+  // list inside it would pin ~500px of glossary over the table.
   const controls = el('div',
     s4ChipGroup('cchips', 'cfilter', options, { label: 'Filter curses by action' }), {
       className: 'wa-split wa-flex-wrap wa-gap-s', id: 'ccontrols',
@@ -950,10 +854,10 @@ export function renderCurses(payload) {
     toggle = waCallout(join(
       el('p', esc(
         `The rulebook removes ${s4JoinWords(spendingPresent.slice(0, 2))} when your group does `
-        + 'not want to spend money during the game, and is silent about '
+        + 'not want to spend money during the game, and says nothing about '
         + `${spendingPresent[spendingPresent.length - 1]}, which needs a purchase just the same. `
-        + 'That silence is an inconsistency in the rules, not in this map, so the switch treats '
-        + `all ${num(spendingPresent.length)} together and the table shows what it changes.`,
+        + `The switch treats all ${num(spendingPresent.length)} together; the table shows what `
+        + 'it changes.',
       ), { className: 'wa-body-s' }),
       waSwitch('Nobody spends money during this game', { checked: false, id: 'nospend' }),
     ), { variant: 'neutral', appearance: 'outlined', icon: null });
@@ -972,9 +876,8 @@ export function renderCurses(payload) {
   let details = '';
   if (tier4.length) {
     details = waDetails(`${num(tier4.length)} curses that no map can affect`, join(
-      el('p', esc('These do not depend on the geography at all — they are about the deck, the '
-        + "clock or the players. They are listed for completeness and are never removed on this "
-        + "page's advice."), { className: 'wa-body-s' }),
+      el('p', esc('These are about the deck, the clock or the players, not the geography. '
+        + "Listed for completeness; never removed on this page's advice."), { className: 'wa-body-s' }),
       s4Table(['Curse', 'Action', 'Count', 'Why'], s4CurseRows(report, tier4)),
     ), { appearance: 'plain' });
   }
@@ -998,9 +901,9 @@ export function renderCurses(payload) {
   const title = `${num(count(counts, 'keep'))} of ${num(curses.length)} curses work as printed `
     + 'on this map';
   const lede = "Every curse in the hider's deck, checked against this map's geography and this "
-    + "feed's network. A count is the number of qualifying features inside the border — outside "
-    + 'does not count, because outside does not exist for this game. What each tier and each '
-    + 'instruction means is under “what these words mean”, beside the filter.';
+    + "feed's network. A count is the number of qualifying features inside the border; outside "
+    + 'does not exist for this game. Tiers and instructions are defined under “what these '
+    + 'words mean”, beside the filter.';
   const answer = el('p', esc(
     `Take ${num(count(counts, 'remove'))} ${s4Plural(count(counts, 'remove'), 'curse')} out of `
     + `the deck before you start, flag ${num(count(counts, 'warn'))} more, and talk about `
@@ -1025,10 +928,9 @@ function s4RemovedCurses(report) {
 }
 
 /**
- * A definition list of `(anchorId, label, value)` — the provenance spine.
- *
- * A blank value suppresses the whole row, which is why `_s4_sources_index` is handed
- * the exact same list: an index entry can never point at a row that never rendered.
+ * A definition list of `(anchorId, label, value)` — the provenance spine. A blank value
+ * suppresses the row, and `_s4_sources_index` is handed the same list so an index entry
+ * can never point at a row that never rendered.
  *
  * (generate.py `_s4_fact_rows`.)
  *
@@ -1049,13 +951,9 @@ function s4FactRows(rows) {
 }
 
 /**
- * `<ol id="cites">` — a named home for every `provChip` target on the page.
- *
- * This adds no content: every one of the page's citations already points at an anchor
- * that exists. What was missing was an index to land in, so a reader arriving from a
- * superscript could see what the anchor is called. Deterministic by construction: the
- * score trace's own order, then the provenance card's own row order, then the Overpass
- * keys in the order that table already sorts them.
+ * `<ol id="cites">` — a named home for every `provChip` target on the page, so a reader
+ * arriving from a superscript can see what the anchor is called. Order is the score
+ * trace's, then the provenance card's rows, then the Overpass keys as already sorted.
  *
  * (generate.py `_s4_sources_index`.)
  *
@@ -1089,17 +987,11 @@ function s4SourcesIndex(report, factRows) {
 }
 
 /**
- * §09 — feed hash and dates, every category selector with its count and the world
- * lookup, the admin ladder, the generator version and arguments, and the full
- * interpretation list.
- *
- * The three machine identifiers — feed sha256, generator, argv — move into a "Build
- * fingerprint" disclosure with their anchors intact; app.js's `openTargeted()` opens
- * it when a citation points inside.
- *
- * This section is the receipts and it is printed in full. Nothing here is summarised,
- * elided or paginated: an unabridged list of what was asked and what came back is the
- * difference between a report and an opinion.
+ * §09 — feed hash and dates, every category selector with its count, the admin ladder,
+ * the generator version and arguments, and the full interpretation list. Printed in
+ * full: nothing here is summarised, elided or paginated. The machine identifiers sit
+ * in a "Build fingerprint" disclosure; app.js's `openTargeted()` opens it when a
+ * citation points inside.
  *
  * (generate.py `index_provenance`.)
  *
@@ -1117,16 +1009,11 @@ export function renderProvenance(payload) {
   const agencies = p.agencies || [];
   const agencyNames = s4JoinWords(agencies.map((a) => String(a.name || '')));
   const tz = String((agencies.length ? agencies[0].timezone : '') || '');
-  // One row per input feed on a merged run. A report built from three feeds that
-  // printed one hash and one file name would be describing a map that does not
-  // exist; below one feed there is nothing extra to say, and the rows are the ones
-  // this section has always had.
+  // One row per input feed on a merged run; a single feed prints the usual rows.
   const feeds = p.feeds || [];
   const merged = feeds.length > 1;
-  // Set by the worker when any source was built from OpenStreetMap instead of read
-  // from a published timetable, and true for the WHOLE run once one source is: after
-  // the merge nothing downstream can tell an invented departure from a published one,
-  // so the run says so about all of them rather than about some of them.
+  // True for the WHOLE run once any source was built from OpenStreetMap: after the
+  // merge nothing downstream can tell an invented departure from a published one.
   const assumedSchedule = Boolean(report.metrics && report.metrics.assumedSchedule);
 
   /** @type {Array<[string,string,string]>} */
@@ -1138,12 +1025,10 @@ export function renderProvenance(payload) {
       String(f.sha256 || ''),
     ]) : []),
     ['generator', 'Generator', `${p.generator || GENERATOR} ${p.version || VERSION}`],
-    // `memory` is the answer to "why did this run refetch everything?": IndexedDB
-    // could not be opened, so the cache lived and died with the run. Printed
-    // always rather than only when degraded, so its absence is never ambiguous.
+    // Printed always so its absence is never ambiguous: `memory` means IndexedDB could
+    // not be opened and the cache died with the run.
     ['', 'Cache backend', String(p.cacheBackend || '')],
-    // verbatim, every argument and all: this string *is* the determinism claim, and
-    // truncating it would be removing content.
+    // Verbatim: this string *is* the determinism claim.
     ['argv', 'Options', (p.argv || []).map((a) => String(a)).join(' ') || '(none)'],
   ];
 
@@ -1169,9 +1054,8 @@ export function renderProvenance(payload) {
         (f.feedStart && f.feedEnd)
           ? `${prettyDate(String(f.feedStart))} – ${prettyDate(String(f.feedEnd))}` : '',
         String(f.source || '')].filter((x) => x).join(' · ')]) : []),
-    // A blank value drops the row, so this says nothing at all on an ordinary run —
-    // and on a run that has one, it sits directly under the file it is qualifying,
-    // where a reader looking for "what did this read" cannot walk past it.
+    // Blank on an ordinary run (a blank value drops the row); otherwise it sits directly
+    // under the file it qualifies.
     ['', 'Timetable', assumedSchedule
       ? 'Assumed, not published. The lines come from OpenStreetMap: where they run is '
         + 'measured, how often they run is modelled from the assumptions listed below, '
@@ -1190,9 +1074,8 @@ export function renderProvenance(payload) {
         + `${s4Dist(report, size.zoneRadiusM, 2)} zones · `
         + `${num(size.catalogueSize)} questions · ${num(curses.length)} curses`
       : ''],
-    // The pad clause follows `Border.derivation` (CONTRACT §(b)): a box the reader set
-    // is unpadded, and one the in-play filter fell back on was not applied at all.
-    // "padded 0 ft" was the milder version of the same false sentence §05 printed.
+    // Follows `Border.derivation` (CONTRACT §(b)): a reader-set box is unpadded, and one
+    // the in-play filter fell back on was not applied at all.
     ['border', 'Border', border
       ? `${border.kind} · S ${num(border.bbox[0], 6, { comma: false })}, `
         + `W ${num(border.bbox[1], 6, { comma: false })}, `
@@ -1249,16 +1132,12 @@ export function renderProvenance(payload) {
         }),
       ]]);
     }
-    // There used to be a "Cache key" column here holding the content address of the
-    // query text, back when this page was answered by live Overpass requests that could
-    // hit or miss a cache. Nothing populates it now — every record carries `cacheKey: ''`
-    // — so it was a column of blanks under a paragraph explaining what the blanks meant.
-    // The last column is the file each count was read from, which is the useful half.
+    // No "Cache key" column: every record carries `cacheKey: ''`. The last column is
+    // the file each count was read from.
     const note = 'Every count is the number of matching OpenStreetMap elements inside the '
-      + 'border. A count marked with a + was not confirmed by reading the features: either '
-      + 'the category is too large to fetch and the number is an upper bound, or that layer '
-      + 'could not be read at all. Selectors are printed verbatim so you can re-run any of '
-      + 'them at overpass-turbo.eu and check this page against a live database.';
+      + 'border. A + marks a count not confirmed by reading the features: the category was '
+      + 'too large to fetch (so the number is an upper bound) or the layer could not be read. '
+      + 'Selectors are printed verbatim so you can re-run them at overpass-turbo.eu.';
     blocks.push(waCard(join(
       el('p', esc(note), { className: 'wa-body-s wa-color-text-quiet' }),
       s4Table(['Category', 'Count', 'What was searched for', 'Read from'], rows),
@@ -1301,7 +1180,7 @@ export function renderProvenance(payload) {
         headerHtml: s4CardHeader(
           'Administrative divisions',
           "The rulebook's 1st–4th divisions land on different levels in every country, so "
-          + 'the ladder is derived per country from the division data itself and never assumed.',
+          + 'the ladder is derived from the division data, never assumed.',
         ),
       },
     ));
@@ -1309,11 +1188,8 @@ export function renderProvenance(payload) {
 
   const interps = sortedBy(p.interpretations || [], (x) => [String(x.id)]);
   if (interps.length) {
-    // A `<dl>`, not an accordion. As a disclosure this was inverted: the *summary* was
-    // a 30–45-word paragraph and the *payload* was two tags, so 23 chevrons each
-    // promised more and delivered less. Flat, the sentence reads first, the id and the
-    // affected metrics sit under it, and nothing is one click away that was not
-    // already in the label. `id="interp-…"` still anchors each entry.
+    // A flat `<dl>`, not an accordion: the sentence is the content and the payload is
+    // two tags. `id="interp-…"` anchors each entry.
     const entries = [];
     for (const i of interps) {
       const iid = String(i.id || '');
@@ -1338,8 +1214,8 @@ export function renderProvenance(payload) {
     blocks.push(waCard(el('dl', entries.join(''), { className: 'wa-stack wa-gap-3xs' }), {
       headerHtml: s4CardHeader(
         `${num(interps.length)} places where the rulebook is silent and this report decided`,
-        'Each of these changed a number on this page. They are interpretations, not rules, and '
-        + 'a group that disagrees with one should feel free to overrule it.',
+        'Each changed a number on this page. They are interpretations, not rules; a group '
+        + 'that disagrees with one may overrule it.',
       ),
     }));
   }
@@ -1355,8 +1231,7 @@ export function renderProvenance(payload) {
       {
         headerHtml: s4CardHeader(
           'What this data does not know',
-          'Honest limits of the sources, carried straight through from the layers that produced '
-          + 'them.',
+          'Limits of the sources, carried through from the layers that produced them.',
         ),
       },
     ));
@@ -1384,10 +1259,9 @@ export function renderProvenance(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The page footer: five figures, the credit sentence, and a link back to the top.
- *
- * The ids match the shell's skeleton (`#footer-figures`, `#footer-credit`) so app.js
- * can either replace the whole `<footer>` or swap the two children in place.
+ * The page footer: five figures, the credit sentence, and a link back to the top. The
+ * ids match the shell's skeleton (`#footer-figures`, `#footer-credit`) so app.js can
+ * replace the whole `<footer>` or swap the two children in place.
  *
  * (generate.py `_s4_footer`.)
  *
@@ -1444,40 +1318,29 @@ export function renderFooter(payload) {
 // THE DECK TABLES — sort, filter, search, paging
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// The CLI ships one static document and binds three things to it: a chip filter, a
-// search box and the no-spending switch (`_S4_INDEX_JS`). The
-// browser build adds column sorting and an opt-in page size on top, and then has to
-// solve a problem the CLI does not have: app.js re-renders a whole section when a
-// later stage lands or the reader switches service day, which throws away every
-// element these listeners were attached to.
+// The CLI binds a chip filter, a search box and the no-spending switch to one static
+// document (`_S4_INDEX_JS`). The browser build adds column sorting and an opt-in page
+// size, and app.js re-renders a whole section when a later stage lands or the reader
+// switches service day, which discards every element these listeners were on. So the
+// state lives in `DECK_STATE`, keyed by table id, and `initDeckTables` writes it back
+// into the fresh controls before binding anything.
 //
-// So the state does not live in the DOM. It lives in `DECK_STATE`, keyed by table id,
-// and `initDeckTables` writes it back into the freshly-inserted controls before it
-// binds anything. A reader who sorted by status, filtered to "can't be answered" and
-// typed "park" keeps all three across a day switch.
-//
-// COMPOSING WITH app.js. app.js carries its own copy of the CLI's `bindFilter` /
-// `bindSearch` / `bindSpending` inside `PAGE_RUNTIME_JS` — it must, because that
-// string is a verbatim port of the CLI's page JS. Both are bound to the same
-// elements, so the two have to agree rather than fight. They agree on one rule:
+// app.js carries its own copy of `bindFilter` / `bindSearch` / `bindSpending`
+// (`PAGE_RUNTIME_JS`), bound to the same elements. Both agree on one rule:
 //
 //     a row is hidden when its chip filter rejects it, OR when data-match is '0'
 //
-// app.js writes `data-match` from the search box alone. This module writes it from the
-// search box AND the page window, which is a strict refinement: whichever handler runs
-// last, the final visibility is the same, because both read `data-match` live rather
-// than caching it. This module also listens for app.js's `refilter` event and never
-// dispatches one, so there is no ping-pong.
+// app.js writes `data-match` from the search box alone; this module writes it from the
+// search box AND the page window, a strict refinement, and both read it live. This
+// module listens for app.js's `refilter` event and never dispatches one.
 //
-// KEYBOARD. Every control is a real control — `wa-radio-group`, `<input type=search>`,
-// `wa-switch`, `wa-button` — so sort, filter, search and paging are all reachable and
-// operable with the keyboard alone, with no `keydown` handler of our own.
+// Every control is a real control (`wa-radio-group`, `<input type=search>`,
+// `wa-switch`, `wa-button`), so everything is keyboard-operable with no `keydown`
+// handler of our own.
 
 /**
  * Per-table interaction state, preserved across every re-render of its section.
- *
- * `search` exists only for a table that has a search box: the curses table declares
- * `searchId: null` below and no `#csearch` element is ever emitted, so it carries none.
+ * `search` exists only for a table with a search box (the curses table has none).
  *
  * @type {Object<string, {sortKey: string|null, sortDir: number, filter: string,
  *                        search?: string, pageSize: string, page: number}>}
@@ -1513,11 +1376,9 @@ const DECK_TABLES = Object.freeze([
 /** The last payload `initDeckTables` was handed, for the re-wire observer. */
 let lastPayload = null;
 /**
- * Table ids whose `refilter` listener is already on `document`.
- *
- * The guard has to be module state, not a `data-` flag on the table: app.js hands us a
- * brand-new `<table>` on every re-render, so a per-element flag would add one more
- * document-level listener per day switch and never remove any of them.
+ * Table ids whose `refilter` listener is already on `document`. Module state, not a
+ * `data-` flag: app.js hands us a new `<table>` on every re-render, so a per-element
+ * flag would leak one document listener per day switch.
  * @type {Set<string>}
  */
 const REFILTER_BOUND = new Set();
@@ -1551,12 +1412,9 @@ function sortTypeOf(table, key) {
 }
 
 /**
- * Reorder the table body to the stored sort, and mirror it into `aria-sort` and the
- * header icons.
- *
- * The original document order — the CLI's `(category, id)` / `(tier, name, id)` — is
- * stamped onto every row as `data-ord` the first time a table is seen, so "no sort" is
- * restorable and every comparison has a total, deterministic tie-break.
+ * Reorder the table body to the stored sort and mirror it into `aria-sort` and the
+ * header icons. Document order is stamped as `data-ord` the first time a table is
+ * seen, so "no sort" is restorable and every comparison has a deterministic tie-break.
  */
 function applySort(table, st) {
   const tbody = table.tBodies[0];
@@ -1599,10 +1457,8 @@ function applySort(table, st) {
 
 /**
  * Decide every row's visibility from filter + search + page, and update the pager.
- *
- * `data-match` is the shared channel with app.js's copy of `bindFilter`: '0' means
- * "hidden for a reason that is not the chip filter". Folding the page window into it
- * is what stops the two implementations from disagreeing.
+ * `data-match` is the channel shared with app.js's `bindFilter`: '0' means "hidden for
+ * a reason other than the chip filter", and the page window is folded into it.
  */
 function applyRows(spec) {
   const table = document.getElementById(spec.tableId);
@@ -1611,9 +1467,8 @@ function applyRows(spec) {
   const group = document.getElementById(spec.groupId);
   const input = spec.searchId ? document.getElementById(spec.searchId) : null;
 
-  // Read the property when the element has upgraded and the attribute when it has not;
-  // falling straight through to 'all' would silently drop a restored filter on the one
-  // paint where WebAwesome's definitions have not landed yet.
+  // Read the property once upgraded and the attribute before then; falling through to
+  // 'all' would drop a restored filter on the paint where WebAwesome has not landed.
   let want = st.filter || 'all';
   if (group) {
     const live = group.value;
@@ -1715,17 +1570,15 @@ function wireTable(container, spec) {
   if (!table) return;
   const st = DECK_STATE[spec.tableId];
 
-  // Restore the chip filter. A stored value whose chip no longer exists — a status
-  // that vanished when a later stage re-audited the deck — falls back to "all" rather
-  // than filtering the table down to nothing with no visible reason.
+  // A stored filter whose chip no longer exists (a status a later stage re-audited
+  // away) falls back to "all" rather than filtering the table down to nothing.
   const group = document.getElementById(spec.groupId);
   if (group) {
     const has = st.filter === 'all'
       || Boolean(group.querySelector(`wa-radio[value="${CSS.escape(st.filter)}"]`));
     if (!has) st.filter = 'all';
-    // Attribute first, then property: the attribute is what a `wa-radio-group` that has
-    // not upgraded yet reads on upgrade, and the property is what one that already has
-    // reads now. Setting both means the restore does not depend on load order.
+    // Attribute first, then property, so the restore does not depend on whether the
+    // `wa-radio-group` has upgraded yet.
     if (group.getAttribute('value') !== st.filter) group.setAttribute('value', st.filter);
     if (group.value !== st.filter) group.value = st.filter;
     bindOnce(group, 'deckFilterBound', 'change', () => {
@@ -1743,9 +1596,8 @@ function wireTable(container, spec) {
     });
   }
 
-  // One delegated listener per table for the header buttons. They are real
-  // `wa-button`s, so Enter and Space already produce a `click` — there is no keydown
-  // handler here and there must not be one.
+  // One delegated listener per table. The headers are real `wa-button`s, so Enter and
+  // Space already produce `click`; there must be no keydown handler here.
   bindOnce(table, 'deckSortBound', 'click', (event) => {
     const th = event.target && event.target.closest
       ? event.target.closest('th[data-sort-key]') : null;
@@ -1785,9 +1637,8 @@ function wireTable(container, spec) {
     });
   }
 
-  // app.js's own `bindSearch` dispatches `refilter` after it rewrites `data-match`.
-  // Listening for it (and never dispatching one) is what keeps the two copies of the
-  // filter in agreement without either of them re-entering the other.
+  // Listen for app.js's `refilter` (dispatched after it rewrites `data-match`) and never
+  // dispatch one, so the two filter copies agree without re-entering each other.
   if (!REFILTER_BOUND.has(spec.tableId)) {
     REFILTER_BOUND.add(spec.tableId);
     document.addEventListener('refilter', () => applyRows(spec));
@@ -1799,13 +1650,10 @@ function wireTable(container, spec) {
 }
 
 /**
- * Re-wire automatically after app.js swaps a section's markup.
- *
- * Armed on the first `initDeckTables` call and never at import time — importing a
- * renderer must not touch the DOM. The check is identity: if `#qtable` and `#ctable`
- * are the same nodes we wired last time, nothing was re-rendered and there is nothing
- * to do, so the observer's own mutations (row reordering, `hidden` flips) cost one
- * frame-debounced comparison and stop there.
+ * Re-wire automatically after app.js swaps a section's markup. Armed on the first
+ * `initDeckTables` call, never at import time. The check is identity: if `#qtable` and
+ * `#ctable` are the nodes wired last time, nothing was re-rendered, so the observer's
+ * own mutations cost one frame-debounced comparison.
  */
 function armRewireObserver() {
   if (rewireObserver || typeof MutationObserver === 'undefined' || !document.body) return;
@@ -1825,11 +1673,9 @@ function armRewireObserver() {
 }
 
 /**
- * Wire §07's and §08's tables after their markup has been inserted.
- *
- * Idempotent: call it once per section swap, or once for the whole page, or after
- * every stage — every listener is guarded and every apply is a pure function of
- * `DECK_STATE` and the DOM. Safe to call when neither table is on the page yet.
+ * Wire §07's and §08's tables after their markup has been inserted. Idempotent: every
+ * listener is guarded and every apply is a pure function of `DECK_STATE` and the DOM.
+ * Safe to call when neither table is on the page yet.
  *
  * @param {ParentNode} [container] — the freshly-inserted subtree, or the document
  * @param {Object} [payload] — the partial `Report`, kept for the re-wire observer

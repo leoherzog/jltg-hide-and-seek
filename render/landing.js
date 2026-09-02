@@ -1,20 +1,9 @@
 /**
  * render/landing.js — the landing picker's markup. Pure `data → string`, no DOM.
  *
- * The same split `render/strategy.js` / `render/simulator.js` uses and CONTRACT.md
- * §(a) already sanctions: this file prints the picker, `render/picker.js` makes it
- * move. Nothing here reads or writes an element, listens to anything, or knows that
- * MapLibre exists — which is what lets the search results and the selected list be
- * checked as strings.
- *
- * ESCAPING. Every value on this page comes from `data/feeds.json`, which is upstream
- * text: provider names carry ampersands, accents, quotes and the occasional angle
- * bracket. Everything goes through `esc()` or a helper that escapes for us, exactly
- * as §(e) requires — there is no interpolation of a raw catalogue string anywhere
- * below.
- *
- * NUMBERS. `num()` from `lib/core.js`, never `toFixed`, never `Intl`. This file
- * formats; it does not compute. `spanKmOf` is `lib/catalog.js`'s.
+ * This file prints the picker; `render/picker.js` makes it move (CONTRACT.md §(a)).
+ * Every catalogue value goes through `esc()` or an escaping helper (§(e)). Numbers
+ * use `num()` from `lib/core.js`, never `toFixed` or `Intl`.
  *
  * @module render/landing
  */
@@ -23,44 +12,23 @@ import { num, coord, MAX_FEEDS_PER_RUN } from '../lib/core.js';
 import { esc, el, join, waIcon, waButton, waCallout, chip } from './html.js';
 import { labelOf, placeOf, spanKmOf } from '../lib/catalog.js';
 
-/** How many feeds one run may merge. Refuse above this.
- *  One number, defined in `lib/core.js`, because `readSources` and the worker refuse
- *  the same eleventh feed this list refuses. */
+/** How many feeds one run may merge; `readSources` and the worker refuse the same number. */
 export const PICK_CAP = MAX_FEEDS_PER_RUN;
 
 /**
- * The picker's controls, as one string.
+ * The picker's controls, as one string. Injected by `app.js` only once the catalogue
+ * loaded, so a failed fetch collapses the stage to a plain card.
  *
- * Shipped as a string rather than as static `index.html` so the controls exist only
- * once the catalogue actually loaded: `app.js` injects this into the empty host and
- * only then calls the page ready, so a failed fetch collapses the stage back to a
- * plain centred card with the bring-your-own disclosure open, rather than leaving a
- * world map nobody can pick anything off.
+ * `#catalog-map`, the heading and the lede are NOT here: they are static markup in
+ * `index.html`, siblings of this panel inside `#picker`, and survive its replacement.
  *
- * WHAT IS NOT IN HERE, and was until 2026-09-01: `#catalog-map`. The map is the
- * landing now — a full-bleed layer under the floating panel these controls live in —
- * so its host is static markup in `index.html`, a SIBLING of that panel inside
- * `#picker`, and it survives the wholesale replacement of `[data-role=pickerbody]`
- * this string is written into. `initPicker`'s root is still `#picker`, so
- * `root.querySelector` reaches the map and these controls alike; nothing in
- * `render/picker.js` has to know which of the two doors an id came through.
- *
- * The page's heading and lede are likewise NOT here. They belong to the panel, which
- * has to read the same whether or not the catalogue ever arrived.
- *
- * Every `<wa-button>` here is `type="button"` on purpose. This markup lives INSIDE
- * `<form id="landing-form">` (PLAN D10 — one form, so `boot()`'s single submit
- * listener and `readOptions`' eleven `[data-opt]` lookups are untouched), and a
- * button in a form defaults to submitting it. A "Draw a shape" button that started
- * the analysis would be a very confusing bug.
+ * Every `<wa-button>` here is `type="button"`: this markup lives inside
+ * `<form id="landing-form">` and a button in a form defaults to submitting it.
  *
  * @returns {string}
  */
 export function renderPickerCard() {
-  // The search box IS the picker: it is wired synchronously, before MapLibre, and it
-  // finds every feed the map does. The label is real but visually hidden — the
-  // magnifying glass and the placeholder say the same thing twice in a 27rem panel —
-  // so a screen reader still announces the field.
+  // The label is real but visually hidden, so a screen reader still announces it.
   const search = el('wa-input', join(
     waIcon('magnifying-glass', { slot: 'start' }),
     el('span', 'Or tap a marker. Locations come from the Mobility Database and are '
@@ -78,17 +46,14 @@ export function renderPickerCard() {
     className: 'picker-search wa-visually-hidden-label',
   });
 
-  // The draw tool's three controls, in their own row so the mobile sheet can keep
-  // exactly this row on screen while a shape is being drawn (styles.css §7): a
-  // reader cannot draw on a map the panel is sitting on top of.
+  // The draw tool's controls, in their own row so the mobile sheet can keep just
+  // this row on screen while a shape is drawn (styles.css §7).
   const draw = el('div', join(
     waButton('Draw a shape', {
       id: 'draw-shape', type: 'button', icon: 'draw-polygon', ariaPressed: 'false',
     }),
-    // The pointer-only way to finish a ring. Double-click, a click on vertex 0 and
-    // Enter all close it, and none of the three is available to a finger on a phone:
-    // there is no keyboard, a 10 px target is not a realistic tap, and a double-tap
-    // under cooperative gestures is the map's own. Revealed while drawing.
+    // The touch way to finish a ring; double-click, vertex 0 and Enter are not
+    // available to a finger. Revealed while drawing.
     waButton('Finish shape', {
       id: 'draw-finish', type: 'button', icon: 'check', variant: 'brand', hidden: true,
     }),
@@ -101,10 +66,7 @@ export function renderPickerCard() {
     id: 'picker-toolbar', className: 'wa-stack wa-gap-xs',
   });
 
-  // Said on the page, not only in the console: the panel offers a map, so when the
-  // library is blocked the reader is told what happened and where the same feeds are.
-  // Directly under the toolbar, because that is where the drawing buttons it just
-  // took away used to be.
+  // Says on the page that the map library was blocked and where the same feeds are.
   const mapNote = el('p', '', {
     id: 'map-note',
     role: 'status',
@@ -112,8 +74,7 @@ export function renderPickerCard() {
     hidden: true,
   });
 
-  // Filled by `render/picker.js` once it knows which examples the catalogue can
-  // serve (`exampleMapsFor`); empty markup here so the card is still one string.
+  // Filled by `render/picker.js` once it knows which examples the catalogue can serve.
   const examples = el('div', '', {
     id: 'example-maps',
     role: 'group',
@@ -122,12 +83,8 @@ export function renderPickerCard() {
     hidden: true,
   });
 
-  // Two opt-in switches, folded into a disclosure since the panel became the whole
-  // of the page's chrome: they are a refinement of a search nobody has run yet, and
-  // sixty words of explanation at first paint bury the thing they qualify. The
-  // sentences stay slotted `hint`s — that is what puts them in each switch's
-  // `aria-describedby` — and `#picker-note`'s "turn on the regional feeds above"
-  // still points the right way, because this sits above the note.
+  // Two opt-in switches in a disclosure. The slotted `hint`s land in each switch's
+  // `aria-describedby`; this sits above `#picker-note`, whose advice points here.
   const switches = el('div', join(
     el('wa-switch', join(
       'Regional and long-distance feeds',
@@ -137,7 +94,7 @@ export function renderPickerCard() {
     ), { id: 'include-regional', size: 's' }),
     el('wa-switch', join(
       'Feeds no longer updated',
-      el('span', 'The operator has stopped publishing. Old, but still a real city.',
+      el('span', 'The operator has stopped publishing, but the city is real.',
         { slot: 'hint', className: 'wa-caption-xs wa-color-text-quiet' }),
     ), { id: 'include-inactive', size: 's' }),
   ), { id: 'picker-switches', className: 'wa-stack wa-gap-2xs' });
@@ -146,14 +103,9 @@ export function renderPickerCard() {
     id: 'picker-filters', summary: 'Include more feeds', appearance: 'plain',
   });
 
-  // `role="group"` and real buttons, deliberately NOT `role="listbox"`: every row
-  // carries an Add control, and an `option` containing a `button` is a shape no
-  // screen reader is required to make sense of. A group of buttons is reachable by
-  // Tab, announced with its own name, and arrow-navigable — see `render/picker.js`.
-  // The count is spoken, the list is not: `role="status"` on a one-line summary says
-  // "7 feeds match, showing 5" without a screen reader reading twenty buttons aloud
-  // every keystroke. `#catalog-search` points at the list with `aria-controls`, so the
-  // relationship is stated rather than implied by document order.
+  // `role="group"` with real buttons, not `role="listbox"`: an `option` containing a
+  // `button` is a shape no screen reader has to make sense of. The one-line summary
+  // is `role="status"`, so the count is spoken without the list being read out.
   const results = join(
     el('p', '', {
       id: 'catalog-summary',
@@ -170,25 +122,19 @@ export function renderPickerCard() {
   );
 
   const picks = el('div', join(
-    // `tabindex="-1"` so focus has somewhere to land when the last pick is removed
-    // and there is no Remove button left to take it (see `refocus` in picker.js).
+    // `tabindex="-1"` so focus has somewhere to land when the last pick is removed.
     el('p', '', {
       id: 'picks-count', className: 'wa-caption-s', ariaLive: 'polite', tabindex: '-1',
     }),
     el('div', '', { id: 'picks-list', className: 'wa-stack wa-gap-2xs' }),
   ), { id: 'picks', className: 'wa-stack wa-gap-2xs' });
 
-  // The game-border frame's controls. Empty and hidden until a feed is picked:
-  // `render/picker.js` fills it with `renderBorderRow` the moment `st.border`
-  // exists and empties it again when the last pick goes. It sits under the picks
-  // list because it is the border OF those picks, and because the rectangle it
-  // edits is on the map behind the panel either way.
+  // The game-border frame's controls; `render/picker.js` fills it with
+  // `renderBorderRow` while a feed is picked.
   const borderRow = el('div', '', { id: 'border-row', hidden: true });
 
-  // `.picker-controls` is not decoration: it is what styles.css §7's drawing rule
-  // reaches through to keep the draw row — and only the draw row — on screen while a
-  // shape is being drawn on a phone. `[data-role=pickerbody] > *` is this one
-  // wrapper, never the toolbar.
+  // `.picker-controls` is what styles.css §7's drawing rule reaches through to keep
+  // only the draw row on screen while a shape is drawn on a phone.
   return el('div', join(toolbar, mapNote, examples, filters, results, picks, borderRow,
     el('div', '', { id: 'picker-note', role: 'status' })),
   { className: 'picker-controls wa-stack wa-gap-m' });
@@ -199,31 +145,18 @@ function deg(x) {
   return String(coord(x));
 }
 
-/** `about 11,400 km²` — the frame's area, spoken roughly because the boxes it is
- *  fitted to are catalogue boxes, "only accurate enough to place a marker". */
+/** `about 11,400 km²`: roughly, because catalogue boxes are only marker-accurate. */
 function aboutArea(areaSqM) {
   return `about ${num(areaSqM / 1000000.0)} km²`;
 }
 
 /**
- * The `#border-caption` sentence, as plain text — the caller writes it with
- * `textContent`, so a drag that moves the frame sixty times a second updates one
- * text node rather than rebuilding the row under the reader's pointer.
+ * The `#border-caption` sentence, as plain text; the caller writes it with
+ * `textContent` so a drag patches one node.
  *
- * The state is the frame's `mode` FIRST, then the flags — never the other way round,
- * because `mode` is the only thing that decides what `readOptions` sends. An untouched
- * (`'auto'`) frame says the border will be INFERRED, because that is what happens to
- * it: null crosses the wire and the worker fits the border to what the start stop can
- * reach, exactly as a run with no frame at all. A frame the reader has moved says so
- * and names the way back.
- *
- * An OpenStreetMap area splits the same way and used to be tested first, which made
- * its sentence win in every mode: taking the area, then pressing "Fit to feeds", left
- * a frame that sends null while the caption still called it "the box around the shape
- * you drew" — the two-extents confusion the auto/custom split exists to prevent. So
- * the OSM sentence is for `'custom'` only, and `osmFrame` narrows it further to a
- * frame that is still literally that box (see `borderView` in render/picker.js): once
- * a handle has moved it, it is the reader's rectangle like any other. (2026-08-27.)
+ * Branch on `mode` FIRST: it alone decides what `readOptions` sends. An `'auto'`
+ * frame says the border will be inferred, because null crosses the wire. The OSM
+ * sentence is for `'custom'` only, and only while the frame is still that box.
  *
  * @param {Object} s
  * @param {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null} s.border
@@ -244,12 +177,11 @@ export function renderBorderCaption(s) {
     return `Game border: the box you set (${aboutArea(s.areaSqM)}). Fit to feeds resets it.`;
   }
   if (s.osmPicked) {
-    // 'auto' with a shape picked: the frame is fitted to the shape's box, but it is
-    // still sent as null, so the border will be inferred from the network the shape
-    // produces — not from the shape's own extent. Saying which is the whole point.
+    // 'auto' with a shape picked is still sent as null: the border is inferred from
+    // the network the shape produces, not from the shape's extent.
     return `Game border: fitted to your shape (${aboutArea(s.areaSqM)}) but left to be `
-      + 'inferred — an untouched border is fitted to what the start stop can reach in the '
-      + 'network the shape produces. Drag a corner or edge to play the box instead.';
+      + 'inferred from what the start stop can reach. Drag a corner or edge to play the '
+      + 'box instead.';
   }
   const feeds = s.count === 1 ? 'the feed' : `the ${num(s.count)} feeds`;
   return `Game border: fitted to ${feeds} you picked (${aboutArea(s.areaSqM)}). Leave it `
@@ -276,20 +208,9 @@ function borderField(edge, label, value) {
 
 /**
  * The `#border-row` markup: caption, the four edge fields, the five buttons.
- *
- * Rebuilt by `render/picker.js` only when its SHAPE changes — the frame appears or
- * goes, the overlap button earns or loses its place, a drawn shape arrives — and
- * otherwise patched in place, because an `innerHTML` rebuild detaches the field the
- * reader is typing in. That is why the caption and the field values are also
- * reachable one at a time (`renderBorderCaption`, and the fields by `data-border-edge`).
- *
- * The four fields ARE the keyboard path. The handles on the map are not focusable —
- * eight tab stops on a canvas the search box already bypasses would be eight stops
- * to nowhere — so the help line says the fields do the same job, and Shift+Arrow in
- * one nudges that edge by 0.01°.
- *
- * Every `<wa-button>` is `type="button"`: this row lives inside `<form
- * id="landing-form">`, and "Shrink 10 %" starting the analysis would be a bad joke.
+ * `render/picker.js` rebuilds it only when its shape changes and otherwise patches
+ * the caption and fields in place. The fields are the keyboard path; the map
+ * handles are not focusable. Every `<wa-button>` is `type="button"` (see above).
  *
  * @param {Object} s
  * @param {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null} s.border
@@ -336,21 +257,16 @@ export function renderBorderRow(s) {
     }),
   ), { className: 'wa-cluster wa-gap-2xs', role: 'group', ariaLabel: 'Game border tools' });
   const help = el('p', 'The gold rectangle on the map is the same box: drag a handle to '
-    + 'resize it, or its outline to move the whole thing. Dragging inside it pans the map. '
-    + 'The fields are the keyboard path — Shift+↑ and Shift+↓ nudge that edge by 0.01°.',
+    + 'resize it, or its outline to move it. Dragging inside it pans the map. '
+    + 'In a field, Shift+↑ and Shift+↓ nudge that edge by 0.01°.',
   { className: 'wa-caption-xs wa-color-text-quiet', style: 'max-inline-size:72ch' });
   return el('div', join(caption, fields, buttons, help), { className: 'wa-stack wa-gap-xs' });
 }
 
 /**
  * The example-map chips: one `<wa-button>` per city, `data-example` naming it.
- *
- * Buttons, not `<wa-tag>`s — a chip that loads four feeds is a control, and a tag is
- * decoration a keyboard cannot reach. `aria-pressed` says whether the selection IS
- * that example right now; `render/picker.js` keeps it current, because a reader who
- * removes the Water Taxi has left Chicago and the chip must stop saying otherwise.
- * `type="button"` for the same reason every button in this card carries it: the card
- * lives inside `<form id="landing-form">`.
+ * Buttons, not `<wa-tag>`s, because a keyboard cannot reach a tag. `aria-pressed`
+ * says whether the selection is that example right now.
  *
  * @param {Array<{key: string, name: string, where: string, rows: Object[]}>} examples
  * @param {{pressedKey?: string|null}} [opts]
@@ -368,8 +284,7 @@ export function renderExampleMaps(examples, opts = {}) {
       appearance: ex.key === pressedKey ? 'filled' : 'outlined',
       ariaPressed: ex.key === pressedKey ? 'true' : 'false',
       dataExample: ex.key,
-      // "Chicago, Illinois — 4 feeds": the tooltip a mouse gets and the name a
-      // screen reader hears, so the chip says what it costs before it is pressed.
+      // "Chicago, Illinois — 4 feeds": the tooltip and the accessible name.
       title: `${ex.name}, ${ex.where} — ${num(ex.rows.length)} ${ex.rows.length === 1 ? 'feed' : 'feeds'}`,
       ariaLabel: `${ex.name}, ${ex.where}: ${num(ex.rows.length)} ${ex.rows.length === 1 ? 'feed' : 'feeds'}`,
     }))), { className: 'wa-cluster wa-gap-2xs', ariaLabelledby: 'example-maps-lede' }),
@@ -397,9 +312,7 @@ function rowWhere(row) {
  * @param {string} textHtml @param {string} controlHtml @param {Object} [opts]
  */
 function pickRow(textHtml, controlHtml, opts = {}) {
-  // The cluster utilities are the row's whole layout — `styles.css` keeps only the
-  // padding and the divider — so a caller's own `className` is appended rather than
-  // allowed to replace them, which a bare `...opts` spread would do.
+  // The cluster utilities are the row's layout, so a caller's `className` is appended.
   const { className = '', ...rest } = opts;
   return el('div', join(el('div', textHtml, { className: 'pick-row-text' }), controlHtml), {
     className: `pick-row wa-cluster wa-gap-s wa-justify-content-space-between ${className}`.trim(),
@@ -408,18 +321,9 @@ function pickRow(textHtml, controlHtml, opts = {}) {
 }
 
 /**
- * The search results list.
- *
- * A row in one of the two opt-in groups is listed anyway, with its badge and an
- * "Add anyway" button (PLAN D15): any single threshold is wrong for somebody, and a
- * reader who typed the operator's name has already said which side of it they are on.
- *
- * A row needing an API key cannot be added at all — the page has no key and will
- * never have one — so it offers the operator's own download link instead.
- *
- * A list silently cut at the caller's limit is a list lying about the catalogue, so
- * when `total` exceeds what is shown the last row says how many more matched and what
- * to do about it.
+ * The search results list. Opt-in rows are listed anyway with an "Add anyway"
+ * button (PLAN D15). A row needing an API key offers the operator's download link
+ * instead. When `total` exceeds what is shown, a last row says how many more matched.
  *
  * @param {Object[]} rows
  * @param {{selectedIds?: Set<string>|string[], full?: boolean, total?: number}} [opts]
@@ -446,11 +350,8 @@ export function renderResults(rows, opts = {}) {
     );
     let control;
     if (row.a) {
-      // The producer's own URL, and only when the snapshot actually carries one:
-      // `tools/mdb-snapshot.mjs` keeps `d` only for http(s), so this can never be a
-      // `javascript:` href, and a row without one says so instead of rendering a
-      // link that goes nowhere. Some of these are plain `http:` — a downgrade the
-      // reader can see in the link, not a silent one.
+      // `tools/mdb-snapshot.mjs` keeps `d` only for http(s), so this is never a
+      // `javascript:` href.
       control = row.d
         ? el('a', join(waIcon('arrow-up-right-from-square'), 'Download it yourself'), {
           className: 'wa-link wa-caption-s',
@@ -476,8 +377,7 @@ export function renderResults(rows, opts = {}) {
 }
 
 /**
- * The spoken one-liner beside the results — `role="status"` in the card markup, so a
- * screen reader hears the count without the list being read out on every keystroke.
+ * The spoken one-liner beside the results (`role="status"` in the card markup).
  *
  * @param {number} shown @param {number} total
  * @returns {string} plain text; the caller writes it with `textContent`
@@ -490,9 +390,8 @@ export function renderResultsSummary(shown, total) {
 }
 
 /**
- * The selected-feeds list. One row per feed that will actually be read, map picks and
- * bring-your-own alike — so there is exactly one place on the page that answers "what
- * is about to run".
+ * The selected-feeds list: one row per feed that will be read, map picks and
+ * bring-your-own alike.
  *
  * @param {Array<{id: string, label: string, where: string, badge: string, icon: string}>} picks
  * @returns {string}
@@ -514,34 +413,18 @@ export function renderPicks(picks) {
       dataRemove: p.id,
       ariaLabel: `Remove ${p.label}`,
     }),
-    // `data-row-id` so `render/picker.js` can put focus back on the row next to the
-    // one just removed instead of dropping it to `<body>`.
+    // `data-row-id` lets `render/picker.js` refocus the row next to the removed one.
     { className: 'pick-row-chosen', dataRowId: p.id },
   )));
 }
 
 /**
- * The picker's status callout, or `''` when there is nothing to say.
+ * The picker's status callout, or `''` when there is nothing to say. Only lines
+ * that refuse (the cap), say something the page cannot say elsewhere (an API-key
+ * feed, a shape the catalogue does not cover), or carry the OpenStreetMap offer.
  *
- * WHAT IS DELIBERATELY NOT IN HERE, and was until 2026-09-01: the advisory nags —
- * "that is a lot of feeds to merge", the cold-download size estimate, "OpenStreetMap
- * is skipped by default", and the mixed-time-zone guess. None of them asked the
- * reader to do anything they could not already see, and the OpenStreetMap one has
- * since stopped being true in any case: the switch it pointed at is gone and every
- * run reads the map files (worker.js S2). The feed count is printed above the note,
- * and the time-zone guess was a longitude heuristic the worker re-decides properly
- * from `agency.txt` anyway. What survives either REFUSES (the hard cap), gives the
- * reader something they cannot get anywhere else on the page (a feed that needs an
- * API key, a shape the catalogue does not cover), or carries the OpenStreetMap offer.
- *
- * THE ONE INTERACTIVE CONTROL IN HERE is the OpenStreetMap offer, and it is here
- * rather than in the toolbar because the offer only makes sense attached to the
- * sentence that provoked it: a shape was drawn, the catalogue had nothing inside it,
- * and this is the moment the reader learns the run is off unless something else
- * supplies the network. The host is `role="status"`, so the button is re-announced
- * whenever the note is rebuilt; it is spelled with a stable id and it DISAPPEARS the
- * instant the area is picked, so it cannot be pressed twice and `render/picker.js`
- * has somewhere deterministic to put focus afterwards.
+ * The offer button is the one control here, attached to the sentence that provoked
+ * it. It disappears the instant the area is picked, so it cannot be pressed twice.
  *
  * @param {Object} s
  * @param {boolean} s.capped @param {string[]} s.blocked @param {boolean} s.ringEmpty
@@ -555,28 +438,24 @@ export function renderPickerNote(s) {
     lines.push(`That is ${num(PICK_CAP)} feeds, which is as many as one run merges. `
       + 'Remove one before adding another.');
   }
-  // Not while the area is a source: "try a bigger one" is advice about a shape
-  // that has since become the run's input, and the two sentences in one status
-  // region would tell the reader to redraw the thing that is about to be built.
+  // Not while the area is a source: "try a bigger one" would be advice to redraw
+  // the thing about to be built.
   if (s.ringEmpty && !s.osmPicked) {
     lines.push('Nothing in the catalogue overlaps that shape. Try a bigger one, or turn '
       + 'on the regional feeds above.');
   }
   if (s.osmOffer) {
-    // Written to stand on its own. The sentence above it is reset by the next search
-    // while this offer is not, so the two are not guaranteed to appear together.
-    lines.push('OpenStreetMap maps the rail, metro and tram lines inside your shape, in '
-      + 'plenty of places where no timetable is published. The area can be built from '
-      + 'those instead: where the lines run is measured, how often they run is assumed, '
-      + 'and the report says which is which on every number.');
+    // Stands on its own: the sentence above is reset by the next search, this is not.
+    lines.push('OpenStreetMap maps the rail, metro and tram lines inside your shape, '
+      + 'even where no timetable is published. The area can be built from those instead: '
+      + 'where the lines run is measured, how often they run is assumed, and the report '
+      + 'says which is which on every number.');
   }
   if (s.osmPicked) {
-    // The border itself is described by `#border-caption`, which tracks the frame
-    // live; this sentence only says where the frame came from, so the two status
-    // regions never disagree about which box governs the run.
-    lines.push('This area will be built from OpenStreetMap’s own rail, metro and tram '
+    // `#border-caption` describes the frame live; this only says where it came from.
+    lines.push('This area will be built from OpenStreetMap’s rail, metro and tram '
       + 'lines. Where they run is measured; how often they run is assumed, so every score '
-      + 'resting on the timetable is dropped rather than guessed at. The game border '
+      + 'resting on the timetable is dropped rather than guessed. The game border '
       + 'starts as the box around your shape.');
   }
   for (const label of s.blocked || []) {
@@ -584,9 +463,6 @@ export function renderPickerNote(s) {
       + 'yourself and drop it in below.');
   }
   if (!lines.length) return '';
-  // `type="button"`, like every other button this file prints: the card lives inside
-  // `<form id="landing-form">` and a submitting button here would start the analysis
-  // from the note.
   const offer = s.osmOffer
     ? waButton('Build this area from OpenStreetMap', {
       id: 'osm-build',

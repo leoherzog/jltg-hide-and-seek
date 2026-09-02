@@ -1,30 +1,16 @@
-// render/verdict.js — the hero and §01–§03 (generate.py S4).
+// render/verdict.js — the hero and §01–§03 (generate.py S4: `index_hero`,
+// `index_verdict`, `index_score_trace`, `index_your_game` and their `_s4_*` helpers).
 //
-// Ported from:
-//   index_hero         + _s4_band_bounds, _s4_band_ladder, _s4_points_budget,
-//                        _s4_subscore_meters, _s4_day_tiles, _s4_scorecard,
-//                        _s4_axis_word, _s4_axis_card, band_variant
-//   index_verdict      + _s4_verdict_title                  → §01 `#verdict`
-//   index_score_trace  + _s4_source_tag, _s4_trace_table    → §02 `#trace`
-//   index_your_game    + _s4_findings_half,
-//                        _s4_house_rules_half               → §03 `#yourgame`
+// Also owns the shared S4 formatting helpers, the per-day view helpers and the
+// deterministic primitives (`sortedBy` over `cmpKey`, `fnum`); `render/map.js` and
+// `render/deck.js` import them from here rather than duplicating them.
 //
-// This file also owns the shared S4 formatting helpers, the per-day view helpers and
-// the tiny deterministic primitives (`sortedBy` over `cmpKey`, `fnum`).
-// `render/map.js` and `render/deck.js` import them from here rather than duplicating
-// them — `cmpKey`'s nested-array branch is the reason a second copy is a divergence
-// waiting to happen.
+// PROGRESSIVE HYDRATION. The browser's `Report` grows as worker stages land; every
+// function degrades on a partial one and returns '' when it has nothing to show, so
+// app.js can drop the section and its nav entry.
 //
-// PROGRESSIVE HYDRATION. The CLI has one `Report`; the browser has a partial one that
-// grows as the worker's stages land. Every function here takes that partial report and
-// degrades: a piece it has not been given yet is simply not printed, and a section with
-// nothing to show returns '' so app.js can drop it and its nav entry. That is the only
-// structural difference from the Python — the sentences, the thresholds and the
-// wording are the CLI's, verbatim.
-//
-// FORMATTING DISCIPLINE. Every number on this page goes through exactly one formatter
-// from `../lib/core.js`. There is no `toFixed` and no arithmetic inside a template
-// literal anywhere below.
+// FORMATTING. Every number goes through one formatter from `../lib/core.js`: no
+// `toFixed`, no arithmetic inside a template literal.
 
 import {
   IMPERIAL_COUNTRIES, cmpStr, num, pct, mins, miles, km, sqmi, rhu, prettyDate,
@@ -37,8 +23,7 @@ import {
 
 // ── rulebook presentation constants (read, never recomputed) ─────────────────
 
-// Verdict bands, high to low (scoring.md §1.9). `generate.py` — S4 reads it
-// for the ladder and the advice sentence, exactly as `band_variant` does.
+// Verdict bands, high to low (scoring.md §1.9), read for the ladder and the advice.
 const S3_BANDS = Object.freeze([
   Object.freeze([80.0, 'Excellent map', 'Play it as written; no house rules required.']),
   Object.freeze([65.0, 'Strong map', 'A few house rules and it plays well.']),
@@ -47,9 +32,8 @@ const S3_BANDS = Object.freeze([
   Object.freeze([0.0, 'Not recommended as a transit game', "Consider the rulebook's cars or on-foot variant."]),
 ]);
 
-// scoring.md §1.9 verdict bands → the italic half-sentence in the h1. Keyed on the
-// band string S3 produced; an unknown band falls back to the band itself, so a new
-// band can never render as an empty headline.
+// Verdict band → the italic half-sentence under the h1. An unknown band falls back
+// to the band itself, so a new band never renders an empty headline.
 const S4_BAND_PHRASE = Object.freeze({
   'Excellent map': 'Yes — comfortably.',
   'Strong map': 'Yes, with a few house rules.',
@@ -58,38 +42,33 @@ const S4_BAND_PHRASE = Object.freeze({
   'Not recommended as a transit game': 'Not on transit, no.',
 });
 
-// Finding severity → (word, icon). The *variant* comes from the quadrant, not from
-// here: a "high" plus is a strong point, and painting it red was a bug. The icons are
-// magnitude, not alarm, for the same reason: `circle-exclamation` means "a risk to the
-// round" everywhere else on both pages, and ten of them on the strengths grid said the
-// opposite of what the grid says. Up / dot / down are used nowhere else.
+// Finding severity → (word, icon). The variant comes from the quadrant, not from
+// here: a "high" plus is a strong point, not an alarm. The icons are magnitude, not
+// alarm, for the same reason.
 const S4_SEVERITY = Object.freeze({
   high: Object.freeze(['major', 'circle-up']),
   medium: Object.freeze(['moderate', 'circle-dot']),
   low: Object.freeze(['minor', 'circle-down']),
 });
 
-// `Metric.source` → (wa-tag variant, the word the page prints, icon, the precise term).
-// An interpretation is never presented as a rule; contract.md §5.4 requires it to be
-// visually distinct and labelled, and the precise term survives in the tag's `title`
-// and in the row's `data-basis`.
+// `Metric.source` → (wa-tag variant, printed word, icon, precise term). An
+// interpretation is never presented as a rule (contract.md §5.4); the precise term
+// survives in the tag's `title` and the row's `data-basis`.
 const S4_SOURCE_TAG = Object.freeze({
   rulebook: Object.freeze(['brand', 'From the rules', 'book', 'rulebook']),
   feed: Object.freeze(['neutral', 'Measured', 'wave-square', 'feed']),
   interp: Object.freeze(['warning', 'Our call', 'scale-balanced', 'interpretation']),
 });
 
-// The findings quadrants, in the drafts' order, with their swatch colour, the
-// WebAwesome colour utility that tints the card's leading edge, and the icon that
-// makes the tone legible without the colour.
+// The findings quadrants: swatch colour, the WebAwesome colour utility that tints the
+// card's edge, and the icon that carries the tone without the colour.
 const S4_QUADRANTS = Object.freeze([
   Object.freeze(['plus', 'What the map does well', 'var(--good)', 'wa-success', 'circle-check']),
   Object.freeze(['minus', 'What works against it', 'var(--crit)', 'wa-danger', 'circle-xmark']),
   Object.freeze(['concern', 'Risks needing a house rule', 'var(--warn)', 'wa-warning', 'triangle-exclamation']),
 ]);
 
-// The four size axes in plain words. The generator's own technical name for each stays
-// on the page as the quiet caption beneath, so nothing is renamed away.
+// The four size axes in plain words; the technical name stays as the caption beneath.
 const S4_AXIS_PLAIN = Object.freeze({
   A: 'The area the buses actually cover',
   B: 'How many distinct places there are to hide',
@@ -97,20 +76,10 @@ const S4_AXIS_PLAIN = Object.freeze({
   D: 'How far it is corner to corner',
 });
 
-// Where each axis's band came from, as a `Metric.source` value so the axis table can
-// reuse `s4SourceTag` and read the same as every other provenance chip on the page.
-//
-// "Choosing a Transit System" gives the size table in full and gives nothing else:
-// SMALL 30–100 stations / 10–100 sq. mi, MEDIUM 100–500 / 100–1,000, LARGE 500+ /
-// 1,000+. So:
-//   A · convex-hull area [100, 1000] sq mi — verbatim the rulebook's second column.
-//   B · hiding zones [100, 500] — a reading, not a quotation: the rulebook counts
-//       *stations*, and only because it says each hiding zone is centred on one (and
-//       calls the whole table "our best estimate") does the station band transfer.
-//   C · T90 traversal time and D · straight-line diameter — no rulebook counterpart at
-//       all; the rulebook never mentions traversal or diameter. These bands are the
-//       generator's, and saying otherwise turned two invented thresholds into rules.
-// The numbers themselves live in gtfs/infer.js and are not restated here.
+// Where each axis's band came from, as a `Metric.source` value for `s4SourceTag`.
+// Only A (convex-hull area, 100–1,000 sq mi) is the rulebook's own column. B (hiding
+// zones) is a reading of the rulebook's station counts; C (T90) and D (diameter) have
+// no rulebook counterpart at all. The numbers live in gtfs/infer.js.
 const S4_AXIS_BASIS = Object.freeze({
   A: 'rulebook',
   B: 'interp',
@@ -118,18 +87,13 @@ const S4_AXIS_BASIS = Object.freeze({
   D: 'interp',
 });
 
-// The placeholder every index section passes as its ordinal. app.js replaces it with
-// the section's real number **after** the empty ones are dropped, so a feed with no
-// curses yields §01…§08 with no gap in the sequence. `section()` is the only thing
-// that emits `data-n`, so the substitution can only ever hit the right attribute.
+// The placeholder every section passes as its ordinal. app.js replaces it with the
+// real number after empty sections are dropped, so the sequence has no gaps.
 export const S4_ORDINAL = '--';
 
 // ── tiny deterministic primitives ────────────────────────────────────────────
 
-/**
- * Compare two Python-style sort keys: arrays whose elements are numbers or strings,
- * compared element by element, a shorter prefix sorting first.
- */
+/** Compare two Python-style sort keys element by element; a shorter prefix sorts first. */
 function cmpKey(a, b) {
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i += 1) {
@@ -223,12 +187,8 @@ export function s4Area(report, sqMetres, dp = 1) {
 }
 
 /**
- * A bare number at the shortest precision that does not lose it.
- *
- * Ramp bounds and raw metric values span 0.003 to 84,466 on one page, so a fixed
- * number of decimals is wrong somewhere: `319.0 zones` and `0.4 share` are both
- * misreadings waiting to happen. This walks 0→3 decimals and stops at the first
- * that round-trips, which prints 319, 160.2, 18.99 and 0.003 from one rule.
+ * A bare number at the shortest precision (0–3 decimals) that round-trips: 319,
+ * 160.2, 18.99 and 0.003 from one rule.
  *
  * @param {number} x @returns {string}
  */
@@ -240,12 +200,8 @@ export function s4Val(x) {
 }
 
 /**
- * Sort '3 Miles' before '10 Miles' before '100 Miles'.
- *
- * Half the rulebook's question labels are numeric ('¼ Mile', '25 Miles', '2nd
- * Administrative Division'), and a plain lexical sort renders those lists in an
- * order that reads as a bug. Still fully deterministic: digits compare as integers,
- * everything else casefolded, and the raw string breaks any remaining tie.
+ * Sort '3 Miles' before '10 Miles' before '100 Miles'. Deterministic: digits compare
+ * as integers, everything else casefolded, and the raw string breaks ties.
  *
  * @param {string} text @returns {Array<[number, number|string]>}
  */
@@ -286,10 +242,8 @@ export function s4MetricValue(m) {
 }
 
 /**
- * The threshold column of the score trace, in words.
- *
- * Every metric carries the shaping function that turned its raw value into points;
- * printing it is what makes "17 of 25" checkable rather than assertable.
+ * The threshold column of the score trace, in words: the shaping function that
+ * turned a raw value into points, which is what makes "17 of 25" checkable.
  *
  * @param {{kind?: string, args?: number[]}|null} spec @returns {string}
  */
@@ -340,13 +294,9 @@ export function s4JoinWords(items, conjunction = 'and') {
 // ── per-day views (generate.py) ──────────────────────────────────
 
 /**
- * The metric table as it reads on one service day.
- *
- * `networkMetrics` publishes the best day at the top level and every day under
- * `perDay[key]`; the size-dependent quantities exist only in their `…BySize` form
- * inside `perDay`, because S1 computes them before the size is resolved. This merges
- * the two into the flat view the tiles and the banner read, and resolves the size
- * once, here, so no caller can pick the wrong band.
+ * The metric table as it reads on one service day: the top level merged with
+ * `perDay[key]`, with the `…BySize` quantities resolved for the run's size once,
+ * here, so no caller can pick the wrong band.
  *
  * @param {Object} report @param {string} dayKey @returns {Object}
  */
@@ -396,11 +346,9 @@ export function s4WorstDay(report) {
 }
 
 /**
- * Questions that actually function: functional plus weak. `degenerate`, `dead` and
- * `unknown` are not counted; `unaskable` is not counted either, but nothing emits it
- * any more — `rules/audit.js` `auditQuestions` now scores Transit Line like every
- * other matching question, because a curse that has to be drawn and paid for is not a
- * property of the map. The status stays in the union, so the test stays.
+ * Questions that function: functional plus weak. `degenerate`, `dead`, `unknown` and
+ * `unaskable` are not counted (`unaskable` stays in the status union though nothing
+ * emits it).
  */
 export function s4LiveQuestions(report) {
   let n = 0;
@@ -422,19 +370,16 @@ export function s4MetricLookup(report) {
 // ── shared small markup helpers ──────────────────────────────────────────────
 
 /**
- * A `.sw` colour swatch. (generate.py `_s4_swatch`.)
- *
- * Shape overrides go in `style`, not a utility class: `.sw` is unlayered, so it beats
- * anything in `@layer wa-utilities` — `class="wa-border-radius-circle"` would lose to
- * `.sw`'s own 3px. The dot swatches reference the token inline instead.
+ * A `.sw` colour swatch. (generate.py `_s4_swatch`.) Shape overrides go in `style`,
+ * not a utility class: `.sw` is unlayered and beats anything in `@layer wa-utilities`.
  */
 export function s4Swatch(style) {
   return el('span', '', { className: 'sw', style });
 }
 
 /**
- * The drafts' card header: a heading and the caption that explains the encoding —
- * including, always, what the empty state means. (generate.py `_s4_card_header`.)
+ * A card header: heading plus the caption that explains the encoding, including what
+ * the empty state means. (generate.py `_s4_card_header`.)
  */
 export function s4CardHeader(title, caption) {
   return el('div', join(
@@ -444,10 +389,8 @@ export function s4CardHeader(title, caption) {
 }
 
 /**
- * The WebAwesome colour variant for a verdict band, read off `S3_BANDS`.
- *
- * Reading a module-level rulebook constant is not computing: the cut points are the
- * rulebook's, and both renderers need the same green/amber/red for the same word.
+ * The WebAwesome colour variant for a verdict band, read off `S3_BANDS`, so both
+ * renderers give the same word the same colour.
  *
  * @param {string} band @returns {string}
  */
@@ -464,9 +407,8 @@ export function bandVariant(band) {
 
 // ── the feed / place accessors the partial report needs ──────────────────────
 //
-// Stage 1 posts the feed's fields flat (`{agencyName, feedStart, …}`); the final
-// `done` report nests them under `feed`. Both are read the same way here so the hero
-// renders identically whichever one app.js has merged in.
+// Stage 1 posts the feed's fields flat; the final `done` report nests them under
+// `feed`. Both are read the same way so the hero renders identically either way.
 
 function feedOf(report) {
   return (report && report.feed) || report || {};
@@ -489,13 +431,8 @@ function provOf(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * `[cut point, the next band's cut point, the advice sentence]` for one band.
- *
- * `S3_BANDS` is a module-level rulebook presentation constant carrying
- * `(cut, name, advice)`; `scoreFitness` uses the first two elements and discards the
- * third. Reading it here is not computing, and it is what finally gives the headline
- * number a scale, plus a "so what" sentence that until now was written and thrown
- * away.
+ * `[cut point, the next band's cut point, the advice sentence]` for one band, read
+ * off `S3_BANDS`: what gives the headline number a scale and a "so what".
  *
  * @param {string} band @returns {[number, number, string]}
  */
@@ -509,10 +446,8 @@ export function s4BandBounds(band) {
 }
 
 /**
- * The five verdict bands as a rising ladder of tags, the map's own one filled.
- *
- * The cut-point is in the tag's *text*, not only its `title`: a hover is not an
- * affordance on a phone, and the ladder exists precisely to give the dial a scale.
+ * The five verdict bands as a rising ladder of tags, the map's own one filled. The
+ * cut-point is in the tag's text, not only its `title`: a hover is no affordance on a phone.
  */
 function s4BandLadder(report) {
   const current = report.fitness.band;
@@ -533,13 +468,9 @@ function s4BandLadder(report) {
 }
 
 /**
- * The score as a 100-unit segmented bar — the README's ASCII breakdown, rendered.
- *
- * The six sub-scores are identity, not magnitude, so every segment is one hue and
- * carries its own letter: painting A–F in six colours would imply F is worse than A,
- * which is false. This is why no `variants` is passed — one hue, and the segments are
- * told apart by the 1px seam and the drawn letter, which `budgetSeg` in app.js paints
- * onto the canvas.
+ * The score as a 100-unit segmented bar. The six sub-scores are identity, not
+ * magnitude, so no `variants` is passed: one hue, and the segments are told apart by
+ * the seam and the letter `budgetSeg` in app.js paints.
  *
  * @param {Object} report @param {Object} [opts] @returns {string}
  */
@@ -586,12 +517,8 @@ function s4SubscoreMeters(report) {
 }
 
 /**
- * The three service days and what each one is worth, as clickable tiles.
- *
- * These numbers exist otherwise only inside a `title=` attribute on the day radios,
- * and they are the most interesting finding on the page: the same map is a different
- * game on a Sunday. Clicking a tile goes through `setDay()`, so the tiles, the
- * selector and `localStorage` can never disagree.
+ * The service days and what each one is worth, as clickable tiles. Clicking one goes
+ * through `setDay()`, so the tiles, the selector and `localStorage` never disagree.
  */
 function s4DayTiles(report) {
   const per = (report.fitness && report.fitness.perDay) || {};
@@ -623,12 +550,9 @@ function s4DayTiles(report) {
 }
 
 /**
- * The hero's answer panel: grade, scale, budget, rubric, and what to do next.
- *
- * Tier 1 is the dial and the band word — exactly one grade on the page. Tier 2 is
- * the ladder, the budget bar, the six meters and the day tiles, and none of it is
- * ever collapsed: it is what makes the grade checkable. Tier 3, the metric rows
- * behind every one of those numbers, is one click away in §02.
+ * The hero's answer panel. Tier 1 is the dial and the band word, the page's one
+ * grade. Tier 2 (ladder, budget bar, meters, day tiles) is never collapsed: it is
+ * what makes the grade checkable. Tier 3, the metric rows, is one click away in §02.
  */
 function s4Scorecard(report) {
   const f = report.fitness;
@@ -680,15 +604,13 @@ function s4Scorecard(report) {
 
   let budget = '';
   if (f.score !== null && f.score !== undefined) {
-    // Not `subhead()`: this label sits inside the hero <header>, before the page's
-    // first <h2>, and an <h3> there is a heading-order skip (h1 → h3 → h2).
+    // Not `subhead()`: an <h3> before the page's first <h2> is a heading-order skip.
     budget = el('div', join(
       el('p', esc('Where the 100 points went'), {
         className: 'wa-heading-s wa-color-text-quiet wa-text-uppercase',
       }),
-      // `id` rides through budgetBar's `...rest` into waChart and out of el(). It is
-      // the page's ONE 100-point bar as of 2026-08-23: §08's trace used to draw a
-      // second copy of the identical chart and now links up here instead.
+      // `id` rides through budgetBar's `...rest`. This is the page's ONE 100-point
+      // bar; the score trace links up to it.
       s4PointsBudget(report, { id: 'points-budget' }),
       el('p', esc('Each block is one sub-score; the grey tail is what the map did not '
         + 'earn. Hover a block for its name and its points.'), {
@@ -715,15 +637,10 @@ function s4Scorecard(report) {
 }
 
 /**
- * §00 — the page's answer, above everything else: kicker, the question as an `h1`,
- * the band phrase as its own deck line, the headline sentence, three orienting chips,
- * and the scorecard.
- *
- * Exactly one display figure and one band word exist on this page, and they are both
- * in here. When too little of the map could be measured the dial and the points
- * budget are replaced by a callout saying so; the six sub-score meters and the day
- * tiles are the scorecard's body in both branches, so the fallback is the same layout
- * rather than a different one.
+ * §00 — the page's answer: kicker, the question as an `h1`, the band phrase, the
+ * headline sentence, three orienting chips, and the scorecard. The page's one display
+ * figure and one band word are both here. When too little could be measured the dial
+ * and budget become a callout; the meters and day tiles stay, so the layout is the same.
  *
  * @param {Object} payload the accumulated (possibly partial) report
  * @returns {string}
@@ -748,15 +665,12 @@ export function renderHero(payload) {
   const kicker = [
     'Feasibility report',
     window,
-    // `place` falls back to the agency name when the admin layer produced no place
-    // name (an unreadable map layer), so guard against "CTA, CTA".
+    // `place` falls back to the agency name, so guard against "CTA, CTA".
     (place && place !== agency) ? `${agency}, ${place}` : agency,
   ].filter((x) => x).join(' · ');
 
-  // The headline sentence needs the zone cover; until that lands it is not printed.
-  // The questions clause needs the audit as well — `report.questions` is pre-seeded
-  // as `[]` before the `rules` stage, so it is gated on length, not presence, or the
-  // hero reads "0 of the 0 questions" for the whole network→rules wait.
+  // The headline needs the zone cover. The questions clause is gated on length, not
+  // presence: `report.questions` is pre-seeded as `[]` before the `rules` stage.
   let headlineHtml = '';
   if (size && report.zones && report.zones.length) {
     const c2 = metrics.C2;
@@ -808,16 +722,12 @@ export function renderHero(payload) {
 
   const card = s4Scorecard(report);
 
-  // `wa-align-items-start`, not `-center`: the scorecard is roughly twice the height
-  // of the text beside it, so centring buries the headline under ~275px of dead space
-  // once the two columns fit side by side (~1176px viewport and up). Below that the
-  // columns wrap, each flex line holds one item, and the two alignments are identical.
+  // `wa-align-items-start`, not `-center`: the scorecard is twice the height of the
+  // text beside it, and centring would bury the headline in dead space.
   //
-  // `min-inline-size:0` on the card's flex item is load-bearing. The points budget
-  // inside it is a <wa-chart>, and Chart.js writes its rendered width back onto the
-  // canvas as an inline pixel style; a flex item's default `min-width:auto` then can
-  // never go below that, so the chart's ResizeObserver never fires on the way down
-  // and the card stays at the widest width it was ever laid out at.
+  // `min-inline-size:0` on the card's flex item is load-bearing: Chart.js writes the
+  // budget canvas's rendered width back as an inline style, and the flex default
+  // `min-width:auto` would then never let the card shrink again.
   return el('header', el('div', join(
     left,
     card ? el('div', card, { style: 'flex:1 1 26rem;min-inline-size:0' }) : '',
@@ -837,12 +747,8 @@ export function s4AxisWord(score) {
 }
 
 /**
- * "Why this is a Medium map" — the four size axes as a table, above the prose.
- *
- * This used to be a 60-word clause inside paragraph one. Same four facts per axis —
- * name, value, verdict word and both thresholds — laid out so they can be compared
- * rather than parsed, plus a fifth the table used to assert wrongly in its subtitle:
- * where the band came from.
+ * "Why this is a Medium map" — the four size axes as a table: name, value, verdict
+ * word, both thresholds, and where the band came from.
  */
 function s4AxisCard(report) {
   const si = report.sizeInference || null;
@@ -865,21 +771,15 @@ function s4AxisCard(report) {
         }),
       el('span', esc(`${shown} ${unit}`.trim()), { className: 'wa-text-nowrap' }),
       chip(word, 'equals', { title: `${a.name} votes ${word}` }),
-      // The band and, beneath it, whose band it is. Only axis A's is quoted from the
-      // rulebook (`S4_AXIS_BASIS`); the reader has to be able to tell which cut points
-      // they can look up and which are this generator's, because the verdict is the
-      // median of all four votes, so an arguable band still moves it.
+      // The band and, beneath it, whose band it is (`S4_AXIS_BASIS`): an arguable
+      // band still moves the median vote, so the reader must be able to tell.
       el('span', esc(bands), {
         className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block',
       }) + s4SourceTag(S4_AXIS_BASIS[String(a.id)] || 'interp'),
     ]);
   }
   return waCard(
-    // Scrollable, like every other table on the page. This was the one bare `<table>`
-    // in the document, and four columns — one of them a prose label, one a pair of
-    // band thresholds — do not fit 360px, so at that width it was the page body that
-    // scrolled sideways rather than the table. `waScroller` is `overflow-x: auto`: at
-    // any width where the table already fits it changes nothing at all.
+    // Scrollable, like every other table: four columns do not fit 360px.
     dataTable(['What was measured', 'This map', 'Verdict', 'Bands'], rows),
     {
       headerHtml: s4CardHeader(
@@ -903,13 +803,10 @@ export function s4VerdictTitle(report) {
 }
 
 /**
- * §01 — three to five dropcap paragraphs, entirely template-filled.
- *
- * One paragraph for the size inference naming all four axes and flagging any
- * disagreement, one for the strongest sub-score with its two best metrics, one for
- * the weakest with its two worst and their mitigations, one for any cap that fired,
- * one for the day recommendation. **No free prose** — every sentence is a slot with
- * typed values, so no sentence can drift from the numbers.
+ * §01 — three to five dropcap paragraphs, entirely template-filled: the size
+ * inference, the strongest sub-score, the weakest with its mitigations, any cap that
+ * fired, and the day recommendation. No free prose: every sentence is a slot with
+ * typed values, so none can drift from the numbers.
  *
  * @param {Object} payload @returns {string}
  */
@@ -918,8 +815,7 @@ export function renderVerdict(payload) {
   const f = report.fitness;
   const size = report.size;
   if (!f || !size) return '';
-  // `size` and `sizeInference` come out of one `inferGameSize` call and are posted in
-  // the same `'network'` payload, so a report with a `size` always has both.
+  // `size` and `sizeInference` are posted in the same `'network'` payload.
   const si = report.sizeInference;
 
   /** @type {Object<string, Object>} */
@@ -928,34 +824,28 @@ export function renderVerdict(payload) {
     if (x.mitigation) mit[String(x.metricId)] = x;
   }
 
-  // Paragraphs are markup, not text: two of them link a sub-score name into its own
-  // score-trace item, so each entry is escaped as it is built.
+  // Paragraphs are markup, not text: two link a sub-score name into its trace item.
   const paras = [];
 
-  // 1 · the size inference. The four axes themselves are in the table above; this
-  // paragraph keeps the unanimity clause, the clamp caveat and what the size means.
+  // 1 · the size inference: the unanimity clause and the clamp caveat (the axes
+  // themselves are in the table above).
   let lead;
   if (size.inferred) {
     lead = `This map is a ${cap(si.verdict)} map. `
       + 'Four independent axes vote on that, and they are in the table above.';
     lead += ` ${si.note}`;
     if (!si.unanimous) {
-      lead += ' Where the axes disagree the vote resolves down, to the smaller and quieter '
-        + 'game — a map that looks large by area and small by zone count will feel empty '
-        + 'in play.';
+      lead += ' Where the axes disagree the vote resolves down, to the smaller game: a map '
+        + 'that looks large by area and small by zone count will feel empty in play.';
     }
     if (si.clamped) {
-      lead += ' The vote was kept within one band of the area axis, which is the axis '
-        + 'the rulebook itself describes maps by.';
+      lead += ' The vote was kept within one band of the area axis, the axis the rulebook '
+        + 'itself describes maps by.';
     }
   } else {
     lead = `The game size was fixed at ${String(size.name).toUpperCase()} rather than inferred, so the four `
       + 'inference axes in the table above are reported but not used.';
   }
-  // What a Medium map *means* — hiding period, zone radius, catalogue size, photo
-  // limit — used to close this paragraph. The hero chip prints the first three above
-  // the fold and the At a Glance tiles print the rest, so it was the third telling.
-  // Cut 2026-08-23; this section keeps only what is new here.
   paras.push(esc(lead));
 
   // 2 · the strongest sub-score
@@ -973,10 +863,7 @@ export function renderVerdict(payload) {
     paras.push(join(
       esc("The map's strongest suit is "),
       el('a', esc(String(best.name).toLowerCase()), { href: `#trace-${best.id}`, className: 'wa-link' }),
-      // The sentence stops at the metric detail. It used to restate the score and the
-      // band — which the hero's dial, its band ladder and its chip all print — with an
-      // else branch repeating the "not enough could be measured" callout `s4Scorecard`
-      // already renders. Both cut 2026-08-23.
+      // Stops at the metric detail; the hero already prints the score and band.
       esc(`, which earns ${s4Points(best.earnedTenths, best.maxTenths)} points`
         + `${detail ? `: ${detail}.` : '.'}`),
     ));
@@ -1011,8 +898,8 @@ export function renderVerdict(payload) {
       `One structural cap fired. The metrics add up to ${num(f.rawScore, 1)}, but `
       + `${f.cappedBy} holds the published score at `
       + `${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'} `
-      + '— a cap can only ever lower a score, never raise one, and the score trace shows both '
-      + 'numbers. Treat it as the map telling you which conversation to have before you play.',
+      + '— a cap can only lower a score, and the score trace shows both numbers. '
+      + 'Treat it as the map telling you which conversation to have before you play.',
     ));
   } else if (f.availablePoints < 100) {
     const names = new Set();
@@ -1036,8 +923,8 @@ export function renderVerdict(payload) {
         + `${num(borderline.length)} ${s4Plural(borderline.length, 'question')} about `
         + `${names}${subjects.length > 3 ? ' and others' : ''} would change verdict under a `
         + 'modestly larger map. Out-of-border features do not exist for this game, so agree '
-        + 'the rectangle before anyone draws a card, and expect at least one player to hold '
-        + 'up a phone showing one of those features just outside the line.',
+        + 'the rectangle before anyone draws a card, and expect someone to hold up a phone '
+        + 'showing one of those features just outside the line.',
       ));
     }
   }
@@ -1047,9 +934,8 @@ export function renderVerdict(payload) {
   const worstDay = s4WorstDay(report);
   const per = f.perDay || {};
   if (worstDay && bestDay in per && worstDay in per) {
-    // "Play on a Weekday" is house rule 1 and the hero's day tiles say it a second
-    // time; the SWING is the fact only this paragraph carries, so that is all it says
-    // now (imperative cut 2026-08-23).
+    // The SWING is the fact only this paragraph carries; house rule 1 and the day
+    // tiles already say which day to play.
     paras.push(esc(
       `The same map rates ${num(per[bestDay], 1)} on a ${s4DayLabel(report, bestDay)} and `
       + `${num(per[worstDay], 1)} on a ${s4DayLabel(report, worstDay)} — a swing of `
@@ -1078,9 +964,8 @@ export function renderVerdict(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Where a threshold came from, in words, with its icon. The precise term —
- * `rulebook`, `feed`, `interpretation` — survives in the chip's `title` and in the
- * row's `data-basis`, which is what the interpretation styling keys on.
+ * Where a threshold came from, in words, with its icon; the precise term survives in
+ * the chip's `title` and the row's `data-basis`, which the interpretation styling keys on.
  *
  * @param {string} source @returns {string}
  */
@@ -1092,12 +977,8 @@ export function s4SourceTag(source) {
 
 /**
  * One sub-score's metrics: value, threshold, points, and where the rule came from.
- *
- * Each row carries `id="prov-<metric id>"`, which is what every provenance chip
- * elsewhere on the page links to. The table is never truncated and never "top N"-ed:
- * a dropped metric is printed with its reason for being dropped, because if a
- * threshold is wrong the reader must be able to see exactly which one and exactly
- * what it cost.
+ * Each row carries `id="prov-<metric id>"`, the target of every provenance chip. The
+ * table is never truncated: a dropped metric is printed with its reason.
  *
  * @param {ReadonlyArray<Object>} metrics @returns {string}
  */
@@ -1131,12 +1012,9 @@ export function s4TraceTable(metrics) {
 
 /**
  * §02 — the explainability anchor: one accordion item per sub-score, each holding a
- * table of `metric · value · threshold · points earned / possible · where the rule
- * came from`. Interpretation rows are visually distinct and labelled in words. Every
- * provenance chip elsewhere on the page links into one of these rows.
- *
- * The bar and the earned/max ride in the accordion item's **label**, so the six
- * collapsed rows read as the whole scorecard while the tables stay one click down.
+ * metric table. Interpretation rows are visually distinct and labelled in words. The
+ * bar and the earned/max ride in the item's label, so the collapsed rows read as the
+ * whole scorecard.
  *
  * @param {Object} payload @returns {string}
  */
@@ -1150,8 +1028,8 @@ export function renderScoreTrace(payload) {
     callouts.push(waCallout(el('p', esc(
       `The metrics below add up to ${num(f.rawScore, 1)}, but ${f.cappedBy} caps the `
       + `published score at ${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'}. A cap can only `
-      + 'lower a score. It fires on a structural fact about the map rather than on a '
-      + 'threshold crossing, and it is the first thing to fix if you want a better game.',
+      + 'lower a score. It fires on a structural fact about the map, not a threshold '
+      + 'crossing, and it is the first thing to fix if you want a better game.',
     ), { className: 'wa-body-s' }), { variant: 'danger', icon: 'circle-exclamation' }));
   }
   if (f.availablePoints < 100) {
@@ -1204,11 +1082,8 @@ export function renderScoreTrace(payload) {
     variant: 'neutral', appearance: 'plain', icon: 'circle-info',
   });
 
-  // A pointer, not a second chart. This block used to render `s4PointsBudget` again —
-  // the identical stacked bar the hero already prints, two screens apart, saying the
-  // same thing twice. Replaced 2026-08-23 with a link to the one on the scorecard;
-  // `openTargeted` resolves the fragment and scrolls, and the hero's six sub-score
-  // meters already link the other way, down into `#trace-{id}`.
+  // A pointer to the hero's bar, not a second chart; the hero's meters link back
+  // down into `#trace-{id}`.
   let budget = '';
   if (f.score !== null && f.score !== undefined) {
     budget = waCallout(el('p', join(
@@ -1223,7 +1098,7 @@ export function renderScoreTrace(payload) {
     });
   }
 
-  const lede = 'Every point on the dial comes from one of these rows. A row names the metric, the '
+  const lede = 'Every point on the dial comes from one of these rows: the metric, the '
     + 'value measured on this feed, the shaping function that turned it into points, and '
     + "whether the threshold is the rulebook's, the feed's own, or our interpretation. "
     + 'Our-call rows carry a gold rule and are never presented as rules.';
@@ -1253,14 +1128,10 @@ export function renderScoreTrace(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §03's second half — the findings quadrants as colour-utility `wa-card`s.
- *
- * Three fixes over the old §08. The card's **heading is the finding's sentence**,
- * with its machine-built title demoted to the caption above it, because ten of these
- * cards used to be titled "<metric name> is a strength here". The severity badge's
- * variant follows the quadrant's tone, so a major *plus* is not painted as an alarm.
- * And a day-sensitive card gets the `[data-today]` outline when the selected day is
- * the one that bites.
+ * §03's second half — the findings quadrants as colour-utility `wa-card`s. The card's
+ * heading is the finding's sentence, with its machine-built title as the caption. The
+ * severity badge's variant follows the quadrant's tone, so a major plus is not an
+ * alarm. A day-sensitive card gets the `[data-today]` outline on the day that bites.
  */
 function s4FindingsHalf(report) {
   const findings = report.findings || [];
@@ -1280,9 +1151,8 @@ function s4FindingsHalf(report) {
           variant, appearance: 'outlined', title: `severity: ${severity}`,
         })
         : '';
-      // A day-sensitive card used to say so in colour only — a red outline the
-      // accessibility tree never sees. Both chips are always in the markup and one
-      // CSS rule swaps them, so the card itself carries the word.
+      // Both day chips are always in the markup and one CSS rule swaps them, so the
+      // card carries the word and not just a red outline.
       const dayKey = typeof item.daySensitive === 'string' ? item.daySensitive : '';
       if (dayKey) {
         const dayLabel = s4DayLabel(report, dayKey);
@@ -1324,8 +1194,8 @@ function s4FindingsHalf(report) {
   }
 
   const lede = 'A card appears when a scored metric crosses a '
-    + 'threshold — under 35% of its possible points becomes a minus (or a concern when there '
-    + 'is a known mitigation), over 85% becomes a plus. A card that only bites on one '
+    + 'threshold: under 35% of its possible points is a minus (or a concern when there '
+    + 'is a known mitigation), over 85% is a plus. A card that only bites on one '
     + 'service day says which day, and says “applies to your day” when that is the day '
     + 'you picked above.';
   return el('div', join(
@@ -1338,12 +1208,9 @@ function s4FindingsHalf(report) {
 }
 
 /**
- * The four border degrees, spelled exactly as the coordinates table under the map
- * spells them — same 6 dp, same `comma: false`, so the two are byte-identical.
- *
- * The page prints the border in ONE place now (the map). This exists only for the
- * COPIED checklist, which is a stand-alone artefact: a group pastes it into a chat,
- * where a sentence pointing at "the map above" points at nothing. (2026-08-23.)
+ * The four border degrees, spelled exactly as the map's coordinates table spells
+ * them. Only for the COPIED checklist, which is pasted into a chat where "the map
+ * above" points at nothing.
  */
 function s4BorderDegrees(report) {
   const bbox = (report.border && report.border.bbox) || null;
@@ -1354,10 +1221,8 @@ function s4BorderDegrees(report) {
 }
 
 /**
- * §03's first half — the fired house rules as an `ol.recs`, in priority order.
- *
- * The whole checklist is also one `wa-copy-button` away as plain text, because the
- * artefact a group actually takes to the game is a list they can paste into a chat.
+ * §03's first half — the fired house rules as an `ol.recs`, in priority order, with
+ * the whole checklist one `wa-copy-button` away as plain text for pasting into a chat.
  */
 function s4HouseRulesHalf(report) {
   const recs = report.recommendations || [];
@@ -1366,16 +1231,14 @@ function s4HouseRulesHalf(report) {
   for (const rec of recs) {
     const tags = [];
     if (rec.required) {
-      // amber, not red: red on this page already means "take it out of the deck"
-      // and "this question is dead", and a third meaning would be a bug.
+      // amber, not red: red on this page already means "out of the deck" / "dead".
       tags.push(chip('everyone must agree', 'circle-exclamation', { variant: 'warning' }));
     }
     if (rec.evidence) {
       tags.push(chip('why?', 'circle-question', { title: String(rec.evidence) }));
     }
-    // The border rule no longer spells the four degrees out — the map is their one
-    // home — so it carries the way there instead. An anchor around the chip, not an
-    // `href` on it: `rec.text` is escaped plain text and `wa-tag` is not a link.
+    // The map is the degrees' one home, so the border rule links there. An anchor
+    // around the chip, not an `href` on it: `wa-tag` is not a link.
     if (rec.id === 'use_borders') {
       tags.push(el('a', chip('go to the map', 'map-location-dot'), {
         className: 'wa-link-plain', href: '#network',
@@ -1388,9 +1251,8 @@ function s4HouseRulesHalf(report) {
     items.push(el('li', card));
   }
   const lede = `${num(recs.length)} house rules fired for this map, in the order they `
-    + 'matter. Each one appears only when its condition is met. The last one always '
-    + 'fires, because the rulebook demands '
-    + 'that conversation and explicitly refuses to automate it.';
+    + 'matter. Each appears only when its condition is met; the last always fires, '
+    + 'because the rulebook demands that conversation and refuses to automate it.';
   const checklist = recs.map(
     (rec, i) => `${num(i + 1)}. ${rec.text || ''}`
       + (rec.id === 'use_borders' ? s4BorderDegrees(report) : '')
@@ -1409,16 +1271,9 @@ function s4HouseRulesHalf(report) {
 }
 
 /**
- * §03 — the two things a group actually acts on: what to agree, and what to expect.
- *
- * Either half may be empty; the section renders if either survives, and when only one
- * does it takes that half's own title. `#recs` and `#findings` stop being sections and
- * become `<h3 id>` destinations inside this one, so every inbound link and every nav
- * entry still resolves.
- *
- * The rules the rulebook is silent on stay labelled as interpretations rather than
- * asserted as rules, each house rule cites its rule in the `why?` chip, and the
- * closing sentiment of the whole report is that the group is the final authority.
+ * §03 — what to agree, and what to expect. Either half may be empty; when only one
+ * survives the section takes that half's title. `#recs` and `#findings` are `<h3 id>`
+ * destinations inside it, so every inbound link and nav entry still resolves.
  *
  * @param {Object} payload @returns {string}
  */

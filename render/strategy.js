@@ -1,48 +1,35 @@
 // render/strategy.js — the secret hider's guide (generate.py S5), static markup.
 //
-// Ported from:
-//   render_strategy         15823  — the hero, the pull quote, the five sections
-//   strategy_pick_card      14505                              → the hero's #1 card
-//   strategy_shortlist      14779  + strategy_zone_map 14655,
-//                                    strategy_zone_list 14752,
-//                                    strategy_dossier_template 14801  → §01 `#s-zones`
-//   strategy_all_candidates 14817                              → §02 `#s-all`
-//   strategy_tactics        14941                              → §03 `#s-tactics`
-//   strategy_axes           14573                              → §04 `#s-axes`
-//   strategy_provenance     15067                              → §05 `#s-method`
-//   the constants and helpers at 13814–13998 (_S5_AXES … _s5_travel_minutes) and the
-//   three payload builders at 14095–14270 (_s5_zone_payload, _s5_poi_payload,
-//   _s5_mode_chips), which become `zoneViews`, `poiCategories` and `modeChips`.
+// Ported from generate.py: `render_strategy` (hero, pull quote, five sections),
+// `strategy_pick_card`, `strategy_shortlist` + `strategy_zone_map` /
+// `strategy_zone_list` / `strategy_dossier_template` (§01 `#s-zones`),
+// `strategy_all_candidates` (§02 `#s-all`), `strategy_tactics` (§03 `#s-tactics`),
+// `strategy_axes` (§04 `#s-axes`), `strategy_provenance` (§05 `#s-method`), the
+// `_S5_*` constants and the payload builders `_s5_zone_payload` / `_s5_poi_payload` /
+// `_s5_mode_chips` (now `zoneViews`, `poiCategories`, `modeChips`).
 //
-// WHAT THIS FILE IS. The CLI emits a second document, `strategy.html`, which nothing
-// links to. The browser port has one document, so the guide is a second *view* of it,
-// reachable only by the URL fragment `#strategy`. Nothing in the report view mentions
-// it. The one link
-// out of here — the hero's `href="#top"` — is only visible to somebody already
-// inside, which is exactly the CLI's cross-page invariant (generate.py).
+// The CLI emits a second document nothing links to; here the guide is a second *view*
+// of one document, reachable only by the fragment `#strategy`. The report never
+// mentions it, and the one link out (the hero's `href="#top"`) is visible only from
+// inside, which keeps the CLI's cross-page invariant.
 //
-// PURE, LIKE EVERY OTHER RENDERER. `Report → string`. No DOM, no `Date.now()`, no
-// `Math.random()`, no listener, no side effect. `render/simulator.js` imports the
-// view model from here and owns every mutation; the dependency is one-way, and it is
-// one-way so that the numbers this file prints and the numbers the simulator prints
-// can only ever come from `zoneViews()` — one implementation, one rounding.
+// PURE: `Report → string`. No DOM, clock, randomness, listeners or side effects.
+// `render/simulator.js` imports the view model from here and owns every mutation, so
+// both files' numbers come from `zoneViews()`: one implementation, one rounding.
 //
-// THE `s-` ID NAMESPACE. Every id below is prefixed `s-`, which the CLI's ids are
-// not. The CLI has two documents and can afford `#top`, `#sources`, `#zmap` and
-// `#axis-IR`; here all of those already belong to the report view, and a collision
-// would send `openTargeted` (app.js 2160) to the wrong element. `#strategy` itself is
-// the one bare id, because it is the fragment.
+// Every id is prefixed `s-` because the report view already owns `#top`, `#sources`,
+// `#zmap` and `#axis-IR`, and a collision would misdirect `openTargeted` (app.js).
+// `#strategy` is the one bare id, because it is the fragment.
 //
-// FORMATTING DISCIPLINE, as everywhere else: every number goes through exactly one
-// formatter from `../lib/core.js`. No `toFixed`, no `Math.round`, no arithmetic inside
-// a template literal.
+// Every number goes through exactly one formatter from `../lib/core.js`: no
+// `toFixed`, no `Math.round`, no arithmetic inside a template literal.
 //
 // @module render/strategy
 
 import { cmpStr, num, pct, mins, rhu, coord, prettyDate } from '../lib/core.js';
 import {
   esc, el, join, waIcon, waCard, waCallout, waButton, waBadge, waDetails,
-  waScroller, waAccordion, chip, meter, searchInput, pullQuote, section, subhead,
+  waAccordion, chip, meter, searchInput, pullQuote, section, subhead,
   dataTable,
 } from './html.js';
 import {
@@ -50,24 +37,17 @@ import {
   s4Dist, s4Val, s4Plural, s4NaturalCmp, s4JoinWords, s4DayLabel, s4BestDay, s4WorstDay,
   s4LiveQuestions, s4MetricLookup, s4Swatch, s4CardHeader, s4SourceTag,
 } from './verdict.js';
-// `render/map.js` is read-only here, exactly like `verdict.js`: the map legends are a
-// shared vocabulary, and a second hand-rolled `div[role="list"]` is the thing
-// `s4Legend`'s own docstring exists to stop.
+// Read-only, like `verdict.js`: the map legends are a shared vocabulary.
 import { s4Legend } from './map.js';
-// The catalogue is pure frozen data and imports nothing but `lib/core.js`, so reading
-// it on the main thread is safe — `render/deck.js:71` already does. It is read here for
-// one field only: a tentacle question's own `param`, its reach in miles. `QuestionAudit`
-// does not carry `param` across the wire (CONTRACT.md §(b)), and inventing a wire field
-// the contract does not have would be the worse of the two fixes.
+// Pure frozen data, safe on the main thread. Read for one field: a tentacle question's
+// `param`, its reach in miles, which `QuestionAudit` does not carry (CONTRACT.md §(b)).
 import { QUESTIONS } from '../rules/catalogue.js';
 
 // ── rulebook presentation constants (read, never recomputed) ─────────────────
 
 /**
  * The six zone axes: `(id, name, what it measures, the rulebook clause behind it)`.
- * (generate.py `_S5_AXES`.) Read only inside this file: the dossier's score block in
- * `simulator.js` reads `AXIS_IDS` (derived from it, just below) and `AXIS_PLAIN`,
- * never this. Exported because CONTRACT.md §(a) names it.
+ * (generate.py `_S5_AXES`.) Exported because CONTRACT.md §(a) names it.
  * @type {ReadonlyArray<readonly [string, string, string, string]>}
  */
 export const AXES = Object.freeze([
@@ -107,10 +87,9 @@ export const AXIS_IDS = Object.freeze(AXES.map((a) => a[0]));
 
 /**
  * Axis id → (the plain name the page leads with, the short word a column header can
- * hold). (generate.py `_S5_AXIS_PLAIN`.) The rulebook's own name for the
- * axis is never dropped — it rides alongside the plain one as a quiet caption in
- * §04's accordion labels, and the letter survives as a `<code>` beside every plain
- * name and in every `data-sort` index.
+ * hold). (generate.py `_S5_AXIS_PLAIN`.) The rulebook's name rides alongside as a
+ * caption in §04, and the letter as a `<code>` beside every plain name and in
+ * parentheses in `TABLE_LABELS`.
  */
 export const AXIS_PLAIN = Object.freeze({
   IR: Object.freeze(['How well you blend in', 'Blends in']),
@@ -122,11 +101,9 @@ export const AXIS_PLAIN = Object.freeze({
 });
 
 /**
- * Zone flag → `[label, wa-tag variant, icon]`. The CLI keeps the label/variant pair
- * (`_S5_FLAG_TEXT`, 13869) and the variant→icon map (`_S5_FLAG_ICON`, 13862) apart
- * and joins them when it ships `__FLAGS__` to the client (15419); the join is done
- * once, here, because both this file and `simulator.js` need the joined form. The
- * icon exists so a flag is never colour alone (html.js `chip`).
+ * Zone flag → `[label, wa-tag variant, icon]`. (generate.py `_S5_FLAG_TEXT` +
+ * `_S5_FLAG_ICON`, joined once here for both this file and `simulator.js`.) The icon
+ * exists so a flag is never colour alone.
  */
 export const FLAG_TEXT = Object.freeze({
   no_service: Object.freeze(['No service', 'danger', 'circle-exclamation']),
@@ -149,7 +126,7 @@ export const MODE_LABEL = Object.freeze([
   Object.freeze(['tentacle', 'Tentacles']),
 ]);
 
-/** Simulator mode → icon. An icon never replaces the mode's word. (13862.) */
+/** Simulator mode → icon. An icon never replaces the mode's word. */
 export const MODE_ICON = Object.freeze({
   explore: 'compass',
   radar: 'magnifying-glass',
@@ -160,10 +137,8 @@ export const MODE_ICON = Object.freeze({
 });
 
 /**
- * Simulator mode → the rulebook question category it simulates. (13888.)
- * Exact names, because `'measuring'.startsWith('measure')` is true but
- * `'measure' === 'measuring'` is not, and the CLI's own comment records that
- * prefix-matching here once silently disabled the whole family.
+ * Simulator mode → the rulebook question category it simulates. Exact names: the
+ * CLI once prefix-matched here and silently disabled the whole measuring family.
  */
 export const MODE_CATEGORY = Object.freeze({
   radar: 'radar',
@@ -174,9 +149,8 @@ export const MODE_CATEGORY = Object.freeze({
 });
 
 /**
- * Radar question id → its radius in MILES. (generate.py `_S5_RADAR_ID_MILES`, 13898.)
- * The ids are not reconstructible in the browser — `radar.quarter_mile` and
- * `radar.3mi` are spelled differently — so the join is a table, not a parse.
+ * Radar question id → its radius in MILES. (generate.py `_S5_RADAR_ID_MILES`.) A
+ * table, not a parse: `radar.quarter_mile` and `radar.3mi` are spelled differently.
  */
 export const RADAR_ID_MILES = Object.freeze({
   'radar.quarter_mile': 0.25,
@@ -191,15 +165,10 @@ export const RADAR_ID_MILES = Object.freeze({
 });
 
 /**
- * Tentacle question id → its OWN reach in MILES, read off the catalogue's `param`.
- *
- * THERE IS NO SUCH THING AS "THE" TENTACLE REACH OF A GAME SIZE. The rulebook lists
- * Museums / Libraries / Movie Theaters / Hospitals **Within 1 Mile**, and then "For
- * LARGE Sized Games, Add the Following: Metro Lines Within 15 Miles / Zoos Within 15
- * Miles / Aquariums Within 15 Miles / Amusement Parks Within 15 Miles" — so a LARGE
- * deck carries both reaches at once. `SizeParams.tentacleReachMi` is the deck's
- * headline figure and cannot answer "how far does THIS question reach"; the engine has
- * never used it for that either (`rules/audit.js:980` reads `question.param`).
+ * Tentacle question id → its OWN reach in MILES, from the catalogue's `param`. There is
+ * no single tentacle reach per game size: a LARGE deck holds the 1-mile questions and
+ * the 15-mile ones at once. `SizeParams.tentacleReachMi` is only the headline figure;
+ * the engine reads `question.param` (`rules/audit.js`).
  * @type {Object<string, number>}
  */
 export const TENTACLE_ID_REACH_MI = Object.freeze(Object.fromEntries(
@@ -217,23 +186,19 @@ export const SPOTS_SHIPPED = 10;
 /** Simulator feature cap per category; the page says so when it bites. (`_S5_MAX_POI_PER_CATEGORY`.) */
 export const MAX_POI_PER_CATEGORY = 500;
 /**
- * The zone score's denominator, everywhere it is printed or filled into a bar.
- *
- * A constant because `overallTenths` is already renormalised — `rules/score.js:1121`
- * is `1000 × earned ÷ max` — so it is out of 100 whether or not every axis could be
- * measured. See the note in `zoneViews` and CONTRACT.md §(g) 8.
+ * The zone score's denominator everywhere it is printed. A constant because
+ * `overallTenths` is already renormalised to `1000 × earned ÷ max` (`rules/score.js`),
+ * whether or not every axis could be measured. See CONTRACT.md §(g) 8.
  */
 export const SCORE_MAX = 100;
 
 // ── the shared numeric helpers ───────────────────────────────────────────────
 //
-// Rounding happens exactly ONCE, inside `zoneViews`: every score on either page is a
-// `ZoneView` field these produced there, and `simulator.js` prints those fields rather
-// than calling these again. That is why no number can be rounded twice. They are
-// exported because CONTRACT.md §(a) names them.
+// Rounding happens ONCE, inside `zoneViews`; `simulator.js` prints those fields rather
+// than calling these again. Exported because CONTRACT.md §(a) names them.
 
 /**
- * Integer tenths of a point → the number the page prints. (`_s5_pts`, 13912.)
+ * Integer tenths of a point → the number the page prints. (`_s5_pts`.)
  * @param {number|null|undefined} tenths @returns {number}
  */
 export function pts(tenths) {
@@ -241,11 +206,9 @@ export function pts(tenths) {
 }
 
 /**
- * Axis fill as a 0–100 percentage, guarding a zero denominator. (`_s5_bar`, 13917.)
- *
- * The guard is load-bearing rather than defensive: when the map files could not be
- * read the `E` and `A` axes really do carry `axisMax === 0` (score.js 1004), and the
- * page must say "not measured" rather than draw an empty bar labelled `0 / 0`.
+ * Axis fill as a 0–100 percentage, guarding a zero denominator. (`_s5_bar`.) The guard
+ * is load-bearing: with no map files the `E` and `A` axes carry `axisMax === 0`, and
+ * the page must say "not measured" rather than draw `0 / 0`.
  *
  * @param {number|null|undefined} earnedTenths @param {number|null|undefined} maxTenths
  * @returns {number}
@@ -257,11 +220,8 @@ export function bar(earnedTenths, maxTenths) {
 
 /**
  * Colour band for the map and the rail, relative to this map's own best zone.
- * (`_s5_band`, 13932.)
- *
- * Relative rather than absolute on purpose: a 41-point zone is a bad hide on a great
- * map and the best available hide on a poor one, and the player needs to see which
- * situation they are in.
+ * (`_s5_band`.) Relative on purpose: a 41-point zone is a bad hide on a great map and
+ * the best available on a poor one.
  *
  * @param {number} overall @param {number} best
  * @returns {'top'|'good'|'fair'|'weak'|'un'}
@@ -282,7 +242,7 @@ function keysOf(obj) {
   return Object.keys(obj || {}).sort(cmpStr);
 }
 
-/** `{metricId: Metric}` for one zone score. (`_s5_metric_by_id`, 13984.) */
+/** `{metricId: Metric}` for one zone score. (`_s5_metric_by_id`.) */
 function metricById(score) {
   const out = Object.create(null);
   for (const m of (score && score.metrics) || []) out[m.id] = m;
@@ -290,12 +250,9 @@ function metricById(score) {
 }
 
 /**
- * The first ranked zone that carries a score. (`_s5_reference_score`, 13951.)
- *
- * The per-axis maxima are identical across zones, so one of them supplies the
- * published totals every axis label, legend row and column header prints. Reading
- * them off a real zone rather than restating them keeps the page and the score from
- * ever disagreeing.
+ * The first ranked zone that carries a score. (`_s5_reference_score`.) The per-axis
+ * maxima are identical across zones, so one zone supplies the published totals every
+ * axis label and column header prints.
  *
  * @param {Object} report @returns {Object|null}
  */
@@ -310,15 +267,10 @@ function referenceScore(report) {
 /**
  * The OSM category keys this run actually knows about.
  *
- * DIVERGENCE, deliberate. The CLI tests `key in {c.key for c in GEO_CATEGORIES}`
- * (generate.py) to tell an OSM-backed question subject from a GTFS or
- * administrative one. `GEO_CATEGORIES` lives in `osm/geodata.js`, a worker
+ * DIVERGENCE, deliberate. The CLI tests membership in `GEO_CATEGORIES`, a worker
  * module this file may not import, so the set is derived from the two `GeoData`
- * fields that are keyed by category: `counts` (every queried category, zero-count
- * ones included — absent categories are absent keys, CONTRACT.md §(b)) and `pois`.
- * Same answer for every category the run touched; a category that was never queried
- * at all is simply absent from the chips instead of appearing dead, which is the one
- * observable difference.
+ * fields keyed by category: `counts` (zero-count categories included) and `pois`. A
+ * category that was never queried is absent from the chips instead of appearing dead.
  */
 function geoKeys(report) {
   const geo = (report && report.geo) || {};
@@ -334,18 +286,14 @@ function subjectKey(questionId) {
   return dot === -1 ? id : id.slice(dot + 1);
 }
 
-/** Questions in id order — the CLI sorts before every chip loop (14239, 14257). */
+/** Questions in id order — the CLI sorts before every chip loop. */
 function questionsById(report) {
   return Array.from((report && report.questions) || []).sort((a, b) => cmpStr(a.id, b.id));
 }
 
 /**
- * The DISTINCT reaches of a set of tentacle questions, ascending, in miles.
- *
- * `[]` for a SMALL deck (which holds no tentacle question at all), `[1]` for a MEDIUM
- * one, `[1, 15]` for a LARGE one — the rulebook adds the four 15-mile tentacles to the
- * four 1-mile ones rather than replacing them, so a LARGE game has two reaches at once
- * and no single number can stand for "the" tentacle reach. See `TENTACLE_ID_REACH_MI`.
+ * The DISTINCT reaches of a set of tentacle questions, ascending, in miles: `[]` for a
+ * SMALL deck, `[1]` for MEDIUM, `[1, 15]` for LARGE. See `TENTACLE_ID_REACH_MI`.
  * @param {Array<Object>} questions @returns {number[]}
  */
 function tentacleReachesMi(questions) {
@@ -363,7 +311,7 @@ function tentacleReachWords(reaches) {
   return s4JoinWords(reaches.map((r) => `${s4Val(r)} ${s4Plural(r, 'mile')}`));
 }
 
-/** One zone flag, as icon **and** word — never colour alone. (`_s5_flag_chip`, 13962.) */
+/** One zone flag, as icon **and** word — never colour alone. (`_s5_flag_chip`.) */
 function flagChip(flag) {
   const [label, variant, icon] = FLAG_TEXT[flag] || [flag, 'neutral', 'circle-info'];
   return chip(label, icon, { variant });
@@ -401,13 +349,10 @@ function flagChip(flag) {
 /**
  * The ranked zone view model — the one place a zone becomes numbers for the page.
  *
- * Order: `report.rankedZoneIds` first, in order, carrying rank 1..n, then every
- * remaining key of `report.zoneScores` sorted by plain code-point comparison,
- * carrying `rank === null`. Those leftovers are the zones `rankZones` deliberately
- * held out — unreachable, or the designated station has no service — and they still
- * reach the page, because nothing is ever silently dropped (generate.py).
- *
- * `_s5_tie_break` (14243) is `--llm`-only and the port has no LLM, so it is dropped.
+ * Order: `report.rankedZoneIds` first, carrying rank 1..n, then every remaining key of
+ * `report.zoneScores` in code-point order with `rank === null`. Those are the zones
+ * `rankZones` held out (unreachable, or no service), and nothing is silently dropped
+ * (generate.py). `_s5_tie_break` is `--llm`-only and is dropped.
  *
  * @param {Object} report the complete `Report`
  * @returns {ZoneView[]}
@@ -423,8 +368,7 @@ export function zoneViews(report) {
   const zoneById = Object.create(null);
   for (const z of rep.zones || []) zoneById[z.zoneId] = z;
 
-  // One pass over `report.stops` instead of one per zone: 319 zones × 2,000 stops is
-  // 640,000 comparisons for a count that is a single lookup away.
+  // One pass over `report.stops` instead of one per zone.
   const stopById = Object.create(null);
   for (const s of rep.stops || []) stopById[s.stopId] = s;
 
@@ -457,9 +401,8 @@ export function zoneViews(report) {
       bars[a] = bar(score.axes ? score.axes[a] : 0, score.axisMax ? score.axisMax[a] : 0);
     }
 
-    // R1 is stored as travel ÷ hiding period; the page prints minutes. Derived
-    // rather than re-measured — the ratio is the scored quantity and this is only
-    // its presentation, so the two can never disagree. (`_s5_travel_minutes`, 13989.)
+    // R1 is stored as travel ÷ hiding period; minutes are derived from it, never
+    // re-measured, so the two cannot disagree. (`_s5_travel_minutes`.)
     const metrics = metricById(score);
     const r1raw = metrics.R1 ? fnum(metrics.R1.raw) : null;
     const travelMin = r1raw === null ? null : rhu(r1raw * hidingMin, 1);
@@ -483,11 +426,9 @@ export function zoneViews(report) {
     const spots = ((geo.legalSpots || {})[zid]) || [];
     const flags = Array.from(score.flags || []);
 
-    // SCOPE-REDUCED against the CLI, and recorded as such in CONTRACT.md §(g): the
-    // CLI's per-zone × per-day block reads `ServiceDay.stopDays`, which `daySummary`
-    // strips before anything crosses `postMessage` (worker.js 643). What is already
-    // on the main thread and already scored — S1/S2/S3 plus the stop rows — says the
-    // same things minus the first/last times, the departure count and the sparkline.
+    // SCOPE-REDUCED against the CLI (CONTRACT.md §(g)): the per-day block reads
+    // `ServiceDay.stopDays`, which `daySummary` strips before `postMessage`. S1/S2/S3
+    // plus the stop rows say the same minus first/last times and the sparkline.
     let servedStops = 0;
     let frequentStops = 0;
     for (const sid of zone.stopIds || []) {
@@ -514,12 +455,9 @@ export function zoneViews(report) {
       lat: coord(zone.lat),
       lon: coord(zone.lon),
       overall,
-      // DIVERGENCE, deliberate, CONTRACT.md §(g) 8. The CLI prints `overall` over the
-      // sum of the raw axis maxima (14326, 14361), but `overall` is not a raw total:
-      // `rules/score.js:1121` renormalises it to `1000 × earned ÷ max`, so its
-      // denominator is 100 whatever the axes measured. The two agree whenever every
-      // axis was measurable; when OSM is off, E and A have `axisMax === 0` and the
-      // CLI's arithmetic prints "97.6 / 70.0" — and fills a progress bar to 139%.
+      // DIVERGENCE, CONTRACT.md §(g) 8. The CLI prints `overall` over the sum of the
+      // raw axis maxima, but `overall` is renormalised to 100 (`rules/score.js`); with
+      // OSM off the CLI printed "97.6 / 70.0" and filled a bar to 139%.
       max: SCORE_MAX,
       scoreBand: band(overall, best),
       cappedBy: score.cappedBy === undefined ? null : score.cappedBy,
@@ -548,22 +486,17 @@ export function zoneViews(report) {
  * @typedef {{key:string, label:string, count:number,
  *            why:string, usable:boolean, reachMi:number|null}} CatChip
  *
- * `reachMi` is the tentacle chip's own reach in miles (`TENTACLE_ID_REACH_MI`), and is
- * `null` on matching and measuring chips, which have no reach at all. The simulator
- * measures against THIS number, never against `size.tentacleReachMi`.
+ * `reachMi` is the tentacle chip's own reach in miles (`TENTACLE_ID_REACH_MI`), `null`
+ * on matching and measuring chips. The simulator measures against THIS number.
  */
 
 /**
- * Per-mode chip definitions, resolved once. (`_s5_mode_chips`, 14232.)
- *
- * The chips have to name a real question and a real OSM category, and neither join
- * can be reconstructed from an id in the browser: radar radii are ids like
- * `radar.quarter_mile` and `radar.3mi`, and a category chip only means something if a
- * question of that category exists *and* the features were fetched.
+ * Per-mode chip definitions, resolved once. (`_s5_mode_chips`.) A chip must name a
+ * real question and a real OSM category, and neither join can be reconstructed from
+ * an id in the browser.
  *
  * DIVERGENCE: the category label comes from the `QuestionAudit`'s own `label` rather
- * than from `GEO_CATEGORIES` (see `geoKeys`). Same words in practice — the catalogue
- * names a question after its subject.
+ * than from `GEO_CATEGORIES` (see `geoKeys`). Same words in practice.
  *
  * @param {Object} report
  * @returns {{radar: RadarChip[], match: CatChip[], measure: CatChip[], tentacle: CatChip[]}}
@@ -607,9 +540,7 @@ export function modeChips(report) {
         why: q.why,
         usable: (q.status === 'functional' || q.status === 'weak')
           && Array.isArray(features) && features.length > 0,
-        // per QUESTION, not per game size: a LARGE deck holds 1-mile and 15-mile
-        // tentacles side by side, so the chip has to carry its own reach for the
-        // simulator to measure against (see `TENTACLE_ID_REACH_MI`).
+        // per QUESTION, not per game size (see `TENTACLE_ID_REACH_MI`)
         reachMi: mode === 'tentacle' ? (TENTACLE_ID_REACH_MI[q.id] ?? null) : null,
       });
     }
@@ -624,15 +555,12 @@ export function modeChips(report) {
  */
 
 /**
- * The simulator's POI set. (`_s5_poi_payload`, 14195.)
+ * The simulator's POI set. (`_s5_poi_payload`.) Only categories a matching /
+ * measuring / tentacle question uses, and only where features exist. Each is capped
+ * and `capped` names the ones where the cap bit, so the page can say so.
  *
- * Only categories a matching / measuring / tentacle question actually uses, and only
- * where features exist. Each is capped, and `capped` names the ones where the cap
- * bit — the page says so rather than quietly answering from a subset.
- *
- * NOTE THE COORDINATE ORDER: `[lon, lat, name]`. Longitude first, which is the CLI's
- * order and GeoJSON's, and the opposite of every `haversineM(lat, lon, …)` call —
- * `simulator.js` is written against it.
+ * COORDINATE ORDER is `[lon, lat, name]`: GeoJSON's, and the opposite of every
+ * `haversineM(lat, lon, …)` call.
  *
  * @param {Object} report
  * @returns {{categories: Object<string, PoiCategory>, capped: string[], cap: number}}
@@ -643,8 +571,7 @@ export function poiCategories(report) {
   const pois = geo.pois || {};
   const keys = geoKeys(rep);
 
-  // Exactly the categories a chip can select: the subject of an OSM-backed question
-  // in one of the three category-driven modes.
+  // Exactly the categories a chip can select.
   const labels = Object.create(null);
   const used = new Set();
   for (const q of questionsById(rep)) {
@@ -688,9 +615,7 @@ export function poiCategories(report) {
 
 /**
  * One axis row of the pick card and the dossier: plain name, letter, bar, earned/max.
- *
- * An axis whose maximum is zero was never measurable on this map — when the map files
- * could not be read that is `E` and `A` — and prints the words, never `0.0 / 0`.
+ * An axis whose maximum is zero was never measurable and prints the words, never `0.0 / 0`.
  */
 function axisMeter(view, axis) {
   const label = el('span', join(
@@ -710,11 +635,8 @@ function axisMeter(view, axis) {
 
 /**
  * The page's answer, above everything else: the top-ranked zone in full.
- * (`strategy_pick_card`, 14309.)
- *
- * Zone scores are not day-dependent, so this card is rendered once and never
- * re-rendered. It is consistent with the simulator's own state by construction —
- * `selected` initialises to the same zone.
+ * (`strategy_pick_card`.) Rendered once; the simulator's `selected` initialises to
+ * the same zone.
  *
  * @param {Object} report @param {ZoneView} view the rank-1 zone
  * @returns {string}
@@ -766,12 +688,9 @@ function pickCard(report, view) {
 }
 
 /**
- * The hero: kicker, headline, lede, two chips, the pick card — and the one link out.
- *
- * `href="#top"` is what leaves the route (spec §5.1): the report hero owns `#top`, and
- * `applyRoute` treats any hash that is not `#strategy` as an exit. The link is inside
- * the secret view and is therefore visible only to somebody already in it, which is
- * how the CLI's "the two pages never link to each other" invariant survives the port.
+ * The hero: kicker, headline, lede, two chips, the pick card, and the one link out.
+ * `href="#top"` leaves the route (spec §5.1): `applyRoute` treats any hash that is not
+ * `#strategy` as an exit, and the link is visible only from inside the secret view.
  */
 function hero(report, views) {
   const feed = report.feed || {};
@@ -805,9 +724,8 @@ function hero(report, views) {
     back,
   ), { className: 'wa-stack wa-gap-xs', style: 'flex:1 1 24rem' });
 
-  // Top-aligned for the same reason as the report hero: the pick card is much taller
-  // than the text beside it, and centring pushes the h1 down the page once the two
-  // columns fit side by side.
+  // Top-aligned: the pick card is much taller than the text, and centring pushes the
+  // h1 down once the columns sit side by side.
   return el('header', el('div', join(
     left,
     el('div', pickCard(report, views[0]), { style: 'flex:1 1 26rem' }),
@@ -817,16 +735,13 @@ function hero(report, views) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §01 THE SHORTLIST — the map, the simulator, the rail, the dossier (14459–14616)
+// §01 THE SHORTLIST — the map, the simulator, the rail, the dossier
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * §01's map card: the mode buttons, the MapLibre host, the readout, the legend.
- *
  * Order is controls → map → readout → legend → method, and none of the first four
- * may ever be collapsed: `#s-map` is a MapLibre container, which reads its size once
- * at construction (html.js 239, 407), and the buttons are how the simulator is
- * driven. Only the closing `wa-details` collapses.
+ * may be collapsed: `#s-map` is a MapLibre container, which reads its size once.
  */
 function mapCard(report) {
   const size = report.size || {};
@@ -835,15 +750,10 @@ function mapCard(report) {
   const questions = report.questions || [];
   const radiusLabel = s4Dist(report, size.zoneRadiusM || 0, 2);
 
-  // A mutually exclusive set of six, so it is a `wa-radio-group` of button-appearance
-  // radios — the same native pair `s4ChipGroup` (render/deck.js 259) builds for the
-  // report's filter rows, and the same reason: the group carries the role, the label,
-  // arrow-key navigation and a real checked state, where a row of `wa-button`s
-  // conveyed the selection by fill colour and told assistive tech nothing at all.
-  // `s4ChipGroup` itself is NOT reused here because it cannot express `disabled`, and
-  // a dead mode shown disabled-with-reason is the point of this row, not an oversight —
-  // knowing which questions cannot hurt you here is worth as much as knowing which
-  // can. (generate.py.) Every attribute below is the helper's.
+  // A `wa-radio-group` of button-appearance radios, as `s4ChipGroup` (render/deck.js)
+  // builds: the group carries the role, label, arrow keys and a real checked state.
+  // Not `s4ChipGroup` itself because it cannot express `disabled`, and a dead mode
+  // shown disabled-with-reason is the point of this row. (generate.py.)
   const chips = modeChips(report);
   const reasons = [];
   const radios = MODE_LABEL.map(([mode, label]) => {
@@ -853,11 +763,9 @@ function mapCard(report) {
       const family = questions.filter((q) => q.category === category);
       const live = family.filter((q) => q.status === 'functional' || q.status === 'weak');
       if (!family.length) {
-        // NOT a map problem, and saying "no question functions on this map" blamed the
-        // geography for a rule. The audit only ever contains the questions this game
-        // size's deck holds, so an empty family means the RULEBOOK left the category
-        // out — which today is exactly one case: "Tentacle question cannot be used in
-        // SMALL games", asserted at `rules/catalogue.js:711`.
+        // The audit holds only this size's deck, so an empty family means the RULEBOOK
+        // left the category out; today that is only tentacles in SMALL games
+        // (`rules/catalogue.js`). Not a map problem, so not blamed on the geography.
         reason = category === 'tentacle'
           ? 'The rulebook says the tentacle question cannot be used in SMALL games, so a '
             + 'SMALL deck contains none.'
@@ -867,12 +775,9 @@ function mapCard(report) {
         reason = family[0].why
           || `No ${label.toLowerCase()} question functions on this map.`;
       } else if (mode !== 'thermo' && !(chips[mode] || []).length) {
-        // A live question the simulator has nothing to point at. `modeChips` derives
-        // its category set from what the OSM stage returned (see `geoKeys`), so on a
-        // run with the map layer off — or one where every category came back empty —
-        // the question can be functional and still have no selectable subject. Left
-        // enabled, the mode opened on an empty option row while the readout asked for
-        // a category that was not there. Dead is dead: say so on the button.
+        // A live question with no selectable subject: `modeChips` derives its
+        // categories from what the OSM stage returned (see `geoKeys`), so with the map
+        // layer off the mode would open on an empty option row. Dead is dead.
         reason = 'No mapped category on this map backs a question of that kind, so the '
           + 'simulator has nothing to measure against.';
       }
@@ -900,10 +805,8 @@ function mapCard(report) {
     className: 'wa-visually-hidden-label',
   });
 
-  // A disabled control is not focusable, so a `title` on one is reachable only by
-  // hovering with a pointer — no keyboard, no touch, no screen reader. The reasons are
-  // printed instead, which also makes them findable and printable. They are the whole
-  // argument of the card's copy below; they should not have been a tooltip.
+  // Printed, not a `title`: a disabled control is not focusable, so a tooltip on it
+  // is reachable only by pointer hover.
   const modesWhy = reasons.length
     ? el('div', reasons.map(([label, why]) => el(
       'p',
@@ -924,12 +827,8 @@ function mapCard(report) {
     'If your browser blocks the map, it is omitted and everything below still works.',
   ].join(' ');
 
-  // Three keys, not one, because the dots carry two different encodings: the view
-  // OPENS in explore mode, where they are score bands, and the old legend documented
-  // only the answer colours a reader has not seen yet. Same swatch shape and the same
-  // `s4Legend` the report's maps use — a real `<ul class="wa-list-plain">` rather than
-  // a `div[role="list"]`, per its own docstring; its margin caveat is satisfied
-  // because the parent below is a `wa-stack`.
+  // Three keys, because the dots carry two encodings: the view OPENS in explore mode,
+  // where they are score bands. Same `s4Legend` the report's maps use.
   const dot = (token) => s4Swatch(
     `background:var(${token});border-radius:var(--wa-border-radius-circle)`,
   );
@@ -990,10 +889,8 @@ function mapCard(report) {
 
 /**
  * §01's ranked rail and the dossier shell the simulator fills.
- * (`strategy_zone_list` 14752 + `strategy_dossier_template` 14801.)
- *
- * The rail is a `role="listbox"` of `role="option"` rows built client-side; it is a
- * shortlist rather than the field, and the link under it says so.
+ * (`strategy_zone_list` + `strategy_dossier_template`.) The rail is a
+ * `role="listbox"` built client-side; it is a shortlist, and the link under it says so.
  */
 function railAndDossier(report) {
   const zones = report.zones || [];
@@ -1054,14 +951,13 @@ function sectionShortlist(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §02 THE WHOLE FIELD — every scored zone, sortable and filterable (14618)
+// §02 THE WHOLE FIELD — every scored zone, sortable and filterable
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The eleven column words of §02's table, in `data-sort` index order.
- *
- * **The indices 0–10 are the contract between this file and `simulator.js`
- * (generate.py). Never renumber them.**
+ * The eleven column words of §02's table, in column order. **The ORDER is the contract
+ * with `simulator.js` (generate.py). Never reorder them.** `wa-data-grid` addresses a
+ * column by string id (`rank`, `name`, `score`, `axis-IR` … `flags`, `travel`).
  */
 const TABLE_HEADERS = Object.freeze([
   Object.freeze(['Rank', '']),
@@ -1072,15 +968,24 @@ const TABLE_HEADERS = Object.freeze([
   Object.freeze(['Travel', '']),
 ]);
 
+/**
+ * The same eleven words as flat column labels. `wa-data-grid`'s `label` is a bare
+ * string, so the axis's `<code>` chip folds into the text. The letter is KEPT in
+ * parentheses: the axis legend above the table links `#s-axis-{AXIS}` by it, and
+ * CONTRACT §(g) note 3 makes that legend the substitute for the CLI's tooltips.
+ */
+export const TABLE_LABELS = Object.freeze(
+  TABLE_HEADERS.map(([word, axis]) => (axis ? `${word} (${axis})` : word)),
+);
+
 /** §02 — every scored zone, sortable and filterable, plus the axis winners. */
 function sectionWholeField(report, views) {
   const zones = report.zones || [];
   const ref = referenceScore(report);
   const excluded = views.filter((v) => v.excluded);
 
-  // Axis winners: the best non-excluded zone on each axis, in `views` order, so a tie
-  // resolves to the better-ranked zone. An axis nobody could be scored on has no
-  // winner and no card — never a card reading "0 of 0 pt".
+  // Axis winners: the best non-excluded zone on each axis, in `views` order so a tie
+  // goes to the better-ranked zone. An unmeasurable axis gets no card.
   const winners = [];
   for (const [axis, name] of AXES) {
     const maxPts = ref ? pts(ref.axisMax[axis]) : 0;
@@ -1110,15 +1015,10 @@ function sectionWholeField(report, views) {
     ), { className: 'wa-stack wa-gap-xs' })
     : '';
 
-  // The axis legend replaces the CLI's six `wa-tooltip for="th-{axis}"` (14705):
-  // `html.js` has no tooltip helper and is frozen for this task, and a link into §04
-  // is a better answer than a hover anyway — it survives touch, print and Ctrl+F.
-  // It stays out of the sticky strip on purpose: six labelled entries pinned under a
-  // 7rem header would take a third of a phone viewport.
-  // A real `<ul>`/`<li>` rather than a `div[role="list"]`, for `s4Legend`'s stated
-  // reason — native semantics need no ARIA override. It cannot BE `s4Legend`: that
-  // helper takes `[swatchHtml, plainText]`, and each entry here is a link, a name and
-  // a points figure.
+  // The axis legend replaces the CLI's six header tooltips: a link into §04 survives
+  // touch, print and Ctrl+F. Out of the sticky strip on purpose (six entries under a
+  // 7rem header would take a third of a phone viewport). A real `<ul>`, not
+  // `s4Legend`, because each entry is a link, a name and a points figure.
   const legend = el('ul', AXES.map(([axis]) => el('li', join(
     el('a', el('code', esc(axis)), { href: `#s-axis-${axis}`, className: 'wa-link' }),
     el('span', esc(AXIS_PLAIN[axis][0]), { className: 'wa-caption-s' }),
@@ -1139,16 +1039,28 @@ function sectionWholeField(report, views) {
     className: 'wa-split wa-flex-wrap wa-gap-s',
   });
 
-  // `aria-sort="none"` is set here as well as by `renderTable()` so the header row is
-  // honest before the simulator has run; the sort arrows are a `th[aria-sort]` rule in
-  // styles.css and need no extra markup.
-  const cells = TABLE_HEADERS.map(([word, axis], i) => el('th', el('button', join(
-    el('span', esc(word)),
-    axis ? el('code', esc(axis), { className: 'wa-caption-2xs' }) : '',
-  ), { className: 'wa-plain', dataSort: String(i) }), { ariaSort: 'none' })).join('');
-  const table = waScroller(el('table',
-    el('thead', el('tr', cells)) + el('tbody', '', { id: 's-tbody' }),
-    { id: 's-table', className: 'wa-zebra-rows wa-hover-rows' }));
+  // The component owns the sort cycle, arrows, `aria-sort`, stripes and scrolling;
+  // `simulator.js` hands it `columns` and `data`. Four attributes carry behaviour the
+  // hand-rolled table had:
+  //   `sort-desc-first`      a new column opens on its most useful end; Zone overrides
+  //                          it back (`sortDescFirst: false`).
+  //   `without-sort-removal` the old cycle had no unsorted state.
+  //   `max-multi-sort="1"`   shift-click would otherwise stack a second sort entry.
+  //   `striped`              `wa-zebra-rows` was scoped to `<tbody> <tr>` and stops matching.
+  // `with-search` is ABSENT: the filter matches route names, which are not a column,
+  // and the component's box would render below the sticky `#s-controls`. `#s-filter`
+  // drives the grid through `searchFn` + `searchTerm`. No `wa-scroller`: the grid is
+  // already the horizontal scroller, and nesting one would confuse the row virtualizer.
+  const table = el('wa-data-grid', '', {
+    id: 's-table',
+    label: 'Every scored zone',
+    rowKey: 'id',
+    size: 's',
+    striped: true,
+    sortDescFirst: true,
+    withoutSortRemoval: true,
+    maxMultiSort: '1',
+  });
 
   const pager = el('div', '', {
     id: 's-pager', className: 'wa-cluster wa-gap-s wa-align-items-center',
@@ -1190,15 +1102,13 @@ function sectionWholeField(report, views) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §03 HOW TO PLAY THIS MAP — the parameterised playbook (14734)
+// §03 HOW TO PLAY THIS MAP — the parameterised playbook
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * §03 — rulebook tips parameterised from this feed, dropped when they do not apply.
- *
- * The clause each tip comes from lives in the card's footer, so the advice reads as
- * advice and the citation reads as a citation. Six to nine tips typically; five with
- * no OpenStreetMap data, because tips 3 and 5 have no facts to stand on.
+ * The clause each tip comes from lives in the card's footer. Six to nine tips
+ * typically; five with no OpenStreetMap data.
  */
 function sectionTactics(report) {
   const size = report.size || {};
@@ -1254,10 +1164,8 @@ function sectionTactics(report) {
     if (tentacles.length) {
       const named = Array.from(new Set(tentacles.map((q) => q.label)))
         .sort(cmpStr).slice(0, 4).join(', ');
-      // Per question, never `size.tentacleReachMi`: a LARGE deck asks about museums,
-      // libraries, movie theaters and hospitals within 1 mile AND about metro lines,
-      // zoos, aquariums and amusement parks within 15, so one number would misstate
-      // half the family. (`TENTACLE_ID_REACH_MI`.)
+      // Per question, never `size.tentacleReachMi`: a LARGE deck has both 1-mile and
+      // 15-mile tentacles. (`TENTACLE_ID_REACH_MI`.)
       const reaches = tentacleReachesMi(tentacles);
       const words = tentacleReachWords(reaches);
       const reachClause = reaches.length > 1
@@ -1297,8 +1205,7 @@ function sectionTactics(report) {
   const evening = metrics.D2;
   const eveningRaw = evening ? fnum(evening.raw) : null;
   if (eveningRaw !== null && eveningRaw < 0.85) {
-    // The CLI points the reader at the day banner; this view has none (the subheader
-    // is `data-when="report"` and hidden), so the sentence names the day instead.
+    // This view has no day banner, so the sentence names the day instead.
     const worstKey = s4WorstDay(report);
     const worstClause = worstKey
       ? ` ${s4DayLabel(report, worstKey)} is the worst day on this map, so settle which day `
@@ -1313,10 +1220,8 @@ function sectionTactics(report) {
     ]);
   }
 
-  // Fixed in the port, deliberately: the CLI reads `metrics["hub_route_share"]`
-  // (14824), a key `network_metrics` never emits — it emits `hub_dominance` (3871) —
-  // so this tip has never once fired in the CLI. `Metrics.hubDominance` (network.js
-  // 890) is the intended value. Filed against generate.py separately.
+  // Fixed in the port: the CLI reads `metrics["hub_route_share"]`, a key never emitted,
+  // so this tip never fired there. `Metrics.hubDominance` is the intended value.
   const dominance = fnum((report.metrics || {}).hubDominance);
   if (dominance !== null && dominance >= 0.5) {
     tips.push([
@@ -1354,15 +1259,13 @@ function sectionTactics(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §04 HOW ZONES ARE SCORED — the six axes as reference material (14380)
+// §04 HOW ZONES ARE SCORED — the six axes as reference material
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §04 — one accordion item per axis, all collapsed.
- *
- * A reader arrives here from a column header or a dossier meter wanting one axis, not
- * six; and a collapsed accordion label still shows the axis's plain name, its letter
- * and what it is worth, which is the whole reason this is not a tab group.
+ * §04 — one accordion item per axis, all collapsed. A reader arrives from a column
+ * header or a dossier meter wanting one axis, and a collapsed label still shows the
+ * plain name, the letter and what it is worth.
  */
 function sectionAxes(report) {
   const zones = report.zones || [];
@@ -1384,8 +1287,7 @@ function sectionAxes(report) {
       + `${num(zones.length)} zones still standing.`;
   }
 
-  // The page's thesis rides on the hero as a pull quote; the precise version, naming
-  // the two metrics that fight, stays here — in both axes it is about.
+  // The page's thesis, in its metric-naming form, in both axes it is about.
   const tension = waCallout(el('p', esc(
     'Reach and Exposure pull against each other on purpose, and that tension is the whole '
     + 'game. R1 rewards a zone you can actually get to inside the hiding period; X3 rewards '
@@ -1397,8 +1299,7 @@ function sectionAxes(report) {
     const maxPts = ref ? pts(ref.axisMax[axis]) : 0;
     const rows = [];
     for (const m of (ref && ref.metrics) || []) {
-      // `IR1` starts with `I` but belongs to `IR`, not to a one-letter axis: the id
-      // matches only when everything after the axis letters is digits. (14415.)
+      // `IR1` belongs to `IR`, not `I`: match only when the rest of the id is digits.
       if (!m.id.startsWith(axis) || !/^\d+$/.test(m.id.slice(axis.length))) continue;
       rows.push([
         el('code', esc(m.id)) + ' ' + esc(m.name),
@@ -1461,14 +1362,13 @@ function sectionAxes(report) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §05 METHOD & PARAMETERS (14856)
+// §05 METHOD & PARAMETERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §05 — the scoring parameters actually used.
- *
- * The feasibility report is named in prose and deliberately **not** linked: the hero's
- * back-link is the affordance, and it is the only one. (generate.py.)
+ * §05 — the scoring parameters actually used. The feasibility report is named in
+ * prose and deliberately **not** linked: the hero's back-link is the only affordance.
+ * (generate.py.)
  */
 function sectionMethod(report) {
   const p = report.provenance || {};
@@ -1487,9 +1387,7 @@ function sectionMethod(report) {
     ['Game size', esc(`${String(size.name || '').toUpperCase()}`
       + `${size.inferred ? ' (inferred)' : ' (given)'}`)],
     ['Hiding period', esc(mins(size.hidingPeriodMin))],
-    // Per question, not per size. A LARGE deck holds the four 1-mile tentacles AND the
-    // four 15-mile ones, so this row prints both; a SMALL deck holds none, because the
-    // rulebook excludes the category. (`TENTACLE_ID_REACH_MI`.)
+    // Per question, not per size: a LARGE deck prints both reaches, a SMALL deck none.
     ['Tentacle reach', esc(tentacleReaches.length
       ? tentacleReachWords(tentacleReaches)
       : `none — no tentacle question in a ${String(size.name || '').toUpperCase()} game`)],
@@ -1529,19 +1427,16 @@ function sectionMethod(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The whole secret view as one HTML string, or `''` when it cannot be rendered.
+ * The whole secret view as one HTML string, or `''` when the report is missing any
+ * piece every section depends on. The five sections share that one guard, so the
+ * literal ordinals `'01'`…`'05'` are always right. **Do not switch them to
+ * `S4_ORDINAL`**: `renumberSections` (app.js) strips `data-n` from every remaining
+ * `[data-n="--"]`, which would silently erase them.
  *
- * Returns `''` — and the caller mounts nothing — when the report is missing any of
- * the pieces every section depends on. The five sections share that one guard, so
- * they are all present or all absent and the literal ordinals `'01'`…`'05'` are
- * always right. **Do not switch them to `S4_ORDINAL`**: `renumberSections`
- * (app.js 1215–1233) walks its own `NUMBERED` list and then strips `data-n` from
- * every remaining `[data-n="--"]` in the document, which would silently erase them.
- *
- * The returned string is EXACTLY ONE top-level element, and both its attributes are
- * load-bearing: `id="strategy"` is the fragment and the `initStrategy` root, and
- * `data-when="strategy"` is what `body:not([data-view='strategy'])` hides. There is
- * no `data-state`: `fatalError` sweeps `[data-state="skeleton"]` (app.js 1397).
+ * The returned string is EXACTLY ONE top-level element: `id="strategy"` is the
+ * fragment and the `initStrategy` root, and `data-when="strategy"` is what
+ * `body:not([data-view='strategy'])` hides. No `data-state`: `fatalError` sweeps
+ * `[data-state="skeleton"]`.
  *
  * @param {Object} report the complete `Report` (state.report after `finish`)
  * @returns {string} HTML, or ''
@@ -1556,8 +1451,8 @@ export function renderStrategy(report) {
   const views = zoneViews(rep);
   if (!views.length) return '';
 
-  // The page's thesis, which the CLI keeps as a pull quote on the hero and repeats in
-  // precise, metric-naming form inside §04's R and X items. Exactly one per view.
+  // The page's thesis, as the CLI keeps it: a pull quote on the hero, repeated in
+  // metric-naming form inside §04's R and X items.
   const thesis = pullQuote(
     'A zone you can actually reach and a zone the seekers find expensive to reach are '
     + 'opposite things. One that scores well on both is genuinely rare — and it is what you '
@@ -1570,8 +1465,7 @@ export function renderStrategy(report) {
     + "Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking "
     + 'on the day.';
 
-  // `href="#strategy"`, not `#top`: `#top` is the report hero and leaving is what it
-  // does. The footer's job is to get back to the top of *this* view.
+  // `href="#strategy"`, not `#top`: `#top` is the report hero and leaving is what it does.
   const footer = el('footer', join(
     el('p', esc(credit), { className: 'wa-body-s', style: 'max-width:88ch' }),
     el('a', join(waIcon('arrow-up'), esc('Back to top')), {
@@ -1579,16 +1473,11 @@ export function renderStrategy(report) {
     }),
   ), { className: 'wa-stack wa-gap-s' });
 
-  // `section`, and not a `div`, because `wa-page` pads exactly two element names in its
-  // default slot -- `slot:not([name]) { &::slotted(main), &::slotted(section) }` -- and a
-  // slotted `div` matches neither, so it lands flush against the header with no gutter at
-  // all. WebAwesome ships no sectioning element of its own and asks callers to slot their
-  // own; this is that. `section` and not `main` for two reasons: `wa-page > main` is what
-  // styles.css hides to put the report away, so a second `main` would hide the guide from
-  // itself, and the spec's one-visible-`main` rule is written against the `hidden`
-  // attribute, which a `display: none` report does not carry. The `--content-width` cap and
-  // the matching inline gutter come from the one measure rule in styles.css, which lists
-  // `wa-page > section` beside `main` -- the mount position does nothing on its own.
+  // `section`, not `div`: `wa-page` pads only slotted `main` and `section`, so a `div`
+  // lands flush against the header. Not `main`: `wa-page > main` is what styles.css
+  // hides to put the report away, so a second `main` would hide the guide from itself.
+  // The `--content-width` cap comes from the measure rule in styles.css, which lists
+  // `wa-page > section` beside `main`.
   return el('section', join(
     hero(rep, views),
     thesis,
@@ -1600,12 +1489,9 @@ export function renderStrategy(report) {
     footer,
   ), {
     id: 'strategy',
-    // The report's `<main>` is `display: none` while this is up, and `wa-page` supplies
-    // no landmark of its own (its shadow template wraps the slot in a plain `div`), so
-    // without this the whole guide sits outside every landmark region. It cannot
-    // collide with the report's `<main>`: a `display: none` element is not in the
-    // accessibility tree, and the two are never visible together. `main` is one of the
-    // roles ARIA in HTML allows on a `section`.
+    // The report's `<main>` is `display: none` while this is up and `wa-page` supplies
+    // no landmark, so without this the guide sits outside every landmark region. A
+    // `display: none` element is not in the accessibility tree, so the two never collide.
     role: 'main',
     dataWhen: 'strategy',
     className: 'wa-stack wa-gap-3xl',

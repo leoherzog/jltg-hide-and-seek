@@ -966,18 +966,41 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 #s-detail   { position: sticky; top: calc(var(--s-sticky) + 1rem); }
 @media (max-width: 560px) { #s-controls, #s-detail { position: static; } }
 
-/* sort arrows painted from the `aria-sort` the table already sets, so the header
-   button carries no second element and no icon to keep in sync */
-#s-table th[aria-sort='ascending'] button::after  { content: ' \2191'; }
-#s-table th[aria-sort='descending'] button::after { content: ' \2193'; }
-#s-table td { white-space: nowrap; }
+/* §02's table is a `wa-data-grid` (render/strategy.js:1187), so the four rules that
+   lived here are gone: the `th[aria-sort]` arrows are the component's own
+   `part="sort-indicator"` icon, driven by the same `desc` boolean it writes
+   `aria-sort` from, and `td { white-space: nowrap }` is its `.cell-content-text`
+   single-line ellipsis. What is left is what the component has no opinion about.
 
-/* The selected row. render/simulator.js:1393 writes `data-sel` on the row it opened
-   the dossier for, and without this the click had no visible answer at all — the
-   dossier is a sticky column away and the table never said which row it belonged to.
-   `#ztable tr[data-sel] td` in the CLI (generate.py:15810); the tint sits on the cells
-   because a `<tr>` background is painted under its cells, not over them. */
-#s-table tr[data-sel] td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+   `--max-height: none` keeps the table at its natural height inside the page's own
+   scroll, which is what the `wa-scroller` wrapper did; the component otherwise caps
+   its body at 30rem and scrolls inside itself. `[part~='table']` is `overflow: auto`,
+   so it is still the sideways scroller `wa-scroller` was.
+
+   The selected row: `#s-table tr[data-sel] td` here, `#ztable tr[data-sel] td` in the
+   CLI (generate.py:15810) — without it the click had no visible answer at all, the
+   dossier being a sticky column away. The row now lives in a shadow root and
+   `::part(row)[data-selected]` is not a legal selector, so the colour is handed over
+   as the component's own custom property and the component paints it;
+   render/simulator.js drives it with `selectedKeys`.
+
+   `font-variant-numeric` because line 225's `:where(td, …)` selects `td` ELEMENTS and
+   there is no longer a `td` in this table — the cells are `div[part=cell]` inside a
+   shadow root no document stylesheet can select into. The property is inherited, and
+   inheritance crosses the shadow boundary from the host, so one rule here reaches
+   every cell and header. Line 225 stays as it is: every other table on the page is
+   still a real `<table>`.
+
+   The footer is hidden because the component's pager reprints the count as a bare
+   "1–100 of 237" — the noun-less wording `#s-tableinfo` exists to avoid — in a
+   `.pager-info` span with no CSS part, so it cannot be hidden on its own. `#s-pager`
+   below the table is this page's pager and drives `grid.page`. */
+#s-table {
+  --max-height: none;
+  --selected-background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+#s-table::part(footer) { display: none; }
 
 /* The rail's no-service cards. render/simulator.js:1090 writes `data-off` on every
    card for a zone no trip serves that day; the state was otherwise carried only by the

@@ -4,19 +4,10 @@
  *   uv run tools/osm-world/make-test-world.py /tmp/world
  *   node tools/osm-world/test-pipeline.mjs /tmp/world
  *
- * WHY THIS EXISTS. `collectGeodata` is ~250 lines of orchestration that nothing else
- * executes: `tools/smoke.mjs` points the world files at a host that cannot resolve, so
- * it takes the failure path and never enters this function, and every other test stops
- * at the FlatGeobuf reader. That gap is not theoretical — the world-file migration shipped
- * with `zoneInventory` accidentally deleted out from under its own call site, and the
- * failure was completely invisible, because `worker.js` catches everything from that
- * call and degrades to `emptyGeoData`. A crash inside the OSM layer still reaches the
- * page as a generic degradation unless something actually runs it.
- *
- * It serves the test world over real HTTP with real `Range` support rather than
- * injecting a fake `fetch`, because `collectGeodata` builds its own readers internally
- * and never threads a `fetchImpl` through — so a stubbed fetch would test a path the
- * app does not take.
+ * Nothing else executes `collectGeodata` end to end: smoke.mjs takes its failure
+ * path, and `worker.js` swallows any throw into `emptyGeoData`, so a crash in the OSM
+ * layer is otherwise invisible. The world is served over real HTTP with Range support
+ * because `collectGeodata` builds its own readers and never takes a `fetchImpl`.
  *
  * The server binds 0.0.0.0, not loopback.
  */
@@ -37,24 +28,19 @@ if (!worldDir) {
   process.exit(2);
 }
 
-// ── a static server that speaks Range, the way R2 does ───────────────────────
+// A static server that speaks Range, the way R2 does.
 
 let rangeRequests = 0;
 let bytesServed = 0;
 
-// A path-less manifest entry ({"features": 0}, merge.py's empty-layer shape) must
-// never be turned into a reader: `baseUrl + '/' + info.path` on such an entry is
-// literally '<base>/undefined'. Counted rather than 404'd so the failure is a named
-// assertion, not a mystery in a degraded-category warn line.
+// A path-less manifest entry ({"features": 0}) must never become a reader; its URL
+// would be '<base>/undefined'. Counted so the failure is a named assertion.
 let undefinedRequests = 0;
 
-// Layers listed here 404, so a degraded origin can be simulated without a second
-// world directory. Mutated between runs below.
+// Layers listed here 404, simulating a degraded origin. Mutated between runs.
 const suppressed = new Set();
 
-// basename → body, served INSTEAD of the file on disk. One world directory can then
-// stand in for several published builds — used below to serve a legacy manifest that
-// still lists `curse_animal_habitat` without rebuilding anything.
+// basename → body, served instead of the file on disk (e.g. a legacy manifest).
 const overrides = new Map();
 
 const server = createServer(async (req, res) => {
@@ -88,12 +74,12 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// Bind all interfaces — this box is headless and never loopback-only.
+// Bind all interfaces; this box is headless.
 await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
 const { port } = server.address();
 const baseUrl = `http://127.0.0.1:${port}`;
 
-// ── the smallest inputs collectGeodata will accept ───────────────────────────
+// The smallest inputs collectGeodata will accept.
 
 const bbox = [42.9550, -85.6850, 42.9800, -85.6600];   // [s, w, n, e]
 const border = { bbox };
@@ -116,7 +102,7 @@ const logLines = [];
 let geo;
 let world;
 try {
-  // Exactly what worker.js does: open the world, then hand it to collectGeodata.
+  // Same sequence as worker.js.
   world = await openWorld(baseUrl);
   geo = await collectGeodata(
     world, {}, border, zones, proj, radiusM,
@@ -134,7 +120,7 @@ try {
   process.exit(1);
 }
 
-// ── what a real run has to produce ───────────────────────────────────────────
+// What a real run has to produce.
 
 check('geo.available', geo.available === true, JSON.stringify(geo.notes));
 
@@ -183,8 +169,7 @@ check('density categories marked partial in provenance',
 // Admin, without Nominatim
 check('country code from ISO3166-1 on the level-2 polygon',
   geo.admin.countryCode === 'us', String(geo.admin.countryCode));
-// The R-tree hands back Canada for this map because its BBOX contains it. Only a real
-// geometry test rejects it; without one, 'Canada' < 'United States of America' wins.
+// The R-tree returns Canada (bbox contains the map); only a geometry test rejects it.
 check('a country whose bbox contains the map but whose geometry does not is rejected',
   geo.admin.countryCode !== 'ca',
   `countryCode=${geo.admin.countryCode} — the admin bbox superset was not filtered`);
@@ -200,13 +185,9 @@ check('place name from the zone census, not the bbox centre',
 check('per-zone admin ladder populated',
   Object.keys(geo.admin.perZone).length === 3);
 
-// ── Phase 0: the double-emit fix, exercised on build.py's REAL pipeline ──────
-//
-// `pitch` and `coastline` were not hand-written into the test world: make-test-world
-// runs an OSM XML fixture through build.py's actual per-layer chain. Way 7101 is a
-// CLOSED way — under the old all-types export it produced two records (its polygon
-// plus the same ring as a zero-area linestring) and therefore two POIs at different
-// coordinates. Exactly one must survive.
+// Phase 0: the double-emit fix on build.py's real pipeline. `pitch` and `coastline`
+// come from an OSM XML fixture run through build.py. Way 7101 is a closed way and
+// must yield exactly one record, not polygon plus zero-area linestring.
 const pitchPois = geo.pois.pitch || [];
 check('closed way exports exactly one record (geometry class)',
   pitchPois.filter((p) => p.osmId === 7101).length === 1,
@@ -216,9 +197,8 @@ check('unclosed way carrying an area tag is dropped as a mapping error',
   pitchPois.map((p) => `${p.osmType}/${p.osmId}`).join(','));
 check('pitch count is the deduplicated count', geo.counts.pitch === 2,
   `counts.pitch=${geo.counts.pitch}`);
-// The mixed-layer case: coastline keeps `linestring` in its export (way 7104 is an
-// open shore segment), so the closed island way 7103 double-emits and the streaming
-// dedup pass — not the geometry class — must drop its linestring copy.
+// Mixed layer: coastline keeps `linestring` (way 7104 is open), so closed way 7103
+// double-emits and the streaming dedup pass must drop its linestring copy.
 const coastPois = geo.pois.coastline || [];
 check('closed way on a mixed layer exports exactly one record (dedup pass)',
   coastPois.filter((p) => p.osmId === 7103).length === 1,
@@ -231,13 +211,9 @@ check('coastline count is the deduplicated count', geo.counts.coastline === 2,
 check('tumble_ground curse reads the deduplicated pitch count',
   geo.curseCounts.endless_tumble === 2, `endless_tumble=${geo.curseCounts.endless_tumble}`);
 
-// ── Phase 1 R5: a built layer ships ONLY the runtime columns ─────────────────
-//
-// Asserted on the FlatGeobuf HEADER, exactly, rather than on the decoded properties —
-// a build-only column that came back would be invisible in the POIs (nothing reads
-// `leisure`) while costing bytes on every feature of every layer on the planet. The
-// fixture tags `pitch` with `leisure` and `name`; `-select` must project `leisure`
-// away and keep the identity pair. An == comparison, so a re-added column fails here.
+// Phase 1 R5: a built layer ships only the runtime columns. Asserted on the
+// FlatGeobuf header exactly, since a stray build-only column (e.g. `leisure`) is
+// invisible in the POIs but costs bytes on every feature.
 {
   const reader = new FlatGeobufReader(`${baseUrl}/pitch.fgb`);
   const columns = (await reader.open()).columns.map((c) => c.name);
@@ -246,12 +222,8 @@ check('tumble_ground curse reads the deduplicated pitch count',
     JSON.stringify(columns));
 }
 
-// ── Phase 1 R1: curse layers are bbox diagonals with no properties ───────────
-//
-// curse_cairn_terrain also went through the real pipeline (a closed natural=wood way
-// plus a natural=beach node). What ships must be 2-point linestrings whose envelopes
-// are BIT-IDENTICAL to the source features' — that is the whole safety argument for
-// R1: worldCount walks the R-tree, and identical envelopes mean identical counts.
+// Phase 1 R1: curse layers are bbox diagonals with no properties. Envelopes must be
+// bit-identical to the source features', since worldCount walks the R-tree.
 {
   const rect = { minX: bbox[1], minY: bbox[0], maxX: bbox[3], maxY: bbox[2] };
   const reader = new FlatGeobufReader(`${baseUrl}/curse_cairn_terrain.fgb`);
@@ -263,9 +235,7 @@ check('tumble_ground curse reads the deduplicated pitch count',
       && Object.keys(f.properties).length === 0),
     JSON.stringify(diagonals.map((f) => [f.lines, f.properties])));
   const got = diagonals.map((f) => JSON.stringify(f.lines[0])).sort();
-  // The wood way's ring spans lon −85.6750..−85.6730, lat 42.9560..42.9580; the beach
-  // node degenerates to a zero-length diagonal. Compared exactly, not approximately —
-  // the envelope must be bit-identical or every R-tree bbox drifts.
+  // Compared exactly: the beach node degenerates to a zero-length diagonal.
   check('diagonal equals the source envelope exactly (closed way)',
     got.includes(JSON.stringify([[-85.675, 42.956], [-85.673, 42.958]])), got.join(' | '));
   check('a node diagonal degenerates to its own point',
@@ -274,7 +244,7 @@ check('tumble_ground curse reads the deduplicated pitch count',
     `cairn=${geo.curseCounts.cairn}`);
 }
 
-// ── Phase 1 R2: curse_animal_habitat replaced by a partition identity ────────
+// Phase 1 R2: curse_animal_habitat replaced by a partition identity.
 check('curse_animal_habitat is no longer built',
   world.manifest.layers.curse_animal_habitat === undefined);
 check('the R2 partition layers are built',
@@ -282,8 +252,7 @@ check('the R2 partition layers are built',
   && world.manifest.layers.animal_delta !== undefined,
   Object.keys(world.manifest.layers).join(','));
 {
-  // The identity, computed the way the client computes it: envelope counts. The true
-  // habitat set over this bbox is {w101, w102, w801, w802, w201, w203} — six.
+  // Envelope counts, as the client computes them. True habitat set here is six features.
   const green = await worldCount(world, 'green', bbox);
   const recreation = await worldCount(world, 'green_recreation_ground', bbox);
   const delta = await worldCount(world, 'animal_delta', bbox);
@@ -299,14 +268,9 @@ check('the substitution is logged, not silent',
   logLines.some((l) => /animal_habitat.*counted as/.test(l)),
   logLines.filter((l) => /animal_habitat/.test(l)).join(' | ') || '(no habitat log line)');
 
-// ── R2's other half: a world that STILL ships curse_animal_habitat ───────────
-//
-// Every world built before Phase 1 R2 carries the layer, and `curseLayerCount` reads it
-// directly in that case — the identity arithmetic must not run at all, or an old build
-// would be re-derived from layers it never contained. The variant world is the same
-// directory with an aliased manifest: `curse_animal_habitat` pointing at
-// `curse_cairn_terrain.fgb`, whose 2 features over this bbox are deliberately NOT the
-// 6 the identity produces, so a direct read and a substituted read cannot be confused.
+// R2's other half: a world that still ships curse_animal_habitat must be read
+// directly, with no identity arithmetic. The aliased manifest points the layer at
+// curse_cairn_terrain.fgb (2 features, not the identity's 6) so the two cannot be confused.
 {
   const real = JSON.parse(await readFile(join(worldDir, 'manifest.json'), 'utf8'));
   overrides.set('manifest.json', Buffer.from(JSON.stringify({
@@ -332,19 +296,11 @@ check('the substitution is logged, not silent',
     legacy.available === true && (legacy.pois.park || []).length === 2);
 }
 
-// ── the R2 identity against merge.py's two manifest degradations ─────────────
-//
-// Three variants of the same world, differing only in what the manifest says about
-// `green_recreation_ground` (the subtracted term, 1 feature over this bbox):
-//
-//   1. a PATH-LESS `{"features": 0}` entry — a real, present, EMPTY layer. worldCount
-//      answers 0 directly, so the identity runs with a genuine zero: 3 − 0 + 4 = 7.
-//      No absent-term logging, and no fetch of '<base>/undefined'.
-//   2. the entry DELETED from a full manifest — build.py's "selector matched nothing"
-//      omission. The absent-term-as-zero branch runs, logged: 3 − 0 + 4 = 7.
-//   3. the entry deleted from a manifest marked `"partial": true` — a --only build,
-//      where absence means NOT BUILT. Zeroing would fabricate a wrong total in the
-//      direction that removes a curse, so the predicate must refuse instead.
+// The R2 identity against merge.py's manifest degradations. Three variants differing
+// only in the `green_recreation_ground` entry (the subtracted term, 1 feature here):
+//   1. path-less `{"features": 0}`: a real empty layer, genuine zero: 3 − 0 + 4 = 7.
+//   2. deleted from a full manifest: absent-as-zero, logged: 3 − 0 + 4 = 7.
+//   3. deleted from a `"partial": true` manifest: absence means NOT BUILT; refuse.
 {
   const real = JSON.parse(await readFile(join(worldDir, 'manifest.json'), 'utf8'));
   const run = async (mutate) => {
@@ -360,7 +316,7 @@ check('the substitution is logged, not silent',
     return { out, lines };
   };
 
-  // 1. path-less empty term: a genuine 0 inside the expression.
+  // 1. path-less empty term.
   const empty = await run((m) => {
     m.layers.green_recreation_ground = { features: 0 };
   });
@@ -371,7 +327,7 @@ check('the substitution is logged, not silent',
     !empty.lines.some((l) => /green_recreation_ground.*counted as 0/.test(l)),
     empty.lines.filter((l) => /green_recreation_ground/.test(l)).join(' | '));
 
-  // 2. term omitted from a FULL manifest: absent-as-zero, with the info line.
+  // 2. term omitted from a full manifest.
   const omitted = await run((m) => {
     delete m.layers.green_recreation_ground;
   });
@@ -382,7 +338,7 @@ check('the substitution is logged, not silent',
     omitted.lines.some((l) => /green_recreation_ground.*counted as 0/.test(l)),
     omitted.lines.filter((l) => /green_recreation_ground/.test(l)).join(' | ') || '(no line)');
 
-  // 3. the same omission on a PARTIAL manifest: refuse, never zero.
+  // 3. the same omission on a partial manifest.
   const partial = await run((m) => {
     delete m.layers.green_recreation_ground;
     m.partial = true;
@@ -399,7 +355,7 @@ check('the substitution is logged, not silent',
     partial.out.available === true && (partial.out.pois.park || []).length === 2);
 }
 
-// ── Phase 1 R4: zero-valued density counts are omitted per cell ──────────────
+// Phase 1 R4: zero-valued density counts are omitted per cell.
 {
   const rect = { minX: bbox[1], minY: bbox[0], maxX: bbox[3], maxY: bbox[2] };
   const reader = new FlatGeobufReader(`${baseUrl}/density.fgb`);
@@ -420,14 +376,8 @@ check('an empty layer reads as zero features, not an error',
   && (geo.pois.foreign_consulate || []).length === 0,
   `counts.foreign_consulate=${geo.counts.foreign_consulate}`);
 
-// ── merge.py's OTHER empty-layer shape: a path-less {"features": 0} entry ────
-//
-// A merged world lists a layer that is empty across every region as an entry with no
-// `path` at all — present, real, and zero. `mountain` is that entry in this world.
-// It must answer 0 / [] like the with-file shape above, must not degrade the category
-// to unavailable, and above all must never be turned into a reader: the naive
-// `baseUrl + '/' + info.path` is '<base>/undefined', and the throw from its first
-// Range request used to abort the whole curse-predicate loop.
+// merge.py's other empty-layer shape: a path-less {"features": 0} entry (`mountain`
+// here). It must answer 0 / [], not degrade the category, and never become a reader.
 check('a path-less manifest entry answers count 0, not unavailable',
   geo.counts.mountain === 0, `counts.mountain=${JSON.stringify(geo.counts.mountain)}`);
 check('a path-less manifest entry answers an empty POI list',
@@ -448,9 +398,7 @@ check('the path-less entry gets an empty-layer provenance line, not undefined/Na
 check('no request was ever made to <base>/undefined',
   undefinedRequests === 0, `${undefinedRequests} requests to /undefined`);
 
-// Curse predicates
-// curse_water is 'marked' water (3 features); the water CATEGORY is 'named' (2). On a
-// real map they differ by 8:1, and conflating them has happened before.
+// Curse predicates. curse_water is 'marked' water (3); the water category is 'named' (2).
 check('curse water uses its OWN layer, not the water category',
   geo.curseCounts.water_weight === 3,
   `water_weight=${geo.curseCounts.water_weight}, counts.water=${geo.counts.water}`);
@@ -487,12 +435,8 @@ check('served over HTTP Range', rangeRequests > 0,
 check('worldStatsLine reports real traffic', /range requests/.test(worldStatsLine(world)),
   worldStatsLine(world));
 
-// ── second run: the density grid is unreachable ──────────────────────────────
-//
-// A failed density fetch must leave the six grid categories ABSENT, not zero. A zero
-// propagates: curseCounts reads geo.counts directly, so Bridge Troll / Luxury Car /
-// Right Turn would all come back "remove, count 0 — no bridges on the game map" off a
-// network error, and the street question would flip from functional to dead.
+// Second run: the density grid is unreachable. The six grid categories must be
+// ABSENT, not zero, or curses would be removed off a network error.
 suppressed.add('density.fgb');
 let degraded;
 try {
@@ -515,8 +459,7 @@ if (degraded) {
 }
 suppressed.delete('density.fgb');
 
-// Across EVERY run above — including the path-less-entry variants — nothing may have
-// asked the origin for '<base>/undefined'.
+// Across every run above, nothing may have asked for '<base>/undefined'.
 check('no run ever requested <base>/undefined',
   undefinedRequests === 0, `${undefinedRequests} requests to /undefined`);
 

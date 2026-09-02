@@ -1,27 +1,15 @@
 #!/usr/bin/env bash
 # tools/osm-world/fgb-equal.sh — is FlatGeobuf A equivalent to FlatGeobuf B?
 #
-# WHY THIS EXISTS
-# ---------------
-# build.py's per-layer pipeline (osmium tags-filter → osmium export → ogr2ogr) is
-# byte-reproducible: identical input and identical flags give a bit-identical .fgb,
-# regardless of output path, temp directory, locale, timezone, thread-pool size, or
-# how many conversions run concurrently. That was verified empirically, so a plain
-# sha256 comparison is the real test and running the layers in parallel must not
-# change a single byte.
-#
-# The semantic tiers below exist for the case where sha256 legitimately differs —
-# a GDAL or osmium upgrade, or a deliberate flag change — and the question becomes
-# "is the DATA still the same?" rather than "is the FILE still the same?".
+# build.py's per-layer pipeline is byte-reproducible, so sha256 is the real test.
+# The semantic tiers cover the case where sha256 legitimately differs (a GDAL or
+# osmium upgrade, a flag change) and the question is whether the DATA is the same.
 #
 #   TIER 1  sha256           the whole file. Cheap, and the one that should pass.
 #   TIER 2  ogrinfo -so -al  layer name, geometry type, feature count, extent,
-#                            field schema. Reads only the header: instant even on
-#                            a 1.1 GB layer.
-#   TIER 3  sorted content   every feature's attributes and geometry as WKT, sorted
-#                            so Hilbert ordering cannot matter, hashed. This reads
-#                            both files end to end — minutes and gigabytes of I/O
-#                            on the large layers — so it is opt-in via --deep.
+#                            field schema. Header only: instant.
+#   TIER 3  sorted content   every feature as WKT + attributes, sorted, hashed.
+#                            Reads both files end to end, so opt-in via --deep.
 #
 # USAGE
 #   tools/osm-world/fgb-equal.sh a.fgb b.fgb            # tiers 1-2
@@ -38,7 +26,7 @@ while [[ ${1:-} == --* ]]; do
   case "$1" in
     --deep) deep=1; shift ;;
     --dir)  dirmode=1; shift ;;
-    --help) sed -n '2,40p' "$0"; exit 0 ;;
+    --help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -48,12 +36,7 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-# ── tier 2: the header summary, with the noise stripped ──────────────────────
-#
-# `ogrinfo -so -al` prints the path it was given ("INFO: Open of `x.fgb'"), which
-# differs between any two files by construction, and 30 lines of WGS 84 WKT that is
-# a constant. Both are dropped. What is kept is everything that describes the data:
-# layer name, geometry type, feature count, extent, and every field with its type.
+# Tier 2: the header summary, minus the path line and the constant WGS 84 WKT.
 summary() {
   ogrinfo -so -al "$1" 2>&1 \
     | grep -Ev '^INFO: Open of|^ *using driver|^$' \
@@ -61,14 +44,8 @@ summary() {
     | grep -Ev '^(GEOGCRS|ENSEMBLE|MEMBER|ELLIPSOID|LENGTHUNIT|ENSEMBLEACCURACY|PRIMEM|ANGLEUNIT|CS|AXIS|ORDER|USAGE|SCOPE|AREA|BBOX|ID|Layer SRS WKT|Data axis)|^ '
 }
 
-# ── tier 3: every feature, order-independent ─────────────────────────────────
-#
-# CSV with GEOMETRY=AS_WKT puts the geometry in a column alongside the attributes,
-# so one sorted hash covers both. Sorting is what makes this independent of the
-# Hilbert order the FlatGeobuf writer imposes — two files holding the same features
-# in different physical order are the same data, and this says so.
-#
-# LC_ALL=C so the sort is bytewise and cannot drift with the caller's locale.
+# Tier 3: every feature, sorted so the writer's Hilbert order cannot matter.
+# LC_ALL=C so the sort is bytewise regardless of locale.
 content_hash() {
   LC_ALL=C ogr2ogr -f CSV /vsistdout/ "$1" -lco GEOMETRY=AS_WKT -lco LINEFORMAT=LF 2>/dev/null \
     | LC_ALL=C sort \
@@ -120,9 +97,7 @@ compare_one() {
 
 status=0
 if [[ $dirmode == 1 ]]; then
-  # Compare the union of both directories, so a layer present in one and absent from
-  # the other is reported rather than silently skipped — an omitted layer is exactly
-  # the kind of regression a parallel rewrite introduces.
+  # Compare the union of both directories so an omitted layer is reported, not skipped.
   mapfile -t names < <(
     { ls "$1" 2>/dev/null; ls "$2" 2>/dev/null; } | grep '\.fgb$' | sort -u
   )

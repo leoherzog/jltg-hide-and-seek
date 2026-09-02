@@ -6,32 +6,23 @@
  * `_s1_percentiles`, `_s1_day_metrics`, `_s1_axis_scores`, `_s1_provisional_size`,
  * `network_metrics` and `route_headways`.
  *
- * `routeSpokes` is not a port: it is new (2026-08-23) and exists so the map can draw
- * the network's shape. It and `s1RouteKm` read one `s1Shapes(feed)` — one parse of
- * `shapes.txt`, one longest-shape-per-(route, direction) selection — so the drawn
- * network and the published kilometres are the same set of lines by construction.
+ * `routeSpokes` is not a port: it draws the network's shape on the map. It and
+ * `s1RouteKm` read one `s1Shapes(feed)`, so the drawn network and the published
+ * kilometres are the same set of lines. `cluster_stations` lives in `./service.js`
+ * and is re-exported here.
  *
- * `cluster_stations` lives in `./service.js` in this port — it is a
- * property of the feed, not of the metric table — and is re-exported here so the
- * grouping of the Python section survives.
+ * Three things here carry rulebook meaning and must not drift:
  *
- * Three things in this file carry rulebook meaning and must not drift:
- *
- *   * `zoneCover` is *the* hiding-zone count. The tie-break chain and the lazy-heap
- *     ordering are load-bearing: change either and the reference feed stops being
- *     319 quarter-mile zones.
- *   * `routeHeadways` reports the **midday median over the route-direction's stops**,
- *     never the all-day mean. It legitimately disagrees with agency-published figures
- *     on peak-heavy routes; that disagreement is the correct answer to "how often can
- *     I catch this at 11am", which is the only question the game asks.
+ *   * `zoneCover` is *the* hiding-zone count. Its tie-break chain and lazy-heap
+ *     ordering are load-bearing: the reference feed is 319 quarter-mile zones.
+ *   * `routeHeadways` reports the midday median over the route-direction's stops,
+ *     never the all-day mean: it answers "how often can I catch this at 11am".
  *   * `_s1DayMetrics` emits the metric table that `rules/score.js` and every renderer
- *     look up **by name**. Renaming a key silently deletes a scoring metric.
+ *     look up by name. Renaming a key silently deletes a scoring metric.
  *
  * Field names follow CONTRACT.md §(b): camelCase, with the snake_case Python
- * original in the trailing comment.
- *
- * No DOM, no clock, no RNG. Every `Map`/`Set`/object is sorted before it is
- * iterated for anything that reaches the output.
+ * original in the trailing comment. No DOM, no clock, no RNG; every `Map`/`Set`/
+ * object is sorted before it is iterated for anything that reaches the output.
  *
  * @module gtfs/network.js
  */
@@ -70,10 +61,9 @@ import {
   polygonArea,
 } from '../lib/geo.js';
 import { s1Cache, s1Float, s1Int, s1Median, s1Share } from './feed.js';
-// A cycle on purpose: infer.js imports the size table from here, and this file
-// takes the memoised hub run from there. Both sides only call the other's
-// functions from inside functions, never at module top level, so ES-module
-// hoisting resolves it; do not add a top-level use of `hubRun` here.
+// A cycle on purpose: infer.js imports the size table from here and this file takes
+// `hubRun` from there. Both sides call the other only from inside functions; do not
+// add a top-level use of `hubRun` here.
 import { hubRun } from './infer.js';
 import {
   busiestDay,
@@ -122,20 +112,14 @@ export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.
 
 /**
  * The rulebook's own size parameters (GUIDE.md "Choosing Game Size", SEEKING.md
- * question tiers). Every field here is a transcription EXCEPT `requiredHours`,
- * which is inferred and marked as such on each entry — see the note below.
- * `SIZES` in rules/catalogue.js is now only the catalogue-size lookup; it no
- * longer carries this table or this inference.
- * `_S1_SIZE_PARAMS`, generate.py.
+ * question tiers). Every field is a transcription except `requiredHours`, which is
+ * inferred and marked on each entry. `_S1_SIZE_PARAMS`, generate.py.
  *
- * `requiredHours` is a playing DAY, not the whole game. The rulebook states a
- * size's length only as prose — SMALL "lasts 4–8 hours", MEDIUM "lasts about 1
- * day", LARGE "lasts 2 to 4 days" (GUIDE.md "Choosing Game Size") — and never
- * prints an hours-per-day figure, so 6 / 10 / 12 are ours. SMALL's 6 sits inside
- * the stated 4–8; 10 and 12 stay under the ~14 hours a day can hold once the
- * rulebook's own "minimum of 10 hours" of rest comes out of the 24. The scoring
- * layer divides a single day's service span by this, which is why a per-day
- * figure is the right unit for the multi-day sizes.
+ * `requiredHours` is a playing DAY, not the whole game. The rulebook gives a size's
+ * length only as prose (SMALL "lasts 4–8 hours", MEDIUM "about 1 day", LARGE "2 to
+ * 4 days"), so 6 / 10 / 12 are ours: inside the stated range for SMALL, and under
+ * the ~14 hours a day holds once the rulebook's 10 hours of rest come out. The
+ * scoring layer divides a single day's service span by this.
  */
 export const S1_SIZE_PARAMS = Object.freeze({
   small: Object.freeze({
@@ -167,10 +151,8 @@ const SIZE_NAMES_SORTED = Object.freeze(Object.keys(S1_SIZE_PARAMS).sort(cmpStr)
 // ── the lazy greedy heap ─────────────────────────────────────────────────────
 
 /**
- * Python tuple order over `(-degree, -events, stopId)`.
- *
- * `stopId` is unique across the heap, so the order is total and the pop sequence
- * is fully determined — it does not depend on this heap's internal layout.
+ * Python tuple order over `(-degree, -events, stopId)`. `stopId` is unique, so the
+ * order is total and the pop sequence fully determined.
  */
 function heapLess(a, b) {
   if (a[0] !== b[0]) return a[0] < b[0];
@@ -227,14 +209,13 @@ function heapPop(h) {
  * Greedy maximal independent set at `radiusM` — the distinct-hiding-zone count.
  *
  * Repeatedly take the stop covering the most still-uncovered stops within the
- * radius, emit it as a zone centre, and remove everything inside. Tie-break chain
- * `(−degree, −stopEvents, stopId)` makes it fully deterministic; a grid makes it
- * 0.04 s where the O(n²) reference took 57 s (identical output).
+ * radius, emit it as a zone centre, and remove everything inside. The tie-break
+ * chain `(−degree, −stopEvents, stopId)` makes it deterministic; a grid makes it
+ * 0.04 s where the O(n²) reference took 57 s.
  *
- * Returns the chosen centre stop ids, sorted. This is *the* number that goes into
- * the rulebook's "30–100 / 100–500 / 500+ stations" table — 1,493 bus poles are 319
- * distinct ¼-mile zones, and feeding the raw stop count in would call a mid-size
- * bus city a national rail network.
+ * Returns the centre stop ids, sorted. This is the number that goes into the
+ * rulebook's "30–100 / 100–500 / 500+ stations" table: 1,493 bus poles are 319
+ * distinct ¼-mile zones.
  *
  * @param {string[]} stopIds
  * @param {number} radiusM
@@ -313,20 +294,13 @@ export function s1ZoneMembers(centres, stopIds, radiusM, pos) {
 }
 
 /**
- * Turn zone-cover centres into full `Zone` records.
+ * Turn zone-cover centres into full `Zone` records: every served stop inside each
+ * circle, the union of their routes, and the total stop events. Sorted by `zoneId`.
  *
- * Each zone gains every served stop inside its circle, the union of their routes,
- * and the total stop events — so the dossier can say "6 stops, 3 routes, this is
- * the one you name". Sorted by `zoneId`.
- *
- * `inPlay` (2026-08-27) is the in-play set, or null for every served stop. It has to
- * be threaded here as well as into `zoneCover`: the cover picks the CENTRES, and
- * without this the MEMBERS would still be drawn from every served stop, so a stop the
- * border or `excludeStops` deleted would go on contributing its departures to
- * `stopEvents`, its routes to `routeIds`, and its id to `Zone.stopIds` — which
- * `s3ZoneHeadwayMin`, `s3ZoneLastArrivalS` and the strategy view's "N stops inside the
- * circle" all read. `s1DayMetrics` has always measured its own zones over the in-play
- * set, so the emitted zones and the metrics measured over them used to disagree.
+ * `inPlay` must be threaded here as well as into `zoneCover`: the cover picks the
+ * centres, but the MEMBERS would otherwise still come from every served stop, so an
+ * excluded stop would keep contributing to `stopEvents`, `routeIds` and
+ * `Zone.stopIds`.
  *
  * @param {object} feed @param {object} day a `ServiceDay`
  * @param {string[]} centres @param {number} radiusM
@@ -395,21 +369,16 @@ export function s1HullAndShape(points) {
 }
 
 /**
- * `shapes.txt`, parsed once per feed: each shape's metric length and its ordered
- * `[lat, lon]` points, plus the **longest shape per (routeId, directionId)**.
+ * `shapes.txt`, parsed once per feed: each shape's metric length and ordered
+ * `[lat, lon]` points, plus the longest shape per (routeId, directionId).
  *
  * `s1RouteKm` sums the lengths and `routeSpokes` draws the points, so this is the
- * one place the selection is made — the published kilometres and the drawn network
- * cannot disagree, and the file is read once rather than once per caller.
+ * one place the selection is made. A route-direction whose shapes all measure zero
+ * is still a key with `len: 0`.
  *
- * A route-direction whose every shape measures zero is still a key here, carrying
- * `len: 0`: it adds nothing to a sum and draws nothing.
- *
- * Only the **selected** shapes' points survive into the cached value. A big feed's
- * `shapes.txt` is mostly short-turn and detour variants that no route-direction wins
- * with (MBTA: ~1.4 M points), and this is memoised on the feed for the whole run —
- * so the point arrays are built, measured, and then dropped for every shape
- * `longest` does not name.
+ * Only the selected shapes' points survive into the cached value: a big feed's
+ * `shapes.txt` is mostly short-turn variants (MBTA: ~1.4 M points) and this is
+ * memoised for the whole run.
  *
  * @param {object} feed
  * @returns {{seq: Map<string, Array<[number, number]>>,
@@ -468,14 +437,10 @@ function s1Shapes(feed) {
 }
 
 /**
- * `[bothDirectionsKm, oneDirectionKm]` from the **longest shape per
- * (routeId, directionId)**.
- *
- * Summing every shape overstates the reference network 6.5× (5,220 km against
- * 809 km) because every short-turn and detour variant is its own shape.
- *
- * The one-direction figure folds out of the same map: a route's longest shape is
- * the longest of its directions' longest shapes.
+ * `[bothDirectionsKm, oneDirectionKm]` from the longest shape per
+ * (routeId, directionId). Summing every shape overstates the reference network
+ * 6.5× (5,220 km against 809 km). The one-direction figure is the longest of a
+ * route's directions' longest shapes.
  *
  * @param {object} feed @returns {[number, number]}
  */
@@ -499,11 +464,9 @@ export function s1RouteKm(feed) {
 }
 
 /**
- * Perpendicular distance in metres from `p` to the segment `a`–`b`.
- *
- * Local equirectangular metres about `a` — the same approximation `ringOf` in the
- * page runtime draws with, and good to a few centimetres over a bus route. Only the
- * RDP decimation reads it, and its tolerance is 20 m.
+ * Perpendicular distance in metres from `p` to the segment `a`–`b`, in local
+ * equirectangular metres about `a` (the same approximation `ringOf` draws with).
+ * Only the RDP decimation reads it.
  */
 function segDistM(p, a, b) {
   const k = Math.cos((a[0] * Math.PI) / 180.0);
@@ -522,12 +485,9 @@ function segDistM(p, a, b) {
 }
 
 /**
- * Ramer-Douglas-Peucker, **iterative**, over `[lat, lon]` points.
- *
- * An explicit stack and integer indices, never recursion: a national feed ships
- * polylines deep enough to blow the call stack, and — worse for this repo — a
- * recursive implementation's result can depend on the engine's stack limit. The
- * keep-mask is built in index order, so the output is the input's own order.
+ * Ramer-Douglas-Peucker, iterative, over `[lat, lon]` points. An explicit stack
+ * rather than recursion: a national feed's polylines can blow the call stack, and a
+ * recursive result could depend on the engine's stack limit. Output keeps input order.
  *
  * @param {Array<[number, number]>} points @param {number} toleranceM
  * @returns {Array<[number, number]>}
@@ -562,16 +522,13 @@ function rdp(points, toleranceM) {
 /**
  * Drawable geometry for the map's route-spoke layer, one entry per route-direction.
  *
- * The geometry is `s1Shapes`' **longest shape per (routeId, directionId)** — the
- * very selection `s1RouteKm` sums for `routeKmOneDir`, so the drawn network and the
- * published kilometres cannot disagree — decimated by RDP at `toleranceM`. A feed
- * with no `shapes.txt` falls back to the longest ordered stop sequence per
- * route-direction (`source: 'stops'`), which is a chord diagram rather than a road
- * alignment and is labelled as one on the page.
+ * The geometry is `s1Shapes`' longest shape per (routeId, directionId) — the same
+ * selection `s1RouteKm` sums — decimated by RDP at `toleranceM`. A feed with no
+ * `shapes.txt` falls back to the longest stop sequence per route-direction
+ * (`source: 'stops'`), a chord diagram the page labels as such.
  *
- * Route-directions are ranked by `(-maxTrips, shortName, routeId, directionId)` —
- * `s4HeatmapRows`' own tie-break tuple — and sliced to `cap`. `cap.shown < cap.total`
- * is the page's cue to say so; a silent cap is the one thing this must not be.
+ * Route-directions are ranked by `(-maxTrips, shortName, routeId, directionId)` and
+ * sliced to `cap`; `cap.shown < cap.total` is the page's cue to say so.
  *
  * @param {object} feed @param {object[]} days @param {object|null} hub
  * @param {number} [cap=MAX_MAP_SPOKES] @param {number} [toleranceM=MAP_SPOKE_RDP_M]
@@ -602,9 +559,8 @@ export function routeSpokes(feed, days, hub, cap = MAX_MAP_SPOKES,
   }
 
   if (!geometry.size) {
-    // No shapes.txt (or none any trip references). The honest fallback is the
-    // longest ordered stop sequence per route-direction: right topology, straight
-    // chords instead of streets, and `source` says so.
+    // No shapes.txt: fall back to the longest stop sequence per route-direction, and
+    // `source` says so.
     source = 'stops';
     /** @type {Map<string, string[]>} route-direction → stop ids */
     const longest = new Map();
@@ -629,8 +585,8 @@ export function routeSpokes(feed, days, hub, cap = MAX_MAP_SPOKES,
     }
   }
 
-  // Which route-directions touch the round-start station, from the day's own stop
-  // rows rather than from the geometry — a shape can pass a stop it does not serve.
+  // From the day's own stop rows, not the geometry: a shape can pass a stop it does
+  // not serve.
   const atHub = new Set();
   const hubId = (hub && hub.stopId) || '';
   if (hubId) {
@@ -693,10 +649,9 @@ export function routeSpokes(feed, days, hub, cap = MAX_MAP_SPOKES,
 /**
  * Hit rate of each radar radius over a deterministic stop-pair sample.
  *
- * Returns `radiusM → fraction of sampled pairs within that radius` (the key is the
- * radius stringified, per CONTRACT §(b) — `obj[402.336]` reads it back unchanged).
- * A radar is dead above `RADAR_DEAD_HIGH` (always "yes") or below `RADAR_DEAD_LOW`
- * (always "no"). Sampling is a fixed stride over sorted pairs, not RNG.
+ * Returns `radiusM → fraction of sampled pairs within that radius` (key is the
+ * radius stringified, per CONTRACT §(b)). A radar is dead above `RADAR_DEAD_HIGH`
+ * or below `RADAR_DEAD_LOW`. Sampling is a fixed stride over sorted pairs, not RNG.
  *
  * @param {string[]} stopIds @param {Object<string, [number, number]>} pos
  * @param {number[]} radiiM
@@ -722,8 +677,7 @@ export function radarLiveness(stopIds, pos, radiiM) {
   for (let i = 0; i < n; i++) {
     const xi = points[i][0];
     const yi = points[i][1];
-    // The rotating offset keeps the sample from always landing on the same
-    // alignment of the pair matrix; it is a pure function of i, not entropy.
+    // The rotating offset is a pure function of i, not entropy.
     for (let j = i + 1 + (i % stride); j < n; j += stride) {
       const d = Math.hypot(points[j][0] - xi, points[j][1] - yi);
       sampled++;
@@ -764,14 +718,9 @@ function inPlayForDay(day, inPlay) {
   if (!inPlay) return Array.from(day.servedStopIds);
   const today = new Set(day.servedStopIds);
   const out = inPlay.filter((sid) => today.has(sid));
-  // A day the set does not touch AT ALL is measured whole rather than not at all.
-  // The `IN_PLAY_MIN_SHARE` floor in `inPlayStopIds` protects the best day only, and
-  // the set is then measured across every day type (and, for `suggestBorder`, over a
-  // candidate core built on the best day): a Sunday network entirely outside the
-  // reader's box leaves this intersection empty, and an empty set reaches
-  // `minEnclosingCircle` below as `RangeError: no points` — which worker.js turns
-  // into a fatal 'network' error and no report at all, for a border the reader was
-  // entitled to draw. Same discipline as the floor, applied per day. (2026-08-27.)
+  // A day the set does not touch at all is measured whole: the `IN_PLAY_MIN_SHARE`
+  // floor protects the best day only, and an empty set would reach
+  // `minEnclosingCircle` as `RangeError: no points` and kill the report.
   return out.length ? out : Array.from(day.servedStopIds);
 }
 
@@ -779,17 +728,14 @@ function inPlayForDay(day, inPlay) {
  * Everything that is a property of one service day. Called once per day type.
  * `_s1_day_metrics`, generate.py.
  *
- * The keys are read **by name** — by `rules/score.js`, by the renderers, and by
- * `networkMetrics` itself. Do not rename one without grepping.
+ * The keys are read by name — by `rules/score.js`, the renderers and
+ * `networkMetrics`. Do not rename one without grepping.
+ *
+ * `inPlay` narrows every quantity to the in-play set ∩ this day's served stops,
+ * filtered in `servedStopIds` order so the T90 origin stride samples as it always
+ * has. `null` is every served stop.
  *
  * @param {object} feed @param {object} day a `ServiceDay`
- * `inPlay` (2026-08-27) narrows every quantity to the in-play set ∩ this day's
- * served stops — an intersection, because the set is built on the best day and a
- * Sunday-only stop is not in it while a weekday-only one is not served today.
- * Filtered in `inPlay`'s own order, which is `servedStopIds` order, so the T90
- * origin stride below samples the same way it always has. `null` is every served
- * stop and byte-identical to the pre-2026-08-27 behaviour.
- *
  * @param {Projection|{lat0:number,lon0:number}} projLike
  * @param {string|null} hubStopId @param {number} radiusM
  * @param {string[]|null} [inPlay] the in-play set, or null for every served stop
@@ -804,18 +750,15 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = n
   for (const sid of served) events[sid] = day.stopDays[sid].departures.length;
 
   const centres = zoneCover(served, radiusM, events, pos);
-  // At LARGE the zone radius IS the half-mile radius, and nothing here mutates a
-  // cover, so the two share one greedy pass rather than running it twice.
+  // At LARGE the zone radius IS the half-mile radius, so the two share one pass.
   const centresHalf = radiusM === HALF_MILE_M
     ? centres
     : zoneCover(served, HALF_MILE_M, events, pos);
 
   const points = served.map((sid) => pos[sid]);
   const [, hullArea, diameter] = s1HullAndShape(points);
-  // Belt and braces beside `inPlayForDay`'s floor: `minEnclosingCircle` throws on an
-  // empty array and `bboxOf` returns ±Infinity, which `proj.xy` turns into NaN. A day
-  // with no served stops at all cannot reach here today; a table of zeroes is still a
-  // better failure than a fatal stage. (2026-08-27.)
+  // Belt and braces beside `inPlayForDay`'s floor: `minEnclosingCircle` throws on
+  // empty and `bboxOf` returns ±Infinity; a table of zeroes beats a fatal stage.
   const [cx, cy, mecR] = points.length ? minEnclosingCircle(points) : [0, 0, 0];
   const [mecLon, mecLat] = proj.lonlat(cx, cy);
   const latLon = served.map((sid) => [feed.stops[sid].lat, feed.stops[sid].lon]);
@@ -865,19 +808,16 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = n
   const reachByMinutes = Object.create(null);
   const reachableCentres = Object.create(null);
   if (origin) {
-    // Memoised on the feed: `inferBorder` and `suggestBorder` want this exact run
-    // (hub, DEFAULT_DEPARTURE) and now read the same object. Read-only from here.
+    // Memoised on the feed: `inferBorder` and `suggestBorder` read the same object.
+    // Read-only from here.
     const run = hubRun(feed, day, origin, depart);
-    // The run covers the WHOLE network — RAPTOR does not know about the in-play set —
-    // so the arrival keys have to be narrowed to it here or `reachWithinHidingPeriod`
-    // and the two hub-travel percentiles would be measured over stops the border
-    // deleted, while `servedStops` beside them counts only the in-play ones. §05 and
-    // the A2 finding print the two against each other ("1,486 of 1,190 served stops"),
-    // so the mismatch was visible on the page. A null set keeps `Object.keys` verbatim
-    // — same members, same order, byte-identical goldens. (2026-08-27.)
+    // RAPTOR covers the whole network, so the arrival keys are narrowed to the
+    // in-play set here or the reach counts would include stops the border deleted
+    // while `servedStops` counts only in-play ones. A null set keeps `Object.keys`
+    // verbatim.
     const daySet = inPlay ? new Set(served) : null;
-    // Unsorted keys on purpose: the map turns them into plain numbers before the
-    // cmpNum sort, so the key order cannot be observed. Do not restore a cmpStr sort.
+    // Unsorted keys on purpose: they become plain numbers before the cmpNum sort, so
+    // the key order cannot be observed. Do not restore a cmpStr sort.
     hubTimes = Object.keys(run.arrivalS)
       .filter((sid) => daySet === null || daySet.has(sid))
       .map((sid) => (run.arrivalS[sid] - depart) / 60.0).sort(cmpNum);
@@ -894,9 +834,8 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = n
     }
   }
 
-  // ~50 origins whatever the feed's size: the stride is the constant on a city
-  // feed (1,490 served stops → exactly 50) and grows on a national one, so T90
-  // costs 50 RAPTOR runs rather than one per thirty stops.
+  // ~50 origins whatever the feed's size: the stride is the constant on a city feed
+  // and grows on a national one.
   const stride = Math.max(T90_ORIGIN_STRIDE, Math.ceil(served.length / 50));
   const sample = [];
   for (let i = 0; i < served.length; i += stride) sample.push(served[i]);
@@ -916,8 +855,7 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = n
   const members = s1ZoneMembers(centres, served, radiusM, pos);
   let isolated = 0;
   if (centres.length > 1) {
-    // Grid at 2r so any neighbour inside 2r lies in the 3×3 cell block — O(n),
-    // not the O(n²) that a national feed's few thousand zones would make painful.
+    // Grid at 2r so any neighbour inside 2r lies in the 3×3 cell block — O(n).
     const cell = Math.max(1.0, 2 * radiusM);
     const zgrid = new GridIndex(cell);
     for (const centre of centres) zgrid.add(centre, pos[centre][0], pos[centre][1]);
@@ -989,8 +927,7 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = n
     transferStops2plus: multiRoute,              // transfer_stops_2plus
     transferStops3plus: tripleRoute,             // transfer_stops_3plus
     multiRouteStopShare: s1Share(multiRoute, served.length),      // multi_route_stop_share
-    // NOT `Math.max(...routeCounts)`: this array has one entry per served stop and
-    // spread blows the argument limit on a national feed. Loop.
+    // Not `Math.max(...routeCounts)`: spread blows the argument limit on a national feed.
     routesPerStopMax: maxOf(routeCounts),        // routes_per_stop_max
     stopDensityPerSqMi: s1Share(served.length, servedSqMi),  // stop_density_per_sq_mi
     zoneDensityPerSqMi: s1Share(centres.length, servedSqMi), // zone_density_per_sq_mi
@@ -1043,32 +980,23 @@ export function s1ProvisionalSize(metrics) {
 /**
  * Compute the whole network metric table — the input to the fitness model.
  *
- * Returns the flat object documented in CONTRACT §(b) `Metrics` (`servedStops`,
- * `nZones`, `hullSqM`, `diameterM`, `t90Min`, `medianHeadwayMin`, `frequentShare`,
- * `hubDominance`, `weekendRatio`, `spanHours`, …), with every per-day quantity
- * nested under `perDay[dayKey]`.
+ * Returns the flat object documented in CONTRACT §(b) `Metrics`, with every per-day
+ * quantity nested under `perDay[dayKey]`.
  *
- * Three choices that are baked in and must not be re-litigated:
- *   * route-km uses the **longest shape per (routeId, directionId)** — summing
- *     all shapes overstates the reference network 6.5× because every short-turn
- *     variant is its own shape;
- *   * area uses the **convex hull of served stops**, not the bbox (160 vs 259 sq mi);
- *   * traversal time is **T90** (median over a strided origin sample of each
- *     origin's p90), never `max`, which is set by one stop with a single
- *     mid-afternoon departure.
+ * Three baked-in choices, not to be re-litigated:
+ *   * route-km uses the longest shape per (routeId, directionId) — summing all
+ *     shapes overstates the reference network 6.5×;
+ *   * area uses the convex hull of served stops, not the bbox (160 vs 259 sq mi);
+ *   * traversal time is T90 (median over a strided origin sample of each origin's
+ *     p90), never `max`, which one stop with a single departure would set.
  *
- * Size-dependent quantities (`reachableZoneShare`, `eveningZoneShare`,
- * `playableDayWeight`, `reachWithinHidingPeriod`) are published both as a
- * `…BySize` object and as a single default keyed on the size the axes imply, so a
- * caller that already knows the resolved `GameSize` can read the exact figure.
+ * Size-dependent quantities are published both as a `…BySize` object and as a
+ * single default keyed on the size the axes imply.
  *
- * `inPlay` (2026-08-27) is the in-play set the whole table is measured over, or
- * null for every served stop. The memo key carries the set's length and a content
- * hash, so a caller measuring several candidate sets (`suggestBorder`) pays once
- * per DISTINCT set while a null caller keeps the key it always had. Two extra
- * fields describe the set: `allServedStops` (the unfiltered count on the best day)
- * and `inPlayFallback`, false here — the worker, which is the only caller that
- * knows whether `inPlayStopIds` fell back, overwrites it on the run's tables.
+ * `inPlay` is the in-play set the table is measured over, or null for every served
+ * stop. The memo key carries the set's length and a content hash, so `suggestBorder`
+ * pays once per distinct set. `allServedStops` is the unfiltered count on the best
+ * day; `inPlayFallback` is false here and overwritten by the worker.
  *
  * @param {object} feed @param {object[]} days `ServiceDay`s
  * @param {Projection|{lat0:number,lon0:number}} projLike
@@ -1203,15 +1131,11 @@ export function networkMetrics(feed, days, projLike, hub, radiusM, inPlay = null
 /**
  * Per-route median headway per day type, for the heatmap.
  *
- * Keyed on `(routeId, directionId, stopId)` and then medianed over the
- * route-direction's stops. Computing it at "the busiest stop of the route" merges
- * the two directions and reported one route as 3 min instead of 8 — always key on
- * the direction.
- *
- * The window is MIDDAY, and the number is a MEDIAN over the direction's stops — not
- * the all-day mean and not an average of averages. On peak-heavy routes this
- * legitimately disagrees with the agency's own published headway, and the midday
- * figure is the one the game needs: it answers "how often can I catch this at 11am".
+ * Keyed on `(routeId, directionId, stopId)`, then medianed over the route-direction's
+ * stops. Always key on the direction: measuring at "the busiest stop" merges the two
+ * directions and reported one route as 3 min instead of 8. The window is MIDDAY and
+ * the figure a median, so it legitimately disagrees with published headways on
+ * peak-heavy routes.
  *
  * Returns rows shaped as CONTRACT §(b) `RouteHeadwayRow`.
  *
@@ -1222,11 +1146,8 @@ export function routeHeadways(feed, days) {
   if (!days.length) return [];
   const bestKey = busiestDay(days).dayType.key;
 
-  // Midday is the honest window for "how often does this line run", but a peak-only
-  // route has no midday service at all and would otherwise be indistinguishable from
-  // a route that does not run that day. Widen the window until a number exists, so a
-  // `null` headway means the line ran fewer than two trips past any single stop —
-  // the row's `trips` counter says which of "none" and "one" it was.
+  // A peak-only route has no midday service, so widen the window until a number
+  // exists; a `null` headway then means fewer than two trips past any single stop.
   const windows = [MIDDAY_WINDOW, HEADWAY_WINDOW, ['00:00:00', hhmmss(SERVICE_DAY_SECONDS)]];
 
   // `routeId\0directionId` → dayKey → median headway ; and trip counts per day

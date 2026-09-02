@@ -2,27 +2,17 @@
 // worker.js — the pipeline orchestrator
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Ported from `build_report` (generate.py). The order below is the
-// Python's dependency order and it is the contract between sections: nothing later
-// may be needed by anything earlier. The one reordering is `travelTimeSamples`,
-// which the CLI computes last but CONTRACT.md §(d) puts in the `'network'` stage
-// payload; every input it needs (feed, days, zones, origin, departure) exists by
-// then, so moving it up is dependency-safe and changes no value.
+// Ported from `build_report` (generate.py). The order below is the Python's
+// dependency order: nothing later may be needed by anything earlier. The one
+// reordering is `travelTimeSamples`, which CONTRACT.md §(d) puts in the `'network'`
+// payload; every input it needs exists by then.
 //
-// Two entry points:
+// Two entry points: `runPipeline(options, source, emit)`, importable from Node
+// (`tools/smoke.mjs`), and `self.onmessage`, installed only inside a real worker.
 //
-//   * `runPipeline(options, source, emit)` — the pipeline itself, with the message
-//     sink injected. Importable from Node with no `Worker` global, which is what
-//     `tools/smoke.mjs` uses.
-//   * the module's own `self.onmessage`, which wraps `runPipeline` and forwards
-//     every message through `postMessage`. Installed only when this module is
-//     actually evaluated inside a worker.
-//
-// Everything that crosses `postMessage` is flattened to plain data here: the GTFS
-// layer's `ServiceDay` carries typed arrays and `Map`s, `Feed.tables` is a lazy
-// Proxy over a columnar store, and `Projection` is a class. None of the three can
-// be structured-cloned, so §(d)'s wire shapes (`DaySummary`, `StopRow`,
-// `{lat0, lon0}`) are built at this boundary and nowhere else.
+// Everything that crosses `postMessage` is flattened to plain data here: `ServiceDay`,
+// `Feed.tables` and `Projection` cannot be structured-cloned, so §(d)'s wire shapes
+// are built at this boundary and nowhere else.
 
 import {
   QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
@@ -57,10 +47,8 @@ import {
   auditCurses, seekerSample,
 } from './rules/audit.js';
 
-// `rules/score.js` (CONTRACT.md §(a)) is loaded dynamically rather than with a
-// static import. A static import of a module that is not on disk is a link error
-// that takes the whole worker down before the first message; a dynamic one lets the
-// nine sections that do not depend on scoring still reach the page. See `loadScore`.
+// `rules/score.js` (CONTRACT.md §(a)) is imported dynamically so its absence
+// degrades the scoring sections instead of taking the worker down. See `loadScore`.
 let SCORE = null;
 let SCORE_ERROR = null;
 
@@ -68,16 +56,13 @@ let SCORE_ERROR = null;
 const GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
- * `DEFAULT_OPTIONS`, CONTRACT.md §(c). `source` is deliberately absent — the run
- * message carries the file or the URL separately.
+ * `DEFAULT_OPTIONS`, CONTRACT.md §(c). `source` is deliberately absent: the run
+ * message carries the sources separately.
  */
 const DEFAULT_PIPELINE_OPTIONS = Object.freeze({
-  // Null, not the URL: this is an OVERRIDE, and it has to be distinguishable from
-  // "the reader typed the default back in by hand". `openWorld`'s own parameter
-  // default is the one place the published bucket is named, and a null here resolves
-  // to it at the call site — a null passed straight into `openWorld(baseUrl = …)`
-  // would NOT trigger the parameter default, which is the trap this comment exists
-  // to close.
+  // Null, not the URL: an override must be distinguishable from the default typed
+  // back in. Resolve it at the call site; a null passed straight into
+  // `openWorld(baseUrl = …)` would NOT trigger the parameter default.
   worldBaseUrl: null,
   asOf: null,
   sizeOverride: null,
@@ -104,12 +89,9 @@ const HEADWAY_BUCKETS = Object.freeze([5, 10, 15, 20, 30, 45, 60, 90]);
 
 // ── progress model ───────────────────────────────────────────────────────────
 //
-// One monotonic 0..1000 bar over weighted phases. Weights are rough measured
-// shares of the schedule side on the reference feed; the OSM phase dominates every
-// real run, which is why it carries the largest weight. `total` is fixed at 1000
-// and only `done` moves — CONTRACT.md permits a growing `total`, but a bar that
-// only ever advances reads better and the geo layer's own growing estimate is
-// already normalised into this phase's slice.
+// One monotonic 0..1000 bar over weighted phases; weights are rough measured shares
+// on the reference feed. `total` is fixed and only `done` moves: CONTRACT.md permits
+// a growing `total`, but a bar that only advances reads better.
 
 const PHASES = Object.freeze([
   ['feed', 'Reading the feed', 150],
@@ -139,11 +121,7 @@ class Progress {
     this.scale = PROGRESS_TOTAL / sum;
   }
 
-  /**
-   * Enter phase `i`, retiring every earlier phase's weight. The first message
-   * carries no label of its own, so `report` falls through to `PHASES[i]`'s name —
-   * which is the only phase-opening label there has ever been.
-   */
+  /** Enter phase `i`, retiring every earlier phase's weight; the label is `PHASES[i]`'s name. */
   begin(i) {
     this.index = i;
     let base = 0;
@@ -158,8 +136,7 @@ class Progress {
     const [token, name, weight] = PHASES[this.index];
     const f = frac < 0 ? 0 : frac > 1 ? 1 : frac;
     const value = this.base + f * weight * this.scale;
-    // Monotonic: a sub-phase that recomputes its own denominator must never
-    // walk the bar backwards.
+    // Monotonic: a sub-phase that recomputes its denominator must never walk the bar back.
     if (value > this.done) this.done = value;
     this.emit({
       type: 'progress',
@@ -175,8 +152,7 @@ class Progress {
 
   /**
    * A sink shaped like the geo / audit modules' `onProgress(done, total, label)`,
-   * normalised into the current phase's slice. A zero or missing `total` is
-   * treated as "unknown work remaining" and leaves the bar where it is.
+   * normalised into the current phase's slice. A zero or missing `total` leaves the bar put.
    */
   sink() {
     return (done, total, label) => {
@@ -195,22 +171,14 @@ const SOURCE_KINDS = Object.freeze(['file', 'osm', 'url']);
 /**
  * The run's sources as a list of `{ arg, ring, id, label, mdbId }`.
  *
- * CONTRACT.md §(d)'s `run` message carries `sources: SourceRef[]` and nothing else —
- * the older `file` / `url` pair is gone, because two ways to say the same thing is
- * how a stale main thread half-works silently. This function is the one place that
- * knows a `SourceRef` from a bare input, so `runPipeline` stays callable from Node
- * with a single `File`, which is exactly what `tools/smoke.mjs` does and the path
- * the golden numbers are measured on.
+ * CONTRACT.md §(d)'s `run` message carries `sources: SourceRef[]` only. This is the
+ * one place that knows a `SourceRef` from a bare input, so `runPipeline` stays
+ * callable from Node with a single `File` (`tools/smoke.mjs`, the golden path).
  *
- * A `kind:'osm'` ref carries no loadable input at all: `ring` is the input, and the
- * GTFS zip it becomes is synthesized inside the load loop, so a synthesis failure
- * lands in the same per-source catch a dead mirror does. `arg` stays null until then.
- *
- * A ref-shaped object whose `kind` is not one of the three is REFUSED BY NAME. Before
- * this, an unknown kind failed the `isRef` test, was treated as a bare input, and was
- * handed to `loadFeed` as a raw object — which surfaced four stages later as an
- * unreadable source rather than as the one sentence that says a newer page is talking
- * to an older worker.
+ * A `kind:'osm'` ref has no loadable input: `ring` is the input, and the zip is
+ * synthesized inside the load loop so a failure lands in the per-source catch.
+ * A ref whose `kind` is unknown is refused by name, so a newer page talking to an
+ * older worker gets one sentence rather than an unreadable source four stages later.
  *
  * @param {SourceRef[]|Array<File|Blob|string>|File|Blob|ArrayBuffer|Uint8Array|string} source
  * @returns {Array<{arg: (File|Blob|ArrayBuffer|Uint8Array|string|null),
@@ -222,8 +190,7 @@ function normaliseSources(source) {
   const out = [];
   for (const item of list) {
     if (item === null || item === undefined) continue;
-    // A `File` and a `Blob` are objects with no `kind`, which is what keeps the bare
-    // input path — and the golden numbers that run on it — untouched by all of this.
+    // A `File` or `Blob` has no `kind`, which keeps the bare-input path untouched.
     const kind = (typeof item === 'object' && !Array.isArray(item)
       && typeof item.kind === 'string') ? item.kind : '';
     if (kind && !SOURCE_KINDS.includes(kind)) {
@@ -250,15 +217,12 @@ function normaliseSources(source) {
     }
     const mdbId = isRef && item.mdbId !== undefined && item.mdbId !== null
       ? String(item.mdbId) : null;
-    // `id` is carried only so a synthesized feed can be NAMED after the area it was
-    // built from; nothing here sorts on it. The main thread already sorted the list.
+    // `id` only names a synthesized feed; nothing here sorts on it.
     out.push({ arg, ring, id: isRef ? String(item.id || '') : '', label, mdbId });
   }
   if (!out.length) throw new Error('The run message carried no feed to read.');
-  // CONTRACT.md §(d) bounds the list at both ends. The page refuses the eleventh feed
-  // twice over before it gets here, so this is the backstop for a message that came
-  // from somewhere else — a stale tab, a hand-built `postMessage` — rather than a
-  // sentence anyone should be able to reach through the UI.
+  // CONTRACT.md §(d) bounds the list at both ends; the page refuses first, so this is
+  // the backstop for a stale tab or a hand-built `postMessage`.
   if (out.length > MAX_FEEDS_PER_RUN) {
     throw new Error(`One run merges at most ${MAX_FEEDS_PER_RUN} feeds; `
       + `this run asked for ${out.length}.`);
@@ -270,29 +234,21 @@ function normaliseSources(source) {
 /**
  * A drawn area as GTFS zip bytes, built from OpenStreetMap's own route relations.
  *
- * `osm/synth.js` is imported DYNAMICALLY, the same way `rules/score.js` is and for a
- * weaker version of the same reason: a run whose sources are all published feeds must
- * not parse the converter, and — since the module is only reachable from a source kind
- * the page has to offer first — its absence should degrade one source rather than
- * refuse to start the worker.
+ * `osm/synth.js` is imported dynamically so a run of published feeds never parses
+ * the converter and its absence degrades one source rather than the worker.
  *
- * `worldTransitRoutes` answers three different ways and they are three different
- * sentences: `null` says the build shipped no `transit_route` layer at all, which is a
- * stale bucket rather than a city with no railway; `[]` says the layer is there and has
- * nothing inside this shape; anything else is the relations to convert. None of the
- * three is a report about the city until the last one.
+ * `worldTransitRoutes` answers three ways: `null` means the build shipped no
+ * `transit_route` layer (a stale bucket, not a city with no railway); `[]` means
+ * nothing inside this shape; anything else is the relations to convert.
  *
- * The bytes come back wrapped in a `File` where there is one to wrap them in, purely
- * so `loadFeed` has a name to put in `Feed.source`: unwrapped, every synthesized feed
- * is called `uploaded.zip` in §09, which is the one place a report must not be vague
- * about what it read. The hash is unaffected — `sha256` is still the digest of exactly
- * these bytes.
+ * The bytes are wrapped in a `File` where one exists so `Feed.source` has a name in
+ * §09 instead of `uploaded.zip`. The hash is still the digest of exactly these bytes.
  *
  * @param {{ring: Array<[number,number]>, label: string, id?: string}} src
  * @param {Object} world an open `World` (`osm/worldfile.js`)
  * @param {string|null} asOf the effective analysis date for the synthesized
- *        calendar — the run's own `asOf`, or the caller's alignment date on a
- *        mixed run (see the load loop), or null for the fixed 2030 fallback
+ *        calendar (the run's `asOf`, the alignment date on a mixed run, or null
+ *        for the fixed 2030 fallback)
  * @returns {Promise<{arg: (File|Uint8Array), notes: string[]}>}
  */
 async function synthesizeArea(src, world, asOf) {
@@ -316,30 +272,22 @@ async function synthesizeArea(src, world, asOf) {
 
 /**
  * Run the whole pipeline, emitting `progress` / `stage` / `log` / `degraded` /
- * `error` / `done` messages through `emit`.
+ * `error` / `done` messages through `emit`, which is injected so the pipeline is
+ * testable outside a worker. Every payload is already structured-clone-safe.
  *
- * `emit` is injected rather than being `postMessage` directly so the pipeline is
- * importable and testable outside a worker (`tools/smoke.mjs`). Every payload
- * `emit` receives is already structured-clone-safe.
- *
- * The only fatal failures are the ones CONTRACT.md §(f)6 names: the source could
- * not be read, the zip could not be opened, or the feed has no usable tables.
- * Everything after that degrades — a stage that throws emits a non-fatal `error`
- * plus a `degraded`, and the pipeline continues as far as the dependency order
- * allows.
+ * The only fatal failures are CONTRACT.md §(f)6's: the source could not be read,
+ * the zip could not be opened, or the feed has no usable tables. Every later stage
+ * that throws emits a non-fatal `error` plus a `degraded` and the pipeline continues.
  *
  * @param {object} options an `Options` (CONTRACT.md §(c))
  * @param {SourceRef[]|Array<File|Blob|string>|File|Blob|ArrayBuffer|Uint8Array|string} source
- *        the run's sources. A bare `File`/`Blob`/buffer/URL is a list of one, which
- *        is the shape `tools/smoke.mjs` passes and the path the golden numbers run on.
+ *        the run's sources; a bare `File`/`Blob`/buffer/URL is a list of one
  * @param {(msg: object) => void} emit
  * @returns {Promise<object|null>} the `Report`, or null after a fatal error
  */
 export async function runPipeline(options, source, emit) {
-  // CONTRACT.md §(c) `DEFAULT_OPTIONS`. The main thread is supposed to send a full
-  // `Options`, but `buildProvenance` prints `departure`, `boardSlackS`,
-  // `excludeStops` and `excludeRoutes` verbatim, and an absent key would reach the
-  // page as `undefined`. Fill the defaults once, here, rather than at each reader.
+  // CONTRACT.md §(c) `DEFAULT_OPTIONS`: `buildProvenance` prints several options
+  // verbatim, so fill the defaults once here rather than at each reader.
   const opts = { ...DEFAULT_PIPELINE_OPTIONS, ...options };
   const post = typeof emit === 'function' ? emit : () => {};
   const progress = new Progress(post);
@@ -363,8 +311,7 @@ export async function runPipeline(options, source, emit) {
     post({ type: 'error', stage, message, fatal: true });
   };
 
-  // The GTFS and inference layers log through injectable sinks (they have no
-  // stdlib `log` in a worker). Route both at the `log` message.
+  // The GTFS and inference layers log through injectable sinks.
   setFeedLogger({
     info: (m) => log('info', m),
     warn: (m) => log('warn', m),
@@ -379,10 +326,8 @@ export async function runPipeline(options, source, emit) {
     refresh: Boolean(opts.refresh),
   });
 
-  // The world files, opened at most once and only when something asks. Two phases can
-  // need them now — an OpenStreetMap area source at S1, and the geo layer at S2 — and
-  // they must share one handle: `world.stats()` is what the run reports as its map-file
-  // budget, and two handles would each report half of it.
+  // The world files, opened at most once. An OSM area source at S1 and the geo layer
+  // at S2 must share one handle, or `world.stats()` would report half the budget each.
   let world = null;
   const openWorldOnce = async () => {
     if (world === null) world = await openWorld(opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL);
@@ -401,24 +346,15 @@ export async function runPipeline(options, source, emit) {
   try {
     srcs = normaliseSources(source);
     progress.begin(0);
-    // One `loadFeed` per source, then a table-level merge. The per-source download
-    // cache is what makes a repeated pick cheap; there is no merged-artifact cache,
-    // because a `Feed` holds typed arrays and a Proxy and is not serialisable.
+    // One `loadFeed` per source, then a table-level merge. There is no merged-artifact
+    // cache: a `Feed` is not serialisable.
     const loaded = [];
-    // The source metadata travels BESIDE the feed it produced, never re-indexed by
-    // position: when a download fails the loaded list is shorter than `srcs`, and an
-    // index into one is not an index into the other. §09 exists so a merged report
-    // cannot lie about what it read, so this pairing is load-bearing, not tidiness.
+    // Source metadata travels BESIDE the feed it produced, never re-indexed by
+    // position: a failed download makes `loaded` shorter than `srcs`.
     const loadedSrcs = [];
-    // Published sources load FIRST and drawn areas synthesize after them — not for
-    // tidiness: a synthesized calendar pinned to the fixed 2030 fallback can never
-    // intersect a live feed's window, so a default mixed run would take merge's
-    // no-dates-in-common union and the OSM system would run on zero representative
-    // days. With the published feeds already loaded, a ring source with no explicit
-    // `asOf` anchors its 14-day calendar to their latest start date instead — still
-    // deterministic, a pure function of the run's own feed bytes, and an OSM-only
-    // run keeps the fixed fallback untouched. The reorder is free: `mergeOrder`
-    // sorts by content hash, and `loaded`/`loadedSrcs` travel as a pair.
+    // Published sources load FIRST: a ring source with no explicit `asOf` anchors its
+    // 14-day calendar to their latest start date, since the fixed 2030 fallback could
+    // never intersect a live feed's window. Order is free: `mergeOrder` sorts by hash.
     const loadOrder = [];
     for (let i = 0; i < srcs.length; i++) if (!srcs[i].ring) loadOrder.push(i);
     for (let i = 0; i < srcs.length; i++) if (srcs[i].ring) loadOrder.push(i);
@@ -426,26 +362,17 @@ export async function runPipeline(options, source, emit) {
       const i = loadOrder[k];
       const many = srcs.length > 1;
       const label = many ? `Reading feed ${k + 1} of ${srcs.length}` : 'Reading the feed';
-      // A download is one silent block — `loadFeed`'s own `onProgress` fires per
-      // table, not per byte — so the bar is nudged between sources as well, which is
-      // also what keeps app.js's 120-second silence watchdog fed on a multi-feed run.
+      // A download is one silent block, so the bar is nudged between sources too,
+      // which keeps app.js's silence watchdog fed.
       progress.report(k / srcs.length, label);
       try {
-        // An OpenStreetMap area becomes a real GTFS zip HERE, before anything else in
-        // the pipeline sees it, and then falls into the untouched `loadFeed` below.
-        // That is the whole trick: the fatal guards, the content-addressed `sha256`,
-        // the merge order, the `f0:` namespacing and `mergeFeeds([f]) === f` all hold
-        // by construction rather than by a second Feed constructor re-earning each of
-        // them. A failure in here is a per-source failure like any other — the catch
-        // below is fatal on a single-source run and degrades on a merged one.
+        // An OpenStreetMap area becomes a real GTFS zip HERE and then falls into the
+        // untouched `loadFeed`, so every guard, the hash and the merge order hold by
+        // construction. A failure here is a per-source failure like any other.
         if (srcs[i].ring) {
           progress.report(k / srcs.length, 'Building the area from OpenStreetMap');
-          // The effective analysis date: the run's own `asOf` when given, else the
-          // latest feed_start_date among the feeds already loaded — the merged
-          // window's intersection starts there, and the synthesizer's windowMonday
-          // steps back at most six days, so its 14-day calendar covers it — else
-          // null, and the synthesizer's fixed 2030 fallback (the OSM-only path,
-          // unchanged).
+          // The run's own `asOf`, else the latest feed_start_date already loaded,
+          // else null for the synthesizer's fixed 2030 fallback.
           let synthAsOf = opts.asOf;
           if (!String(synthAsOf ?? '').trim()) {
             synthAsOf = null;
@@ -457,10 +384,8 @@ export async function runPipeline(options, source, emit) {
           }
           const built = await synthesizeArea(srcs[i], await openWorldOnce(), synthAsOf);
           srcs[i].arg = built.arg;
-          // The assumptions go to the log channel, one line each, rather than into the
-          // degradation list: they are what the feed ASSUMED, not what the report is
-          // missing, and the callout they would land in is titled the other thing. The
-          // one sentence that IS a limit of the source is degraded below.
+          // Assumptions go to the log, not the degradation list; the one real limit
+          // of the source is degraded below.
           for (const note of built.notes) log('info', `osm feed: ${note}`);
         }
         loaded.push(await loadFeed(srcs[i].arg, cache, {
@@ -469,10 +394,8 @@ export async function runPipeline(options, source, emit) {
           },
         }));
         loadedSrcs.push(srcs[i]);
-        // Said only once the feed is actually IN the run. Synthesis can succeed and the
-        // load still fail, and on a merged run that source is then dropped — a report
-        // that announced an assumed timetable it did not end up reading would be
-        // apologising for the wrong thing.
+        // Said only once the feed is actually IN the run: synthesis can succeed and
+        // the load still fail.
         if (srcs[i].ring) {
           assumedSchedule = true;
           degrade(`${srcs[i].label} was built from OpenStreetMap's rail, metro and tram `
@@ -481,14 +404,11 @@ export async function runPipeline(options, source, emit) {
             + 'timetable is dropped rather than guessed at.');
         }
       } catch (err) {
-        // One dead mirror out of four must not kill the run. With a single source,
-        // one failure IS zero loaded, so this falls through to the fatal below and
-        // the single-feed path behaves exactly as it always has.
+        // One dead mirror must not kill a merged run; a single source falls through
+        // to the fatal below.
         if (srcs.length === 1) throw err;
-        // One failure, one line in the degradation list. A `nonFatal` here as well
-        // would reach the page twice — app.js files a non-fatal `error` as its own
-        // degradation — so the diagnostic copy goes to the log channel instead, and
-        // the sentence that names the feed and the consequence is the record.
+        // Not `nonFatal` as well: app.js files a non-fatal `error` as its own
+        // degradation, so the diagnostic goes to the log and the sentence is the record.
         log('warn', `feed: ${(err && err.message) || err}`);
         degrade(`${srcs[i].label} could not be read (${(err && err.message) || err}); `
           + 'the report covers the other feeds only.');
@@ -498,9 +418,8 @@ export async function runPipeline(options, source, emit) {
       throw new Error('None of the chosen feeds could be read.');
     }
     const order = mergeOrder(loaded);
-    // `mergeFeeds([f]) === f` — reference equality, nothing copied. That identity is
-    // why a single-source run cannot drift. `sources` is attached HERE, on both
-    // paths, so every renderer sees the same shape whatever the feed count.
+    // `mergeFeeds([f]) === f`, so a single-source run cannot drift. `sources` is
+    // attached here on both paths so every renderer sees the same shape.
     feed = await mergeFeeds(loaded, { onNote: degrade });
     feed.sources = feedSourceRows(order, loadedSrcs);
     progress.finish();
@@ -542,8 +461,7 @@ export async function runPipeline(options, source, emit) {
       stops: stopCount,
       routes: routeCount,
       trips: tripCount,
-      // `geo.admin.placeName` has not been resolved yet; the agency name is the
-      // CLI's own fallback and the `'provenance'` stage overwrites it.
+      // `geo.admin.placeName` is not resolved yet; the `'provenance'` stage overwrites this.
       place: feed.agencyName,
     },
   });
@@ -595,15 +513,11 @@ export async function runPipeline(options, source, emit) {
   let spokes = { spokes: [], cap: { shown: 0, total: 0, source: 'shapes' } };
   let origin;
   let depS;
-  // ── the in-play set (CONTRACT.md §(b) Metrics "Stop set", 2026-08-27) ──────
-  // Computed ONCE, here, and threaded into every measurement below: hub
-  // candidates, both metric passes, the zone cover, the stop table and the border
-  // trim all see the same array. `null` is the literal "no override" case — not an
-  // array that happens to equal `servedStopIds` — because a null reaches every
-  // memo key and code path as the pre-2026-08-27 value, which is the property the
-  // smoke goldens are an identity under. `excludedStopSet` rather than the two
-  // option lists: `excludeRoutes` can name a route no stop is exclusively on,
-  // and that must stay a no-op.
+  // ── the in-play set (CONTRACT.md §(b) Metrics "Stop set") ──────────────────
+  // Computed ONCE and threaded into every measurement below. `null` is the literal
+  // "no override" case, not an array equal to `servedStopIds`: the smoke goldens are
+  // an identity under it. `excludedStopSet` rather than the option lists, because
+  // `excludeRoutes` can name a route no stop is exclusively on, which must be a no-op.
   let inPlay = null;
   let inPlayFallback = false;
   if (opts.borderBbox || excludedStopSet(feed, best, opts).size) {
@@ -614,13 +528,8 @@ export async function runPipeline(options, source, emit) {
       + (inPlayFallback ? ' (fallback: every served stop)' : '')
       + (opts.borderBbox ? ' inside the supplied border' : '')
       + ' after exclusions');
-    // The fallback used to leave no trace but a worker log line, while §05 and the
-    // provenance interpretation went on saying "every stop, zone and instance count
-    // on this page is measured inside it" — which is exactly what did NOT happen. A
-    // silent fallback that contradicts two printed sentences is worse than either
-    // honouring or refusing the box, so it is a degradation like any other, and
-    // `Border.derivation` is marked `'option_fallback'` below so the three sentences
-    // that describe the border pick the third wording. (2026-08-27.)
+    // A silent fallback would contradict §05's "measured inside it", so it is a
+    // degradation, and `Border.derivation` becomes `'option_fallback'` below.
     if (inPlayFallback) {
       degrade(opts.borderBbox
         ? 'The border you set kept fewer than half the stops this network serves, so it '
@@ -637,23 +546,17 @@ export async function runPipeline(options, source, emit) {
     progress.finish();
 
     progress.begin(4);
-    // First pass at the rulebook's default zone radius: the size vote reads
-    // `nZones`, and `nZones` depends on the radius, so the radius the size
-    // resolves to cannot be used to compute the vote. The CLI does the same and
-    // then re-runs the whole metric table at the real radius below.
+    // First pass at the rulebook's default radius: the size vote reads `nZones`,
+    // which depends on the radius. Re-measured at the resolved radius below, as the CLI does.
     metrics = networkMetrics(feed, days, proj, hub, QUARTER_MILE_M, inPlay);
     metrics.inPlayFallback = inPlayFallback;
     progress.finish();
 
     [size, sizeInference] = inferGameSize(metrics, opts);
     border = inferBorder(feed, best, hub, size, proj, opts, inPlay);
-    // `inferBorder` cannot tell a box that happens to keep everything from a box the
-    // in-play filter threw away — it is handed a set, not the decision. The worker is
-    // the knower, the same way it is for `Metrics.inPlayFallback`, so the third
-    // derivation is stamped here. The rectangle itself is still the reader's box:
-    // what changed is that nothing was measured inside it.
-    // Only when there WAS a box: a fallback caused by exclusions alone leaves the
-    // border inferred ('reach'), and the degradation above is the whole of the story.
+    // `inferBorder` is handed a set, not the decision, so the worker stamps the third
+    // derivation. Only when there WAS a box: a fallback from exclusions alone leaves
+    // the border inferred ('reach').
     if (inPlayFallback && border && opts.borderBbox) border.derivation = 'option_fallback';
 
     progress.begin(5);
@@ -663,44 +566,32 @@ export async function runPipeline(options, source, emit) {
       events[sid] = best.stopDays[sid].departures.length;
       pos[sid] = proj.xy(feed.stops[sid].lat, feed.stops[sid].lon);
     }
-    // The reachability-aware suggestion (CONTRACT.md §(b) SuggestedBorder). It is
-    // OFFERED on the 'network' payload and the Report and never applied: applying
-    // it is the reader's cached re-run with `borderBbox` set, which is why it is
-    // computed on the run's own inputs — the same hub, in-play set and vote — and
-    // returns null the moment `sizeOverride` or `borderBbox` says they already
-    // chose. Costs the memoised hub run plus at most three metric passes.
+    // The reachability-aware suggestion (CONTRACT.md §(b) SuggestedBorder): OFFERED,
+    // never applied. Computed on the run's own inputs; null once `sizeOverride` or
+    // `borderBbox` says the reader already chose.
     progress.report(0, 'Looking for a tighter border');
     suggestedBorder = suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, events);
-    // Zones outside a supplied border cease to exist rather than being drawn
-    // and then explained away: the cover runs over the in-play set.
+    // Zones outside a supplied border cease to exist: the cover runs over the in-play set.
     const centres = zoneCover(inPlay ?? best.servedStopIds, size.zoneRadiusM, events, pos);
     zones = buildZones(feed, best, centres, size.zoneRadiusM, proj, inPlay);
     progress.report(0.5, 'Re-measuring at the resolved zone radius');
     metrics = networkMetrics(feed, days, proj, hub, size.zoneRadiusM, inPlay);
     metrics.inPlayFallback = inPlayFallback;
-    // The honesty boundary, carried as one clone-safe boolean on the object that
-    // already reaches every scoring entry point — `auditQuestions`, `scoreFitness`,
-    // `fitnessCaps`, `scoreZones`, `deriveRecommendations` — so nothing downstream
-    // grows a parameter for it. The rule is run-level and deliberately conservative:
-    // ONE invented timetable in the merge makes every schedule-derived number in the
-    // run assumed, because after `mergeFeeds` nothing can tell the two apart.
+    // One clone-safe boolean on the object every scoring entry point already gets.
+    // Run-level and conservative: ONE invented timetable in the merge makes every
+    // schedule-derived number assumed, since after `mergeFeeds` nothing can tell them apart.
     metrics.assumedSchedule = assumedSchedule;
     headways = routeHeadways(feed, days);
     gtfsFacts = gtfsQuestionFacts(feed, days, zones, stations);
     progress.finish();
 
-    // generate.py: `--start` is resolved here, not inside infer.js,
-    // and the departure `or` chain lets a literal '00:00:00' fall through to 09:00.
+    // generate.py resolves `--start` here, and its `or` chain lets '00:00:00' fall through to 09:00.
     origin = opts.startStopId || hub.stopId;
     depS = hmsToS(opts.departure || DEFAULT_DEPARTURE) || hmsToS(DEFAULT_DEPARTURE);
 
     progress.begin(6);
     // The CLI computes this last; CONTRACT.md §(d) needs it in the `'network'`
-    // payload and every input already exists. Pure function, same value.
-    //
-    // One RAPTOR pass per day, shared: the fourteen chart destinations and the
-    // per-zone reach the map colours by are two readings of the same runs, so the
-    // reach layer costs no extra pass. (2026-08-23.)
+    // payload. One RAPTOR pass per day is shared by the chart and the reach layer.
     const runs = dayRaptorRuns(days, origin, depS);
     travelSamples = travelTimeSamples(days, zones, origin, depS, 14, runs);
     zoneReach = zoneReachMinutes(days, zones, runs, origin, depS, size.hidingPeriodMin);
@@ -711,11 +602,8 @@ export async function runPipeline(options, source, emit) {
     return null;
   }
 
-  // Built once, sent twice. CONTRACT.md §(d) carries these rows on the `'network'`
-  // stage AND in the `Report`, and nothing between the two touches `feed`, `days`,
-  // `best` or `zones`, so the `'done'` payload below reuses this array. On the worker
-  // path each `postMessage` clones it and the two messages stay independent; in Node
-  // (`tools/smoke.mjs`) they are one array, which neither consumer writes to.
+  // Built once, sent twice (CONTRACT.md §(d): the `'network'` stage AND the `Report`);
+  // nothing between the two touches its inputs, and no consumer writes to it.
   const stops = stopRows(feed, days, best, zones, inPlay);
 
   post({
@@ -741,35 +629,25 @@ export async function runPipeline(options, source, emit) {
 
   // ── S2 geodata ────────────────────────────────────────────────────────────
   //
-  // UNCONDITIONAL since 2026-09-01. There is no longer a switch, a flag or a default
-  // that turns this phase off: every run reads the world files, and the ONLY way to
-  // reach an unavailable OSM layer is the catch below — the files could not be read.
-  // The reason is CONTRACT.md §(f)1's other half: `geo.available === false` costs 37
-  // of the 80 questions, 16 of the 24 curses and the E and A axes (30 of the 100
-  // score points), which is a third of the report. That is a failure to report, not
-  // a mode to offer.
-  //
-  // A caller that must run without the network points `worldBaseUrl` at a host that
-  // cannot resolve and takes this catch deliberately — `tools/smoke.mjs` does exactly
-  // that, which is what keeps the 19 golden numbers offline and reproducible.
+  // UNCONDITIONAL: no switch turns this phase off, and the only way to an
+  // unavailable OSM layer is the catch below. `geo.available === false` costs a third
+  // of the report (CONTRACT.md §(f)1), which is a failure to report, not a mode.
+  // A caller that must run offline points `worldBaseUrl` at an unresolvable host and
+  // takes the catch deliberately, as `tools/smoke.mjs` does.
   let geo;
   progress.begin(7);
   try {
-    // One manifest fetch, then every category is a Range request against an
-    // immutable file. `opts.worldBaseUrl` exists so a build can be pointed at a
-    // local static server before it is published — the Advanced panel's "Map file
-    // base URL" field sets it, and null means "the published bucket".
+    // One manifest fetch, then Range requests against immutable files. Null
+    // `worldBaseUrl` means the published bucket.
     const baseUrl = opts.worldBaseUrl || DEFAULT_WORLD_BASE_URL;
     if (opts.worldBaseUrl) log('info', `reading the map files from ${baseUrl}`);
-    // `openWorldOnce`, not a second `openWorld`: an area source has usually opened
-    // this bucket already, and one handle is what keeps `worldStatsLine` a report of
-    // the whole run's map-file budget instead of the geo phase's share of it.
+    // `openWorldOnce`, so `worldStatsLine` reports the whole run's map-file budget.
     const handle = await openWorldOnce();
     geo = await collectGeodata(handle, opts, border, zones, proj, size.zoneRadiusM, {
       onProgress: progress.sink(),
       onLog: (level, message) => log(level === 'warning' ? 'warn' : level, message),
-      // Arms adminInfo's ordinal-1 place rule (Tokyo, Vienna). The primary feed's
-      // agency_timezone — a hint the census cross-checks, never an input it trusts.
+      // Arms adminInfo's ordinal-1 place rule (Tokyo, Vienna); a hint the census
+      // cross-checks, never an input it trusts.
       timezone: feed.timezone,
     });
     log('info', worldStatsLine(handle));
@@ -802,8 +680,7 @@ export async function runPipeline(options, source, emit) {
     progress.finish();
 
     progress.begin(9);
-    // Signatures and surv are computed only for questions that are still alive:
-    // a dead question partitions nothing, and evaluating it would just be noise.
+    // Signatures and surv only for live questions: a dead question partitions nothing.
     const defs = Object.create(null);
     for (const d of catalogueFor(size)) defs[d.id] = d;
     const live = questions.filter(
@@ -879,8 +756,7 @@ export async function runPipeline(options, source, emit) {
       ranked = score.rankZones(zoneScores);
       progress.report(0.7, 'Scoring the city');
       fitness = score.scoreFitness(metrics, questions, zones, zoneScores, size, days);
-      // `fitnessCaps(metrics, questions, zones, size, days)` — the Python signature
-      // (generate.py). It does not take `zoneScores`.
+      // The Python signature; it does not take `zoneScores`.
       caps = score.fitnessCaps(metrics, questions, zones, size, days);
       const zoneById = Object.create(null);
       for (const z of zones) zoneById[z.zoneId] = z;
@@ -908,8 +784,8 @@ export async function runPipeline(options, source, emit) {
       dossierZoneIds: dossiers,
       findings,
       recommendations,
-      // `scoreZones` fills `QuestionAudit.survMean` IN PLACE, so this copy is the
-      // authoritative one and §07 must re-hydrate from it. CONTRACT.md §(d).
+      // `scoreZones` fills `QuestionAudit.survMean` IN PLACE; §07 re-hydrates from
+      // this copy (CONTRACT.md §(d)).
       questions,
     },
   });
@@ -968,8 +844,7 @@ export async function runPipeline(options, source, emit) {
     place,
     provenance,
     degradations: degradations.slice(),
-    // Not in the CLI's `Report`; CONTRACT.md §(d) sends both on their stages and
-    // the renderers read them off the report object.
+    // Not in the CLI's `Report`; the renderers read them off the report object (§(d)).
     caps,
     stops,
   };
@@ -981,12 +856,9 @@ export async function runPipeline(options, source, emit) {
 // ── wire shapes ──────────────────────────────────────────────────────────────
 
 /**
- * `ServiceDay` → `DaySummary` (CONTRACT.md §(d)).
- *
- * Full `ServiceDay` objects never leave the worker: `patterns`, `patternAtStop`,
- * `footpaths`, `stopIndex` and `extras` are typed arrays and `Map`s, and
- * `stopDays` is one object per served stop, which is megabytes of no use to the
- * page. The scalars below are everything §06 reads.
+ * `ServiceDay` → `DaySummary` (CONTRACT.md §(d)). Full `ServiceDay` objects never
+ * leave the worker: they hold typed arrays, `Map`s and megabytes of per-stop data.
+ * The scalars below are everything §06 reads.
  */
 function daySummary(day) {
   const served = day.servedStopIds;
@@ -1041,34 +913,27 @@ function daySummary(day) {
 /**
  * The map's stop layer (CONTRACT.md §(d) `StopRow`), one row per served stop.
  *
- * `zoneId` is the zone whose circle designates the stop. Zone circles overlap —
- * the cover guarantees centres are more than one radius apart, not that the discs
- * are disjoint — so a stop can sit in two. First zone wins in sorted `zoneId`
- * order, which is deterministic and is what the map legend implies.
+ * Zone circles overlap, so a stop can sit in two; the first in sorted `zoneId`
+ * order wins.
  *
- * THE ROW SET IS THE BUSIEST DAY'S SERVED STOPS, on every day. `headwayByDay`
- * (added 2026-08-23 for the map's frequency layer) expresses the other days through
- * `null` — "no service here that day" — and never through extra rows, because
- * `render/strategy.js` counts these rows per zone and `servedStopCount` falls back to
- * their length: widening the set would move published numbers. The cost is real and
- * small: a stop served only on a Sunday never appears (3 of 1,493 on the reference
- * feed), and `null` is what says so.
+ * THE ROW SET IS THE BUSIEST DAY'S SERVED STOPS, on every day. `headwayByDay` says
+ * `null` for a day with no service and never adds rows: `render/strategy.js` counts
+ * these rows per zone, so widening the set would move published numbers. A stop
+ * served only on a Sunday therefore never appears.
  */
 function stopRows(feed, days, day, zones, inPlay = null) {
   const owner = Object.create(null);
   for (const z of Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId))) {
     for (const sid of z.stopIds) if (owner[sid] === undefined) owner[sid] = z.zoneId;
   }
-  // Sorted so the per-day object's key order is the day key order, not insertion
-  // order — CONTRACT §(b): nothing that reaches output iterates an object unsorted.
+  // Sorted: nothing that reaches output iterates an object unsorted (CONTRACT §(b)).
   const dayKeys = Array.from(days || [], (d) => d.dayType.key)
     .sort((a, b) => cmpStr(a, b));
   const stopDaysByKey = new Map();
   for (const d of days || []) stopDaysByKey.set(d.dayType.key, d.stopDays);
 
   const rows = [];
-  // The in-play set when one exists (a stop outside the reader's box is not on
-  // the map), else every served stop — both in `servedStopIds` order.
+  // The in-play set when one exists, else every served stop; both in `servedStopIds` order.
   for (const sid of (inPlay ?? day.servedStopIds)) {
     const stop = feed.stops[sid];
     if (!stop) continue;
@@ -1097,10 +962,7 @@ function stopRows(feed, days, day, zones, inPlay = null) {
 }
 
 /**
- * `Feed` minus `tables`.
- *
- * CONTRACT.md §(b) permits dropping it and §(d) requires it: `tables.stop_times`
- * is a lazy Proxy over a columnar store, which `structuredClone` cannot copy.
+ * `Feed` minus `tables`, which `structuredClone` cannot copy (CONTRACT.md §(b), §(d)).
  * Nothing after `buildProvenance` reads it.
  */
 function wireFeed(feed) {
@@ -1120,21 +982,14 @@ function wireFeed(feed) {
   };
 }
 
-/**
- * `Options` as the page receives them. `source` is deliberately absent from
- * `DEFAULT_PIPELINE_OPTIONS` — the run message carries the file or the URL
- * separately — so anything under that key is already a plain string.
- */
+/** `Options` as the page receives them. */
 function wireOptions(opts) {
   return { ...opts };
 }
 
 /**
- * `Object.create(null)` → an ordinary object.
- *
- * `structuredClone` already does this, but the smoke harness calls `runPipeline`
- * directly and never crosses a clone boundary, so the two paths would otherwise
- * disagree about the prototype of a handful of small tables.
+ * `Object.create(null)` → an ordinary object, so the smoke harness (no clone
+ * boundary) and the worker agree about prototypes.
  */
 function toPlain(obj) {
   const out = {};
@@ -1143,11 +998,8 @@ function toPlain(obj) {
 }
 
 /**
- * Load `rules/score.js` if it is present.
- *
- * It is the one module in CONTRACT.md §(a) whose absence must not take the page
- * down with it: §01–§03 and §09 need it, §04–§08 do not, and a report with six
- * sections beats a blank page with a stack trace. Memoised, including the failure.
+ * Load `rules/score.js` if present. The one module in CONTRACT.md §(a) whose absence
+ * must not take the page down: §04–§08 do not need it. Memoised, including the failure.
  */
 async function loadScore() {
   if (SCORE || SCORE_ERROR) return SCORE;
@@ -1162,11 +1014,7 @@ async function loadScore() {
 
 // ── worker entry point ───────────────────────────────────────────────────────
 
-/**
- * True only inside a real `WorkerGlobalScope`. Node has neither `self` nor
- * `WorkerGlobalScope`, so importing this module there installs no handler and has
- * no side effect beyond the imports.
- */
+/** True only inside a real `WorkerGlobalScope`; importing from Node installs no handler. */
 const IN_WORKER = typeof self !== 'undefined'
   && typeof WorkerGlobalScope !== 'undefined'
   // eslint-disable-next-line no-undef
@@ -1177,13 +1025,11 @@ if (IN_WORKER) {
   self.onmessage = (event) => {
     const msg = event && event.data;
     if (!msg || msg.type !== 'run') return;
-    // CONTRACT.md §(d): exactly one message, ever. A second `run` is a bug on the
-    // main thread and must not start a second pipeline over the same cache.
+    // CONTRACT.md §(d): exactly one `run` message, ever.
     if (started) return;
     started = true;
 
-    // `readSources` on the main thread sends a `SourceRef[]` and nothing else:
-    // two ways to name the same input is how a stale main thread half-works.
+    // `readSources` sends a `SourceRef[]` and nothing else.
     const source = msg.sources;
     const post = (out) => self.postMessage(out);
     runPipeline(msg.options || {}, source, post).catch((err) => {

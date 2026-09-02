@@ -12,38 +12,27 @@
 """
 tools/osm-world/build.py — build the global OSM world files and publish them to R2.
 
-WHAT THIS REPLACES
-------------------
-`osm/geodata.js` used to answer every question by asking Overpass at run time: one
-bbox-wide query per category group, with mirror failover, a ≤0.1° tiling fallback and
-a 3 s courtesy sleep between round-trips. That is ~10 requests and ~40 MB on the
-reference map, against a shared free service that 504'd on five of six first attempts.
-
-This script moves all of it offline. It reads one planet.osm.pbf and writes a
-FlatGeobuf per category to R2. The browser then range-requests only the bytes its bbox
-needs, because FlatGeobuf carries a packed Hilbert R-tree in its header: read the
-index, learn which byte ranges hold the features intersecting your bbox, fetch those.
-No server, no rate limit, no failover, no tiling.
-
-FlatGeobuf is the format that makes that possible. Geobuf — protobuf-encoded GeoJSON —
-has no spatial index at all and would mean downloading the planet to read one park.
+WHAT THIS DOES
+--------------
+Reads one planet.osm.pbf and writes a FlatGeobuf per category to R2. The browser then
+range-requests only the bytes its bbox needs, because FlatGeobuf carries a packed
+Hilbert R-tree in its header: read the index, learn which byte ranges hold the
+features intersecting your bbox, fetch those. No server, no rate limit, no tiling.
+This replaced run-time Overpass queries (~10 requests and ~40 MB on the reference map
+against a shared service that 504'd most first attempts).
 
 WHAT IT COSTS
 -------------
-A planet build is a big job and this script does not pretend otherwise:
-
   * planet.osm.pbf is ~87 GB. Stage 0 downloads it if it is not already there.
-  * Stage 0b then keeps it current with replication diffs instead of re-downloading:
-    a week of edits is ~700 MB of diffs against an 87.6 GB re-fetch, about 125× less.
-    It rewrites the whole PBF to apply them, so it saves bandwidth, not time, and it
-    transiently needs about double the planet in free disk. `--no-update` opts out.
-  * Stage 1 makes ONE pass over it (see `stage_filter`) and everything after that
-    works on a ~4 GB intermediate. Skipping that consolidation and running 35
-    `osmium tags-filter` passes over the planet instead is roughly a day of I/O.
-  * Stage 4 makes a second full pass for the density grid, because counting buildings
-    needs every building and the intermediate deliberately does not carry them.
-  * Peak disk is roughly 180 GB including the planet itself. Peak RAM is dominated by
-    osmium's node-location cache; `--index-type sparse_file_array` keeps it on disk.
+  * Stage 0b keeps it current with replication diffs (~700 MB a week against an 87 GB
+    re-fetch). It rewrites the whole PBF, so it saves bandwidth, not time, and needs
+    about double the planet in free disk. `--no-update` opts out.
+  * Stage 1 makes ONE pass over it (see `stage_filter`); everything after works on a
+    ~4 GB intermediate. 35 separate `osmium tags-filter` passes would be a day of I/O.
+  * Stage 4 makes a second full pass for the density grid, because the intermediate
+    deliberately does not carry buildings.
+  * Peak disk is roughly 180 GB including the planet. Peak RAM is osmium's
+    node-location cache; `--index-type sparse_file_array` keeps it on disk.
 
 Every stage is skipped when its output already exists, so an interrupted build resumes.
 Pass `--force` to rebuild anyway.
@@ -54,37 +43,29 @@ USAGE
     uv run tools/osm-world/build.py --planet some-extract.osm.pbf --out build/world
     uv run tools/osm-world/build.py --out build/world --upload
 
-With no `--planet`, the planet file is downloaded to `./planet-latest.osm.pbf`, and
-every later run brings that same file up to date with replication diffs rather than
-re-downloading it. Point `--planet` at a Geofabrik extract to develop against
-something that builds in minutes instead of hours — the script does not care which it
-is given, and only downloads when the named file is absent.
-
-`--no-fetch` turns a missing planet file into a hard error instead, which is what a CI
-job with a pre-seeded cache wants.
-
-`uv` reads the dependency block above and builds the environment itself; there is no
-requirements file and no virtualenv to activate.
+With no `--planet`, the planet is downloaded to `./planet-latest.osm.pbf` and later
+runs bring it up to date with diffs. Point `--planet` at a Geofabrik extract to
+develop against something that builds in minutes; the script only downloads when the
+named file is absent. `--no-fetch` makes a missing planet a hard error, for CI with a
+pre-seeded cache. `uv` builds the environment from the dependency block above.
 
 EXTERNAL BINARIES
 -----------------
-Two required, and they are not pip-installable:
+Two required, not pip-installable:
 
     osmium      osmium-tool      (Fedora: dnf install osmium-tool)
     ogr2ogr     GDAL >= 3.5      (Fedora: dnf install gdal)
 
-GDAL 3.5 is the floor because that is where the FlatGeobuf writer learned to emit the
-spatial index by default. Without the index every client read is a full download and
-the entire point of this exercise is lost, so `preflight` checks the version rather
-than trusting it.
+GDAL 3.5 is the floor because that is where the FlatGeobuf writer emits the spatial
+index by default; without it every client read is a full download, so `preflight`
+checks the version.
 
-One more is needed only for stage 0, and any of the three will do:
+Stage 0 also needs one of:
 
     aria2c | curl | wget
 
-The download is NOT done in Python. An 85 GB transfer wants resumption across a dropped
-connection, and aria2c additionally wants several connections at once; all three of
-these do that properly and correctly, and `urllib` does not.
+The download is NOT done in Python: an 85 GB transfer wants resumption and several
+connections, which these do properly and `urllib` does not.
 """
 
 from __future__ import annotations
@@ -117,26 +98,12 @@ OSMIUM_INDEX = "sparse_file_array"
 
 DEFAULT_PLANET = Path("planet-latest.osm.pbf")
 
-# Tried in order. Every one of these was verified reachable, serving ~87.6 GB with a
-# matching `.md5` sidecar. The OSM wiki lists 17 sites in total; these are the ones that
-# answered, spread across operators and continents so that one institution's outage does
-# not strand a build.
-#
-# NOT ordered by any etiquette rule. The wiki used to ask people to prefer a mirror to
-# conserve OSM's bandwidth and explicitly no longer does — "It used to be necessary to
-# download mirrors to conserve OSM bandwidth, but that is no longer necessary." The
-# origin sits first because it is authoritative and always the freshest snapshot; the
-# rest are failover.
-#
-# THE ORDER IS NOT ARBITRARY AT THE TAIL. Mirrors lag: when this list was checked, nine
-# of ten reachable sites published md5 3f79d450… while osuosl published 434349ae… — a
-# different nightly rebuild under the same filename. Lagging mirrors go last, and
-# `stage_fetch_planet` discards a partial file rather than resuming it against a
-# different mirror, because the two together are what prevent splicing two snapshots.
-#
-# Mirrors come and go. The current list lives at
-# https://wiki.openstreetmap.org/wiki/Planet.osm — pass `--planet-url` to override
-# rather than editing this and hoping.
+# Tried in order. Each was verified reachable, serving ~87.6 GB with a matching `.md5`
+# sidecar, spread across operators and continents. The origin sits first because it
+# is authoritative and freshest; the rest are failover. Mirrors LAG each other by a
+# nightly rebuild, so lagging ones go last and `stage_fetch_planet` discards a partial
+# file rather than resuming it against a different mirror. The current list lives at
+# https://wiki.openstreetmap.org/wiki/Planet.osm; pass `--planet-url` to override.
 PLANET_MIRRORS = (
     "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf",
     "https://ftpmirror.your.org/pub/openstreetmap/pbf/planet-latest.osm.pbf",
@@ -156,9 +123,8 @@ PLANET_MIRRORS = (
 # intermediate and the per-layer scratch. Refusing up front beats discovering it at 90%.
 PLANET_HEADROOM_BYTES = 20 << 30
 
-# In preference order. All three resume a partial file, which is the property that
-# matters — an 85 GB transfer WILL be interrupted. aria2c is first because it also
-# opens several connections, which is usually the difference between 2 hours and 8.
+# In preference order. All three resume a partial file, which is what matters for an
+# 85 GB transfer. aria2c also opens several connections: 2 hours instead of 8.
 DOWNLOADERS = (
     ("aria2c", lambda url, dest: [
         "aria2c", url,
@@ -192,11 +158,9 @@ DOWNLOADERS = (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-# The geometry classes a layer may ask `osmium export` for. Passing all three to every
-# layer was the double-emit bug (DESIGN.md §Phase 0): osmium exports a closed way ONCE PER
-# REQUESTED INTERPRETATION, so `point,linestring,polygon` writes every closed way twice
-# — its polygon, then the same ring re-read as a zero-area linestring — and nothing
-# downstream dedups ways. `point,polygon` makes a closed way a polygon and only that.
+# The geometry classes a layer may ask `osmium export` for. osmium exports a closed way
+# ONCE PER REQUESTED INTERPRETATION, so `point,linestring,polygon` writes every closed
+# way twice (polygon plus zero-area linestring): the double-emit bug (DESIGN.md §Phase 0).
 GEOMETRY_TYPES = frozenset({"point", "linestring", "polygon"})
 
 
@@ -204,27 +168,20 @@ GEOMETRY_TYPES = frozenset({"point", "linestring", "polygon"})
 class Layer:
     """One output FlatGeobuf: a name, an osmium pre-filter, an OGR SQL predicate.
 
-    `geometry` is the comma-separated `--geometry-types` list handed to
-    `osmium export`, derived per layer from its selector and OSM tagging reality
-    (documented next to each entry in categories.json):
-
-      * pure-node layers (`mountain`, `bench`) ask for `point`;
-      * area layers (`park`, `museum`, …) ask for `point,polygon` — which is the
-        double-emit fix for them: a closed way exports once, as its polygon, and an
-        unclosed way carrying an area tag (a mapping error) is dropped;
-      * genuinely mixed layers (`water`, `coastline`, `high_speed_rail`, `platform`,
-        `green`) keep all three types and set `dedup`, because a lake is a polygon and
-        a river a linestring in the same file.
+    `geometry` is the `--geometry-types` list handed to `osmium export`, per layer
+    (documented next to each entry in categories.json): pure-node layers ask for
+    `point`; area layers ask for `point,polygon`, so a closed way exports once and an
+    unclosed way with an area tag (a mapping error) is dropped; genuinely mixed layers
+    (`water`, `coastline`, `high_speed_rail`, `platform`, `green`) keep all three and
+    set `dedup`.
 
     `dedup` drops a way's linestring reading when the same way was also exported as a
-    polygon — the closed-way double emission that `--geometry-types` alone cannot fix
-    on a mixed layer. See `apply_geometry_dedup`.
+    polygon. See `apply_geometry_dedup`.
 
-    `count_only` marks a layer nothing ever reads features from (the curse predicate
-    layers): the client walks the R-tree and counts (`worldCount` in osm/worldfile.js)
-    without touching one feature byte. Those ship as 2-point bbox-diagonal linestrings
-    with no properties — same envelope, so every R-tree node and every search result
-    is bit-identical, at a fraction of the bytes (DESIGN.md §Phase 1 R1). See
+    `count_only` marks a layer nothing ever reads features from: the client walks the
+    R-tree and counts (`worldCount` in osm/worldfile.js). Those ship as 2-point
+    bbox-diagonal linestrings with no properties, so every R-tree node and search
+    result is bit-identical at a fraction of the bytes (DESIGN.md §Phase 1 R1). See
     `diagonalize_layer`, which also dedups on `(osm_type, osm_id)`.
     """
 
@@ -245,21 +202,17 @@ class Table:
     cell_deg: float = 0.002
     include_tags: tuple[str, ...] = ()
     # The columns the CLIENT reads off a shipped feature, plus the `(osm_type, osm_id)`
-    # identity. Everything else in `include_tags` exists so a `where` clause can see it
-    # and is projected away by `ogr2ogr -select` (DESIGN.md §Phase 1 R5). Identity stays
-    # even on layers that never read it, because the Phase-3 shard merge dedups on it.
+    # identity the shard merge dedups on. The rest of `include_tags` exists for `where`
+    # and is projected away by `ogr2ogr -select` (DESIGN.md §Phase 1 R5).
     runtime_columns: tuple[str, ...] = ()
 
     @property
     def feature_layers(self) -> list[Layer]:
-        """Everything that ships as real geometry — one FlatGeobuf each.
+        """Everything that ships as real geometry, one FlatGeobuf each.
 
-        Deliberately WITHOUT admin: per-extract admin is broken by construction (a
-        boundary relation only assembles inside an extract that contains it whole),
-        and merge.py takes the shipped admin layer from `--admin` — the Overture
-        build — never from anything build.py produced. Building it here was pure
-        waste, measured at 16.5% of pooled feature-shard output. See
-        `_admin_comment` in categories.json.
+        WITHOUT admin: a boundary relation only assembles inside an extract that
+        contains it whole, and merge.py takes admin from `--admin` (the Overture
+        build). See `_admin_comment` in categories.json.
         """
         return list(self.categories) + list(self.curse_layers)
 
@@ -295,9 +248,8 @@ def load_table(path: Path) -> Table:
 
     density = raw["density"]
 
-    # No admin here on purpose — categories.json carries no admin entry (see its
-    # `_admin_comment`): the shipped admin layer is Overture's, placed by
-    # merge.py --admin, and a per-extract OSM admin build is discarded unread.
+    # No admin here on purpose: the shipped admin layer is Overture's, placed by
+    # merge.py --admin (see `_admin_comment` in categories.json).
     return Table(
         categories=[layer(e) for e in raw["categories"]],
         curse_layers=[layer(e) for e in raw["curse_layers"]],
@@ -381,9 +333,8 @@ def gdal_version() -> tuple[int, ...]:
 
 def preflight() -> None:
     """Fail before the eight-hour part, not during it."""
-    # ogrinfo included since 2026-08-22 (the finalize-job lesson, run
-    # 32597356160): preflight what the code INVOKES — feature_count shells out
-    # to ogrinfo — not just what usually travels together in a package.
+    # ogrinfo included: preflight what the code INVOKES (feature_count shells out to
+    # ogrinfo), not just what usually travels together in a package.
     missing = [b for b in ("osmium", "ogr2ogr", "ogrinfo") if shutil.which(b) is None]
     if missing:
         raise SystemExit(
@@ -440,10 +391,8 @@ def expected_md5(url: str) -> str | None:
     """
     The mirror's `.md5` sidecar, if it publishes one.
 
-    Every planet mirror serves `planet-latest.osm.pbf.md5` next to the file, in the
-    usual `<hash>  <filename>` form. It is worth having: a resumed download that
-    silently interleaved bytes from two different nightly rebuilds produces a file that
-    osmium will parse for hours before failing somewhere in the middle.
+    Worth having: a resumed download that interleaved bytes from two nightly rebuilds
+    produces a file osmium parses for hours before failing in the middle.
     """
     import urllib.request  # noqa: PLC0415
 
@@ -469,11 +418,9 @@ def stage_fetch_planet(planet: Path, url: str | None, no_fetch: bool,
     """
     Download the planet if it is not already on disk.
 
-    Deliberately a no-op when the file exists, which is what makes `--planet` usable for
-    a Geofabrik extract: the script never asks what it was handed, only whether it is
-    there. Nothing here re-downloads or freshens an existing file — a planet build takes
-    hours and silently swapping the input out from under a resumed run would be worse
-    than a stale snapshot. Delete the file to get a newer one.
+    A no-op when the file exists, which is what makes `--planet` usable for a
+    Geofabrik extract. Nothing here re-downloads or freshens an existing file; delete
+    it to get a newer one.
     """
     if planet.exists():
         log(f"stage 0: {planet} present ({human_bytes(planet.stat().st_size)}), not fetching")
@@ -522,12 +469,9 @@ def stage_fetch_planet(planet: Path, url: str | None, no_fetch: bool,
     last_error: Exception | None = None
     partial_from: str | None = None
     for candidate in urls:
-        # Resuming ACROSS mirrors is the one thing that must not happen. Mirrors lag
-        # each other by a nightly rebuild — as of writing, osuosl and planet.osm.org
-        # publish different md5s for "planet-latest" — so continuing mirror A's partial
-        # file against mirror B splices two different snapshots together. The result is
-        # a plausible-looking PBF that osmium parses for hours before failing somewhere
-        # in the middle. Start clean whenever the source changes.
+        # Resuming ACROSS mirrors must not happen: mirrors lag each other by a nightly
+        # rebuild, so continuing mirror A's partial file against mirror B splices two
+        # snapshots into a PBF osmium parses for hours before failing.
         if partial_from is not None and partial_from != candidate and planet.exists():
             log(f"stage 0: discarding {human_bytes(planet.stat().st_size)} partial from "
                 f"{partial_from} — resuming it against a different mirror would splice "
@@ -575,11 +519,9 @@ def stage_fetch_planet(planet: Path, url: str | None, no_fetch: bool,
 # Stage 0b — bring an existing planet up to date with replication diffs
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Per invocation, and this is a MEMORY limit, not a disk one: pyosmium-up-to-date holds
-# the downloaded diffs in RAM. Its own default is 1 GB ≈ 3 days of edits, and raising it
-# buys nothing here — a week of daily diffs is ~700 MB, so a weekly rebuild needs two or
-# three passes and never more than a gigabyte resident. Do not raise this to "save
-# passes"; it trades a bounded loop for an OOM kill.
+# A MEMORY limit, not a disk one: pyosmium-up-to-date holds the diffs in RAM. A week
+# of daily diffs is ~700 MB, so a weekly rebuild needs two or three passes. Do not
+# raise this to "save passes"; it trades a bounded loop for an OOM kill.
 UPDATE_CHUNK_MB = 1024
 
 # Refuse to start if the loop could plausibly not finish. Applying diffs is not an
@@ -592,21 +534,14 @@ def stage_update_planet(planet: Path, no_update: bool, freshly_downloaded: bool)
     """
     Apply OSM replication diffs to an existing planet file. Returns True if it changed.
 
-    WHY THIS IS THE DEFAULT. A weekly planet re-download is 87.6 GB. The same week of
-    edits as replication diffs is about 700 MB — the daily diffs run ~100 MB each — so
-    this is roughly 125× less to transfer. `pyosmium-up-to-date` reads the file's own
-    `osmosis_replication_timestamp` header (the same field `planet_timestamp` reads for
-    the manifest), works out which diffs are missing, and applies them.
+    A week of edits as diffs is ~700 MB against an 87.6 GB re-download.
+    `pyosmium-up-to-date` reads the file's `osmosis_replication_timestamp` header,
+    works out which diffs are missing, and applies them. It does not save time: the
+    entire PBF is rewritten, and the transient disk need is roughly double the planet.
+    `--no-update` opts out.
 
-    WHAT IT DOES NOT SAVE is time. Applying diffs rewrites the entire PBF, so the disk
-    I/O is comparable to a fresh download and the transient disk requirement is roughly
-    double the planet. On a very fast connection a fresh torrent can genuinely be
-    quicker; on anything metered or slow this wins by a mile. `--no-update` opts out.
-
-    A freshly downloaded planet is deliberately NOT updated. It is at most a week old,
-    it is internally coherent, and the manifest records its real snapshot date — paying
-    an 87 GB rewrite immediately after an 87 GB download to shave a few days off is not
-    a trade anyone asked for.
+    A freshly downloaded planet is NOT updated: it is at most a week old and the
+    manifest records its real snapshot date.
     """
     if no_update:
         log("stage 0b: --no-update given, not applying replication diffs")
@@ -634,17 +569,11 @@ def stage_update_planet(planet: Path, no_update: bool, freshly_downloaded: bool)
     log(f"stage 0b: applying replication diffs (rewrites {human_bytes(size)}; "
         "the download is small, the rewrite is not)")
 
-    # Exit status is a three-way, not a boolean. Quoting its own --help: "returns 0, if
-    # updates have been successfully applied up to the newest data or no new data was
-    # available. It returns 1, if some updates could not be resolved. Any other error
-    # results in a return code larger than 1."
-    #
-    # So 1 is the ambiguous one — it covers both "stopped at the --size limit, more to
-    # do" and "genuinely could not resolve". Looping on it is right for the first and
-    # useless for the second, and the two are indistinguishable from the exit code
-    # alone. The loop therefore watches the file's OWN replication timestamp and stops
-    # the moment a pass fails to advance it; without that, a persistent failure would
-    # re-download a gigabyte of diffs twenty-four times over.
+    # Exit status is a three-way: 0 is done or nothing new, >1 is an error, and 1
+    # covers both "stopped at the --size limit, more to do" and "genuinely could not
+    # resolve". So the loop watches the file's OWN replication timestamp and stops
+    # the moment a pass fails to advance it; otherwise a persistent failure would
+    # re-download a gigabyte of diffs twenty-four times.
     passes = 0
     cursor = before
     for attempt in range(1, 25):
@@ -680,16 +609,11 @@ def stage_update_planet(planet: Path, no_update: bool, freshly_downloaded: bool)
 
 def planet_timestamp(planet: Path) -> str | None:
     """
-    The PBF's own replication timestamp — the honest 'as of' for every count.
+    The PBF's own replication timestamp, the honest 'as of' for every count.
 
-    Every number this build produces is a snapshot, and the pages say so. Reading the
-    clock at build time instead would attribute a months-old planet dump to today.
-
-    Read through pyosmium rather than by shelling out to `osmium fileinfo`. That is not
-    a style preference: `stage_update_planet` calls this after every pass to decide
-    whether the file actually advanced, and that guard is what stops a failing update
-    from re-downloading diffs twenty-four times. A guard that silently returns None
-    whenever osmium-tool happens not to be installed is not a guard.
+    Read through pyosmium rather than `osmium fileinfo`: `stage_update_planet` calls
+    this after every pass to decide whether the file advanced, and a guard that
+    returns None whenever osmium-tool is not installed is not a guard.
     """
     import osmium  # noqa: PLC0415 — a declared dependency; kept beside its use
 
@@ -711,20 +635,16 @@ def planet_timestamp(planet: Path) -> str | None:
 
 def stage_filter(planet: Path, work: Path, table: Table, force: bool) -> Path:
     """
-    Cut the planet down to everything any feature layer could possibly want, once.
+    Cut the planet down to everything any feature layer could want, once.
 
-    This is the stage that decides whether the build takes three hours or a day. Every
-    feature layer's `filter` is unioned into a single `osmium tags-filter` invocation,
-    so the 85 GB file is read once and every later stage works against a ~4 GB
-    intermediate. Running one tags-filter per layer would re-read the planet 35 times.
+    Every feature layer's `filter` is unioned into a single `osmium tags-filter`
+    invocation, so the planet is read once and every later stage works against a
+    ~4 GB intermediate. The union is a superset of every layer; `where` narrows it
+    back per layer, and widening never loses a feature.
 
-    The union is a superset of every layer, which is safe in exactly the way the build
-    table's header describes: `where` narrows it back down per layer, and widening
-    never loses a feature.
-
-    Density layers are deliberately NOT in this union. Buildings and highways are the
-    bulk of the planet; folding them in here would make the intermediate as large as
-    the input and save nothing. They get their own pass in stage 4.
+    Density layers are NOT in this union: buildings and highways are the bulk of the
+    planet and would make the intermediate as large as the input. Stage 4 has its
+    own pass.
     """
     out = work / "interesting.osm.pbf"
     if out.exists() and not force:
@@ -733,9 +653,8 @@ def stage_filter(planet: Path, work: Path, table: Table, force: bool) -> Path:
 
     expressions = sorted({expr for layer in table.feature_layers for expr in layer.filter})
     log(f"stage 1: one planet pass, {len(expressions)} filter expressions")
-    # No `--index-type` here: tags-filter takes only -e/-i/-R/-t and rejects anything
-    # else outright (see `export_layer`). It needs no node-location index either — it
-    # matches on tags and pulls referenced objects by id, never by location.
+    # No `--index-type`: tags-filter takes only -e/-i/-R/-t and needs no node-location
+    # index (it matches on tags and pulls references by id).
     run([
         "osmium", "tags-filter", str(planet),
         *expressions,
@@ -751,29 +670,21 @@ def stage_filter(planet: Path, work: Path, table: Table, force: bool) -> Path:
 
 def export_config(work: Path, table: Table) -> Path:
     """
-    The `osmium export -c` config. Written rather than passed as flags, because the
-    flags do not exist.
+    The `osmium export -c` config. Written as a file because the flags do not exist.
 
-    `include_tags`, the attribute prefix and the record-separator switch are NOT
-    command-line options of `osmium export` — they are config-file keys only.
-    (`--include-tags` and `--attributes-prefix` have never existed in osmium-tool;
-    `--omit-rs` was removed in 1.15.0.) Passing them aborts the run on the first
-    invocation, and simply dropping them is worse than passing them: the export then
-    succeeds while writing something the client cannot read.
+    `include_tags`, the attribute prefix and the record-separator switch are config
+    keys only (`--include-tags` and `--attributes-prefix` never existed; `--omit-rs`
+    was removed in 1.15.0). Passing them aborts the run; dropping them writes
+    something the client cannot read.
 
-    `attributes` is the load-bearing part. `--add-unique-id=type_id` puts the identity
-    in the GeoJSON *Feature-level* `"id"` member, which is not a property — so
-    `feature.properties.osm_id` would be undefined, `splitOsmId` would return null, and
-    `featuresToPois` would `continue` on every single feature: zero POIs, no error
-    anywhere. Naming `id` and `type` as attributes puts them in `properties` instead,
-    where the client actually looks. The names are given explicitly so nothing carries
-    osmium's default `@` prefix, which is not a portable column name — it has to survive
-    an OGR SQL `-where` clause and a FlatGeobuf column header, and it is
-    quoting-sensitive in both.
+    `attributes` is load-bearing. `--add-unique-id=type_id` puts the identity in the
+    Feature-level `"id"` member, not a property, so `feature.properties.osm_id` would
+    be undefined and `featuresToPois` would skip every feature with no error. Naming
+    `id` and `type` as attributes puts them in `properties`, without osmium's default
+    `@` prefix, which is quoting-sensitive in OGR SQL and FlatGeobuf column headers.
 
-    Pinning `include_tags` is what gives the stream a stable schema, which is what lets
-    ogr2ogr write a FlatGeobuf without buffering the whole layer to discover fields —
-    and without it every stray tag in OSM becomes a column.
+    Pinning `include_tags` gives the stream a stable schema, so ogr2ogr can write a
+    FlatGeobuf without buffering the layer to discover fields.
     """
     config = {
         "attributes": {"type": "osm_type", "id": "osm_id"},
@@ -789,13 +700,12 @@ def export_layer(source: Path, layer: Layer, work: Path, table: Table, force: bo
     """
     `osmium tags-filter` then `osmium export` → newline-delimited GeoJSON.
 
-    Identity travels as two columns, `osm_type` ("node"/"way"/"relation") and `osm_id`
-    (an integer), which the client recombines. That pair is what the node-inside-area
-    dedup, every tie-break sort and every provenance row key off; an export without it
-    renumbers features arbitrarily and all three break at once.
+    Identity travels as `osm_type` ("node"/"way"/"relation") and `osm_id`, which the
+    client recombines; the node-inside-area dedup, every tie-break sort and every
+    provenance row key off that pair.
 
-    Note `--index-type` appears on `osmium export` and NOT on `osmium tags-filter`:
-    tags-filter takes only `-e/-i/-R/-t` and rejects anything else outright.
+    `--index-type` appears on `osmium export` and NOT on `osmium tags-filter`, which
+    takes only `-e/-i/-R/-t`.
     """
     cut = work / f"{layer.key}.osm.pbf"
     geojson = work / f"{layer.key}.geojsonl"
@@ -811,13 +721,10 @@ def export_layer(source: Path, layer: Layer, work: Path, table: Table, force: bo
         "osmium", "export", str(cut),
         "--index-type", OSMIUM_INDEX,
         "--config", str(export_config(work, table)),
-        # PER LAYER, and that is the double-emit fix (DESIGN.md §Phase 0). osmium exports
-        # a closed way once per requested interpretation, so asking every layer for all
-        # three types wrote every closed way twice — polygon plus zero-area linestring
-        # — inflating counts up to 2× and planting a second POI at a different
-        # coordinate. An area layer asks for `point,polygon` and the linestring reading
-        # is never produced; the genuinely mixed layers keep `linestring` and drop the
-        # duplicates in `apply_geometry_dedup` instead.
+        # PER LAYER: the double-emit fix (DESIGN.md §Phase 0). Asking every layer for
+        # all three types wrote every closed way twice, inflating counts up to 2× and
+        # planting a second POI. Area layers ask for `point,polygon`; the mixed layers
+        # keep `linestring` and drop duplicates in `apply_geometry_dedup`.
         f"--geometry-types={layer.geometry}",
         "-f", "geojsonseq",
         "--overwrite", "-o", str(geojson),
@@ -882,22 +789,15 @@ def apply_geometry_dedup(geojson: Path, layer: Layer) -> Path:
     """
     Drop a way's linestring reading when the same way was also exported as a polygon.
 
-    This is the half of the double-emit fix (DESIGN.md §Phase 0) that per-layer
-    `--geometry-types` cannot cover: a genuinely mixed layer (`water` holds lake
-    polygons AND river linestrings) must keep `linestring` in its export, and osmium
-    then writes every CLOSED way twice — its polygon, plus the same ring re-read as a
-    zero-area linestring. The polygon is the real feature; the linestring copy is what
-    inflated counts up to 2× and put a second POI at a different coordinate.
+    The half of the double-emit fix (DESIGN.md §Phase 0) that per-layer
+    `--geometry-types` cannot cover: a mixed layer (`water` holds lake polygons AND
+    river linestrings) must keep `linestring`, so osmium writes every CLOSED way
+    twice. The polygon is the real feature.
 
-    TWO PASSES, NECESSARILY. osmium emits every linestring before any polygon (ways
-    are exported in the way pass, areas in the area pass that follows), so a streaming
-    "have I seen this id as a polygon yet" always answers no. The first pass collects
-    the way-ids that appear as polygons; the second drops those ways' linestrings.
-    The id set is ints only — ~75 MB per million closed ways, far under the flat
-    2.4 GB the feature stages already hold.
-
-    Only ways can be double-emitted: nodes have one reading and relations export as
-    multipolygons only, so both pass through untouched.
+    TWO PASSES, NECESSARILY: osmium emits every linestring before any polygon, so a
+    streaming "seen as a polygon yet" always answers no. The first pass collects the
+    way-ids that appear as polygons (ints only, ~75 MB per million); the second drops
+    those ways' linestrings. Nodes and relations pass through untouched.
     """
     if not layer.dedup:
         return geojson
@@ -970,17 +870,14 @@ def diagonalize_layer(filtered: Path, layer: Layer, work: Path) -> Path:
     """
     Reduce a count-only layer to 2-point bbox-diagonal linestrings (DESIGN.md §Phase 1 R1).
 
-    The curse predicate layers are never drawn and never read feature-by-feature: the
-    client calls `worldCount`, which walks the R-tree and reads zero feature bytes. All
-    the index stores is each feature's envelope — and a diagonal from `(minX, minY)` to
-    `(maxX, maxY)` HAS exactly that envelope. So every R-tree node bbox and every
-    search result is bit-identical to the full-geometry layer's, at a fraction of the
-    bytes. Properties are dropped entirely; there is nothing left that reads them.
+    The curse predicate layers are never read feature-by-feature: `worldCount` walks
+    the R-tree, which stores only each feature's envelope, and a diagonal from
+    `(minX, minY)` to `(maxX, maxY)` HAS exactly that envelope. Every R-tree node and
+    search result is bit-identical at a fraction of the bytes. Properties are dropped.
 
     This pass also owns the layer's double-emit dedup: it keeps the FIRST record per
-    `(osm_type, osm_id)`, which collapses a closed way's polygon+linestring pair into
-    one diagonal (both readings of one ring have the same envelope, so which survives
-    is irrelevant). Runs AFTER the `where` filter, which needs the original properties.
+    `(osm_type, osm_id)`; both readings of one ring have the same envelope. Runs AFTER
+    the `where` filter, which needs the original properties.
     """
     diag = filtered.with_suffix(".diag.geojsonl")
     seen: set[tuple[str, int]] = set()
@@ -1067,29 +964,20 @@ def geojson_fields(geojson: Path) -> list[str]:
 
 # ── the `where` guard: a column the source lacks is NULL, not an error ───────
 #
-# `ogr2ogr -where` REJECTS a field the source layer does not carry — the same trap
-# `geojson_fields` already disarms for `-select`. It bites in two different ways and
-# the second is the dangerous one, because both calls below pass `-skipfailures`:
+# `ogr2ogr -where` REJECTS a field the source layer does not carry, and under
+# `-skipfailures` (which both calls below pass) that is exit 0 with
+# "ERROR 1: SetAttributeFilter(...) failed" on stderr while EVERY FEATURE IS COPIED
+# THROUGH UNFILTERED: the layer builds, the manifest lists it, the counts are wrong.
+# Verified against GDAL 3.12.
 #
-#     ogr2ogr ... -where "landuse IS NULL"                  → exit 1, build aborts
-#     ogr2ogr ... -where "landuse IS NULL" -skipfailures    → exit 0, and
-#         "ERROR 1: SetAttributeFilter(...) failed" on stderr while EVERY FEATURE IS
-#         COPIED THROUGH UNFILTERED. The layer builds, the manifest lists it, the
-#         counts are wrong, and nothing downstream can tell.
+# `osmium export` only writes the `include_tags` a layer's features actually HAVE.
+# `animal_delta`'s `where` references `landuse` only to exclude what `green` counted;
+# on an extract where nothing in its cut carries `landuse`, the column is absent.
 #
-# So this is not only an availability fix. Verified against GDAL 3.12.
-#
-# It happens because `osmium export` only writes the `include_tags` a layer's features
-# actually HAVE. `animal_delta`'s `where` references `landuse` purely to exclude the
-# features `green` already counted; on an extract where nothing in that layer's cut
-# carries `landuse`, the column is absent and the clause explodes — on an input where
-# the clause has nothing to do.
-#
-# The fix is not to drop the clause: dropping `landuse IS NULL OR ...` is fine, dropping
-# `landuse IS NULL` alone would be a silent semantic change. An absent column is NULL
-# for EVERY feature, so each predicate over it has a known constant value, and the
-# expression is constant-folded with those substituted. That is exactly the answer
-# ogr2ogr would have given had osmium written the column full of nulls.
+# Dropping the clause would be a silent semantic change. An absent column is NULL for
+# EVERY feature, so each predicate over it has a known constant value and the
+# expression is constant-folded with those substituted: exactly what ogr2ogr would
+# have answered had osmium written the column full of nulls.
 
 _WHERE_TOKEN = re.compile(
     r"""\s+
@@ -1104,10 +992,8 @@ _WHERE_TOKEN = re.compile(
 )
 
 # Words that are grammar rather than a column reference. Anything else spelled like an
-# identifier IS a column, which is the conservative direction: an unknown keyword would
-# be treated as a missing column and fold the clause away, so the set is kept complete
-# for the SQL the build table is allowed to contain and `rewrite_where` refuses to guess
-# beyond it (see the `NOT` guard below).
+# identifier IS a column; an unknown keyword would be treated as a missing column and
+# fold the clause away, so the set is kept complete for the SQL the table may contain.
 _SQL_KEYWORDS = frozenset({
     "AND", "OR", "NOT", "IN", "IS", "NULL", "LIKE", "ILIKE", "BETWEEN", "ESCAPE",
     "TRUE", "FALSE",
@@ -1258,21 +1144,18 @@ def rewrite_where(where: str, present, key: str = "") -> str | None:
     `where` with every reference to a column the source lacks constant-folded away.
 
     Returns the SQL to hand `-where`; `""` when the clause became unconditionally true
-    (pass no `-where` at all); or `None` when it can never match, which means the layer
-    is legitimately empty for this input.
+    (pass no `-where` at all); or `None` when it can never match, meaning the layer is
+    legitimately empty for this input.
 
-    The rewrite is semantics-preserving, not a best effort. `animal_delta` on an
-    extract with no `landuse` anywhere goes from
+    The rewrite is semantics-preserving. `animal_delta` on an extract with no `landuse`
+    goes from
 
         (leisure IN ('park','nature_reserve') OR ("natural" = 'water' AND name IS NOT
          NULL)) AND (landuse IS NULL OR landuse NOT IN ('forest','grass', ...))
 
-    to just the first half — because with `landuse` NULL for every feature the second
-    half IS true for every feature. Before this, that input shipped the layer with no
-    attribute filter applied at all.
-
-    A clause with nothing to fold is returned BYTE-IDENTICAL: surviving terms are
-    re-emitted as their original source slices, never re-serialised from the parse.
+    to just the first half, because with `landuse` NULL everywhere the second half IS
+    true for every feature. A clause with nothing to fold is returned BYTE-IDENTICAL:
+    surviving terms are re-emitted as their original source slices.
     """
     present_lower = {str(column).lower() for column in present}
     tokens = _where_tokens(where)
@@ -1336,33 +1219,27 @@ def convert_layer(geojson: Path, layer: Layer, out_dir: Path, work: Path,
     """
     GeoJSONSeq → FlatGeobuf, applying `where` and building the spatial index.
 
-    `SPATIAL_INDEX=YES` is the whole architecture in one creation option: it is the
-    packed Hilbert R-tree the browser walks with Range requests. Without it the client
-    must download the file to find anything in it.
+    `SPATIAL_INDEX=YES` is the packed Hilbert R-tree the browser walks with Range
+    requests; without it the client must download the file to find anything.
 
-    `-select` projects away the build-only columns (DESIGN.md §Phase 1 R5): the layer
-    ships only what the client reads at runtime plus the `(osm_type, osm_id)` identity
-    the Phase-3 merge dedups on. `-where` still sees every column — GDAL applies the
-    attribute filter against the SOURCE layer, before the field map — so a `where` on
-    `leisure` keeps working while `leisure` never reaches the output.
+    `-select` projects away the build-only columns (DESIGN.md §Phase 1 R5): only the
+    runtime columns plus the `(osm_type, osm_id)` identity ship. `-where` still sees
+    every column, because GDAL applies the attribute filter against the SOURCE layer
+    before the field map.
 
-    `-where` is not passed verbatim either: `rewrite_where` folds out any reference to a
-    column this export does not carry, because ogr2ogr rejects the whole attribute
-    filter over one absent field — and under `-skipfailures` it does so while still
-    exiting 0 and copying every feature through unfiltered.
+    `-where` goes through `rewrite_where` first, because ogr2ogr rejects the whole
+    filter over one absent field and under `-skipfailures` still exits 0 with every
+    feature copied through unfiltered.
 
-    A `count_only` layer takes a different road: `where` must run while the properties
-    still exist, so it is applied in its own GeoJSONSeq→GeoJSONSeq pass, then
-    `diagonalize_layer` reduces what survives to bbox diagonals with no properties at
-    all, and the FlatGeobuf is written from that with no `-where` and no `-select`.
+    A `count_only` layer applies `where` in its own GeoJSONSeq→GeoJSONSeq pass while
+    the properties still exist, then `diagonalize_layer` reduces what survives, and
+    the FlatGeobuf is written from that with no `-where` and no `-select`.
 
-    Returns None when the layer has no features. That is a real state, not an error:
-    a regional extract legitimately contains no `high_speed_rail` and no `coastline`,
-    and the GeoJSONSeq driver cannot open a file with no records — `ogr2ogr` fails with
-    "Unable to open datasource" rather than writing an empty layer. Skipping keeps the key out of the
-    manifest, which is the case `osm/geodata.js` already handles: it marks the category
-    `partial` and degrades it alone. Writing a feature-less .fgb instead would claim
-    the build had looked and found nothing, which is a different and stronger claim.
+    Returns None when the layer has no features. That is a real state: a regional
+    extract legitimately contains no `high_speed_rail`, and the GeoJSONSeq driver
+    cannot open a file with no records. A key absent from the manifest is the case
+    `osm/geodata.js` already handles (it marks the category `partial`); a feature-less
+    .fgb would claim the build looked and found nothing, a stronger claim.
     """
     fgb = out_dir / f"{layer.key}.fgb"
     if fgb.exists() and not force:
@@ -1372,11 +1249,9 @@ def convert_layer(geojson: Path, layer: Layer, out_dir: Path, work: Path,
         log(f"stage 3: {layer.key} has no features, omitting from the manifest")
         return None
 
-    # One schema probe, hoisted above the count_only branch so both roads share it:
-    # `-select` is intersected with it, and `-where` is constant-folded against it.
-    # Either would otherwise trip over a column osmium never wrote because no feature in
-    # this layer's cut carried the tag. It costs a count-only layer one extra `ogrinfo`
-    # pass over its GeoJSONSeq, which the feature layers were already paying.
+    # One schema probe, shared by both roads: `-select` is intersected with it and
+    # `-where` is constant-folded against it, since either trips over a column osmium
+    # never wrote because no feature in this layer's cut carried the tag.
     present = geojson_fields(geojson)
     where = rewrite_where(layer.where, present, key=layer.key)
     if where is None:
@@ -1433,9 +1308,8 @@ def build_layer(source: Path, layer: Layer, work: Path, out_dir: Path,
     """One feature layer, source PBF → published .fgb (or None when it is empty)."""
     fgb = out_dir / f"{layer.key}.fgb"
     if fgb.exists() and not force:
-        # Resuming: the .fgb is the stage's real output, so its existence short-circuits
-        # the whole chain — re-running the export only to skip the conversion would
-        # re-read the intermediate for nothing.
+        # Resuming: the .fgb is the stage's real output, so its existence
+        # short-circuits the whole chain.
         log(f"stage 3: {fgb.name} exists, skipping")
         return fgb
     geojson = export_layer(source, layer, work, table, force)
@@ -1496,37 +1370,30 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
     """
     One pyosmium pass over the planet, binning six dense categories into a sparse grid.
 
-    building, street, car_street, footpath, bridge and tree are counts rather than
-    icons — nothing downstream draws them, everything downstream tallies them. Their
-    planet-wide geometry is tens of gigabytes to answer questions of the form "how many
-    buildings are in this circle", so they never ship as features. Instead each is
-    attributed to exactly one `cell_deg` cell and the cell counts ship.
+    building, street, car_street, footpath, bridge and tree are counts, not icons.
+    Their planet-wide geometry is tens of gigabytes, so they never ship as features;
+    each is attributed to exactly one `cell_deg` cell and the cell counts ship.
 
-    Attributing each way to ONE cell — the cell of its first node — is what keeps
-    map-wide totals exact: a way counted in one cell and only one cannot be
-    double-counted by a bbox sum. It is also what makes per-zone figures approximate,
-    since a long street belongs wholly to the cell where it starts. That trade is
-    documented in categories.json's `_density_comment` and surfaced in provenance.
+    Attributing each way to ONE cell, the cell of its first node, keeps map-wide
+    totals exact and makes per-zone figures approximate (a long street belongs wholly
+    to the cell where it starts). That trade is documented in categories.json's
+    `_density_comment` and surfaced in provenance.
 
     `--clip-region` is the sharded-build half of that exactness rule (DESIGN.md
-    §Phase 3): Geofabrik extracts overlap by design (buffered cutting polygons), so
-    a shard build must count only what falls inside its ASSIGNED DISJOINT region
-    (cover.py's `cover-geometries/<id>.geojson`) or every way in the overlap buffer
-    is tallied by both neighbouring shards and merge.py's cell sums double-count.
-    The test is on the way's FIRST NODE — the same point that picks the cell — and,
-    for the node-based `tree` count, on the node's own location, which needs the
-    identical clip for the identical reason. No --clip-region = unchanged behaviour.
+    §Phase 3): Geofabrik extracts overlap by design, so a shard build must count only
+    what falls inside its ASSIGNED DISJOINT region (cover.py's
+    `cover-geometries/<id>.geojson`) or merge.py's cell sums double-count. The test is
+    on the way's FIRST NODE and, for `tree`, on the node's own location. No
+    --clip-region = unchanged behaviour.
 
     Output is a FlatGeobuf of POINTS at cell centres with one integer column per
-    category, so the browser reads it with exactly the same Range-request client as
-    every other layer.
+    category, read with the same Range-request client as every other layer.
     """
     fgb = out_dir / "density.fgb"
-    # The skip-if-exists cache is only valid for the SAME --clip-region: a cached
-    # grid was counted inside one polygon (or none), and reusing it under a
-    # different clip would silently ship the wrong shard's tallies. The clip state
-    # (sha256 of the region file, or "none") is recorded in a sidecar in the work
-    # dir when the grid is built, and the skip only fires when it matches.
+    # The skip-if-exists cache is only valid for the SAME --clip-region: a grid counted
+    # under a different clip would ship the wrong shard's tallies. The clip state
+    # (sha256 of the region file, or "none") is recorded in a sidecar when the grid is
+    # built, and the skip only fires when it matches.
     clip_state = sha256_file(clip_region) if clip_region is not None else "none"
     clip_sidecar = work / "density.clip-state"
     if fgb.exists() and not force:
@@ -1538,10 +1405,8 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
         log(f"stage 4: {fgb.name} exists but was built under a different "
             f"--clip-region state (recorded {recorded!r}, current "
             f"{clip_state!r}) — rebuilding")
-    # Invalidate the sidecar BEFORE any rebuild work: if this run crashes midway
-    # (e.g. during the final ogr2ogr, which writes the fgb in place), a surviving
-    # sidecar would validate the corrupt grid for a later skip. Absent sidecar =
-    # never skip. It is rewritten only after a fully successful build below.
+    # Invalidate the sidecar BEFORE any rebuild work: a crash mid-ogr2ogr must not
+    # leave a sidecar that validates a corrupt grid. Absent sidecar = never skip.
     clip_sidecar.unlink(missing_ok=True)
 
     import osmium  # noqa: PLC0415 — uv installs it; keep the import next to its use
@@ -1551,12 +1416,10 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
         clip_geom = load_clip_region(clip_region)
 
         def inside(lon: float, lat: float) -> bool:
-            # `contains_xy` EXCLUDES the boundary — and both neighbouring shards'
-            # assigned polygons exclude it too, so a first node lying EXACTLY on a
-            # shared border is counted by ZERO shards. The composition is therefore
-            # at-most-once, not exactly-once. Accepted: it errs in the safe
-            # direction (undercount, never the double-count the clip exists to
-            # prevent) and an exact float hit on a full-precision boundary is
+            # `contains_xy` EXCLUDES the boundary, as do both neighbours' assigned
+            # polygons, so a first node EXACTLY on a shared border is counted by ZERO
+            # shards: at-most-once, not exactly-once. Accepted: it errs toward
+            # undercount, and an exact float hit on a full-precision boundary is
             # measure-zero in practice.
             return bool(shapely.contains_xy(clip_geom, lon, lat))
     else:
@@ -1565,10 +1428,9 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
     cell_deg = table.cell_deg
     keys = [layer.key for layer in table.density_layers]
 
-    # Predicates are written against raw OSM tags here rather than reusing the OGR SQL
-    # `where` strings, because there is no SQL engine in this pass. The build table's
-    # density `where` clauses are the specification; these must agree with them, and a
-    # divergence is silent — so they are kept adjacent and minimal.
+    # Predicates are written against raw OSM tags because there is no SQL engine in
+    # this pass. The build table's density `where` clauses are the specification;
+    # these must agree with them, and a divergence is silent.
     car_values = {
         "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified",
         "residential", "living_street", "service", "motorway_link", "trunk_link",
@@ -1582,9 +1444,8 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
     class DensityHandler(osmium.SimpleHandler):
         def __init__(self) -> None:
             super().__init__()
-            # cell -> [count per key]. Sparse: only populated cells are ever created,
-            # which is what keeps a planet grid to tens of millions of cells rather
-            # than the 2.6 billion a dense array would need.
+            # cell -> [count per key]. Sparse: only populated cells exist, tens of
+            # millions rather than the 2.6 billion a dense array would need.
             self.cells: dict[tuple[int, int], list[int]] = {}
             self.ways = 0
             self.nodes = 0
@@ -1625,11 +1486,9 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
                 lat, lon = first.lat, first.lon
             except (IndexError, osmium.InvalidLocationError):
                 return
-            # THE exactness rule under sharding: the way belongs to this shard iff
-            # its FIRST NODE — the point that picks its one cell — is inside the
-            # shard's assigned disjoint region. First node only; nothing else about
-            # the way is tested, so the cost is one prepared point-in-polygon call
-            # per candidate way.
+            # THE exactness rule under sharding: the way belongs to this shard iff its
+            # FIRST NODE, the point that picks its one cell, is inside the assigned
+            # disjoint region. One prepared point-in-polygon call per candidate way.
             if inside is not None and not inside(lon, lat):
                 self.clipped += 1
                 return
@@ -1660,9 +1519,8 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
            if clip_region is not None else ""))
 
     if not handler.cells:
-        # Same contract as convert_layer: the GeoJSONSeq driver cannot open a file
-        # with no records, and a key absent from the manifest is the degradation path
-        # the client already handles. Only a fixture-sized extract can get here.
+        # As in convert_layer: the GeoJSONSeq driver cannot open a record-less file,
+        # and an absent manifest key is the degradation path. Only a fixture can get here.
         log("stage 4: no populated cells, omitting density from the manifest")
         return None
 
@@ -1682,11 +1540,9 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
                         round(row * cell_deg + half, 7),
                     ],
                 },
-                # Zero-valued counts are OMITTED per cell (DESIGN.md §Phase 1 R4): the
-                # client already reads an absent column as zero — `worldDensity` skips
-                # zero and non-finite values on read (osm/worldfile.js), so absent and
-                # 0 are indistinguishable by construction. A cell only exists because
-                # some count is non-zero, so no feature ends up property-less.
+                # Zero-valued counts are OMITTED per cell (DESIGN.md §Phase 1 R4):
+                # `worldDensity` reads an absent column as zero. A cell only exists
+                # because some count is non-zero, so no feature is property-less.
                 "properties": {
                     key: count for key, count in zip(keys, counts) if count != 0
                 },
@@ -1716,16 +1572,14 @@ def stage_manifest(out_dir: Path, table: Table, planet_ts: str | None,
     """
     One small JSON the client fetches first.
 
-    It exists so the browser can answer "is this category available, and how big is the
-    file" without a HEAD request per layer, and so every page can print the planet
-    snapshot date its counts came from. `osm/geodata.js` treats a category missing from
-    the manifest as unavailable and degrades that category rather than erroring.
+    The browser answers "is this category available, and how big is the file" without
+    a HEAD per layer, and every page prints the planet snapshot date. `osm/geodata.js`
+    treats a category missing from the manifest as unavailable and degrades it.
 
     `planet_ts` is captured by the caller BEFORE `--unlink-source` may have deleted
-    the planet file. `partial: true` (the pinned client-side rule) marks a manifest
-    whose layer table was truncated by SELECTION — `--only` / `--skip-density` — as
-    opposed to a full build whose empty layers are legitimately absent; a shard build
-    is partial by construction and must never be mistaken for a whole world.
+    the planet. `partial: true` marks a manifest whose layer table was truncated by
+    SELECTION (`--only` / `--skip-density`), as opposed to a full build whose empty
+    layers are legitimately absent; a shard build must never pass for a whole world.
     """
     manifest = {
         "version": 1,
@@ -1752,14 +1606,12 @@ def stage_manifest(out_dir: Path, table: Table, planet_ts: str | None,
 # Stage 6 — R2
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# The bucket must answer Range requests cross-origin, and it must EXPOSE the range
-# headers — a browser that cannot read Content-Range cannot walk the R2 index, and the
-# failure looks like a corrupt file rather than a CORS error. Apply with:
+# The bucket must answer Range requests cross-origin and EXPOSE the range headers; a
+# browser that cannot read Content-Range cannot walk the index, and the failure looks
+# like a corrupt file. Apply with:
 #   wrangler r2 bucket cors set <bucket> --file tools/osm-world/r2-cors.json
-# NOTE THE `rules` WRAPPER, and the nesting under `allowed`. S3 takes a bare array of
-# AllowedOrigins/AllowedMethods; R2's own API does not, and `wrangler r2 bucket cors
-# set` rejects the S3 shape with "must contain a 'rules' array". Emitting S3's shape
-# made this file unappliable by the one command the docs give for applying it.
+# NOTE THE `rules` WRAPPER and the nesting under `allowed`: R2's API rejects S3's bare
+# AllowedOrigins/AllowedMethods shape with "must contain a 'rules' array".
 R2_CORS = {
     "rules": [
         {
@@ -1782,16 +1634,10 @@ def check_upload_env() -> None:
     """
     The four `R2_*` variables `stage_upload` needs, checked as a PREFLIGHT.
 
-    Stage 6 is the last thing that runs, so checking there means an unset variable
-    surfaces only once every layer is already built — a minute for a density shard,
-    an hour for a coarse feature shard like africa, and none of it survives, because
-    CI's retry is a full re-download and rebuild. It costs nothing to ask first.
-
-    Presence is all this can prove. A variable that is *set but wrong* — a rotated
-    secret, a token without write scope, a typo'd bucket — is still only discovered
-    when boto3 talks to the API in stage 6. Proving otherwise means a live HeadBucket
-    at preflight, which trades this failure mode for a worse one: a transient network
-    blip would then kill a build that was going to succeed.
+    Stage 6 runs last, so checking there surfaces an unset variable only after every
+    layer is built, and CI's retry is a full rebuild. Presence is all this can prove:
+    a set-but-wrong variable is still only discovered in stage 6, and a live
+    HeadBucket at preflight would let a transient blip kill a build that would succeed.
     """
     missing = [name for name in R2_ENV if not os.environ.get(name)]
     if missing:
@@ -1802,9 +1648,8 @@ def r2_client():
     """
     The boto3 S3 client for R2, from the four `R2_*` environment variables.
 
-    Split out of `stage_upload` so `merge.py` can reuse THE SAME uploader (DESIGN.md
-    §Phase 6, gap B4) instead of growing a second aws-cli code path with its own
-    ContentType/CacheControl conventions to drift.
+    Split out of `stage_upload` so `merge.py` reuses THE SAME uploader (DESIGN.md
+    §Phase 6, gap B4) rather than a second code path with its own conventions.
     """
     import boto3  # noqa: PLC0415 — uv installs it; keep the import next to its use
 
@@ -1839,7 +1684,6 @@ def r2_upload(client, path: Path, key: str) -> None:
         str(path), os.environ["R2_BUCKET"], key,
         ExtraArgs={
             "ContentType": content_type,
-            # The files are immutable per build; the manifest is what changes.
             "CacheControl": (
                 "public, max-age=300" if path.suffix == ".json"
                 else "public, max-age=31536000, immutable"
@@ -1864,11 +1708,8 @@ def stage_upload(out_dir: Path, prefix: str) -> None:
 
     # MANIFEST LAST, ALWAYS. It is the only mutable object and the only thing that
     # flips a build live, so every layer it names must already be readable when it
-    # lands. `sorted(out_dir.iterdir())` put manifest.json 22nd of 38 — alphabetically
-    # ahead of pitch, platform, rail_station, restaurant, shop, water and ten more —
-    # so for the length of those uploads the published manifest pointed at objects
-    # that did not exist yet, and a client arriving in that window got a 404 on a
-    # layer the manifest promised. Layers first, in any order; manifest strictly after.
+    # lands. A plain `sorted(out_dir.iterdir())` put manifest.json 22nd of 38, and a
+    # client arriving in that window got a 404 on a layer the manifest promised.
     everything = sorted(p for p in out_dir.iterdir() if p.suffix in (".fgb", ".json"))
     layers_first = [p for p in everything if p.name != "manifest.json"]
     manifest = [p for p in everything if p.name == "manifest.json"]
@@ -1927,10 +1768,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="key prefix inside the R2 bucket (default: world)")
     args = parser.parse_args(argv)
 
-    # Check the toolchain BEFORE spending hours on an 85 GB download that a missing
-    # ogr2ogr would make useless. Same reasoning for the upload credentials: stage 6
-    # runs last, so an unset R2_* variable would otherwise be found only after every
-    # layer is built (see check_upload_env).
+    # Check the toolchain and upload credentials BEFORE spending hours on a download
+    # (see check_upload_env).
     preflight()
     if args.upload:
         check_upload_env()
@@ -1945,10 +1784,8 @@ def main(argv: list[str] | None = None) -> int:
     layers = [l for l in table.feature_layers if wanted is None or l.key in wanted]
     density_selected = not args.skip_density and (wanted is None or "density" in wanted)
 
-    # --unlink-source exists for feature-only shard builds (stage 4 never runs, so
-    # nothing reads the raw extract after stage 1). If density WILL run, deleting the
-    # planet after stage 1 would starve stage 4 of its input — refuse up front rather
-    # than dying hours in.
+    # --unlink-source exists for feature-only shard builds. If density WILL run,
+    # deleting the planet after stage 1 would starve stage 4; refuse up front.
     if args.unlink_source and density_selected:
         raise SystemExit(
             "--unlink-source cannot be combined with a density build: stage 4 reads "
@@ -1967,22 +1804,18 @@ def main(argv: list[str] | None = None) -> int:
     planet = stage_fetch_planet(args.planet, args.planet_url, args.no_fetch, args.skip_md5)
     planet_changed = stage_update_planet(planet, args.no_update, freshly_downloaded=not had_planet)
 
-    # A newer planet invalidates EVERYTHING derived from the old one. Every stage below
-    # skips when its output already exists, which is what makes an interrupted build
-    # resumable — and is exactly what would otherwise splice a freshly-updated planet
-    # together with last week's `interesting.osm.pbf` and last week's density grid. The
-    # result would be internally inconsistent and would not look wrong anywhere.
+    # A newer planet invalidates EVERYTHING derived from the old one: skip-if-exists
+    # resumability would otherwise splice a fresh planet with last week's
+    # `interesting.osm.pbf` and density grid, and nothing would look wrong.
     force = args.force
     if planet_changed and not force:
         log("stage 0b: planet changed — rebuilding every derived stage "
             "(the cached intermediates are from the previous snapshot)")
         force = True
 
-    # Stage 1 is "the stage that decides whether the build takes three hours or a
-    # day", and the per-layer loop below is its ONLY reader. A selection that leaves
-    # no feature layers (`--only density`, every density shard in CI) would otherwise
-    # pay for a whole planet tags-filter pass and write an interesting.osm.pbf that
-    # nothing ever opens.
+    # Stage 1's only reader is the per-layer loop below. A selection with no feature
+    # layers (`--only density`, every density shard in CI) must not pay for a whole
+    # planet tags-filter pass nothing opens.
     source = stage_filter(planet, work, table, force) if layers else None
 
     # The timestamp must be read while the planet file still exists — stage 5 wants
@@ -1990,9 +1823,8 @@ def main(argv: list[str] | None = None) -> int:
     planet_ts = planet_timestamp(planet)
 
     if args.unlink_source and planet.exists():
-        # Reachable with no stage 1 output: --only density --skip-density, or an
-        # --only that names nothing in the table. The gate above has already proved
-        # stage 4 will not run, so the extract is unread either way.
+        # Reachable with no stage 1 output (--only density --skip-density, or an
+        # --only naming nothing). The gate above proved stage 4 will not run.
         why = (f"{source.name} exists and no remaining stage reads the raw extract"
                if source is not None
                else "no selected stage reads the raw extract")

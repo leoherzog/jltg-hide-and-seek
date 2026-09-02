@@ -7,38 +7,29 @@
 tools/osm-world/make-test-world.py — a miniature world file set, for end-to-end tests.
 
 `make-fixture.py` proves `osm/flatgeobuf.js` can read a FlatGeobuf. This proves the
-whole geo layer works: it writes a complete, manifest-described world directory — a few
-category layers, the admin layer, the curse layers and the density grid — small enough
-to serve from a local static server and run `collectGeodata` against for real.
-
-That matters because `collectGeodata` is ~250 lines of orchestration that nothing
-otherwise executes. It was shipped once with a function accidentally deleted out from
-under it and the failure was invisible: `worker.js` catches everything from that call
-and degrades to `emptyGeoData`, so a hard crash inside it looked exactly like an
-unreachable origin. (`collectGeodata` now carries the real per-layer reasons out with
-it, but the catch is still there and a test that only checks the OSM section is absent
-would still have passed.)
+whole geo layer works: it writes a complete, manifest-described world directory (a few
+category layers, the admin layer, the curse layers and the density grid) small enough
+to serve locally and run `collectGeodata` against for real. That matters because
+`worker.js` catches everything from that call and degrades to `emptyGeoData`, so a
+hard crash inside it looks exactly like an unreachable origin.
 
     uv run tools/osm-world/make-test-world.py /tmp/world
     node tools/osm-world/test-pipeline.mjs /tmp/world
 
-THE WORLD MIRRORS WHAT build.py NOW PRODUCES (DESIGN.md Phase 0 + Phase 1):
+THE WORLD MIRRORS WHAT build.py PRODUCES (DESIGN.md Phase 0 + Phase 1):
 
-  * layers carry ONLY the runtime columns (R5) — the build projects the rest away;
+  * layers carry ONLY the runtime columns (R5);
   * the curse layers are 2-point bbox-diagonal linestrings with no properties (R1);
-  * `curse_animal_habitat` does not exist; `green`, `green_recreation_ground` and
-    `animal_delta` do, and their counts satisfy the partition identity the client
-    reconstructs the habitat count from (R2);
+  * `green`, `green_recreation_ground` and `animal_delta` satisfy the partition
+    identity the client reconstructs the habitat count from (R2);
   * the density grid omits zero-valued counts per cell (R4);
-  * four layers — `pitch`, `coastline`, `curse_cairn_terrain`, `animal_delta` — are not
-    hand-written at all: they are built from an embedded OSM XML fixture THROUGH
-    build.py's real per-layer pipeline (tags-filter → export → dedup/diagonal →
-    ogr2ogr), so the double-emit fix, the diagonal pass and the absent-column `where`
-    guard are exercised on the actual code, not on a hand-made imitation of its output.
-    This needs the `osmium` and `ogr2ogr` binaries, the same two the real build needs.
+  * `pitch`, `coastline`, `curse_cairn_terrain` and `animal_delta` are built from an
+    embedded OSM XML fixture THROUGH build.py's real per-layer pipeline, so the
+    double-emit fix, the diagonal pass and the absent-column `where` guard run on the
+    actual code. This needs the `osmium` and `ogr2ogr` binaries.
 
 Geometry is placed around Grand Rapids, MI so the numbers are recognisable next to the
-reference figures quoted throughout osm/geodata.js.
+reference figures quoted in osm/geodata.js.
 """
 
 from __future__ import annotations
@@ -59,10 +50,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import build  # noqa: E402 — build.py, the real pipeline; stdlib-only at import time
 
-# All layers share one pinned column set: exactly the runtime columns the real build
-# ships after R5 projects the build-only columns away (`runtime_columns` in
-# categories.json). The client must work from these and nothing else — leisure,
-# amenity, landuse and friends exist only inside the build's `where` clauses now.
+# One pinned column set: exactly the runtime columns the real build ships after R5
+# (`runtime_columns` in categories.json). leisure, amenity, landuse and friends exist
+# only inside the build's `where` clauses.
 COLUMNS = [
     "osm_type", "osm_id", "name", "name:en", "natural", "cuisine", "access", "foot",
     "entry", "opening_hours", "admin_level", "ISO3166-1", "ISO3166-1:alpha2",
@@ -85,22 +75,19 @@ LAYERS: dict[str, list] = {
     ],
     "water": [
         # `natural` stays a runtime column because synthCoastline reads it off water
-        # features (osm/geodata.js) — polygonal water only, rivers are not coasts.
+        # features (osm/geodata.js); polygonal water only.
         ("w201", {"name": "Grand River", "natural": "water"},
          "POLYGON ((-85.6800 42.9600, -85.6700 42.9620, -85.6700 42.9600, "
          "-85.6800 42.9580, -85.6800 42.9600))"),
-        # CROSSES the map without a single vertex inside it. Both endpoints sit outside
-        # the test bbox [42.9550,-85.6850,42.9800,-85.6600] on opposite corners, so a
-        # vertex-only containment test drops it entirely while the R-tree still counts
-        # it — the published count then disagrees with worldCount in the same run.
-        # Real instance behind this: way 626208834 (Noordertocht), 33 vertices, none
-        # inside a 0.008 deg Flevoland bbox, 550 m of canal crossing the map.
+        # CROSSES the map without a vertex inside it: both endpoints sit outside the
+        # test bbox on opposite corners, so a vertex-only containment test drops it
+        # while the R-tree still counts it. Real instance: way 626208834 (Noordertocht).
         ("w203", {"name": "Crossing Canal", "natural": "water"},
          "LINESTRING (-85.7000 42.9500, -85.6500 42.9900)"),
     ],
     "restaurant": [
-        # `cuisine` is read off individual features by cuisineDetail — the reason
-        # restaurant stays a feature layer instead of going into the density grid.
+        # `cuisine` is read off individual features by cuisineDetail, which is why
+        # restaurant stays a feature layer.
         ("n301", {"name": "Osteria", "cuisine": "italian"},
          "POINT (-85.6700 42.9650)"),
         ("n302", {"name": "Taqueria", "cuisine": "mexican"},
@@ -116,9 +103,8 @@ LAYERS: dict[str, list] = {
         ("n501", {"name": "Main Library", "opening_hours": "24/7"},
          "POINT (-85.6710 42.9670)"),
     ],
-    # The positive term of the R2 partition identity, and a real category (legal-spot
-    # weight 0.5). landuse in the source: forest, grass, recreation_ground — the
-    # column itself is build-only and does not ship.
+    # The positive term of the R2 partition identity, and a real category. landuse
+    # (forest, grass, recreation_ground) is build-only and does not ship.
     "green": [
         ("w801", {"name": "Test Forest"},
          "POLYGON ((-85.6840 42.9560, -85.6820 42.9560, -85.6820 42.9580, "
@@ -130,12 +116,10 @@ LAYERS: dict[str, list] = {
          "POLYGON ((-85.6840 42.9620, -85.6820 42.9620, -85.6820 42.9640, "
          "-85.6840 42.9640, -85.6840 42.9620))"),
     ],
-    # An EMPTY layer is a real case — a map with no consulates — and the reader must
-    # handle featuresCount == 0 rather than treating it as an error.
+    # An EMPTY layer is a real case; the reader must handle featuresCount == 0.
     "foreign_consulate": [],
-    # admin_level 2 carries ISO3166-1 (the country code), level 4 carries ISO3166-2
-    # (the principal subdivision) — which is how the ordinal ladder is anchored now
-    # that Nominatim's ISO3166-2-lvl<N> is gone.
+    # admin_level 2 carries ISO3166-1 (country), level 4 carries ISO3166-2 (principal
+    # subdivision); that anchors the ordinal ladder.
     "admin": [
         ("r901", {"name": "United States of America",
                   "admin_level": "2", "ISO3166-1": "US"},
@@ -148,17 +132,12 @@ LAYERS: dict[str, list] = {
         ("r904", {"name": "Grand Rapids", "admin_level": "8"},
          "POLYGON ((-85.72 42.94, -85.60 42.94, -85.60 43.00, -85.72 43.00, "
          "-85.72 42.94))"),
-        # THE BBOX-SUPERSET TRAP, and it is not hypothetical — this is Canada's real
-        # shape problem in miniature. A country is one relation with one bounding box,
-        # and Canada's spans lat 41.7-83.1 / lon -141..-52, which CONTAINS Grand Rapids.
-        # The R-tree therefore returns it for a Michigan map. The geometry below is a
-        # triangle in the far north-west whose bbox likewise covers the map while the
-        # polygon itself comes nowhere near it.
-        #
-        # If `worldAdminAreas` ever stops filtering the superset by real geometry, this
-        # feature wins the country vote on name order ('Canada' < 'United States of
-        # America') and the page silently renders in kilometres, changes the Unguided
-        # Tourist decision, and claims an international border 250 km from one.
+        # THE BBOX-SUPERSET TRAP, Canada's real shape problem in miniature: its bbox
+        # (lat 41.7-83.1, lon -141..-52) CONTAINS Grand Rapids, so the R-tree returns
+        # it for a Michigan map. This triangle's bbox likewise covers the map while the
+        # polygon comes nowhere near it. If `worldAdminAreas` stops filtering by real
+        # geometry, 'Canada' wins the country vote on name order and the page silently
+        # renders in kilometres and claims an international border 250 km from one.
         ("r905", {"name": "Canada",
                   "admin_level": "2", "ISO3166-1": "CA"},
          "POLYGON ((-141.0 84.0, -52.0 84.0, -141.0 41.0, -141.0 84.0))"),
@@ -167,14 +146,12 @@ LAYERS: dict[str, list] = {
 
 # ── the count-only layers (DESIGN.md Phase 1 R1/R2) ────────────────────────────
 #
-# What the real build ships for these: one 2-point (minX,minY)→(maxX,maxY) linestring
-# per feature, NO properties. The source geometry below is what the envelope is
-# computed FROM — it never ships. `worldCount` walks the R-tree, and a diagonal has
-# exactly its source's envelope, so every count is unchanged.
+# The real build ships one 2-point (minX,minY)→(maxX,maxY) linestring per feature, NO
+# properties. The source geometry below is only what the envelope is computed FROM;
+# a diagonal has exactly its source's envelope, so every `worldCount` is unchanged.
 #
-# curse_water is a proper SUPERSET of the water category: the curse says "marked",
-# the category says "named", and on a real map they differ by 8:1. w202 is marked but
-# unnamed; the crossing canal keeps its envelope-clips-the-map behaviour.
+# curse_water is a proper SUPERSET of the water category ("marked" vs "named", 8:1 on
+# a real map): w202 is marked but unnamed.
 DIAGONAL_LAYERS: dict[str, list[str]] = {
     "curse_water": [
         LAYERS["water"][0][2],                       # w201 Grand River polygon
@@ -194,9 +171,8 @@ DIAGONAL_LAYERS: dict[str, list[str]] = {
     #                         = {w101, w102, w201, w203}
     # so over the test bbox: 3 − 1 + 4 = 6 == |{w101,w102,w801,w802,w201,w203}|.
     #
-    # `animal_delta` is NOT here: it is built through build.py for real (see
-    # ANIMAL_DELTA_SOURCE), over the same four features and therefore the same four
-    # envelopes, so the identity above is unchanged.
+    # `animal_delta` is NOT here: it is built through build.py (ANIMAL_DELTA_SOURCE)
+    # over the same four features, so the identity above is unchanged.
     "green_recreation_ground": [
         LAYERS["green"][2][2],                       # w803
     ],
@@ -216,24 +192,19 @@ DIAGONAL_LAYERS: dict[str, list[str]] = {
 #   w7105  a closed natural=wood way         — diagonalized (R1) and id-deduped;
 #   n7018  a natural=beach node              — a DEGENERATE diagonal (point envelope).
 #
-# `animal_delta` is built here too, and for a different reason: THE ABSENT-COLUMN CASE.
-# Its `where` reads `landuse` only to exclude what `green` already counted, but nothing
-# in its own tags-filter cut carries `landuse` — so `osmium export` never writes that
-# column and `ogr2ogr` rejects the whole attribute filter over it. Under the
-# `-skipfailures` the build passes, that is not even an error: exit 0, and every feature
-# copied through UNFILTERED. This fixture is exactly the shape any small extract has, and
-# it is the regression test for `build.rewrite_where` — if the fold stops working the
-# diagonal count below stops being 4 and `test-pipeline.mjs` fails on the R2 identity.
+# `animal_delta` is built here too, for THE ABSENT-COLUMN CASE: its `where` reads
+# `landuse` only to exclude what `green` counted, but nothing in its tags-filter cut
+# carries `landuse`, so `osmium export` never writes the column and `ogr2ogr` rejects
+# the attribute filter; under `-skipfailures` that is exit 0 with every feature copied
+# UNFILTERED. This is the regression test for `build.rewrite_where`: if the fold breaks,
+# the diagonal count stops being 4 and `test-pipeline.mjs` fails on the R2 identity.
 PIPELINE_KEYS = ("pitch", "coastline", "curse_cairn_terrain", "animal_delta")
 
-# The animal_delta source, generated into the fixture from the SAME WKT the hand-written
-# layers use, so the envelopes the identity is measured over cannot drift apart. Tags
-# are the build-only ones (`leisure`, `natural`, `name`) — deliberately no `landuse`.
+# Generated into the fixture from the SAME WKT the hand-written layers use, so the
+# envelopes cannot drift. Tags are build-only (`leisure`, `natural`, `name`); no `landuse`.
 #
-# w204 is the DETECTOR and the only reason this fixture can fail. The four features
-# above all satisfy the `where`, so a `where` that silently stopped being applied would
-# still yield 4 and prove nothing. w204 is unnamed water: the selector rejects it, an
-# unfiltered pass keeps it, and 5 diagonals break the R2 identity in test-pipeline.mjs.
+# w204 is the DETECTOR: unnamed water, rejected by the selector but kept by an
+# unfiltered pass, and 5 diagonals break the R2 identity in test-pipeline.mjs.
 ANIMAL_DELTA_SOURCE = [
     ("w101", {"leisure": "park", "name": "Ah-Nab-Awen Park"}, LAYERS["park"][0][2]),
     ("w102", {"leisure": "park", "name": "Riverside Park"}, LAYERS["park"][1][2]),
@@ -297,10 +268,8 @@ def ways_as_osm_xml(rows: list, first_node_id: int = 8001) -> str:
     """
     WKT LINESTRING/POLYGON rows → OSM XML `<node>`/`<way>` elements.
 
-    Generated rather than hand-written so a fixture way and the hand-written layer it
-    mirrors cannot drift: both read the same WKT string. A polygon's closing coordinate
-    is not given its own node — the way references the first node again, which is what
-    makes it closed to osmium.
+    Generated so a fixture way and the layer it mirrors cannot drift. A polygon's
+    closing coordinate reuses the first node, which is what closes the way for osmium.
     """
     node_id = first_node_id
     nodes: list[str] = []
@@ -327,9 +296,8 @@ def ways_as_osm_xml(rows: list, first_node_id: int = 8001) -> str:
 
 PIPELINE_OSM = PIPELINE_OSM_HEAD + ways_as_osm_xml(ANIMAL_DELTA_SOURCE) + "</osm>\n"
 
-# The density grid: one point per populated cell, an integer column per category —
-# with zero-valued counts OMITTED per cell (R4), exactly as stage_density writes them.
-# The client reads an absent key as 0, so the map-wide sums are unchanged.
+# The density grid: one point per populated cell, an integer column per category, with
+# zero-valued counts OMITTED per cell (R4) as stage_density writes them.
 DENSITY_KEYS = ["building", "street", "car_street", "footpath", "bridge", "tree"]
 DENSITY_CELLS = [
     (-85.675, 42.965, [120, 14, 11, 6, 1, 40]),
@@ -464,15 +432,12 @@ def main() -> int:
             for key, path in sorted(built.items())
         },
     }
-    # BOTH legal shapes of "this layer is present and empty" are in this world:
-    #   * `foreign_consulate` above ships a real zero-feature .fgb (build.py's shape);
-    #   * `mountain` here is merge.py's shape — a PATH-LESS `{"features": 0}` entry,
-    #     written when a layer is empty across every merged region, so the manifest can
-    #     say "exists, answer is zero" without a file. The client must answer 0 / []
-    #     for either, and must never build a reader for the path-less one — a naive
-    #     `baseUrl + '/' + info.path` yields '<base>/undefined' and throws.
-    # `mountain` is a real category (reference count 0 around Grand Rapids), so the
-    # end-to-end run exercises the path through collectGeodata, not just worldCount.
+    # BOTH legal shapes of "present and empty" are in this world: `foreign_consulate`
+    # ships a real zero-feature .fgb (build.py's shape); `mountain` is merge.py's
+    # PATH-LESS `{"features": 0}` entry. The client must answer 0 / [] for either and
+    # never build a reader for the path-less one (`baseUrl + '/' + info.path` would be
+    # '<base>/undefined'). `mountain` is a real category (reference count 0 around
+    # Grand Rapids), so collectGeodata's path is exercised, not just worldCount.
     manifest["layers"]["mountain"] = {"features": 0}
     (out / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")

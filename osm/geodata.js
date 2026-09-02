@@ -1,58 +1,45 @@
 /**
  * osm/geodata.js — S2 · GEO, the OSM semantic layer.
  *
- * Port of generate.py (everything in S2 except the raw transport,
- * which lives in ./overpass.js). WORKER SIDE ONLY — no DOM, no window, no document.
+ * Port of generate.py's S2 (raw transport lives in ./overpass.js). WORKER SIDE ONLY —
+ * no DOM, no window, no document.
  *
- * NO NETWORK SERVICE IS CALLED FROM HERE ANY MORE. This module used to be a client of
- * two shared free services — Overpass for features and Nominatim for the place name —
- * with mirror failover, ≤0.1° tiling fallbacks and 3 s courtesy sleeps, because
- * etiquette was a hard requirement rather than a nicety. Both are gone. Every feature,
- * count and administrative boundary now comes from the prebuilt world files
- * (`./worldfile.js`), which are immutable, rate-limit-free, and read with HTTP Range
- * requests against an R2 bucket.
+ * No network service is called from here. Every feature, count and administrative
+ * boundary comes from the prebuilt, immutable world files (`./worldfile.js`), read with
+ * HTTP Range requests against an R2 bucket.
  *
- * The GEO_CATEGORIES selectors below are still Overpass QL, and stay that way: they are
- * the DEFINITION of each category, they are printed verbatim in provenance so a player
- * can re-run one, and `tools/osm-world/categories.json` is a mechanical translation of
- * them that has to be checkable against something.
+ * The GEO_CATEGORIES selectors are Overpass QL and stay that way: they DEFINE each
+ * category, are printed verbatim in provenance, and `tools/osm-world/categories.json`
+ * is a mechanical translation that must be checkable against them.
  *
- * Budget on the reference map: ~303 range requests, ~14.7 MB, ~18 s, measured
- * 2026-08-25 against the live world that ships `rail_line`. The requests and the bytes
- * are exactly what they were when the categories ran one at a time — the same 303 and
- * the same 14.7 MB — because running them concurrently changes WHEN a request is made
- * and nothing about which ones are made. Only the seconds moved, from ~36-42 to
- * ~17-20, and they are the network's number: this link varies about a fifth either way
- * and a cold connection measured 59. Never adjust any of it by arithmetic.
- * Nothing here caches; the files are immutable and served `max-age=31536000`, so the
- * browser's own HTTP cache is what makes a second run cheap. Every round-trip is
- * announced through `onProgress(done, total, label)` because the user is watching a bar.
+ * Budget on the reference map: ~303 range requests, ~14.7 MB, ~18 s (measured
+ * 2026-08-25; the seconds are the network's and vary ~20%). Never adjust these by
+ * arithmetic. Nothing here caches; the files are served `max-age=31536000`, so the
+ * browser's HTTP cache makes a second run cheap. Every round-trip is announced through
+ * `onProgress(done, total, label)`.
  *
  * Everything below is deterministic: no wall clock reaches a return value, every
- * dict/set is iterated through a sort, and every tie-break ends in a stable OSM id.
- * The feature categories are READ concurrently and their results APPLIED in catalogue
- * order, which is what keeps that true of a loop whose completion order is now the
- * network's — see `GEO_CATEGORY_CONCURRENCY` and the category loop in `collectGeodata`.
+ * dict/set is iterated through a sort, every tie-break ends in a stable OSM id.
+ * Categories are READ concurrently and APPLIED in catalogue order — see
+ * `GEO_CATEGORY_CONCURRENCY` and the category loop in `collectGeodata`.
  *
- * DEGRADATION IS A FIRST-CLASS PATH, NOT AN ERROR PATH, and there are two of them.
- * They are different states and must be reported separately, never conflated:
+ * Degradation is a first-class path, and there are two distinct states that must
+ * never be conflated:
  *
  *   1. The whole OSM layer failed. `collectGeodata` throws only when NOT ONE layer
- *      could be read (`layersRead === 0`); the caller answers with `emptyGeoData(bbox, note)` —
- *      `available: false`, empty containers, one honesty note — and the run
- *      continues with every OSM-backed score dropped from the denominator and a
- *      banner on the page. See CONTRACT.md §(f).
+ *      could be read (`layersRead === 0`); the caller answers with `emptyGeoData(bbox, note)`
+ *      (`available: false`, empty containers, one honesty note) and the run continues
+ *      with every OSM-backed score dropped from the denominator. See CONTRACT.md §(f).
  *
- *   2. The "within 10 ft of a routable path" join is not evaluated AT ALL — `pathIds`
- *      is unconditionally null (see the note above `legalEndgameSpots`). The pages are
- *      complete and every count is real; what is lost is one refinement, so every
- *      candidate hiding spot comes back `verify: true` at half weight. There is no
- *      provenance row for it — nothing emits one — so the printed E1 definition is
- *      where a reader is told. `available` stays `true`; this is NOT case 1.
+ *   2. The "within 10 ft of a routable path" join is not evaluated at all — `pathIds`
+ *      is unconditionally null (see the note above `legalEndgameSpots`). Every count is
+ *      real; every candidate hiding spot comes back `verify: true` at half weight. No
+ *      provenance row is emitted; the printed E1 definition tells the reader.
+ *      `available` stays `true`; this is NOT case 1.
  *
- * Everything between those two — a category missing from the manifest, an unreadable
- * layer, an unreadable density grid, an unreadable admin layer — degrades in place with
- * a warning and a `partial` provenance row.
+ * Everything in between — a category missing from the manifest, an unreadable layer,
+ * density grid or admin layer — degrades in place with a warning and a `partial`
+ * provenance row.
  */
 
 import {
@@ -71,14 +58,10 @@ import {
 // The category catalogue — DATA. Do not summarise, do not drop the obscure ones.
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// One rulebook feature category and the exact selector that realises it.
-//
-// `selector` is Overpass QL with `{{bbox}}` unsubstituted; it is printed verbatim
-// next to every count on the page so a player can re-run it.
-//
-// The category table is the S1/S2/S3 interface: S2 fetches it, S3 asks questions of
-// it, S4 prints the selectors. Counts in the comments are the measured reference
-// values, kept as a regression anchor.
+// `selector` is Overpass QL with `{{bbox}}` unsubstituted, printed verbatim next to
+// every count on the page. The table is the S1/S2/S3 interface: S2 fetches it, S3
+// asks questions of it, S4 prints the selectors. Trailing counts in comments are the
+// measured reference values, kept as a regression anchor.
 
 /**
  * @typedef {Object} GeoCategory
@@ -98,8 +81,8 @@ function cat(key, label, selector, opts = {}) {
   });
 }
 
-// One constant, three consumers (Right Turn, Luxury Car, street density) — so they
-// can never disagree about what a street is.
+// One constant, three consumers (Right Turn, Luxury Car, street density), so they
+// never disagree about what a street is.
 export const CAR_STREET_SELECTOR =
   'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|'
   + 'living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"]'
@@ -218,59 +201,45 @@ export const FOOT_WAY_SELECTOR =
   'way["highway"]["highway"!~"^(motorway|motorway_link|trunk|trunk_link)$"]'
   + '["foot"!~"^(no|private)$"]["access"!~"^(no|private)$"]({{bbox}});';
 
-// Street View coverage — a static country table, NOT an OSM query. The rulebook
-// names Germany explicitly; this is the low-coverage set the Unguided Tourist curse
-// is removed for. (Python frozenset ⇒ a frozen SORTED array here; use `.includes`.)
+// Street View coverage — a static country table, NOT an OSM query: the low-coverage
+// set the Unguided Tourist curse is removed for. Frozen SORTED array; use `.includes`.
 export const LOW_STREETVIEW_COUNTRIES = Object.freeze(
   ['at', 'ba', 'by', 'cn', 'de', 'in', 'lt'],
 );
 
 // ── tuning constants (S2-local) ───────────────────────────────────────────────
 //
-// What survived the move off Overpass. The constants that described a REQUEST budget —
-// the QL timeout, the tiling degree, the two legal-path timeouts — went with the
-// service they governed; every one left below still decides something here, with one
-// exception kept on purpose: `LEGAL_PATH_JOIN_WAY_BUDGET` now only names the size the
-// legal-path join would have had to fit into, in the note that explains why that join
-// is not evaluated at all.
+// Every constant here still decides something, except `LEGAL_PATH_JOIN_WAY_BUDGET`,
+// which only names the size the legal-path join would have had to fit into (see the
+// note above `legalEndgameSpots`).
 
 export const CATEGORY_FEATURE_BUDGET = 40000;  // above this, a category is counted but not fetched
 export const LEGAL_SPOTS_PER_ZONE = 40;        // cap on the per-zone shortlist (page size guard)
 export const TOILET_WIDE_FACTOR = 1.5;         // A1's "just outside the circle" fallback ring
 export const REDUNDANT_PAIR_FRACTION = 0.05;   // 1/20 of the map diagonal (specs/osm.md §7.4)
 export const REDUNDANT_PAIR_MAX_M = 5000.0;    // …and never further than this — see `redundantPairs`
-// Buffering every walkable way by 5 m is the most expensive thing this program can ask
-// a shared free service to do. Measured on the reference bbox (84,466 non-motorway
-// highway ways) it timed out on all three mirrors, twice, costing 7½ minutes for an
-// optional refinement. So it was only attempted where the walkable network was small
-// enough for the join to be cheap; above the budget every candidate spot was honestly
-// marked verify-on-the-ground, which is what step 7 now does on every map.
+// Buffering every walkable way by 5 m timed out on every Overpass mirror for the
+// reference bbox (84,466 ways); above this budget every spot is marked verify-on-the-ground.
 export const LEGAL_PATH_JOIN_WAY_BUDGET = 40000;
 export const SPOT_VERIFY_WEIGHT = 0.5;         // restrictive opening_hours ⇒ half weight
 
 // ── the world-file layer map ─────────────────────────────────────────────────
 //
-// Every category above is answered by one of exactly three things now, and which one
-// it is decides how honest its number can be:
+// Every category is answered by one of three things:
 //
 //   a FEATURE layer   real geometry, exact count, usable for distance and containment
 //   the DENSITY grid  a per-cell tally, exact map-wide, APPROXIMATE per zone
 //   nothing           absent from the build, so the category degrades
 //
-// `GEO_DENSITY_GRID_CATEGORIES` is the second set. It is the same list as the density
-// layers in tools/osm-world/categories.json, and the two must agree: a key here that
-// the build does not produce silently becomes a zero, which reads as "this map has no
-// streets" rather than as a missing layer.
+// `GEO_DENSITY_GRID_CATEGORIES` must match the density layers in
+// tools/osm-world/categories.json: a key the build does not produce silently becomes
+// a zero, which reads as "this map has no streets" rather than as a missing layer.
 export const GEO_DENSITY_GRID_CATEGORIES = Object.freeze(
   ['bridge', 'building', 'car_street', 'footpath', 'street', 'tree'],
 );
 
-// `curse_animal_habitat` was the second-largest layer in the build and almost all of
-// it was a copy of `green`, which every build already ships. It is no longer built;
-// its count is reconstructed from a partition identity instead (DESIGN.md §Phase 1 R2).
-//
-// The identity is exact, and it is exact because `landuse` is single-valued. Writing
-// the two selectors out:
+// `curse_animal_habitat` is not built; its count is reconstructed from a partition
+// identity (DESIGN.md §Phase 1 R2), exact because `landuse` is single-valued:
 //
 //   green                = landuse ∈ {forest, grass, meadow, village_green,
 //                                     recreation_ground}
@@ -278,38 +247,29 @@ export const GEO_DENSITY_GRID_CATEGORIES = Object.freeze(
 //                          ∪ leisure ∈ {park, nature_reserve}
 //                          ∪ (natural = water ∧ name)
 //
-// No feature carries two `landuse` values, so `green` minus its `recreation_ground`
-// members is precisely the first line of the habitat selector — not an estimate of it
-// — and `animal_delta` is built to be exactly the remaining two lines with the
-// `landuse` members already removed, so the three terms never double-count a feature.
-//
-// Counting is per-feature over unchanged envelopes: `worldCount` walks an R-tree of
-// bounding boxes, and a feature's bbox is the same bbox whichever of these layers it
-// was written into. So the sum is the same upper bound the deleted layer would have
-// returned, bit for bit — including the deliberate over-count of a feature whose bbox
-// clips the map while its geometry does not, which is what makes a zero here safe to
-// act on (see `curseCounts`).
+// `green` minus its `recreation_ground` members is exactly the first line, and
+// `animal_delta` is exactly the remaining two lines with `landuse` members removed,
+// so the terms never double-count. `worldCount` counts per-feature bboxes, which are
+// the same whichever layer a feature was written into, so the sum equals what the
+// layer itself would return — including the deliberate over-count of a feature whose
+// bbox clips the map while its geometry does not (see `curseCounts`).
 //
 // Order is load-bearing for term 0: `curseLayerCount` treats the FIRST term as the
-// base layer — the superset the later terms carve pieces out of. A base absent from
-// the manifest refuses the whole expression; a later term absent counts as 0 (unless
-// the manifest is marked partial). The correction terms after the base may be
-// reordered freely; the base must stay first.
+// base layer. A base absent from the manifest refuses the whole expression; a later
+// term absent counts as 0 (unless the manifest is marked partial).
 export const CURSE_ANIMAL_HABITAT_TERMS = Object.freeze([
   Object.freeze([1, 'green']),
   Object.freeze([-1, 'green_recreation_ground']),
   Object.freeze([1, 'animal_delta']),
 ]);
 
-// Curse predicates whose selector is NOT the same as the same-named category's, so
-// they ship as their own world-file layer. `water` is the one that matters: the curse
-// says "marked", the category says "named", and they differ by 8:1 on a real map.
-// Everything absent from this map is answered either by a category layer of the same
-// name or by the density grid — see `curseCounts`.
+// Curse predicates whose selector differs from the same-named category's, so they
+// ship as their own world-file layer. `water` matters most: the curse says "marked",
+// the category says "named", and they differ by 8:1. Everything absent from this map
+// is answered by a category layer or the density grid — see `curseCounts`.
 //
-// The third element, where present, is a FALLBACK EXPRESSION: a signed sum of other
-// layers that equals the named layer's count exactly, used only when the build did
-// not ship the named layer. See `CURSE_ANIMAL_HABITAT_TERMS`.
+// The optional third element is a FALLBACK EXPRESSION: a signed sum of other layers
+// equal to the named layer's count, used only when the build did not ship the layer.
 export const CURSE_WORLD_LAYERS = Object.freeze([
   Object.freeze(['water', 'curse_water']),
   Object.freeze(['cairn_terrain', 'curse_cairn_terrain']),
@@ -331,36 +291,23 @@ export const CURSE_CATEGORY_ALIASES = Object.freeze({
   tumble_ground: 'pitch',
 });
 
-// Rings are kept only where a containment test is actually asked for. The photo
+// Rings are kept only where a containment test is actually asked for: the photo
 // questions ask "is the hider standing in a park", the matching/measuring ones ask
-// about the icon; the two predicates must never be interchanged.
-//
-// `commercial_airport` was in this list and is not any more. Its rings were built,
-// projected and indexed on every run and then read by nothing: `zoneInventory`'s
-// `polygonHits` is the only consumer of a non-`park`, non-`water` ring, and the only
-// key `rules/score.js` ever reads out of it is `park` (score.js 1068, 1088 — a
-// containment test for a bathroom and for shelter). `legalEndgameSpots` uses rings
-// only for `LEGAL_SPOT_CATEGORIES`, which does not list airports; `iconOffsetP90` is
-// called on `pois.park` alone; `synthCoastline` on `pois.water` alone; and nothing in
-// `render/` ever reads `poi.rings` at all. Dropping the key changes no published
-// number: `featuresToPois` computes the representative point, the area and the
-// node-swallowed-by-area dedup from its own planar copy of the outers
-// (`worldfile.js:524-586`), independently of `keepRings`.
+// about the icon, and the two predicates must never be interchanged. Only `park`
+// is read out of `polygonHits` by `rules/score.js`; `featuresToPois` computes the
+// representative point, area and dedup independently of `keepRings`.
 export const RING_CATEGORIES = Object.freeze(['park', 'water']);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LEGAL SPOT HEURISTICS — THE EDITABLE TABLE
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// AGENTS.md flags this as the weakest hand-written judgement in the codebase. It is
-// deliberately kept here, in one block, rather than scattered through
-// `legalEndgameSpots`, so a human can argue with it in one place. Ported as-is —
-// resist the urge to "improve" it while porting; change it on purpose or not at all.
+// AGENTS.md flags this as the weakest hand-written judgement in the codebase. Kept in
+// one block so a human can argue with it in one place. Change it on purpose or not at all.
 
-// Categories that can supply a candidate endgame spot, with the weight the spot
-// starts at. Restricted to categories this pipeline already fetches, so the
-// shortlist costs no extra request. `true` = the feature is an enclosure when it is
-// an area (park interior, playground, pitch), `false` = a point on the street.
+// Categories that can supply a candidate endgame spot, with the starting weight.
+// Restricted to categories already fetched. `true` = an enclosure when it is an area
+// (park interior, playground, pitch), `false` = a point on the street.
 // Shape: [categoryKey, weight, enclosing]
 export const LEGAL_SPOT_CATEGORIES = Object.freeze([
   Object.freeze(['park', 1.0, true]),
@@ -383,37 +330,28 @@ export const PRIVATE_ACCESS = Object.freeze(
 export const SPOT_ACCESS_TAG_KEYS = Object.freeze(['access', 'foot', 'entry']);
 
 // `opening_hours` values that count as "open during all game hours". Anything else
-// is demoted to verify-on-the-ground at half weight rather than dropped, because
-// OSM does not know whether a plaza is locked at night. An ABSENT tag counts as
-// open — that is the surprise, and it is deliberate: most benches carry no hours.
+// is demoted to verify-on-the-ground at half weight rather than dropped. An ABSENT
+// tag deliberately counts as open: most benches carry no hours.
 export const SPOT_ALL_HOURS_VALUES = Object.freeze(['24/7', 'Mo-Su 00:00-24:00']);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Curse predicates
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Curse predicates that are decided by an OSM count. Everything else — Unguided
-// Tourist (a static Street View country table) and U-Turn (GTFS route overlap) —
-// is decided elsewhere and deliberately absent from this table.
+// Curse predicates decided by an OSM count. Unguided Tourist (Street View table) and
+// U-Turn (GTFS route overlap) are decided elsewhere and deliberately absent.
 export const CURSE_PREDICATE_SELECTORS = Object.freeze([
-  // "'Bridge' is defined as any elevated structure, acting as a path, road or railway,
-  // intended to be crossed by pedestrians, cars, or other vehicles" (Bridge Troll). So
-  // the ["highway"] clause cannot be mandatory — railway bridges are named outright —
-  // and covered bridges are not excluded: the card cares that it is crossable, not that
-  // it is open to the sky. Two statements because Overpass cannot OR across two keys in
-  // one; the surrounding union deduplicates a way carrying both.
+  // Bridge Troll: "any elevated structure, acting as a path, road or railway", so
+  // railway bridges are in and covered bridges are not excluded. Two statements
+  // because Overpass cannot OR across two keys; the union deduplicates.
   Object.freeze(['bridge',
     'way["bridge"]["bridge"!="no"]["highway"]({{bbox}});'
     + 'way["bridge"]["bridge"!="no"]["railway"]({{bbox}});']),
-  // "'Body of water' within this context does not necessarily mean natural, but it
-  // cannot be a pool and must be large enough to be marked on the map" (Water Weight).
-  // MARKED, not named — so no ["name"] filter here. The named form belongs to the
-  // *measuring* question ("any named body of water on your maps app"), which is the
-  // GEO_CATEGORIES `water` category; the two are kept apart on purpose because they
-  // differ by 8:1 and one drifted into the other once already. "Not necessarily
-  // natural" pulls in reservoirs and basins. "Large enough to be marked" has no tag
-  // that expresses it, so it is approximated by "OSM marks it at all" — the honest
-  // reading, and the looser one, which is the right direction for a REMOVAL test.
+  // Water Weight: "does not necessarily mean natural, but it cannot be a pool and
+  // must be large enough to be marked on the map". MARKED, not named — no ["name"]
+  // filter; the named form is the GEO_CATEGORIES `water` category and they differ
+  // by 8:1. "Not necessarily natural" pulls in reservoirs and basins. "Marked" is
+  // approximated by "OSM marks it at all", the looser reading, right for a REMOVAL test.
   Object.freeze(['water',
     'nwr["natural"="water"]["water"!~"^(pool|reflecting_pool)$"]'
     + '["leisure"!="swimming_pool"]({{bbox}});'
@@ -458,9 +396,8 @@ export const CURSE_PREDICATE_MAP = Object.freeze([
 ]);
 
 // ── cuisine → ISO-3166-1 alpha-2 ──────────────────────────────────────────────
-// Adjective tokens ONLY. Promoting a dish to a country is a judgement call that
-// changes the count, so dishes and super-national regions are rejected and the
-// rejected tokens are reported so a player can override.
+// Adjective tokens ONLY. Dishes and super-national regions are rejected and the
+// rejected tokens reported so a player can override.
 
 export const CUISINE_COUNTRY = Object.freeze({
   afghan: 'AF', albanian: 'AL', algerian: 'DZ', american: 'US', argentinian: 'AR',
@@ -486,9 +423,9 @@ export const CUISINE_COUNTRY = Object.freeze({
   vietnamese: 'VN', welsh: 'GB', yemeni: 'YE',
 });
 
-// The two reject lists below are DESCRIPTIVE, exactly as in the Python: nothing reads
-// them. `cuisineDetail` rejects by absence from CUISINE_COUNTRY, so these enumerate
-// what that absence is *meant* to catch and are there to be argued with.
+// The two reject lists below are DESCRIPTIVE: nothing reads them. `cuisineDetail`
+// rejects by absence from CUISINE_COUNTRY; these enumerate what that absence is
+// meant to catch.
 export const CUISINE_REJECT_REGIONAL = Object.freeze([
   'african', 'american_chinese', 'arab', 'asian', 'balkan', 'baltic', 'caribbean',
   'central_american', 'central_asian', 'eastern_european', 'european', 'fusion',
@@ -509,8 +446,8 @@ export const CUISINE_REJECT_DISH = Object.freeze([
 ]);
 
 // ── administrative ladders that are not simply "the next level that exists" ────
-// Small and explicit, per specs/osm.md §6.3 step 5. A null entry means "this
-// country has no such division"; a level absent from the map resolves to null too.
+// Per specs/osm.md §6.3 step 5. A null entry means "this country has no such
+// division"; a level absent from the map resolves to null too.
 export const ADMIN_ORDINAL_OVERRIDES = Object.freeze({
   fr: Object.freeze([4, 6, 8, 9]),      // région / département / commune (7 = arrondissement is skipped)
   de: Object.freeze([4, 6, 8, 9]),      // Land / Kreis / Gemeinde / Stadtbezirk (5 = Regierungsbezirk skipped)
@@ -521,29 +458,21 @@ export const ADMIN_ORDINAL_OVERRIDES = Object.freeze({
 });
 
 // The same ladder judgements for a world whose `admin` layer was built from Overture
-// divisions (manifest `admin_source: 'overture'`, DESIGN.md Phase 2). Overture has no
-// `admin_level`; the build synthesises one per subtype — country=2, dependency=3,
-// region=4, county=6, localadmin=7, locality=8, macrohood=9, neighborhood=10 — and
-// stamps ISO3166-1 only on levels 2–3 and ISO3166-2 only on level 4. The numbers
-// deliberately echo OSM's, but they do NOT mean the same thing (jp municipalities
-// land on 6, not 7; fr communes have no arrondissement level to skip), so the OSM
-// table above must never be consulted for an overture world and vice versa. A country
-// absent here takes the generic path, which for overture always anchors at level 4.
+// divisions (manifest `admin_source: 'overture'`, DESIGN.md Phase 2). The build
+// synthesises `admin_level` per subtype — country=2, dependency=3, region=4,
+// county=6, localadmin=7, locality=8, macrohood=9, neighborhood=10 — and stamps
+// ISO3166-1 only on levels 2–3 and ISO3166-2 only on level 4. The numbers echo OSM's
+// but do NOT mean the same thing, so the OSM table above must never be consulted for
+// an overture world and vice versa. A country absent here takes the generic path,
+// which for overture always anchors at level 4.
 export const OVERTURE_ADMIN_ORDINAL_OVERRIDES = Object.freeze({
   us: Object.freeze([4, 6, 8, null]),   // state / county / place; NO fourth rung —
-  // without this entry the generic path anchors at 4 and fills the fourth rung with
-  // level 9, which is `macrohood`. The census below then takes the deepest ordinal
-  // holding ANY tally, so a US map was named after a neighbourhood: Grand Rapids came
-  // out "Third Ward" (44 of 319 zones) and the CTA map "Austin" (44 of 1,204), while
-  // level 8 held "Grand Rapids" (138 of 319) and "Chicago" (1,070 of 1,204). US cities
-  // are Overture localities at 8; what sits below is not a division a map is named for.
-  ca: Object.freeze([4, 6, 8, null]),   // province / regional district / municipality; the
-  // same judgement as `us` for the same disease (2026-08-30): Canadian cities are
-  // Overture localities at 8 and level 9 holds macrohoods, so the generic path's
-  // fourth rung filled with "Downtown" (6.1% of the TransLink census) — and, worse,
-  // the absence of an entry here withheld the city-rung plurality clause from the
-  // census walk, which is what left that map named "Metro Vancouver Regional
-  // District" over a Vancouver leading Surrey 1.9x.
+  // US cities are Overture localities at 8 and level 9 is `macrohood`. Without this
+  // entry the census takes the deepest ordinal with any tally and names the map after
+  // a neighbourhood ("Third Ward" instead of "Grand Rapids").
+  ca: Object.freeze([4, 6, 8, null]),   // province / regional district / municipality;
+  // same judgement as `us`: without it the fourth rung filled with "Downtown" and the
+  // missing entry withheld the city-rung plurality clause from the census walk.
   fr: Object.freeze([4, 6, 8, 10]),     // region / department / commune / neighbourhood
   it: Object.freeze([4, 6, 8, 10]),     // regione / provincia / comune / neighbourhood
   jp: Object.freeze([4, 6, 8, null]),   // prefecture / municipality / ward
@@ -552,17 +481,13 @@ export const OVERTURE_ADMIN_ORDINAL_OVERRIDES = Object.freeze({
   cn: Object.freeze([4, 6, 7, 8]),      // province / prefecture-city / county / township
 });
 
-// A water body larger than the game map behaves exactly like a coast: its shore is
-// the edge of the playable world. OSM reserves `natural=coastline` for ocean and sea,
-// so a Great Lakes or inland-sea map would otherwise report "no coastline" — which is
-// true of the tagging and false of the geography. House ruling: a great-lake shore is
-// a coast.
+// A water body larger than the game map behaves like a coast. OSM reserves
+// `natural=coastline` for ocean and sea, so a Great Lakes map would otherwise report
+// "no coastline". House ruling: a great-lake shore is a coast.
 //
-// The shore is emitted as many short segments rather than one whole-lake feature,
-// because that is how `natural=coastline` itself is modelled and everything
-// downstream depends on it: the in-border filter and the measuring questions both
-// work off a feature's representative point, and Lake Michigan's centroid is ~100 km
-// offshore and outside the map entirely.
+// The shore is emitted as many short segments, as `natural=coastline` itself is
+// modelled: the in-border filter and measuring questions work off a representative
+// point, and Lake Michigan's centroid is ~100 km offshore.
 export const COAST_SEGMENT_PTS = 12;      // ring points per synthesised shore segment
 export const COAST_MAX_SEGMENTS = 600;    // hard cap; a whole sea coast must not swamp the page
 export const COAST_BBOX_PAD_M = 2000.0;   // keep shore just outside the border — it still bounds the map
@@ -583,10 +508,8 @@ function cmpCatTypeId(a, b) {
 }
 
 /**
- * The grid/lookup key for one POI. Python uses the tuple
- * `(category, osm_type, osm_id)`; `GridIndex` sorts by `String(key)`, and only
- * *sets* of keys are ever consumed, so a delimited string is equivalent. Every
- * ordering that matters is re-derived from the parts, never from the string.
+ * The grid/lookup key for one POI: `(category, osm_type, osm_id)` as a delimited
+ * string. Every ordering that matters is re-derived from the parts, never the string.
  */
 function poiKey(poi) { return `${poi.category}\u001f${poi.osmType}\u001f${poi.osmId}`; }
 
@@ -624,9 +547,8 @@ function planarRing(ring, proj) {
 /** `math.dist` over two planar points. */
 function dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
 
-// `Math.min(...arr)` blows the argument limit somewhere north of 65k elements, and
-// one Great Lake ring is bigger than that. Loop instead — everywhere, so no caller
-// has to remember which arrays are small.
+// `Math.min(...arr)` blows the argument limit above ~65k elements, and one Great
+// Lake ring is bigger than that. Loop everywhere.
 function minOf(values) {
   let m = Infinity;
   for (const v of values) if (v < m) m = v;
@@ -640,45 +562,24 @@ function maxOf(values) {
 }
 
 /**
- * Progress bookkeeping around every world-file read. `total` is an estimate; the
- * worker protocol allows it to grow, and finishing a task raises it if the run
- * overruns, but nothing plans for growth any more — a world-file run's shape is
- * known up front.
+ * Progress bookkeeping around every world-file read. `total` is an estimate that
+ * finishing a task raises if the run overruns.
  *
- * ONE COUNTER, SEVERAL READS IN FLIGHT. This used to be a single-current-label
- * model — `start` stored the label in a field and `finish` read it back out — which
- * is honest exactly as long as the reads are strictly sequential. The category loop
- * in `collectGeodata` no longer is, and under the old model `finish` would have
- * reported whichever label was dispatched LAST rather than the one that actually
- * completed, so the bar's caption would routinely name a category still waiting on
- * the network. So `start` now hands back a TASK and a task is the thing that
- * completes: the counter can move once per task and cannot be moved by the wrong
- * one, so `done` counts completions and nothing else.
+ * One counter, several reads in flight: `start` hands back a TASK, and a task is the
+ * thing that completes, so `done` counts completions and nothing else.
  *
- * TWO RULES KEEP THE BAR HONEST UNDER CONCURRENCY, and both are here rather than in
- * the callers because a bar that stalls or rewinds reads as a hung app:
+ * Two rules keep the bar honest under concurrency:
  *
- *   1. An emission that would repeat the previous one exactly — same `done`, same
- *      `total`, same caption — is DROPPED. Sixteen lanes opening at once otherwise
- *      post sixteen identical messages across the worker boundary, and the reader
- *      watches the bar sit still sixteen times over. This never fires on a
- *      sequential caller, whose `start` and `finish` always differ in one or the
- *      other, so it costs those callers nothing.
+ *   1. An emission identical to the previous one (same `done`, `total`, caption) is
+ *      DROPPED, so a batch of lanes opening at once does not post identical messages.
  *
- *   2. The caption is THE OLDEST READ STILL WAITING — the one actually holding the
- *      run up — falling back to the last completed label when nothing is open, so
- *      it never blanks between phases. Naming the most recent arrival instead would
- *      flicker through a dozen names inside one tick and describe none of the wait.
+ *   2. The caption is the OLDEST read still waiting, falling back to the last
+ *      completed label when nothing is open, so it never blanks between phases.
  *
- * A CONCURRENT CALLER MUST PASS THE SAME LABEL FOR EVERY TASK IN ITS BATCH. This is
- * the part that is easy to get wrong and expensive to notice: the completion order
- * of a batch is the network's, so a caption that identifies the individual task is a
- * caption that differs between two runs of the same input, and this module's whole
- * contract is that it does not do that (see the determinism note in the header).
- * `done` stays stable regardless — it only ever counts — but the label does not, so
- * the concurrent caller names its PHASE and lets the counter carry the detail. On a
- * caller that keeps one task open at a time none of this applies, and the class
- * reduces to exactly the old behaviour, emission for emission and label for label.
+ * A CONCURRENT CALLER MUST PASS THE SAME LABEL FOR EVERY TASK IN ITS BATCH: completion
+ * order is the network's, so a per-task caption would differ between two runs of the
+ * same input, breaking the determinism contract. Name the PHASE and let the counter
+ * carry the detail.
  */
 class Progress {
   constructor(cb, total) {
@@ -686,22 +587,17 @@ class Progress {
     this.done = 0;
     this.total = total;
     this._label = '';
-    // Insertion-ordered, so the first value is the oldest task still open. Keyed by
-    // a serial rather than by label because two reads may legitimately carry the
-    // same caption, and a task has to complete by identity.
+    // Insertion-ordered, so the first value is the oldest open task. Keyed by a
+    // serial because two reads may carry the same caption.
     this._open = new Map();
     this._seq = 0;
-    // The last triple actually handed to `cb`, for rule 1. Starts as null rather
-    // than as the zero state so the very first emission always goes out, even on a
-    // caller whose first task opens at `done === 0` with an empty caption.
+    // The last triple handed to `cb`, for rule 1. Null so the first emission always goes out.
     this._last = null;
   }
 
   /**
-   * Open one unit of work and return its handle. `finish` is idempotent: every
-   * caller here closes its task from a `finally` that an early `return` also
-   * reaches, and a unit counted twice would push `done` past `total` — at which
-   * point the bar is no longer describing the run.
+   * Open one unit of work and return its handle. `finish` is idempotent: callers
+   * close from a `finally`, and a unit counted twice would push `done` past `total`.
    */
   start(label) {
     const id = (this._seq += 1);
@@ -744,45 +640,23 @@ class Progress {
 
 // How many feature categories `collectGeodata` reads at once.
 //
-// THIS IS NOT A REQUEST LIMIT, and deliberately does not try to be one. The socket
-// budget is bounded a layer down, by `MAX_CONCURRENT_RANGES` in `./flatgeobuf.js`:
-// every range read in the app funnels through `RangeReader._fetchRange`, so one gate
-// there bounds the whole OSM layer however many categories are open up here. That
-// gate is a GUARD RAIL — it exists so that a handful of layers times a dozen index
-// reads each cannot ask the browser for seventy sockets — and this number is not
-// chosen to press against it. Sizing a lane count so the gate binds does not buy
-// throughput; it just moves the queueing from here into there. Measured both ways
-// on the reference border, forcing the gate to 16 and to 64 moved the run by less
-// than the network's own run-to-run spread.
-//
-// So this number is chosen for the things it actually controls. One category at a
-// time left the connection idle for most of the layer's wall clock, because a
-// category is a mostly serial chain — read the R-tree root, then the nodes it points
-// at, then the feature runs those point at — and can only offer the network a batch
-// at a time before it has to stop and decode. Eight lanes is enough overlap to cover
-// those decode pauses — the category phase went from 19.4 s to ~2.9 s, peaking at
-// ~20 requests in flight, comfortably under the gate — while bounding how many
-// layers' worth of undecoded bytes and half-built feature arrays are resident at
-// once. Sixteen measured ~0.3 s faster and 24 no faster than 16, both inside the
-// run-to-run noise, which is not worth doubling the working set or turning the guard
-// rail into the throttle.
+// NOT a request limit: sockets are gated a layer down by `MAX_CONCURRENT_RANGES` in
+// `./flatgeobuf.js`, a guard rail this number is not chosen to press against. A
+// category is a mostly serial chain (R-tree root, nodes, feature runs) with decode
+// pauses; eight lanes cover those pauses (19.4 s → ~2.9 s, ~20 requests in flight)
+// while bounding the resident working set. 16 and 24 measured inside run-to-run noise.
 const GEO_CATEGORY_CONCURRENCY = 8;
 
-// The one caption every category read in the batch reports under. Shaped like the
-// three sequential phases' labels (`geo:world admin areas`, `geo:world density grid`,
-// `geo:world curse predicates`) because it is the same kind of thing: the name of a
-// phase the run is in, not of a file it is waiting on.
+// The one caption every category read in the batch reports under, shaped like the
+// other phase labels: the name of a phase, not of a file.
 const GEO_FEATURE_PHASE_LABEL = 'geo:world features';
 
 /**
- * Run `worker` over `items` with at most `limit` of them in flight, and return the
- * results in INPUT order however they finished. That the order is the input's is the
- * whole point: it is what lets a caller apply the results in the catalogue's order,
- * so nothing downstream can tell which read came back first.
+ * Run `worker` over `items` with at most `limit` in flight, returning results in
+ * INPUT order however they finished, so a caller can apply them in catalogue order.
  *
- * `worker` must not reject — a rejection here abandons the lanes still running
- * rather than unwinding them. Every caller wraps its own body in try/catch because
- * it has a degradation story to tell anyway.
+ * `worker` must not reject — a rejection abandons the lanes still running. Every
+ * caller wraps its own body in try/catch.
  */
 async function mapConcurrent(items, limit, worker) {
   const out = new Array(items.length);
@@ -826,10 +700,8 @@ export function buildPoiIndex(pois, proj, radiusM) {
  * Grid of *area* features by bounding box, plus the linear-scan overflow list.
  * (generate.py `_area_index`)
  *
- * A feature is inserted into every cell its bbox touches, so a query only has to
- * read the 3×3 neighbourhood; anything spanning more than `GridIndex.addBbox`'s cap
- * (one statewide multipolygon) goes into the overflow list instead of blowing up the
- * index.
+ * A feature is inserted into every cell its bbox touches; anything spanning more
+ * than `GridIndex.addBbox`'s cap goes into the overflow list instead.
  *
  * @returns {[GridIndex, Array<Object>, Map<string, Object>]}
  */
@@ -868,10 +740,9 @@ function ringsPlanar(poi, proj) {
  * (generate.py `zone_inventory`)
  *
  * Returns `[iconCounts, polygonHits]`. **Two different predicates**: icon counts ask
- * whether the representative point is inside the disc (what matching and measuring
- * questions measure to); polygon hits ask whether the feature's ring intersects the
- * disc (what the photo questions mean by "stand in a park"). On the reference feed
- * parks are 28.5% by icon and 45.5% by polygon. Never substitute one for the other.
+ * whether the representative point is inside the disc (matching/measuring questions);
+ * polygon hits ask whether the ring intersects the disc (photo questions' "stand in a
+ * park"). Parks are 28.5% by icon and 45.5% by polygon. Never substitute one for the other.
  *
  * @param {Array<Object>} zones
  * @param {Object<string, Array<Object>>} pois
@@ -882,10 +753,8 @@ function ringsPlanar(poi, proj) {
 export function zoneInventory(zones, pois, proj, radiusM) {
   const categories = Object.keys(pois).sort(cmpStr);
   const flat = [];
-  // NOT `flat.push(...pois[key])`: spread passes every element as a call argument
-  // and blows the stack somewhere north of 65k. `building` alone is 88k features on
-  // the reference bbox, so this threw `RangeError: Maximum call stack size exceeded`
-  // and took the whole OSM layer down. Same reason as `minOf`/`maxOf` above.
+  // NOT `flat.push(...pois[key])`: spread blows the stack above ~65k elements and
+  // `building` alone is 88k features. Same reason as `minOf`/`maxOf` above.
   for (const key of categories) {
     const rows = pois[key];
     for (let i = 0; i < rows.length; i++) flat.push(rows[i]);
@@ -951,10 +820,8 @@ function adminLevel(tags) {
 
 /**
  * Normalise a place name for equality against a timezone's city token: NFD, strip
- * combining marks, casefold, collapse whitespace. "São Paulo" equals "Sao Paulo";
- * "Wien" does NOT equal "Vienna" — deliberately no fuzzier than accents and case
- * (no substrings, no "City of"/"County" stripping), because the ordinal-1 rule this
- * feeds accepts on exact match only and a looser match is how false positives arm.
+ * combining marks, casefold, collapse whitespace. Deliberately no fuzzier than
+ * accents and case: the ordinal-1 rule accepts on exact match only.
  */
 function normPlace(value) {
   return String(value || '')
@@ -967,44 +834,35 @@ function normPlace(value) {
  * Resolve the 1st–4th administrative divisions for this map.
  * (generate.py `resolve_admin` — exported as `adminInfo` per CONTRACT.md)
  *
- * Two Overpass forms are needed because they answer two different rulebook questions
- * and they disagree: containment (`is_in`, batched) answers the *matching* questions,
- * boundary crossing (`relation[boundary=administrative]` inside the bbox) answers the
- * *border measuring* questions. A bbox query returns only divisions whose boundary
- * crosses the box, so the containing state and country are simply absent from it —
- * correct for "does a border cross the map", catastrophically wrong for "which state
- * am I in".
+ * Containment (which division is a zone in) answers the *matching* questions;
+ * boundary crossing answers the *border measuring* questions. They are different
+ * questions and must not be conflated.
  *
  * Ordinals 2–4 come from the distinct levels present across *all* zone centres, not
  * one probe point. Never guess an `admin_level`.
  *
  * The place name is a service-weighted census: each zone votes its `stopEvents`
- * (departures, `gtfs/network.js` buildZones), the walk visits ordinals 4→3→2, and a
- * division wins with a third of the census — or, additively, with a ≥20% city-rung
- * plurality at 1.5× the runner-up in countries with an override-table entry. When
- * nothing wins, an ordinal-1 division holding ≥90% of the census is accepted iff its
- * name equals the feed's `agency_timezone` city and no deeper rung holds that name
- * (Tokyo, Vienna — pass the timezone as `hooks.timezone` to arm this); then the
- * deepest LADDER-level admin area at the map centre (`name:en` preferred); then the
- * caller's agency-name fallback.
+ * (`gtfs/network.js` buildZones), the walk visits ordinals 4→3→2, and a division wins
+ * with a third of the census — or, additively, with a ≥20% city-rung plurality at
+ * 1.5× the runner-up in countries with an override-table entry. When nothing wins, an
+ * ordinal-1 division holding ≥90% of the census is accepted iff its name equals the
+ * feed's `agency_timezone` city and no deeper rung holds that name (pass
+ * `hooks.timezone` to arm this); then the deepest LADDER-level admin area at the map
+ * centre (`name:en` preferred); then the caller's agency-name fallback.
  *
  * @returns {Promise<Object>} AdminInfo
  */
 export async function adminInfo(world, zones, bbox, hooks = {}) {
   const progress = hooks.progress || new Progress(null, 0);
   const log = hooks.log || noopLog;
-  // The primary feed's `agency_timezone`, threaded from the worker for the ordinal-1
-  // rule below. A hint, never an input the ladder depends on — gtfs/merge.js keeps
-  // only the primary feed's timezone, and it is display-grade data.
+  // The primary feed's `agency_timezone`, for the ordinal-1 rule below. A hint, never
+  // an input the ladder depends on.
   const feedTimezone = typeof hooks.timezone === 'string' ? hooks.timezone : '';
 
   const ordered = Array.from(zones).sort((a, b) => cmpStr(a.zoneId, b.zoneId));
 
-  // The admin layer replaces batched Overpass `is_in`, and the shape of the work
-  // changes completely. `is_in` cost one request per 150 zone centres and could not be
-  // cached usefully, because the batch key changed whenever the zone set did. Here the
-  // administrative areas overlapping the map are fetched ONCE and every zone centre is
-  // tested against them locally, so the number of zones stops costing anything at all.
+  // The administrative areas overlapping the map are fetched ONCE and every zone
+  // centre is tested against them locally.
   /** @type {Array<Object>} */
   let areas = [];
   const adminTask = progress.start('geo:world admin areas');
@@ -1018,15 +876,12 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     adminTask.finish();
   }
 
-  // The containing areas per zone, kept as AREA objects too: the country census below
-  // needs to know WHICH polygon contained a zone, not just its synthesized tags.
+  // The containing areas per zone, kept as AREA objects: the country census needs to
+  // know WHICH polygon contained a zone.
   const perPointAreas = ordered.map((zone) => adminAreasAt(areas, zone.lat, zone.lon));
 
-  // One entry per zone, in zone order, shaped exactly like the `is_in` tag objects the
-  // rest of this function already consumes — so everything below is untouched.
-  // `name:en` is carried through where the build has it, because the ladder reads
-  // `tags['name:en'] || tags.name` and a multilingual country's bare `name` is the
-  // slash-joined native form ("Schweiz/Suisse/Svizzera/Svizra").
+  // One tag object per containing area, in zone order. `name:en` is carried through
+  // because a multilingual country's bare `name` is the slash-joined native form.
   const perPoint = perPointAreas.map((zoneAreas) => zoneAreas
     .map((area) => {
       /** @type {Object<string, string>} */
@@ -1040,33 +895,18 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
 
   // ── country identity and the first-division level, from the layer itself ──
   //
-  // These used to come from a Nominatim reverse geocode, with the OSM tags as the free
-  // fallback when Nominatim was unreachable. The fallback is now the only path, and it
-  // is derived from EVERY area overlapping the map rather than only from the areas that
-  // happen to contain a zone centre — which makes it strictly more robust than the
-  // fallback ever was, and no worse than Nominatim on the one thing Nominatim was
-  // genuinely better at.
-  //
-  // That thing was `ISO3166-2-lvl<N>`: Nominatim reports, as a property of the COUNTRY,
-  // which OSM `admin_level` holds its first administrative division. That anchors the
-  // ordinal ladder for every country absent from `ADMIN_ORDINAL_OVERRIDES`. The local
-  // equivalent is to observe which level actually carries an `ISO3166-2` code, because
-  // ISO 3166-2 is by definition the code of a country's principal subdivision. Same
-  // fact, read off the polygons instead of asked for.
+  // The first-division level anchors the ordinal ladder for every country absent
+  // from `ADMIN_ORDINAL_OVERRIDES`. It is the lowest level carrying an `ISO3166-2`
+  // code, which is by definition a country's principal subdivision.
   let iso2Level = null;
   for (const area of areas) {
-    // Lowest level carrying an ISO3166-2 code wins: a country's principal subdivision
-    // is the shallowest thing that has one.
     if (area.iso2 && (iso2Level === null || area.level < iso2Level)) iso2Level = area.level;
   }
 
-  // Country identity. `areas` is sorted (level, name), and "first area carrying
-  // ISO3166-1" — the old rule — resolves a border-straddling map alphabetically: a
-  // Basel map touching de/ch/fr answered 'de' whatever the game was actually in. The
-  // country is instead the ISO3166-1 polygon CONTAINING the most zone centres, with
-  // the (level, name)-order rule kept as the tie-break and as the fallback when no
-  // zone centre sits in any country polygon — so a single-country map, and a map
-  // with no zones at all, answer exactly as they did before.
+  // Country identity: the ISO3166-1 polygon CONTAINING the most zone centres, so a
+  // border-straddling map (Basel: de/ch/fr) is not resolved alphabetically. The
+  // (level, name) order of `areas` is the tie-break and the fallback when no zone
+  // centre sits in any country polygon.
   /** @type {Map<Object, number>} AdminArea (object identity) → zone centres inside */
   const countryTally = new Map();
   for (const zoneAreas of perPointAreas) {
@@ -1089,8 +929,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
       + `(${countryZones} zone centres; ${countryTally.size} countries touch the map)`);
   }
   const iso1Country = countryArea === null ? null : countryArea.iso1.toLowerCase();
-  // Same `name:en` preference the ladder applies — "Switzerland", not the
-  // slash-joined native form.
+  // Same `name:en` preference the ladder applies.
   const countryName = countryArea === null ? null
     : (countryArea.nameEn || countryArea.name || null);
 
@@ -1099,13 +938,9 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   const perZoneLevels = new Map();
   const levelsPresent = new Set();
 
-  // Divisions OVERLAP within a level, so the ladder cannot be built by last-write-wins.
-  // Overture files a US city and a US civil township both as `locality`, so both land
-  // on level 8 and a zone is legitimately inside two of them: 1,070 of the CTA map's
-  // 1,204 zones are in "Chicago" while 265 of those same zones are also in "Lake".
-  // Keeping whichever name happened to arrive last named that map "Lake" off 263 zones.
-  // Collect every name a zone falls in, then let map-wide prevalence choose its rung —
-  // the division that covers most of the map is the one the zone is meaningfully in.
+  // Divisions OVERLAP within a level (Overture files a US city and a civil township
+  // both as `locality`), so the ladder cannot be built by last-write-wins. Collect
+  // every name a zone falls in, then let map-wide prevalence choose its rung.
   /** @type {Map<string, Map<number, Set<string>>>} */
   const perZoneAll = new Map();
   /** @type {Map<number, Map<string, number>>} level → name → zones it contains */
@@ -1144,19 +979,16 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     perZoneLevels.set(zoneId, one);
   }
 
-  // Country identity, entirely from the admin layer. `source` is now one value where
-  // it used to be two ('nominatim' / 'is_in'); `'unknown'` still means what it always
-  // meant — no administrative data at all — which is the only value `render/deck.js`
-  // actually branches on.
+  // `'unknown'` means no administrative data at all; it is the only value
+  // `render/deck.js` branches on.
   let countryCode = iso1Country;
   let placeName = null;
   let source = 'unknown';
   if (countryCode !== null || perZoneLevels.size) source = 'world';
 
-  // Ordinal ladder. Derived, never guessed. Which override table applies is a
-  // property of the WORLD, not the country: an overture-built admin layer uses
-  // synthetic levels that only look like OSM's (see the table's comment), so the
-  // manifest's `admin_source` picks the table. Absent or 'osm' is today's behavior.
+  // Ordinal ladder. Derived, never guessed. The manifest's `admin_source` picks the
+  // override table: an overture-built admin layer uses synthetic levels that only
+  // look like OSM's.
   const adminSource = String(
     (world && world.manifest && world.manifest.admin_source) || 'osm',
   );
@@ -1193,25 +1025,15 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     perZone[zoneId] = entry;
   }
 
-  // The place name is the division that carries the most SERVICE, not the one that
-  // covers the most map and not the one under the bbox centre (a geometric artefact —
-  // on the reference feed it lands in a suburb, Wyoming, MI). Each zone votes its
-  // `stopEvents` (departures inside the zone, `gtfs/network.js` buildZones) rather
-  // than 1: a zone is ~one disc of map AREA, so a bare count rewards sprawl — Surrey
-  // out-zoned Vancouver 283:226 on the TransLink map while Vancouver out-served it
-  // roughly 2:1, and San Jose out-zoned San Francisco the same way. Departures
-  // measure where the transit system actually is. Zone discs overlap
-  // (`s1ZoneMembers` gives every centre all stops within the radius), so a boundary
-  // stop's departures are counted by several zones; the census is a share of summed
-  // zone `stopEvents`, not of the map's departures — it smooths across division
-  // borders, which is harmless for a plurality test.
+  // The place name is the division that carries the most SERVICE, not the most map
+  // area (a bare zone count rewards sprawl: Surrey out-zoned Vancouver while Vancouver
+  // out-served it 2:1) and not the one under the bbox centre. Zone discs overlap, so
+  // the census is a share of summed zone `stopEvents`, not of the map's departures;
+  // harmless for a plurality test.
   //
-  // Go as specific as the data allows, then take the division carrying the most
-  // service *within that ordinal*. Ranking candidates by raw weight across ordinals
-  // does not work: a broader division always wins, which named the Grand Rapids map
-  // "Kent County". Which ordinal holds "the municipality" is not fixed, even across
-  // US states — Michigan puts cities at ordinal 3 and has no ordinal 4; Illinois
-  // puts historic civil townships at 3 and the city at 4 — so the walk starts deep.
+  // Go as specific as the data allows, then take the leader *within that ordinal*.
+  // Ranking by raw weight across ordinals always picks the broadest division. Which
+  // ordinal holds "the municipality" varies even across US states, so the walk starts deep.
   const zoneIds = Object.keys(perZone).sort(cmpStr);
   /** zoneId → census weight: departures when the zones carry them, 1 each otherwise. */
   const weightOf = new Map();
@@ -1223,8 +1045,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
       events += weight;
     }
     if (!(events > 0)) {
-      // Synthetic or stripped zones: degrade to the one-zone-one-vote census this
-      // used to be, never divide by zero.
+      // Synthetic or stripped zones: degrade to one zone, one vote.
       for (const zone of ordered) weightOf.set(zone.zoneId, 1);
     }
   }
@@ -1233,9 +1054,8 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   const pctOf = (weight) => (censusTotal > 0
     ? ((100.0 * weight) / censusTotal).toFixed(1) : '0.0');
 
-  // Weighted tally per ordinal, ranked (weight desc, then name) so the answer never
-  // depends on the order the areas came back in. Ordinal 1 is tallied too: the walk
-  // below never visits it, but the timezone rule after the walk does.
+  // Weighted tally per ordinal, ranked (weight desc, then name). Ordinal 1 is
+  // tallied for the timezone rule after the walk.
   /** @type {Object<number, Array<[string, number]>>} */
   const census = {};
   for (const ordinal of [1, 2, 3, 4]) {
@@ -1256,29 +1076,17 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
       if (!ranked.length) continue;
       const [leaderName, leaderW] = ranked[0];
       const runnerW = ranked.length > 1 ? ranked[1][1] : 0;
-      // A third of the whole census is the bar, as it always was: one stray division
-      // covering a sliver must not beat an ordinal that names the whole map, and a
-      // map whose deepest leader is thinner than that is more honestly named by the
-      // level above.
+      // A third of the whole census is the bar: a stray sliver must not beat an
+      // ordinal that names the whole map.
       const clearsThird = leaderW * 3 >= censusTotal;
-      // The ADDITIVE city-rung clause. A regional network's core city routinely holds
-      // 20–30% of the service with nothing else close (Seattle ~26%, 1.8× Tacoma;
-      // the flat third then hands the header to "King County"). Accept a clear
-      // city-rung plurality — but only ADDITIVELY (a leader already over the third is
-      // never demoted for having a strong twin: PATCO's Philadelphia/Camden sits at
-      // 1.67×), only where an override entry vouches that ordinal 3 is the locality
-      // rung (on the generic path it can be a freguesia, an electoral division or a
-      // ward — the same hole the `us` overture entry plugs one rung down), only when
-      // the rung holds three or more divisions (a one- or two-entry rung is a thin or
-      // cross-border artefact, and the ratio clause is vacuous there), and never when
-      // ordinal 2 is the SAME RUNG duplicated (Japan files the same wards at two
-      // levels, and a duplicated rung must not get a discounted bar). Rung
-      // duplication is detected by BOTH the leader and the runner-up coinciding
-      // across the two ordinals — the leader alone is not enough, because a
-      // city-département legitimately tops both rungs while the rest of each rung
-      // differs (Paris leads ordinal 2 among départements and ordinal 3 among
-      // communes at the same 26%, and blocking on that named the IDFM map
-      // "Vigneux-sur-Seine" off the map-centre fallback).
+      // The ADDITIVE city-rung clause: a regional network's core city routinely holds
+      // 20–30% with nothing close (Seattle ~26%, 1.8× Tacoma). Accept a clear plurality
+      // only additively (a leader over the third is never demoted), only where an
+      // override entry vouches that ordinal 3 is the locality rung, only when the rung
+      // holds three or more divisions (the ratio is vacuous otherwise), and never when
+      // ordinal 2 is the SAME RUNG duplicated (Japan files wards at two levels).
+      // Duplication needs BOTH leader and runner-up to coincide: a city-département
+      // like Paris legitimately tops both rungs while the rest differs.
       const rungDuplicated = leaderName === ord2Leader
         && (ranked.length > 1 ? ranked[1][0] : null) === ord2Runner;
       const loose = !clearsThird
@@ -1301,18 +1109,12 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     }
   }
 
-  // A city-state or a prefecture-city: the city's name exists ONLY at ordinal 1 in
-  // the world file (Tokyo, Vienna — neither has a locality polygon named after it).
-  // The walk above never visits ordinal 1 because a state must not name a map
-  // ("Massachusetts" for Boston), so ordinal 1 is admitted only under a conjunction:
-  // the division must hold ≥90% of the census AND be named by an independent signal —
-  // the feed's `agency_timezone` city — AND no deeper rung may hold a division of
-  // that name. The deeper-rung guard is what disarms the confirmed false-positive
-  // class: Rochester sits inside a level-4 division literally named "New York" under
-  // America/New_York, and Campinas inside "São Paulo" under America/Sao_Paulo; both
-  // have the same-named city elsewhere on the ladder, so the guard blocks them. The
-  // timezone alone is NOT trustworthy (all four Dublin feeds declare Europe/London;
-  // MBTA declares America/New_York) — only the conjunction is.
+  // A city-state or prefecture-city (Tokyo, Vienna) exists ONLY at ordinal 1. A state
+  // must not name a map ("Massachusetts" for Boston), so ordinal 1 is admitted only
+  // under a conjunction: ≥90% of the census AND named by the feed's `agency_timezone`
+  // city AND no deeper rung holds that name. The deeper-rung guard blocks Rochester
+  // inside "New York" and Campinas inside "São Paulo". The timezone alone is NOT
+  // trustworthy (Dublin feeds declare Europe/London; MBTA declares America/New_York).
   if (placeName === null && zoneIds.length && censusTotal > 0
       && ordinals[1] !== null && census[1].length) {
     const [leaderName, leaderW] = census[1][0];
@@ -1330,15 +1132,10 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   }
 
   if (placeName === null) {
-    // No zones, or no division passed any bar above — the one case where Nominatim
-    // used to answer. The local equivalent is the administrative area covering the
-    // middle of the map: a geometric artefact, and worse than the census above, but
-    // the same kind of answer Nominatim gave and it needs no network. Two rules keep
-    // it as honest as a geometric artefact can be: candidates are restricted to the
-    // LADDER'S levels when any of them cover the centre (a raw deepest-level sort
-    // resurfaces exactly the macrohoods the ladder deliberately skips — "Praha 10"
-    // on a CZ ladder of 4/6/7/8), and `name:en` is preferred, same as the census
-    // (the raw `name` printed 武蔵野市 where the census path says Musashino).
+    // No zones, or no division passed any bar: fall back to the administrative area
+    // covering the map centre, a geometric artefact. Candidates are restricted to the
+    // LADDER'S levels when any cover the centre (a raw deepest-level sort resurfaces
+    // the macrohoods the ladder skips), and `name:en` is preferred, as in the census.
     const ladderLevels = new Set([ordinals[1], ordinals[2], ordinals[3], ordinals[4]]
       .filter((level) => level !== null && level !== undefined));
     const [s, w, n, e] = bbox;
@@ -1362,17 +1159,13 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   }
   /** @type {Object<string, boolean>} */
   const borderLevels = {};
-  // Answered off the `areas` already in hand, at no further cost. The question is
-  // whether a boundary LINE crosses the map, and the local test for that is whether
-  // more than one area exists at that level — two adjacent areas at one level means the
-  // seam between them runs through the map. An area whose boundary merely surrounds the
-  // whole map does not count, and there is exactly one of those per level.
+  // Answered off the `areas` in hand: more than one area at a level means the seam
+  // between them runs through the map. An area that merely surrounds the whole map
+  // does not count, and there is exactly one per level.
   //
-  // A DIVERGENCE from the Overpass form, and a deliberate one. `way(r.a)({{bbox}})`
-  // asked whether any member way of such a relation lies in the bbox, which is the
-  // sharper question; this asks whether the map spans a division at that level. The two
-  // agree except when a map sits entirely inside one division and clips the outer edge
-  // of its parent, where this says no and Overpass said yes.
+  // Deliberately diverges from Overpass's `way(r.a)({{bbox}})`: this asks whether the
+  // map spans a division at that level, and says no where a map sits inside one
+  // division and clips the outer edge of its parent.
   for (const [ordinal, level] of wanted) {
     const atLevel = areas.filter((area) => area.level === level);
     borderLevels[ordinal] = atLevel.length > 1;
@@ -1386,11 +1179,8 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
     perZone,
     borderLevels,
     source,
-    // `source` answers "was there administrative data at all" and has only ever held
-    // 'world' or 'unknown', which distinguishes nothing. This is the manifest's own
-    // `admin_source`, and the renderers need it: Overture's levels are synthesised per
-    // subtype and deliberately do NOT mean what OSM's `admin_level` means, so a page
-    // that prints "OSM admin_level 8" for an Overture ladder is stating a falsehood.
+    // The manifest's own `admin_source`; renderers need it because Overture's levels
+    // do NOT mean what OSM's `admin_level` means.
     adminSource,
   };
 }
@@ -1400,49 +1190,28 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * One curse predicate's count: the layer if the build shipped it, otherwise the
- * fallback expression.
+ * One curse predicate's count: the layer if the build shipped it (older and fixture
+ * worlds), otherwise the fallback expression. The two agree by construction; which
+ * branch ran is visible only in the log.
  *
- * The order is deliberate and is the whole backward-compatibility story. A world
- * built before DESIGN.md §Phase 1 R2 — and every fixture world, and any world a reader
- * points the app at by hand — still carries `curse_animal_habitat`, and for those the
- * layer is read directly and no arithmetic happens at all. The expression is reached
- * only when the named layer is genuinely absent from the manifest, which is the new
- * build's signature. The two agree by construction, so which branch ran is invisible
- * in the number; it is not invisible in the log, on purpose.
+ * `worldCount` returns null for anything the manifest does not list, and
+ * `tools/osm-world/build.py` OMITS a layer whose selector matched nothing, so an
+ * absent term means two different things:
  *
- * A missing layer is never an exception: `worldCount` returns null for anything the
- * manifest does not list. But "not in the manifest" means two different things for
- * the two kinds of term, because `tools/osm-world/build.py` OMITS a layer whose
- * selector matched nothing in the region rather than shipping an empty file:
+ *   - The FIRST term is the base layer, a superset the others carve pieces out of.
+ *     Absent, the total would be wrong in the direction that removes a curse, so
+ *     the predicate goes unanswered (the curse stays in the deck).
  *
- *   - The FIRST term is the base layer (`green` in the one live expression), a
- *     superset the others carve pieces out of. If it is absent AND the region has
- *     features the expression should count, the total would be wrong in the
- *     direction that removes a curse — so an absent base is a refusal, and the
- *     predicate goes unanswered. Unanswerable is the safe end: the curse stays in
- *     the deck instead of being removed on the strength of an incomplete total.
+ *   - A LATER term absent is the empty-layer case and counts as 0, with an info line.
  *
- *   - A LATER term absent from the manifest is the empty-layer case: a region with
- *     zero `landuse=recreation_ground` gets no `green_recreation_ground` layer at
- *     all, and treating that as null used to null the whole expression — deleting
- *     the animal-habitat predicates from exactly the regions where they were
- *     answerable. An absent correction term counts as 0, with an info line saying
- *     so.
+ * A path-less manifest entry (`{"features": 0}`) is a genuine zero from `worldCount`
+ * and reaches neither bullet.
  *
- * A path-less manifest entry (`merge.py` writes `{"features": 0}` for a layer that is
- * legitimately empty everywhere) never reaches either bullet: `worldCount` answers 0
- * for it directly, a genuine zero, so no term is "absent" and no arithmetic is skipped.
- *
- * The absent-as-zero reading is only sound for a FULL build, which omits nothing but
- * genuinely-empty layers. A `--only` run of build.py or merge.py ships a manifest that
- * is green while missing layers the region does have, and marks itself with
- * `"partial": true` at the manifest top level. On such a manifest an absent term means
- * "not built", not "empty", so the expression refuses (warn log) instead of fabricating
- * a total that is wrong in the direction that removes a curse.
+ * Absent-as-zero is only sound for a FULL build. A `--only` build marks its manifest
+ * `"partial": true`; there an absent term means "not built", so the expression refuses.
  *
  * @param {Object} world
- * @param {string} layer the layer the build used to ship
+ * @param {string} layer the named layer
  * @param {ReadonlyArray<readonly [number, string]>|undefined} terms signed fallback sum
  * @param {[number, number, number, number]} bbox
  * @param {function(string, string): void} log
@@ -1463,10 +1232,7 @@ async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
     const [sign, key] = terms[i];
     const part = await worldCount(world, key, bbox);
     if (part === null) {
-      // The base layer (term 0) missing means the expression cannot be trusted;
-      // a later term missing means the build had nothing to put in it. See the
-      // doc comment above — the split is what keeps a recreation-ground-free
-      // region from losing an answerable predicate.
+      // Base layer (term 0) missing: untrusted. Later term missing: empty. See above.
       if (i === 0) {
         log('warn', `curse predicate ${predicate}: no ${layer} layer in the manifest, and `
           + `the ${terms.map(([, k]) => k).join(' / ')} substitute needs ${key}, which is `
@@ -1474,9 +1240,7 @@ async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
         return null;
       }
       if (world.manifest && world.manifest.partial === true) {
-        // A --only build: the manifest is marked partial, so an absent term means
-        // "not built in this run", not "empty region", and zeroing it would fabricate
-        // a total. See the doc comment above.
+        // Partial manifest: absent means "not built", and zeroing would fabricate a total.
         log('warn', `curse predicate ${predicate}: ${key} is absent from a PARTIAL `
           + 'manifest (a --only build), where absence means not built rather than '
           + 'empty — the predicate is left unanswered rather than zeroed');
@@ -1491,11 +1255,8 @@ async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
     log('info', `curse predicate ${predicate}: ${absentAsZero.join(', ')} not in this `
       + 'build — the build omits a layer whose selector matched nothing, so counted as 0');
   }
-  // Cannot happen while the layers are the ones this identity was derived over — a
-  // subtracted layer is a strict subset of the layer it is subtracted from, over the
-  // same envelopes. It CAN happen if a build ships mismatched layers, and a negative
-  // count published as a curse total would be a lie in the direction that removes a
-  // curse. Refuse to answer instead.
+  // Only possible if a build ships mismatched layers; a negative total would lie in
+  // the direction that removes a curse. Refuse instead.
   if (total < 0) {
     log('warn', `curse predicate ${predicate}: the substitute for ${layer} summed to `
       + `${total}, which means the layers it reads do not partition each other; the `
@@ -1512,33 +1273,25 @@ async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
  * (generate.py `curse_predicates` — exported as `curseCounts`)
  *
  * Returns `curseId → count`. Removal is `count === 0` for the hard tier; the warn
- * tier is reported with its count and never auto-removed. Two predicates are *not*
- * OSM: Unguided Tourist (the static Street View country table) and U-Turn (GTFS
- * route overlap and wait times) — those are decided elsewhere and must not be
- * invented here.
+ * tier is reported with its count and never auto-removed. Unguided Tourist and
+ * U-Turn are not OSM and must not be invented here.
  */
 export async function curseCounts(world, bbox, geo, hooks = {}) {
   const progress = hooks.progress || new Progress(null, 0);
   const log = hooks.log || noopLog;
   const counts = {};
 
-  // Each predicate is answered by whichever of the three sources actually defines it,
-  // and the split is data (`CURSE_WORLD_LAYERS`, `CURSE_FROM_CATEGORY`,
-  // `CURSE_FROM_DENSITY`) rather than a chain of special cases. The one that must not
-  // be got wrong is `water`: the curse says "marked", the `water` CATEGORY says
-  // "named", and they differ by 8:1 — so it reads `curse_water`, its own layer, and
-  // never `counts.water`.
+  // The source split is data (`CURSE_WORLD_LAYERS`, `CURSE_FROM_CATEGORY`,
+  // `CURSE_FROM_DENSITY`). `water` reads `curse_water`, its own layer, never
+  // `counts.water`: "marked" and "named" differ by 8:1.
   /** @type {Object<string, number>} */
   const raw = {};
 
   const curseTask = progress.start('geo:world curse predicates');
   try {
     for (const [predicate, layer, terms] of CURSE_WORLD_LAYERS) {
-      // An upper bound is the right tool here: these are removal tests of the form
-      // "is there none of this on the map", and the only value that has to be exact is
-      // zero. A bounding box that clips the map without its feature entering can turn
-      // a 0 into a 1, which fails SAFE — the curse stays in play rather than being
-      // removed on a technicality.
+      // An upper bound: these are removal tests and only zero has to be exact. A
+      // bbox clip can turn a 0 into a 1, which fails SAFE.
       const count = await curseLayerCount(world, layer, terms, bbox, log, predicate);
       if (count !== null) raw[predicate] = count;
     }
@@ -1549,15 +1302,14 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
     curseTask.finish();
   }
 
-  // Predicates that are exactly a category already fetched — no extra read at all.
+  // Predicates that are exactly a category already fetched.
   for (const predicate of CURSE_FROM_CATEGORY) {
     const category = CURSE_CATEGORY_ALIASES[predicate] || predicate;
     if (Object.prototype.hasOwnProperty.call(geo.counts, category)) {
       raw[predicate] = geo.counts[category];
     }
   }
-  // Predicates the density grid answers. Map-wide grid totals are exact, which is
-  // exactly the property a removal test needs.
+  // Predicates the density grid answers; map-wide grid totals are exact.
   for (const predicate of CURSE_FROM_DENSITY) {
     if (Object.prototype.hasOwnProperty.call(geo.counts, predicate)) {
       raw[predicate] = geo.counts[predicate];
@@ -1568,8 +1320,7 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
     .sort((a, b) => cmpStr(a[0], b[0]) || cmpStr(a[1], b[1]))) {
     if (Object.prototype.hasOwnProperty.call(raw, predicate)) counts[curseId] = raw[predicate];
   }
-  // Distant Cuisine is decided by tag *content*, not by a count: it is the number of
-  // restaurants serving a single identifiable foreign country's cuisine.
+  // Distant Cuisine: restaurants serving a single identifiable foreign country's cuisine.
   if (Object.prototype.hasOwnProperty.call(geo.pois, 'restaurant')) {
     const restaurants = geo.pois.restaurant;
     const host = ((geo.admin.countryCode || '').toUpperCase()) || null;
@@ -1649,16 +1400,15 @@ function spotPublic(tags) {
  * (generate.py `legal_endgame_spots`)
  *
  * The rulebook's two hard tests are (a) publicly accessible during all game hours
- * and (b) within 10 ft of a path the map app would route you along. (b) has an OSM
- * analogue: within 5 m of a foot-accessible `highway` way. **(a) does not.** OSM does
- * not know whether a plaza is locked at night, so this returns a shortlist for a
- * human and the page must say so — it is never a verdict.
+ * and (b) within 10 ft of a routable path. (b) has an OSM analogue (within 5 m of a
+ * foot-accessible `highway` way); **(a) does not**, so this is a shortlist for a
+ * human, never a verdict, and the page must say so.
  *
- * Features carrying a restrictive `opening_hours` (anything but `24/7`) are demoted
- * to "verify on the ground" at half weight rather than dropped.
+ * Restrictive `opening_hours` (anything but `24/7`) demotes to "verify on the ground"
+ * at half weight rather than dropping.
  *
  * `pathOkIds` is a `Set` of `'type/id'` strings, or `null` when the path join was not
- * attempted or failed — in which case EVERY spot is marked verify-on-the-ground.
+ * attempted or failed, in which case EVERY spot is marked verify-on-the-ground.
  *
  * @returns {Object<string, Array<Object>>} zoneId → LegalSpot[]
  */
@@ -1772,8 +1522,8 @@ export function legalEndgameSpots(zones, geo, proj, radiusM, pathOkIds) {
       row.distanceM = distance;
       found.set(key, row);
     }
-    // Best first, then nearest: the cap must never let a cluster of unnamed grass
-    // verges push the park, the bench and the shelter off a zone's shortlist.
+    // Best first, then nearest: the cap must never let a cluster of grass verges
+    // push the park off a zone's shortlist.
     const rows = Array.from(found.entries()).sort((a, b) => {
       const wd = b[1].weight - a[1].weight;
       if (wd !== 0) return wd;
@@ -1791,16 +1541,11 @@ export function legalEndgameSpots(zones, geo, proj, radiusM, pathOkIds) {
 /**
  * Attribute density-grid cells to zones, in place.
  *
- * A cell counts toward a zone when its CENTRE is within `radiusM` of the zone centre.
- * That is the approximation, stated plainly: a cell straddling the circle edge lands
- * wholly in or wholly out. At the build's 0.002° cells (~220 m) against a ~400 m zone
- * radius the boundary error is real and is why every density category is marked
- * `partial` and carries a note.
- *
- * What it is NOT is a map-wide approximation. The build attributes each feature to
- * exactly one cell, so the map-wide totals in `counts` are exact sums — and those are
- * what every curse predicate and the street-density figure actually read. Only the
- * per-zone numbers here are fuzzy.
+ * A cell counts toward a zone when its CENTRE is within `radiusM` of the zone centre,
+ * so a cell straddling the circle edge lands wholly in or out. At ~220 m cells
+ * against a ~400 m radius the boundary error is real, which is why every density
+ * category is marked `partial`. Map-wide totals in `counts` are exact sums; only the
+ * per-zone numbers are fuzzy.
  *
  * @param {Object<string, Object<string, number>>} inventory mutated in place
  * @param {Array<Object>} zones
@@ -1808,17 +1553,10 @@ export function legalEndgameSpots(zones, geo, proj, radiusM, pathOkIds) {
  * @param {Projection} proj @param {number} radiusM
  */
 function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
-  // Seed every zone to zero FIRST, and do it even when the grid came back empty.
-  // `zoneInventory` does the same for the fetched categories (`for (const key of
-  // categories) counts[key] = 0;`) so that "key absent" reliably means "not queried" —
-  // `audit.js` returns null on an absent key and drops the zone from the denominator.
-  // This function used to write a key only where a nearby cell carried one, and
-  // `worldDensity` omits zero-valued columns on read, so a zone with genuinely no
-  // buildings got no `building` key at all. Every such zone then left the denominator,
-  // which pinned the four building photo questions to `degenerate coverage=1` on any
-  // map containing a building, and to a false `unknown` — "not queried on this run" —
-  // on a rural map whose real count is printed two rows up in the same provenance
-  // table. A present-but-empty grid is a real zero and must read as one.
+  // Seed every zone to zero FIRST, even when the grid came back empty: "key absent"
+  // must mean "not queried" (`audit.js` drops such zones from the denominator), and
+  // `worldDensity` omits zero-valued columns, so a zone with no buildings would
+  // otherwise get no `building` key. A present-but-empty grid is a real zero.
   for (const zone of zones) {
     const row = inventory[zone.zoneId] || (inventory[zone.zoneId] = {});
     for (const key of GEO_DENSITY_GRID_CATEGORIES) {
@@ -1827,9 +1565,8 @@ function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
   }
   if (!density.cells.length) return;
 
-  // Index the cells once, at the zone radius, so a 2,000-zone map does not become a
-  // 2,000 × 50,000 scan. Cell size == query radius is what makes `near`'s 3×3
-  // neighbourhood scan complete; `buildPoiIndex` sizes its index the same way.
+  // Index the cells once at the zone radius. Cell size == query radius is what makes
+  // `near`'s 3×3 neighbourhood scan complete, as in `buildPoiIndex`.
   const index = new GridIndex(Math.max(1.0, radiusM));
   const cells = Array.from(density.cells)
     .sort((a, b) => (a.lat - b.lat) || (a.lon - b.lon));
@@ -1861,8 +1598,8 @@ function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
  * p90 of |representative point − bbox centre| over ring-carrying features.
  * (generate.py `_icon_offset_p90`)
  *
- * This is the honesty number specs/osm.md §3.3 demands: how far our computed map
- * icon can sit from where `out center` (and, by proxy, a map app's label) puts it.
+ * The honesty number specs/osm.md §3.3 demands: how far our computed icon can sit
+ * from where a map app's label puts it.
  */
 function iconOffsetP90(pois, proj) {
   const offsets = [];
@@ -1892,15 +1629,10 @@ function iconOffsetP90(pois, proj) {
  * GR's zoo and aquarium are 81 m apart, so the two matching questions are the same
  * bit for six cards (specs/osm.md §7.4).
  *
- * The threshold is a fraction of the map diagonal UNDER AN ABSOLUTE CEILING, and the
- * ceiling is not decoration: this feeds a sentence printed on the page claiming two
- * icons are effectively in the same place, and the fraction alone scales with the
- * border. On a city it lands at a kilometre or two, which is the scale the claim is
- * true at; at a twentieth of a large border's diagonal the two questions plainly
- * are not the same bit and the note is simply false. The cap binds above a ~100 km
- * zone-centre diagonal, which a regional feed reaches long before a country does —
- * MBTA's is 168 km, where it cuts the threshold from 8.4 km to 5 km. Measured
- * 2026-08-26: no MBTA pair falls in that band, so no page moves today.
+ * The threshold is a fraction of the map diagonal UNDER AN ABSOLUTE CEILING: the
+ * page prints a claim that two icons are effectively in the same place, and a
+ * twentieth of a regional border's diagonal (MBTA: 8.4 km) makes that claim false.
+ * The cap binds above a ~100 km diagonal.
  */
 function redundantPairs(pois, proj, diagonalM) {
   const singles = Object.keys(pois)
@@ -1931,8 +1663,7 @@ function synthCoastline(pois, bbox, proj, log) {
   const segments = [];
   const names = [];
 
-  // "Larger than the game map" is the test, with a floor so that a very small map
-  // cannot promote a boating pond to a sea.
+  // "Larger than the game map", with a floor so a tiny map cannot promote a pond to a sea.
   const [south, west, north, east] = bbox;
   const sw = proj.xy(south, west);
   const ne = proj.xy(north, east);
@@ -1941,14 +1672,10 @@ function synthCoastline(pois, bbox, proj, log) {
 
   for (const water of Array.from(pois.water || []).sort(cmpTypeId)) {
     if (!water.rings || !water.rings.length) continue;
-    // Polygonal water only. A river or canal is linear and almost always runs off the
-    // edge of the map, but a riverbank is not a coast — that is what the
-    // body-of-water questions are for.
+    // Polygonal water only: a riverbank is not a coast.
     if ((water.tags || {}).natural !== 'water') continue;
-    // Bigger than the map? This has to be a real size test, not a clipping test:
-    // "some ring point falls outside the border" is also true of every pond near the
-    // map edge, and picked up three suburban ponds on the reference feed. Overpass
-    // returns a matched element's full geometry, so the area is honest.
+    // A real size test, not a clipping test: "some ring point falls outside the
+    // border" is also true of every pond near the map edge.
     let area = 0.0;
     for (const ring of water.rings) {
       if (ring.length < 3) continue;
@@ -1982,8 +1709,7 @@ function synthCoastline(pois, bbox, proj, log) {
         segments.push({
           category: 'coastline',
           osmType: water.osmType,
-          // Negative ids mark a derived feature, and keep every segment distinct so
-          // nothing downstream dedupes them into one.
+          // Negative ids mark a derived feature and keep every segment distinct.
           osmId: -(Math.abs(water.osmId) * 1000 + segments.length),
           name: water.name,
           lat: mid[0],
@@ -2010,10 +1736,8 @@ function synthCoastline(pois, bbox, proj, log) {
 }
 
 /**
- * The `available: false` form of `GeoData` (mirrors `build_report`).
- *
- * Degradation is a first-class path, not an error path: the run continues, every
- * container is empty, and `note` is the single honesty note that reaches the page.
+ * The `available: false` form of `GeoData` (mirrors `build_report`). The run
+ * continues with empty containers; `note` is the single honesty note on the page.
  * @param {[number, number, number, number]} bbox
  * @param {string} note
  */
@@ -2049,10 +1773,7 @@ export function emptyGeoData(bbox, note) {
  *
  * Order: one bbox query per category → the POI index → per-zone inventory → admin
  * resolution → curse predicates → cuisines → legal spots. If not one layer can be
- * read, the CALLER returns `emptyGeoData(...)`; every downstream consumer must
- * degrade rather than crash.
- *
- * Budget on the reference map: ~303 range requests, ~14.7 MB.
+ * read, the CALLER returns `emptyGeoData(...)`; every consumer degrades, never crashes.
  *
  * @param {Object} opts Options
  * @param {Object} border Border
@@ -2074,15 +1795,9 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   /** @type {Array<string>} */
   const notes = [];
 
-  // Estimated round-trips. A world-file run has a very different shape from an Overpass
-  // one: every category is one bbox query against an immutable file, so the total is
-  // known up front and never grows. What used to be a count audit, four group fetches,
-  // a building fetch, ⌈zones/150⌉ is_in batches and a Nominatim reverse geocode is now
-  // one query per category, plus the density grid and the admin layer.
-  // Count what is actually spent, not how many categories exist: the six density-grid
-  // tallies never take a turn of their own (they are columns on one grid read), so
-  // budgeting for them stalled the bar at 86.8% and left `settle` to rewrite its own
-  // denominator at the end. Three non-category phases follow: curses, admin, density.
+  // Estimated round-trips: one per feature category plus three phases (curses, admin,
+  // density). The density-grid tallies are columns on one grid read and take no turn
+  // of their own; budgeting for them stalls the bar.
   const progress = new Progress(
     h.onProgress,
     GEO_CATEGORIES.length - GEO_DENSITY_GRID_CATEGORIES.length + 3,
@@ -2090,17 +1805,9 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
 
   // ── 1. features, one bbox query per category ──────────────────────────────
   //
-  // There is no separate count audit any more, and that is a real simplification
-  // rather than a shortcut. Overpass had one because asking it for a count was
-  // enormously cheaper than asking it for features, so the pipeline spent a whole
-  // request learning what it could afford. Here the R-tree yields a free upper bound
-  // (`worldCount` walks the index and reads no feature bytes at all) and the exact
-  // count falls out of the fetch itself. The audit collapses into the fetch, and a
-  // category's count and its feature list can no longer disagree.
-  //
-  // `CATEGORY_FEATURE_BUDGET` survives, applied to that free upper bound. Its meaning
-  // has changed though: it was an etiquette limit on what to ask a shared free service
-  // for, and it is now purely a page-size guard.
+  // The R-tree yields a free upper bound (`worldCount` reads no feature bytes) and
+  // the exact count falls out of the fetch, so count and feature list cannot
+  // disagree. `CATEGORY_FEATURE_BUDGET` is applied to that bound as a page-size guard.
   /** @type {Object<string, Array<Object>>} */
   const pois = {};
   /** @type {Object<string, number>} */
@@ -2111,47 +1818,29 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   const layerFailures = new Set();
 
   // THE CATEGORIES ARE READ CONCURRENTLY, AND THE RESULTS ARE APPLIED IN CATALOGUE
-  // ORDER. Those are two separate statements and both are load-bearing.
+  // ORDER. Both statements are load-bearing.
   //
-  // Concurrently, because the layer was doing almost nothing but waiting: measured on
-  // the reference border, its 303 range requests summed to ~32 s of network time
-  // inside a geo stage of ~30 s. A category is a mostly serial chain of dependent
-  // reads, so waiting out `density` (4.8 s of request time) before even asking about
-  // `water` (3.3 s) spent the whole run's latency in series for no reason — reading
-  // the categories one at a time was 19.4 s of that 30.4 s stage, and reading them
-  // together is 2.0 s. The bodies were already independent — each writes only its own
-  // `pois[key]` and `counts[key]` — so nothing had to be untangled to let them
-  // overlap.
+  // Concurrently, because a category is a mostly serial chain of dependent reads and
+  // reading them one at a time spent the run's latency in series (19.4 s → 2.0 s).
   //
-  // In catalogue order, because concurrency's one real hazard here is not a data race
-  // (there are none: the reads share nothing) but the completion order leaking into
-  // the output. `pois` and `counts` are plain objects and their KEY ORDER is
-  // observable — it survives the structured clone to the main thread — and
-  // `layersRead`, `partialCategories` and `layerFailures` would all otherwise record
-  // whichever layer the network happened to answer first. So the concurrent phase
-  // computes nothing but per-category outcomes, and this loop's every mutation, log
-  // line included, happens afterwards in `GEO_CATEGORIES` order. The result is
-  // byte-identical to reading them one at a time; only the waiting changed.
+  // In catalogue order, because the hazard is completion order leaking into the
+  // output: the KEY ORDER of `pois` and `counts` survives the structured clone, and
+  // `layersRead`, `partialCategories` and `layerFailures` would otherwise record the
+  // network's answer order. So the concurrent phase computes only per-category
+  // outcomes, and every mutation, log line included, happens afterwards in
+  // `GEO_CATEGORIES` order. The result is byte-identical to a sequential read.
   //
-  // THE PROGRESS CAPTION IS THE PHASE, NOT THE CATEGORY, and that is the same rule
-  // wearing different clothes. The bar's label is output too — `app.js` puts it
-  // straight into the progress caption — so a per-category caption would be the
-  // network's answer order rendered on screen, differing between two runs of one
-  // border. While a category was read at a time it was both honest and stable to
-  // name the one being read; with eight in flight there is no such category, and
-  // naming any of them would be picking one. So every task in the batch carries the
-  // same label and the counter carries the detail: the bar still advances once per
-  // category, 31 times on the reference border, and the sequence is a function of the
-  // manifest alone. See the rules on `Progress`.
+  // THE PROGRESS CAPTION IS THE PHASE, NOT THE CATEGORY, for the same reason: the
+  // label is output too (`app.js` prints it), and with eight in flight naming any
+  // one category would be rendering the network's order. See the rules on `Progress`.
   const featureCategories = GEO_CATEGORIES
     // The tallies are answered by the density grid in step 2, not by a feature layer.
     .filter((c) => !GEO_DENSITY_GRID_CATEGORIES.includes(c.key));
   const outcomes = await mapConcurrent(
     featureCategories, GEO_CATEGORY_CONCURRENCY, async (category) => {
       const key = category.key;
-      // A layer the build did not produce degrades that category and nothing else —
-      // and costs no round-trip, so it takes no progress task either. That is why
-      // `progress` is started with an estimate the run underruns and `settle` exists.
+      // A layer the build did not produce degrades that category only, costs no
+      // round-trip, and takes no progress task; hence the underrun and `settle`.
       if (worldLayerInfo(world, key) === null) return { key, kind: 'absent' };
       const task = progress.start(GEO_FEATURE_PHASE_LABEL);
       try {
@@ -2181,14 +1870,9 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     } else if (outcome.kind === 'counted') {
       counts[key] = outcome.upperBound;
       partialCategories.add(key);
-      // A COUNTED LAYER WAS READ. `worldCount` walked this layer's R-tree and came back
-      // with a number; only the feature bytes were skipped, and only because there were
-      // too many of them to put on a page. Leaving it out of `layersRead` made a border
-      // where EVERY category is over budget — a country rather than a city — fall into
-      // the fatal branch below with an EMPTY reason list, reporting a scale problem as
-      // an origin failure, which is the exact confusion the comment there warns about.
-      // CONTRACT.md §(f) rule 1 is "not one world-file layer could be read"; this is one
-      // that could.
+      // A COUNTED LAYER WAS READ: only the feature bytes were skipped. Leaving it out
+      // of `layersRead` sent a border where EVERY category is over budget into the
+      // fatal branch below, reporting a scale problem as an origin failure.
       layersRead += 1;
       log('warn', `category ${key} has ~${outcome.upperBound} features `
         + `(> ${CATEGORY_FEATURE_BUDGET}): counted, not fetched`);
@@ -2204,26 +1888,16 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     }
   }
 
-  // Not one layer readable means the origin is down, which is the whole-OSM-layer
-  // failure CONTRACT.md §(f)1 describes — the caller answers it with `emptyGeoData`.
-  // Overpass signalled that by throwing from the count audit; the equivalent here is
-  // having read nothing at all. Throwing on the FIRST failure instead would turn one
-  // missing layer into a dead OSM section, which is the bug this shape avoids.
+  // Not one layer readable is the whole-OSM-layer failure of CONTRACT.md §(f)1; the
+  // caller answers with `emptyGeoData`. Throwing on the FIRST failure would turn one
+  // missing layer into a dead OSM section.
   if (layersRead === 0) {
-    // NOT necessarily an unreachable origin — this line is reachable only AFTER
-    // `openWorld` fetched and parsed manifest.json, so the origin answered. A dead
-    // origin fails earlier, in `openWorld`, with its own message. Naming the network
-    // here made a code regression inside this loop — a renamed export, a decoder that
-    // throws on every feature — read to the player as "the map files were unreachable",
-    // which is the exact confusion this module's header warns about. Carry the real
-    // reasons out instead; they were previously visible only in the console.
+    // NOT necessarily an unreachable origin: `openWorld` already fetched manifest.json,
+    // and a dead origin fails there with its own message. Carry the real reasons out
+    // so a code regression does not read as "the map files were unreachable".
     //
-    // The `sort` is not decoration and must not be dropped: this message is output,
-    // and `layerFailures` is a Set, so without it the three reasons a player is shown
-    // would be whichever three distinct failures the loop above happened to record
-    // first — and the loop applies its outcomes in catalogue order precisely so that
-    // is not the network's answer order. Sorted, the same broken world always says
-    // the same thing.
+    // The `sort` must not be dropped: this message is output and `layerFailures` is a
+    // Set, so sorted, the same broken world always says the same thing.
     const why = Array.from(layerFailures).sort(cmpStr).slice(0, 3).join('; ');
     throw new Error(`world files: no layer could be read${why ? `: ${why}` : ''}`);
   }
@@ -2240,18 +1914,12 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     densityTask.finish();
   }
   for (const key of GEO_DENSITY_GRID_CATEGORIES) {
-    // ABSENT, NOT ZERO, when the grid could not be read. §(f) rule 3 is the whole
-    // reason: a zero here is indistinguishable from "this map genuinely has no
-    // bridges", and it propagates — `curseCounts` reads `geo.counts` directly, so
-    // Bridge Troll, Luxury Car and Right Turn would all come back `action: remove,
-    // count: 0` ("No bridges on the game map") off a failed fetch, and the street
-    // matching question would flip from functional to dead. Leaving the key unset
-    // sends `auditCurses` down its `count === null` warn branch instead, which is the
-    // honest answer. This is the same guard `mergeDensityIntoInventory` already gets
-    // right below; it was missing only here.
+    // ABSENT, NOT ZERO, when the grid could not be read (§(f) rule 3): a zero
+    // propagates through `curseCounts` and removes Bridge Troll, Luxury Car and Right
+    // Turn off a failed fetch. An unset key sends `auditCurses` down its
+    // `count === null` warn branch instead.
     if (density) counts[key] = density.counts[key] || 0;
-    // Partial either way: exact map-wide when present, absent when not, and never a
-    // measured per-zone figure.
+    // Partial either way: exact map-wide, never a measured per-zone figure.
     partialCategories.add(key);
   }
   if (density) {
@@ -2290,12 +1958,9 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
 
   // ── 3. provenance rows, one per category ─────────────────────────────────
   //
-  // The `selector` field still carries the Overpass QL, and deliberately: it is the
-  // definition of the category, it is what `tools/osm-world/categories.json` was
-  // mechanically translated FROM, and a player who wants to check a number can still
-  // paste it into overpass-turbo. What changes is `endpoint`, which now names the file
-  // the number actually came from and the planet snapshot it is as of. Printing an
-  // Overpass endpoint next to a world-file count would be a lie about provenance.
+  // `selector` carries the Overpass QL (the category's definition, which a player
+  // can paste into overpass-turbo); `endpoint` names the file the number actually
+  // came from and its planet snapshot.
   for (const category of GEO_CATEGORIES) {
     const key = category.key;
     const counted = counts[key];
@@ -2314,20 +1979,12 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
 
   // ── 4. per-zone inventory (two predicates, never interchanged) ────────────
   const [inventory, polygonHits] = zoneInventory(zones, pois, proj, radiusM);
-  // The density categories have no features to inventory, so their per-zone figures
-  // are attributed from grid cells instead. Merged in rather than computed inside
-  // `zoneInventory` so the exact predicate and the approximate one stay visibly
-  // separate — every consumer of `zoneInventory` reads both out of the same object,
-  // and the note pushed in step 2 is what tells the page which is which.
+  // Density categories have no features to inventory, so their per-zone figures are
+  // attributed from grid cells. Merged in, not computed inside `zoneInventory`, so
+  // the exact and approximate predicates stay visibly separate.
   if (density) mergeDensityIntoInventory(inventory, zones, density, proj, radiusM);
 
   // ── 5. place, country and the administrative ladder ──────────────────────
-  //
-  // Was: one Nominatim reverse geocode of the mean of the zone centres, with the OSM
-  // `is_in` tags as the free fallback when it was unreachable. Nominatim is gone and
-  // the fallback is now the whole story — see `adminInfo`. That removes the last
-  // shared-free-service dependency in the pipeline, and with it a 1 req/s rate limit
-  // and a mandatory-User-Agent header a browser cannot set.
   const admin = await adminInfo(world, zones, bbox, { progress, log, timezone: h.timezone });
   if (zones.length) {
     queries.push({
@@ -2377,24 +2034,10 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
 
   // ── 7. candidate legal endgame spots ─────────────────────────────────────
   //
-  // The "within 10 ft of a routable path" refinement is GONE, and this is the one
-  // capability the world-file migration loses rather than improves. It worked by
-  // asking Overpass to buffer every walkable way in the map by 5 m and intersect that
-  // with the candidate spots — a server-side spatial join, returning a few kB of ids
-  // instead of the ~40 MB the foot-way geometry would cost. There is no local
-  // equivalent: doing it here would mean shipping the whole walkable network, which is
-  // the single densest thing in OSM and precisely what the density grid exists to
-  // avoid carrying.
-  //
-  // It was already the exception rather than the rule. `LEGAL_PATH_JOIN_WAY_BUDGET` is
-  // 40,000 walkable ways and the reference map alone has 84,466, so the join was
-  // skipped on essentially every real map — and when it was attempted it timed out on
-  // all three mirrors twice, costing 7½ minutes for an optional refinement.
-  //
-  // So this is now the documented, unconditional path: `pathIds` is null, every
+  // The "within 10 ft of a routable path" join is not evaluated: it needs the whole
+  // walkable network, the one layer too dense to ship. `pathIds` is null, every
   // candidate spot comes back `verify: true` at `SPOT_VERIFY_WEIGHT`, and the note
-  // says so. That is CONTRACT.md §(f)2's degradation-in-place, made permanent —
-  // `available` stays true and every count on the page is still real.
+  // says so. This is CONTRACT.md §(f)2's degradation-in-place, made permanent.
   const pathIds = null;
   notes.push(
     'The rulebook\'s “within 10 ft of a routable path” test is not evaluated. It '

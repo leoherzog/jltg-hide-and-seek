@@ -1,24 +1,13 @@
-# .github/workflows/world-canary.yml — spike S3 (see tools/osm-world/DESIGN.md §Phase 4
-# and §Open questions/spikes).
+# .github/workflows/world-canary.yml — spike S3 (DESIGN.md §Phase 4): one ~1 GB
+# shard on a real Actions runner, measuring time and disk headroom. The shard
+# workflows' timeouts are sized against what this measures; re-dispatch it whenever
+# the runner image changes.
 #
-# S3's question: "one ~1 GB shard on an actual Actions runner (time, disk headroom)"
-# decides the CI cost model that world-density-shards.yml and world-feature-shards.yml
-# are sized against (their comments cite the *estimates* this canary is meant to
-# replace with measurements). This is the workflow to run FIRST, by hand, before
-# trusting either scheduled workflow's timeout/disk assumptions.
+# Scope: one shard, full pipeline (feature layers + density), no R2 upload and no
+# secrets; output goes to a workflow artifact. Merge is out of scope in CI.
 #
-# Scope is deliberately narrow: ONE shard, full pipeline (feature layers + density,
-# i.e. no --skip-density / --only), no R2 upload (no secrets required to run this at
-# all — it uploads its output as a workflow artifact instead, so anyone with repo
-# write access can dispatch it without R2 credentials being minted first). The merge
-# step (tools/osm-world/merge.py) is out of scope everywhere in Phase 4 CI — DESIGN.md
-# is explicit that merge does not fit a runner and runs by hand on kadro.
-#
-# NOT verified by running this file: I (the authoring agent) cannot execute GitHub
-# Actions from here. It has since been dispatched twice (DESIGN.md §Phase 4), and the
-# envelope it measured is what every other workflow's timeouts are sized against:
-# 4 vCPU / 15 GB RAM / 86.2 GB free of 144.3 GB, and an apt gdal-bin new enough for
-# build.py's preflight(). Re-dispatch it whenever the runner image changes.
+# Measured envelope: 4 vCPU / 15 GB RAM / 86.2 GB free of 144.3 GB, apt gdal-bin new
+# enough for build.py's preflight().
 
 name: world-canary
 
@@ -34,7 +23,6 @@ on:
         required: false
         default: ""
 
-# Runs by hand only, one at a time is plenty for a spike.
 concurrency:
   group: world-canary
   cancel-in-progress: false
@@ -42,7 +30,6 @@ concurrency:
 jobs:
   canary:
     runs-on: ubuntu-latest
-    # Generous vs. the ~1 GB shard this targets — S3 exists to find the real number.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -52,30 +39,20 @@ jobs:
           set -euo pipefail
           echo "cores: $(nproc)   ram: $(free -g | awk '/^Mem:/{print $2}') GB"
           df -Pk . | awk 'NR==2{printf "disk: %.1f GB free of %.1f GB\n", $4/1048576, $2/1048576}'
-          # GitHub DOCUMENTS 14 GB of runner storage and currently ships far more on
-          # public repos. The merge sizing assumes the larger figure; the shard builds
-          # do not, but africa's density job wants ~40 GB. Printing it every run is how
-          # a silent reversion shows up as a number in a log instead of as ENOSPC
-          # halfway through a 600-job rebuild.
+          # GitHub documents 14 GB of runner storage but ships far more; printing it
+          # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
 
-      # ── toolchain ────────────────────────────────────────────────────────────
-      # build.py's own preflight() hard-fails on GDAL < 3.5 (needs the FlatGeobuf
-      # writer's default spatial index) rather than silently shipping an unindexed
-      # file — so a too-old apt gdal-bin here shows up as a clear build.py error,
-      # not a mystery. Ubuntu 24.04 (ubuntu-latest as of writing) ships GDAL 3.8+.
+      # build.py's preflight() hard-fails on GDAL < 3.5; Ubuntu 24.04 ships 3.8+.
       - name: install osmium-tool, gdal, uv
         run: |
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends osmium-tool gdal-bin time
-          # Driver preflight (world-admin run 32591161893's lesson): a GDAL can
-          # exist and still lack a driver a step needs — fail here, by name, in
-          # seconds. build.py's export path writes GeoJSONSeq and FlatGeobuf.
-          # Plain grep, not -q: under pipefail, -q's early exit kills ogrinfo
-          # with SIGPIPE and fails the pipeline on success.
+          # Driver preflight: a GDAL can lack a driver build.py needs; fail by name now.
+          # Plain grep, not -q: under pipefail -q's early exit SIGPIPEs ogrinfo.
           for drv in FlatGeobuf GeoJSONSeq; do
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
@@ -89,9 +66,8 @@ jobs:
           SHARD_ID_INPUT: ${{ github.event.inputs.shard_id }}
         run: |
           set -euo pipefail
-          # Fallback if shards.json (cover.py output, Phase 3) isn't in the repo yet,
-          # or names an id that no longer resolves: a real, small, stable Geofabrik
-          # extract. ~1 GB-ish as of writing; re-check size if this starts drifting.
+          # Fallback if shards.json is missing or the id does not resolve: a ~1 GB
+          # stable Geofabrik extract.
           FALLBACK_ID="europe/austria"
           FALLBACK_PBF="https://download.geofabrik.de/europe/austria-latest.osm.pbf"
           FALLBACK_MD5="https://download.geofabrik.de/europe/austria-latest.osm.pbf.md5"
@@ -109,7 +85,7 @@ jobs:
                   "$SHARDS_JSON"
               ) || true
             else
-              # Closest coarse shard to ~1 GB, per S3's brief.
+              # Closest coarse shard to ~1 GB.
               read -r id pbf_url md5_url < <(
                 jq -r '
                   .coarse
@@ -130,9 +106,7 @@ jobs:
           fi
 
           echo "id=$id" >> "$GITHUB_OUTPUT"
-          # Artifact names may not contain '/', and shard ids do (the fallback
-          # "europe/austria" included) — sanitize with the same '/' -> '__'
-          # mapping cover-geometries/ uses for filenames.
+          # Artifact names may not contain '/'; use cover-geometries/'s '/' -> '__' mapping.
           echo "id_safe=${id//\//__}" >> "$GITHUB_OUTPUT"
           echo "pbf_url=$pbf_url" >> "$GITHUB_OUTPUT"
           echo "md5_url=$md5_url" >> "$GITHUB_OUTPUT"
@@ -145,8 +119,7 @@ jobs:
           MD5_URL: ${{ steps.pick.outputs.md5_url }}
         run: |
           set -euo pipefail
-          # Same redirect caveat as build-shard.sh: Geofabrik's .md5 302s to a
-          # dated filename, so compare hashes by hand, never `md5sum -c`.
+          # Geofabrik's .md5 302s to a dated filename: compare by hand, never `md5sum -c`.
           curl -fL --retry 5 --retry-connrefused -o shard.osm.pbf "$PBF_URL"
           expected="$(curl -fL --retry 5 --retry-connrefused "$MD5_URL" | awk '{print $1}')"
           got="$(md5sum shard.osm.pbf | awk '{print $1}')"
@@ -160,12 +133,9 @@ jobs:
       - name: disk high-water monitor (background)
         run: |
           set -euo pipefail
-          # Each `run:` step is its own shell process, so a plain `&` background job
-          # risks a SIGHUP when THIS step's shell exits before the build step (the
-          # next `run:` block) is even started. A script file + nohup + disown +
-          # closed stdin makes it survive across steps on the same runner VM;
-          # killed explicitly in "stop disk monitor" rather than relying on the
-          # job ending on its own.
+          # Each `run:` step is its own shell, so a plain `&` job would be SIGHUPed
+          # when this step exits. nohup + disown + closed stdin survives across steps;
+          # "stop disk monitor" kills it explicitly.
           cat > disk-monitor.sh <<'MONEOF'
           #!/usr/bin/env bash
           echo "elapsed_s,avail_kb"
@@ -185,10 +155,7 @@ jobs:
       - name: "build (full pipeline: feature layers + density)"
         run: |
           set -euo pipefail
-          # No --skip-density, no --only: this is the end-to-end pipeline S3 asks
-          # about, not the density-only / feature-only subsets the two scheduled
-          # workflows use per-shard. No --upload: no R2 secrets in this workflow at
-          # all (see header) — output is picked up as a build artifact below.
+          # Full pipeline, no --upload: output is picked up as a build artifact below.
           /usr/bin/time -v uv run tools/osm-world/build.py \
             --planet shard.osm.pbf \
             --no-fetch \
@@ -248,8 +215,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifact
           cp build/world/manifest.json artifact/ 2>/dev/null || echo "::warning::no manifest.json — build likely failed"
-          # Exactly "one layer" per the task brief, not all 30+: the smallest .fgb,
-          # since the point is eyeballing output shape, not shipping the shard.
+          # One layer only, the smallest .fgb: the point is eyeballing output shape.
           smallest="$(ls -S build/world/*.fgb 2>/dev/null | tail -n 1 || true)"
           if [ -n "$smallest" ]; then
             cp "$smallest" artifact/

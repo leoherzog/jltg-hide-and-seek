@@ -11,33 +11,21 @@ tools/osm-world/build-transit.py — the global `transit_route` layer.
 
 WHAT THIS IS FOR
 ----------------
-Every other layer in this build answers "what is near here". This one answers "what
-rides here": one feature per urban-rail ROUTE RELATION, carrying the assembled
-line geometry and the ordered list of stops the relation names. It exists so a map
-with no GTFS feed at all can still be played — `osm/synth.js` reads this layer over
-the drawn ring and synthesizes a feed from it. OSM has no timetable of any kind, so
-the schedule that comes out of that is invented and says so; the geometry and the
-stop order are real, and this is where they come from.
+One feature per urban-rail ROUTE RELATION, carrying the assembled line geometry and
+the ordered list of stops the relation names. A map with no GTFS feed can still be
+played: `osm/synth.js` reads this layer over the drawn ring and synthesizes a feed
+from it. OSM has no timetable, so the schedule is invented and says so; the geometry
+and stop order are real.
 
 WHY IT IS A SEPARATE SCRIPT AND NOT A `categories.json` ENTRY
 ------------------------------------------------------------
-Two independent reasons, and either one alone would be enough.
-
-`osmium export` — the engine behind every category layer — emits relations as
-multipolygons only, and drops `type=route` entirely. Verified against osmium-tool
-1.19.1: given a `type=route,route=subway` relation over two member ways, the export
-wrote the two ways' linestrings with their own `railway=subway` tags and none of the
-relation's. build.py's own header says the same thing. There is no `where` clause
-that recovers a route from that, so the category chain cannot produce this layer.
-
-And a relation only assembles when it fits ENTIRELY inside the extract being read.
-That is the measured law that moved `admin` out of the shard pipeline to Overture
-(DESIGN.md §Phase 2): a Michigan extract yields 73 level-2 features, all zero-area
-linestrings, and no USA polygon. A metro line crossing a Geofabrik shard boundary
-would assemble half, or not at all, in each of the two shards that touch it — and
-merge.py keeps MIN(fid) over shards in sorted order, so the surviving copy would be
-whichever shard sorts first, half line and all. So this is a GLOBAL pass, joined to
-the world at merge time the way admin is (`merge.py --transit`), never a shard's job.
+`osmium export` emits relations as multipolygons only and drops `type=route`
+entirely (verified against osmium-tool 1.19.1), so no `where` clause can recover a
+route. And a relation only assembles when it fits ENTIRELY inside the extract being
+read (the law that moved `admin` to Overture, DESIGN.md §Phase 2): a metro line
+crossing a shard boundary would assemble half or not at all in each shard, and
+merge.py would keep whichever copy sorts first. So this is a GLOBAL pass, joined to
+the world at merge time like admin (`merge.py --transit`), never a shard's job.
 
 THE PIPELINE
 ------------
@@ -47,80 +35,57 @@ THE PIPELINE
     assembly → GeoJSONSeq sorted by relation id
     ogr2ogr → transit_route.fgb (MultiLineString, SPATIAL_INDEX=YES)
 
-`tags-filter` pulls a matched relation's member ways and their nodes along with it
-by default, so the intermediate is self-contained. Urban rail is a small universe —
-about 27,000 route relations planet-wide across the six modes — which is why this
-whole job is minutes of work once the planet has been read once.
+`tags-filter` pulls a matched relation's member ways and their nodes along with it,
+so the intermediate is self-contained. Urban rail is about 27,000 route relations
+planet-wide, so the job is minutes of work once the planet has been read.
 
-TWO PASSES, NOT ONE, AND THAT IS THE POINT. A single pass would have to cache every
-way and node in the file against the chance that a relation later names it, and
-`stage_density`'s measured RSS law (≈1.29 GB + 1.53 kB × populated cells) is the
-reason the planet monolith died. Relations sort last in a PBF, so pass A learns the
-exact member id sets first and pass B keeps nothing else. Peak memory is then a
-function of urban rail, not of the input — Berlin measures 1.85 GB peak RSS, nearly all
-of it pyosmium's own fixed cost. What that leaves unmeasured is the planet, where pass B
-holds every path way's coordinates at once; if that ever OOM-kills a run, the cheap fix
-is to hold each way's coordinates in an `array('d')` rather than a tuple of tuples (the
-chainer only ever walks them in order), and the expensive one is to run the stage once
-per mode and concatenate.
+TWO PASSES, NOT ONE. A single pass would have to cache every way and node against the
+chance that a relation later names it. Relations sort last in a PBF, so pass A learns
+the exact member id sets first and pass B keeps nothing else; peak memory is a
+function of urban rail, not of the input (Berlin: 1.85 GB peak RSS, nearly all
+pyosmium's fixed cost). If the planet ever OOM-kills pass B, hold each way's
+coordinates in an `array('d')` rather than a tuple of tuples, or run once per mode.
 
 ASSEMBLY, AND WHY IT IS NOT "CONCATENATE THE MEMBER WAYS"
 --------------------------------------------------------
-Measured over a 14-city corpus (Seoul, NYC, Berlin, Tokyo, Shanghai, Beijing,
-Guangzhou, Shenzhen, Chengdu, Wuhan, Osaka, Nagoya, Taipei, Busan — 992 relations):
+Measured over a 14-city corpus (992 relations):
 
-  * MEMBER ORDER IS UNRELIABLE, TOPOLOGY IS SOUND. Chaining members in stored order
-    hits at least one endpoint mismatch in 52/162 Seoul relations, 50/131 NYC,
-    27/148 Berlin. Union-find over way endpoints says 97.7% of relations are one
-    connected component anyway. So the members are re-chained by endpoint matching,
-    with per-segment reversal — member ways are frequently traversed against their
-    own node order — and the result is a continuous line for nearly all of them.
+  * MEMBER ORDER IS UNRELIABLE, TOPOLOGY IS SOUND. Stored order hits an endpoint
+    mismatch in 52/162 Seoul relations; union-find says 97.7% are one connected
+    component anyway. So members are re-chained by endpoint matching with
+    per-segment reversal.
 
   * PATH MEMBERS ARE ROLE ∈ {"", forward, backward}. PTv2 deprecated forward and
-    backward in 2011 and they are still everywhere: Seoul carries 957 of them.
-    Filtering on the empty role alone leaves 8 Seoul relations with NO geometry and
-    fakes gaps in 54 more.
+    backward in 2011 and they are still everywhere (Seoul: 957); the empty role
+    alone leaves 8 Seoul relations with NO geometry.
 
-  * PLATFORM WAYS ARE MEMBERS OF THE SAME RELATION and must never reach the
-    geometry — NYC 3,309 way-platform members, Berlin 2,609. They are excluded here
-    by not being path roles, which is also how every other unknown role is handled.
+  * PLATFORM WAYS ARE MEMBERS OF THE SAME RELATION (NYC: 3,309) and must never reach
+    the geometry; they are excluded by not being path roles, like every other role.
 
-  * STOPS ARE READ BY ROLE, NEVER BY POSITION. PTv2 says the stops come first, and
-    a handful of relations interleave them after the ways anyway (Beijing 2,
-    Tokyo 2, Shenzhen 2, Chengdu 1, Osaka 1). Every `stop`-role member in the whole
-    corpus is a NODE — 0 exceptions in 19,400+ slots — so there is no way-centroid
-    path here, and a non-node stop member is dropped and counted.
+  * STOPS ARE READ BY ROLE, NEVER BY POSITION. A handful of relations interleave
+    stops after the ways. Every `stop`-role member in the corpus is a NODE (0
+    exceptions in 19,400+ slots), so a non-node stop member is dropped and counted.
 
-  * LOOPS AND BRANCHES EXIST. 22 relations have no degree-1 endpoint at all (circle
-    lines: the Ringbahn, Beijing 10, Osaka's loop), so the chainer must be able to
-    seed a walk arbitrarily; 3 have a junction node; and 17 are genuinely
-    disconnected into 2–4 pieces (Berlin 11, Tokyo 5). Those ship as a
-    MultiLineString with the parts ordered longest-first. Nothing here ever
-    fabricates a joining segment: an honest gap is information, an invented
-    straight line across it is not.
+  * LOOPS AND BRANCHES EXIST. 22 relations have no degree-1 endpoint (circle lines),
+    so the chainer must seed a walk arbitrarily; 17 are genuinely disconnected and
+    ship as a MultiLineString, parts longest-first. Nothing here fabricates a
+    joining segment: an honest gap is information.
 
-  * STOP ORDER COMES FROM THE GEOMETRY, not from the member list. Projecting the
-    stop nodes onto the assembled line reproduces the member order for 95.9% of
-    relations; the 4.1% that disagree are the Tokyo/Berlin through-services, where
-    the projection is the one that is right. Sorting by projected distance is
-    therefore both the fix and the definition, and it makes travel order monotonic
-    by construction. The DIRECTION is a separate question and the projection
-    cannot answer it — see `order_stops`: a line's two direction relations must
-    not both come back pointing the same way.
+  * STOP ORDER COMES FROM THE GEOMETRY. Projecting stops onto the assembled line
+    reproduces the member order for 95.9% of relations, and the rest are
+    through-services where the projection is right. The DIRECTION is a separate
+    question the projection cannot answer; see `order_stops`.
 
-  * RELATIONS WITH NO STOPS ARE DROPPED (17 in the corpus, e.g. Taipei 6/32). A
-    route with no stops is a line nobody can board; the converter downstream would
-    have to drop it anyway, and shipping it would only invite a zero-stop route
-    into somebody's feed.
+  * RELATIONS WITH NO STOPS ARE DROPPED (17 in the corpus): a route with no stops is
+    a line nobody can board.
 
 DETERMINISM
 -----------
-Same planet in, same bytes out. Relations are emitted sorted by id; every choice the
-chainer makes that could go two ways is broken by the smallest node id, then the
-smallest way id, then member index; coordinates are rounded to 7 decimals before
-they are written; the `stops` JSON has fixed key order and compact separators;
-nothing reads a clock. `fgb-equal.sh` tier 1 (sha256 of the whole file) is therefore
-the real reproducibility test for this stage, exactly as it is for build.py's.
+Same planet in, same bytes out. Relations are emitted sorted by id; every tie in the
+chainer is broken by smallest node id, then way id, then member index; coordinates
+are rounded to 7 decimals; the `stops` JSON has fixed key order and compact
+separators; nothing reads a clock. `fgb-equal.sh` tier 1 (sha256) is the
+reproducibility test.
 
 USAGE
 -----
@@ -128,11 +93,10 @@ USAGE
     uv run tools/osm-world/build-transit.py --planet berlin-latest.osm.pbf \\
         --out ~/osm-builds/transit-berlin
 
-`--planet` behaves exactly as it does in build.py, because it IS build.py's:
-`stage_fetch_planet` and `stage_update_planet` are imported rather than copied. The
-script does not ask whether it was handed a planet or a Geofabrik extract, downloads
-only when the named file is absent, and `--no-fetch` turns a missing file into a
-hard error instead. Pointing it at a city extract is the development loop.
+`--planet` behaves exactly as in build.py because `stage_fetch_planet` and
+`stage_update_planet` are imported, not copied: downloads only when the named file is
+absent, and `--no-fetch` makes a missing file a hard error. A city extract is the
+development loop.
 
 It writes, next to each other in `--out`:
 
@@ -140,9 +104,8 @@ It writes, next to each other in `--out`:
     transit_route.fgb.sha256     in `sha256sum -c` format, like build-admin.sh's
     transit_route.meta.json      counts, modes, planet timestamp, emitter version
 
-and nothing else. The upload is the workflow's job (world-transit.yml, mirroring
-world-admin.yml): these are pipeline intermediates handed to world-merge.yml's
-finalize step, not published world objects.
+The upload is the workflow's job (world-transit.yml): these are pipeline
+intermediates handed to world-merge.yml's finalize step, not published world objects.
 """
 
 from __future__ import annotations
@@ -160,65 +123,50 @@ HERE = Path(__file__).resolve().parent
 
 sys.path.insert(0, str(HERE))
 import build  # noqa: E402 — build.py, same directory; stdlib-only at import time.
-# The planet fetch/update stages and the toolchain preflight live there and are
-# REUSED, never duplicated: `--planet` must mean exactly what it means in build.py,
-# and two copies of that logic would drift on the first fix to either.
+# The planet stages and preflight are REUSED, never duplicated: `--planet` must mean
+# exactly what it means in build.py.
 
 # ── what counts as a route ───────────────────────────────────────────────────
 
-# The six rail modes. `train` is in the list and is not optional: Tokyo and Osaka
-# are mostly `route=train`, and modelling them as subway-only would ship a fraction
-# of the real system. `bus` is deliberately absent — 342,003 relations whose member
-# ways are the road network, which would drag most of the planet's highways into
-# the intermediate for a mode this tier does not claim to model.
+# The six rail modes. `train` is not optional: Tokyo and Osaka are mostly
+# `route=train`. `bus` is deliberately absent: 342,003 relations whose member ways
+# would drag most of the planet's highways into the intermediate.
 MODES = ("subway", "train", "light_rail", "tram", "monorail", "funicular")
 
-# One `osmium tags-filter` expression. Like every `filter` in categories.json this
-# is deliberately WIDER than the selector: tags-filter cannot express a second key,
-# so it matches `route=<mode>` on any relation and the `type=route` test happens in
-# Python. Widening is safe; narrowing loses features silently.
+# Like every `filter` in categories.json this is WIDER than the selector: tags-filter
+# cannot express a second key, so `type=route` is tested in Python. Widening is safe;
+# narrowing loses features silently.
 TAGS_FILTER_EXPRESSION = "r/route=" + ",".join(MODES)
 
 # Bumped whenever a change here would produce different bytes from the same planet.
-# It is part of the skip-cache key below — beside the mode list and the planet's own
-# identity — because this stage's output depends on parameters that its output
-# file's mere existence cannot witness (the `density.clip-state` rule, build.py
-# stage 4). Stage 1 keeps a witness of its own for the same reason: the filtered
-# intermediate was cut with a specific mode list, and the emitter's sidecar is only
-# rewritten at the end of a successful run — too late to protect a rerun's passes
-# from re-reading an intermediate cut under the old modes.
+# It is part of the skip-cache key, beside the mode list and the planet's identity,
+# because the output file's existence cannot witness those parameters (the
+# `density.clip-state` rule, build.py stage 4).
 EMITTER_VERSION = "1"
 
 # ── member roles ─────────────────────────────────────────────────────────────
 
 # Roles are compared after `strip().lower()`: Taipei has a member whose role is
-# literally `"station "`. Trailing space or not, it is ignored either way — but a
-# role that differs from a known one only by whitespace must not be able to hide.
+# literally `"station "`, and a known role plus stray whitespace must not hide.
 PATH_ROLES = frozenset({"", "forward", "backward"})
 STOP_ROLES = frozenset({"stop", "stop_entry_only", "stop_exit_only"})
 
-# Never geometry. These are listed rather than merely "not a path role" because the
-# count of them is the interesting diagnostic — if this number collapses on some
-# future run, the role vocabulary moved and the lines grew platform stubs.
+# Never geometry. Listed so the count is a diagnostic: if it collapses, the role
+# vocabulary moved and the lines grew platform stubs.
 PLATFORM_ROLES = frozenset({
     "platform", "platform_entry_only", "platform_exit_only", "platform_edge",
 })
 
 
 def normalise_role(role: str) -> str:
-    """The one place a member role is turned into something comparable.
-
-    Named rather than inlined because it is the only defence against a role that
-    is a known one plus a typo in whitespace or case, and a silently-unrecognised
-    path role is a silently-missing piece of line.
-    """
+    """The one place a member role is turned into something comparable; a
+    silently-unrecognised path role is a silently-missing piece of line."""
     return role.strip().lower()
 
 # ── the FGB property schema ──────────────────────────────────────────────────
 
-# Self-contained on purpose: this layer is NOT built through `export_layer`, so the
-# global `include_tags` / `runtime_columns` lists do not apply to it and adding a
-# column here moves no other layer's bytes. Order is the column order in the file.
+# Self-contained on purpose: this layer is NOT built through `export_layer`, so
+# `include_tags` / `runtime_columns` do not apply. Order is the column order in the file.
 TAG_COLUMNS = (
     ("name", "name"),
     ("name_en", "name:en"),
@@ -228,29 +176,22 @@ TAG_COLUMNS = (
     ("operator", "operator"),
     ("network", "network"),
     ("route", "route"),
-    # The only two temporal tags OSM has for a line, and both are rare (interval
-    # sits on ~2% of route relations worldwide). They ship raw and unparsed: the
-    # converter owns the grammar and the fallback, and a build that pre-digested
-    # them would bake one interpretation of `10:00` into the world file forever.
+    # The only two temporal tags OSM has for a line, both rare. They ship raw: the
+    # converter owns the grammar and the fallback.
     ("interval", "interval"),
     ("duration", "duration"),
 )
 
 COLUMNS = ("osm_type", "osm_id", *[name for name, _ in TAG_COLUMNS], "stops")
 
-# An absent tag ships as the EMPTY STRING rather than as JSON null, and that is a
-# schema decision, not a taste one: OGR infers a GeoJSONSeq field's type from the
-# values it sees, and a column that is null on every feature has no type to infer.
-# Writing every column on every feature is what pins the schema without a scan.
-# Inside the `stops` JSON there is no schema to pin, so a missing name is null
-# there — the consumer can tell "unnamed" from "named empty" for free.
+# An absent tag ships as the EMPTY STRING, not JSON null: OGR infers a GeoJSONSeq
+# field's type from the values it sees, and an all-null column has no type. Inside the
+# `stops` JSON a missing name is null, so the consumer can tell "unnamed" from "".
 ABSENT = ""
 
-# Ordering stops by projection is right even when a stop sits far from the line
-# (JOSM PT_Assistant's check #10, "stop not served", uses ~0.002°). Such a stop is
-# NOT dropped here — it is a real member of a real route and dropping it would
-# silently shorten somebody's line — but it is counted, because a build where this
-# number jumps is a build where the assembly went wrong.
+# A stop far from the line (JOSM PT_Assistant's "stop not served" uses ~0.002°) is
+# NOT dropped, since that would silently shorten a line, but it is counted: a build
+# where this number jumps is a build where assembly went wrong.
 STOP_OFFLINE_M = 500.0
 
 EARTH_RADIUS_M = 6371008.8
@@ -278,10 +219,8 @@ class Segment(NamedTuple):
 def _plane(origin: tuple[float, float]):
     """A local equirectangular projection to metres, anchored at `origin`.
 
-    Good to a fraction of a percent over a metro, which is all that is asked of it:
-    it is used for lengths (to order the parts of a MultiLineString) and for
-    point-to-line projection (to order stops). Nothing downstream reads a distance
-    out of this file, so the approximation never reaches a published number.
+    Good to a fraction of a percent over a metro: it orders MultiLineString parts and
+    projects stops. No published number reads a distance out of it.
     """
     lon0, lat0 = origin
     scale = math.cos(math.radians(lat0))
@@ -307,18 +246,13 @@ def line_length_m(coords, project) -> float:
 def chain_segments(segments: list[Segment]) -> list[list[tuple[float, float]]]:
     """Re-chain member ways into as few continuous lines as their topology allows.
 
-    The walk is greedy over shared endpoint nodes with reversal, seeded at the
-    smallest degree-1 node id when the remaining graph has one and at the smallest
-    way id when it does not (a circle line has no end to start from). Every
-    tie-break is on an id rather than on member order, because member order is the
-    thing that cannot be trusted.
+    Greedy walk over shared endpoint nodes with reversal, seeded at the smallest
+    degree-1 node id when there is one and at the smallest way id otherwise (a circle
+    line has no end). Every tie-break is on an id, never on member order.
 
-    Leftovers become extra parts. That covers both the genuinely disconnected
-    relations and the branch a junction node spills, and it is why the return type
-    is a list: the caller emits a MultiLineString and never bridges the gap.
-
-    Parts come back longest-first, ties broken by the smallest way id in the part,
-    so the principal line is part 0 for any consumer that wants one line.
+    Leftovers become extra parts (disconnected relations, a junction's branch), so the
+    caller emits a MultiLineString and never bridges the gap. Parts come back
+    longest-first, ties by smallest way id, so the principal line is part 0.
     """
     remaining = set(range(len(segments)))
     incident: dict[int, list[int]] = {}
@@ -377,10 +311,9 @@ def chain_segments(segments: list[Segment]) -> list[list[tuple[float, float]]]:
 def _project_onto(parts, project):
     """Per-part cumulative offsets along the concatenated chain.
 
-    A disconnected relation still has ONE travel order, so the second part's
-    distances continue where the first left off — plus the straight-line gap
-    between them, which keeps the two parts from interleaving when the gap is
-    large and the second part doubles back.
+    A disconnected relation still has ONE travel order, so the second part continues
+    where the first left off plus the straight-line gap, which keeps parts from
+    interleaving when the second doubles back.
     """
     offsets = []
     running = 0.0
@@ -398,27 +331,19 @@ def order_stops(parts, stops):
     """Sort stops into travel order by projecting them onto the chained line.
 
     THE PROJECTION DECIDES THE SEQUENCE; THE MEMBER LIST DECIDES WHICH END IS THE
-    START. Those are two different questions and only the first one is geometry.
-    The chainer seeds its walk at the smallest degree-1 node id, which is a
-    determinism rule and nothing more — it has no idea which way the trains run —
-    so a line's two direction relations would otherwise come back listing their
-    stops in the SAME geographic order, and a feed synthesized from them would
-    have two northbound services and nothing going south. PTv2 says the stop
-    members are listed in travel order, and the corpus says they really are for
-    95.9% of relations, so the direction comes from them: if the projected
-    distances descend more often than they ascend as the member list is walked,
-    the whole sequence is flipped. The 4.1% that disagree with their own member
-    order are still fixed by the projection — a majority vote on the direction is
-    not disturbed by a stop or two out of place.
+    START. The chainer's seed is a determinism rule with no idea which way the trains
+    run, so a line's two direction relations would otherwise list their stops in the
+    SAME order and a synthesized feed would have two northbound services. PTv2 says
+    stop members are listed in travel order (true for 95.9% of the corpus), so if the
+    projected distances descend more often than they ascend along the member list,
+    the sequence is flipped; a stop or two out of place cannot disturb that vote.
 
-    Returns `(ordered, offline)` — the sorted list, and how many of them lie
-    further than `STOP_OFFLINE_M` from every part. The sort is stable, so stops
-    that project to the same distance (a terminus mapped twice, one node per
-    platform track) keep the relative order the relation gave them.
+    Returns `(ordered, offline)`: the sorted list, and how many lie further than
+    `STOP_OFFLINE_M` from every part. The sort is stable, so stops projecting to the
+    same distance keep the relation's relative order.
 
-    With no geometry at all there is nothing to project onto and the member order
-    is the only order there is; that case is the caller's to reject, but the
-    function stays total rather than raising inside an assembly loop.
+    With no geometry the member order is the only order; that case is the caller's
+    to reject, but the function stays total.
     """
     if not parts or not stops:
         return list(stops), 0
@@ -472,17 +397,13 @@ def order_stops(parts, stops):
 def stage_filter_routes(planet: Path, work: Path, force: bool) -> Path:
     """One `osmium tags-filter` pass; everything after it reads a few-hundred-MB file.
 
-    No `-R`: the referenced member ways and their nodes are exactly what pass B
-    needs, and letting tags-filter collect them is far cheaper than a second id-based
-    pass over the planet. tags-filter takes no `--index-type` and needs none — it
-    matches on tags and resolves references by id, never by location.
+    No `-R`: the referenced member ways and nodes are exactly what pass B needs.
+    tags-filter takes no `--index-type` and needs none.
 
-    The skip has its own witness, `routes.state`, holding the exact filter
-    expression AND the planet identity the intermediate was cut from: the file's
-    existence can witness neither, a mode added to MODES must re-cut the
-    intermediate, and so must a swapped `--planet` under the same work dir — the
-    emitter's own sidecar is rewritten only at the end of a successful run, which
-    is too late to stop passes A/B re-reading a stale cut.
+    The skip has its own witness, `routes.state`, holding the filter expression AND
+    the planet identity the intermediate was cut from: a mode added to MODES or a
+    swapped `--planet` must re-cut it, and the emitter's sidecar is rewritten too
+    late to protect a rerun's passes from a stale cut.
     """
     out = work / "routes.osm.pbf"
     witness = work / "routes.state"
@@ -545,12 +466,10 @@ def read_relations(routes: Path) -> list[dict]:
 def read_members(routes: Path, way_ids: set[int], node_ids: set[int]):
     """Pass B: the member ways' geometry and the stop nodes' position and names.
 
-    Only the ids pass A asked for are kept, which is what bounds this pass's memory
-    to the size of urban rail rather than to the size of the input.
+    Only the ids pass A asked for are kept, which bounds memory to urban rail.
 
-    A way with even one unresolvable node location is dropped whole. Keeping the
-    valid part would move its endpoints, and a moved endpoint chains to the wrong
-    neighbour — a wrong line is worse than a short one, and the short one is
+    A way with even one unresolvable node location is dropped whole: keeping the
+    valid part would move its endpoints and chain to the wrong neighbour. The drop is
     counted and reported.
     """
     import osmium  # noqa: PLC0415 — as above
@@ -691,10 +610,8 @@ def assemble(relation: dict, ways: dict[int, Segment], nodes: dict[int, dict],
 def emit_geojsonseq(features: list[dict], work: Path) -> Path:
     """Write the features one per line, in relation-id order.
 
-    FlatGeobuf reorders into Hilbert order on write, so this file's order does not
-    survive into the layer — but a reproducible intermediate is what makes a diff
-    between two builds mean something, and it is the same reason `stage_density`
-    sorts its cells.
+    FlatGeobuf reorders into Hilbert order on write, but a reproducible intermediate
+    makes a diff between two builds meaningful, as `stage_density`'s sort does.
     """
     path = work / "transit_route.geojsonl"
     with path.open("w", encoding="utf-8") as destination:
@@ -726,13 +643,10 @@ def convert(geojsonl: Path, out_dir: Path) -> Path:
 def state_key(planet: Path) -> str:
     """Everything this run's output depends on, the planet's identity included.
 
-    build.py stage 4's rule, for the same reason: a skip-if-exists cache is only
-    sound when the output file's existence witnesses the parameters it was built
-    under. Here those are the mode list, the emitter version, and — because a key
-    that ignored the planet would let a Berlin dev-loop build masquerade as a
-    planet build under the default `--out`, or hand back a weeks-stale snapshot
-    with exit 0 — the planet file's resolved path and its own replication
-    timestamp.
+    A skip-if-exists cache is only sound when the output's existence witnesses the
+    parameters it was built under: the mode list, the emitter version, and the planet
+    file's resolved path and replication timestamp, so a Berlin dev-loop build cannot
+    masquerade as a planet build under the default `--out`.
     """
     return hashlib.sha256("\n".join((
         EMITTER_VERSION,
@@ -765,9 +679,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="rebuild stages whose output already exists")
     args = parser.parse_args(argv)
 
-    # The toolchain check is build.py's, unchanged: the GDAL floor is the whole
-    # reason this layer is readable by Range request at all, and a version below it
-    # writes a valid FlatGeobuf with no spatial index and no error.
+    # build.py's toolchain check: below the GDAL floor ogr2ogr writes a valid
+    # FlatGeobuf with no spatial index and no error.
     build.preflight()
 
     out_dir: Path = args.out
@@ -778,14 +691,10 @@ def main(argv: list[str] | None = None) -> int:
     fgb = out_dir / "transit_route.fgb"
     sidecar = work / "transit.state"
 
-    # The planet stages run BEFORE the skip check, exactly as build.py's main does
-    # — the header's "`--planet` behaves exactly as it does in build.py" is a
-    # control-flow promise, not just an import: a skip must never return a layer
-    # built from a different planet file or an older snapshot, and `--no-fetch`'s
-    # hard error on a missing file must fire on every run, cached or not. The
-    # resumability the skip exists for survives the order: fetch is a no-op when
-    # the file exists, and update is cheap when it is current (`--no-update` for
-    # the dev loop).
+    # The planet stages run BEFORE the skip check, as in build.py's main: a skip must
+    # never return a layer built from a different planet or an older snapshot, and
+    # `--no-fetch`'s hard error must fire on every run. Fetch is a no-op when the file
+    # exists and update is cheap when it is current (`--no-update` for the dev loop).
     had_planet = args.planet.exists()
     planet = build.stage_fetch_planet(args.planet, args.planet_url,
                                       args.no_fetch, args.skip_md5)
@@ -845,10 +754,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{STOP_OFFLINE_M:.0f} m from their line")
 
     if not features:
-        # Same contract as build.py's convert_layer and stage_density: the
-        # GeoJSONSeq driver cannot open a record-less file, so a feature-less .fgb
-        # is not writable. An absent layer is the degradation path the client
-        # already handles; only a fixture-sized extract should ever get here.
+        # As in build.py's convert_layer: the GeoJSONSeq driver cannot open a
+        # record-less file. Only a fixture-sized extract should ever get here.
         raise SystemExit(
             "no route relation in this extract survived assembly — nothing to "
             "write. For a real region that is a build failure, not an empty "
@@ -860,8 +767,7 @@ def main(argv: list[str] | None = None) -> int:
 
     digest = build.sha256_file(fgb)
     # `sha256sum -c` format, like build-admin.sh's sidecar, so a transferred copy
-    # verifies with the stock tool and merge.py's caller can check the handoff
-    # before it content-addresses the file into the world.
+    # verifies with the stock tool.
     (out_dir / "transit_route.fgb.sha256").write_text(
         f"{digest}  {fgb.name}\n", encoding="utf-8")
     meta = {
@@ -870,9 +776,8 @@ def main(argv: list[str] | None = None) -> int:
         "emitter_version": EMITTER_VERSION,
         "features": build.feature_count(fgb),
         "modes": list(MODES),
-        # The PBF's own replication header, never the clock: every count in this
-        # file is as of that instant, and stamping build time would attribute a
-        # months-old planet dump to today.
+        # The PBF's own replication header, never the clock: stamping build time
+        # would attribute a months-old planet dump to today.
         "planet_timestamp": build.planet_timestamp(planet),
         "sha256": digest,
     }

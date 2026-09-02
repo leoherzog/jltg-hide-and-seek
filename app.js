@@ -1,27 +1,18 @@
 /**
  * app.js — the main-thread controller.
  *
- * Ported from generate.py's S4 page assembly (`render_index`), its
- * day-switched payload (`_s4_banner` … `_s4_stops_payload`) and
- * its client runtime (`SHARED_PAGE_JS` + `_S4_INDEX_JS`).
+ * Ported from generate.py's S4 page assembly (`render_index`), day-switched payload
+ * and client runtime (`SHARED_PAGE_JS` + `_S4_INDEX_JS`).
  *
- * The CLI computes a whole `Report` and then prints one finished document. The
- * browser cannot: an eight-minute Overpass pass would be eight minutes of blank
- * page. So the same document is assembled progressively — the shell ships eight
- * skeleton sections, the worker streams staged partial results, and each section is
- * swapped for real markup the moment its data lands. The *output* is the same
- * artifact; only the arrival order changed.
+ * The document is assembled progressively: the shell ships skeleton sections, the
+ * worker streams staged partial results, and each section is swapped for real markup
+ * as its data lands. The stat rail hydrates through a nested `data-section="glance"`
+ * host inside the map section so its tiles can be corrected without re-mounting
+ * `#netmap` and tearing down MapLibre.
  *
- * Eight, not nine, since 2026-08-23: §04's stat rail was folded into §05 and now
- * hydrates through a NESTED `data-section="glance"` host inside the map section, with
- * its own `needs`/`redo`. Two hydration clocks in one section is what lets the tiles
- * be corrected at `rules`, at `score` and on every day click without re-rendering the
- * map section — a re-render swaps `#netmap` out and tears down MapLibre.
- *
- * Division of labour, unchanged from the CLI:
- *   • the worker computes, and never touches the DOM;
- *   • `render/*.js` turn a `Report` into HTML strings, and never touch the DOM;
- *   • this file owns every element, every listener and the worker protocol.
+ * Division of labour: the worker computes and never touches the DOM; `render/*.js`
+ * turn a `Report` into HTML strings and never touch the DOM; this file owns every
+ * element, every listener and the worker protocol.
  *
  * @module app
  */
@@ -36,9 +27,7 @@ import {
   esc, el, join, waIcon, waCard, waDetails, jsonBlock, chip,
 } from './render/html.js';
 
-// The S4 formatting and day-view helpers are aliased back to their bare CLI names on
-// import. `verdict.js` defines them for the whole page — one implementation, exactly
-// as its own header claims — and every call site below reads as it always did.
+// The S4 formatting and day-view helpers are aliased back to their bare CLI names.
 import {
   renderHero, renderVerdict, renderScoreTrace, renderYourGame, bandVariant,
   s4Imperial as imperial, s4Signed as signed, s4JoinWords as joinWords,
@@ -52,9 +41,8 @@ import {
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
 } from './render/deck.js';
-// S5 (`render_strategy`) — the hider's guide. Not a section, not a nav
-// entry, not in `SECTIONS`: the fragment `#strategy` is the only door. See
-// `applyRoute` below for why it is a view and not a tenth card.
+// S5 (`render_strategy`) — the hider's guide. Not a section and not in `SECTIONS`:
+// the fragment `#strategy` is the only door (see `applyRoute`).
 import { renderStrategy } from './render/strategy.js';
 import { initStrategy } from './render/simulator.js';
 
@@ -63,19 +51,16 @@ import { initStrategy } from './render/simulator.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The placeholder every section passes as its ordinal (`_S4_ORDINAL`).
- * Replaced with the section's real number **after** the empty ones are dropped, so a
- * feed with no curses yields §01…§08 with no gap in the sequence.
+ * The placeholder every section passes as its ordinal (`_S4_ORDINAL`). Replaced with
+ * the real number after empty sections are dropped, so the sequence has no gaps.
  */
 const ORDINAL_PLACEHOLDER = '--';
 
 /**
- * The ONE cross-load handoff (CONTRACT §(d), AGENTS.md, 2026-08-27). "Re-run with
- * this border" writes `{v:1, sources, options, note}` here and reloads; `boot()`
- * reads it, REMOVES it, validates it and starts the run without the picker. Session
- * storage, not local: a re-run is a thing this tab is doing now, and a key that
- * outlived the tab would replay a run into a stranger's fresh visit. Consumed
- * exactly once — Reset from the second run finds nothing and is the plain landing.
+ * The one cross-load handoff (CONTRACT §(d)). "Re-run with this border" writes
+ * `{v:1, sources, options, note}` here and reloads; `boot()` reads it, removes it,
+ * validates it and starts the run without the picker. Session storage so the key
+ * cannot outlive the tab; consumed exactly once.
  */
 const RERUN_KEY = 'jltg.rerun';
 /** The handoff's schema version. Anything else is ignored, never migrated. */
@@ -83,11 +68,9 @@ const RERUN_VERSION = 1;
 
 /** `class Options`, minus everything meaningless in a browser. */
 const DEFAULT_OPTIONS = Object.freeze({
-  // An override, and null is the whole of its default. The published bucket is named
-  // once, in `osm/worldfile.js`'s `DEFAULT_WORLD_BASE_URL`, and this file does not
-  // import it: doing so would pull the world-file reader and the FlatGeobuf decoder
-  // onto the main thread to read one string, when the only code that opens a world is
-  // in the worker. Null travels to `worker.js`, which resolves it.
+  // Null means the default bucket, resolved in `worker.js` (`osm/worldfile.js`'s
+  // `DEFAULT_WORLD_BASE_URL`); importing it here would pull the world reader onto
+  // the main thread.
   worldBaseUrl: null,
   asOf: null,
   sizeOverride: null,
@@ -96,9 +79,8 @@ const DEFAULT_OPTIONS = Object.freeze({
   startStopId: null,
   borderShape: 'bbox',
   borderBbox: null,
-  // Provenance only — no pipeline reads it (CONTRACT §(c), 2026-08-27). `'landing'`
-  // when the reader set the frame on the landing map, `'suggestion'` when a re-run
-  // took the worker's suggested border, null when the border was inferred.
+  // Provenance only; no pipeline reads it (CONTRACT §(c)). `'landing'`, `'suggestion'`
+  // or null when the border was inferred.
   borderSource: null,
   excludeStops: [],
   excludeRoutes: [],
@@ -111,36 +93,22 @@ const DEFAULT_OPTIONS = Object.freeze({
 /**
  * Section → the stage that first fills it, and the later stages that correct it.
  *
- * `redo` is not a nicety: `scoreZones` fills `QuestionAudit.surv_mean` in place, so
- * §07 rendered from the `'rules'` copy is missing its funnel column (CONTRACT §(d)),
- * and the stat rail's tiles count live questions and removed curses. Every redo is
- * compared against the markup already on the page and skipped when identical, so a
- * section that did not actually change never reflows.
+ * `redo` matters: `scoreZones` fills `QuestionAudit.surv_mean` in place (CONTRACT
+ * §(d)), and the stat rail counts live questions and removed curses. A redo whose
+ * markup is identical to what is on the page is skipped.
  *
- * ORDER IS LOAD-BEARING FOR `glance`, and only for it: `hydrate` walks this array in
- * order, so `network` must mount its markup — which carries the rail's empty host —
- * before `glance` is asked to mount into it in the same pass.
+ * Order is load-bearing for `glance` only: `hydrate` walks this array in order, and
+ * `network` must mount the rail's empty host before `glance` mounts into it.
  */
 const SECTIONS = [
-  // The hero's redo list is long on purpose. Its headline sentence reads "N of the M
-  // questions in the SIZE deck function here", and `M` is `questions.length` — which
-  // is `0` between the `network` and `rules` stages. Without `rules` in the list the
-  // page would sit on "0 of the 0 questions" for the whole Overpass wait, which is
-  // several minutes of a confidently wrong sentence. `days` is here for the same
-  // reason at smaller stakes: it adds the "Best day" chip.
+  // The hero's headline counts `questions.length`, which is 0 until `rules`; `days`
+  // adds the "Best day" chip.
   { id: 'hero', needs: 'feed', redo: ['days', 'network', 'rules', 'score'], render: (r) => renderHero(r) },
-  // `geo` and only `geo`: `s4Imperial` flips km→mi there and rewrites the zone
-  // radius, the border pad and the border area, so §05's string genuinely moves and
-  // the section must re-mount. `score` used to be here so the map could show its
-  // scored zone dots; those now arrive through `#stops` and `refreshMapData()`, which
-  // is a `setData` and keeps the reader's pan and zoom. (2026-08-23, D4.)
+  // `geo` only: `s4Imperial` flips km→mi there. Scored zone dots arrive through
+  // `#stops` and `refreshMapData()` (a `setData`, which keeps pan and zoom).
   { id: 'network', needs: 'network', redo: ['geo'], render: (r) => renderNetworkMap(r) },
-  // Not a numbered section and not in `NUMBERED`: the stat rail lives INSIDE §05, in
-  // a nested `data-section="glance"` host that §05's own markup ships empty. It needs
-  // exactly what §05 needs (`size`, `metrics`, `days`, all at the `network` stage) and
-  // redoes on everything §05 must not: `days` adds the day chips, `geo` flips km→mi,
-  // `rules` fills the deck tiles, `score` corrects the live-question and removed-curse
-  // counts. None of those may touch §05's string. (Added 2026-08-23, the §04→§05 merge.)
+  // Not numbered: the stat rail lives in a nested `data-section="glance"` host inside
+  // §05 and redoes on everything §05 must not.
   { id: 'glance', needs: 'network', redo: ['days', 'geo', 'rules', 'score'], render: (r) => renderGlanceRail(r) },
   { id: 'yourgame', needs: 'score', redo: [], render: (r) => renderYourGame(r) },
   { id: 'transit', needs: 'network', redo: ['score'], render: (r) => renderTransitReality(r) },
@@ -149,49 +117,27 @@ const SECTIONS = [
   { id: 'curses', needs: 'rules', redo: ['score'], render: (r) => renderCurses(r) },
   { id: 'trace', needs: 'score', redo: [], render: (r) => renderScoreTrace(r) },
   { id: 'sources', needs: 'provenance', redo: [], render: (r) => renderProvenance(r) },
-  // Chrome, like the hero: no ordinal, no nav entry. Its five figures count zones,
-  // live questions, removed curses, Overpass queries and interpretations, so it is
-  // corrected by every stage that changes one of those.
+  // Chrome, like the hero: its figures are corrected by every stage that changes one.
   { id: 'footer', needs: 'feed', redo: ['network', 'rules', 'score', 'provenance'], render: (r) => renderFooter(r) },
 ];
 
 /**
- * The eight numbered sections, in page order. `hero` is chrome, not a numbered card,
- * and neither is the map's `glance` rail — it is a nested host inside `network`, so
- * it takes no ordinal and appears here nowhere.
+ * The eight numbered sections, in page order. `hero` and the `glance` rail are
+ * chrome and take no ordinal.
  *
- * This array — not the DOM — is what `renumberSections` walks to hand out `data-n`,
- * so it and the <section> order in index.html must be kept in lockstep: move a
- * section there without moving it here and the printed ordinals run out of
- * sequence. The nav rail is the third copy of this order, because `bindSpy` takes
- * the last link whose section is above the fold, in LINK order.
+ * `renumberSections` walks this array, not the DOM, to hand out `data-n`, so it, the
+ * <section> order in index.html and the nav rail (which `bindSpy` walks in link
+ * order) must stay in lockstep.
  *
- * Reordered 2026-08-23 (was verdict, trace, yourgame, numbers, network, transit,
- * questions, curses, sources): the map is the artifact readers recognise, so it
- * opens the report, and the point-by-point trace is reference material that now
- * sits with the receipts. `SECTIONS` above is in the same order for the same
- * reason — reading the array should read the page. `numbers` left this list the same
- * day, when its tiles became §05's rail; nine numbered sections became eight.
- *
- * ONE CONSEQUENCE FOR EVERY COMMENT IN THIS REPO: the `§NN` written throughout
- * these files is the numbering the port was written under (§01 verdict … §09
- * sources) and is a NICKNAME, not the printed ordinal, which is handed out below
- * from this array. CONTRACT.md §(e) is the id → printed-ordinal map and the only
- * place to trust for it. (`render/strategy.js` and `render/simulator.js` number
- * the strategy view's own five sections and never meant these at all.)
+ * The `§NN` written in comments throughout this repo is the port's original
+ * numbering (§01 verdict … §09 sources), a nickname rather than the printed ordinal.
+ * CONTRACT.md §(e) is the id → printed-ordinal map. (`render/strategy.js` and
+ * `render/simulator.js` number the strategy view's own sections.)
  */
 const NUMBERED = ['network', 'yourgame', 'transit', 'verdict',
   'questions', 'curses', 'trace', 'sources'];
 
-/**
- * What each stage is actually doing, in words a waiting human can act on.
- *
- * No stage waits on a shared, rate-limited service any more — GEO reads the prebuilt
- * world files — but a cold run still has quiet stretches: the feed unzip, RAPTOR over
- * every stop, the first range reads of a map. An unchanged label reads as a hang, so
- * each note says what the stage is doing and, where it matters, why it takes as long
- * as it does.
- */
+/** What each stage is doing, in words a waiting human can act on. */
 const STAGE_NOTE = {
   feed: 'Downloading and unzipping the GTFS feed.',
   days: 'Working out which service days this feed distinguishes.',
@@ -229,13 +175,8 @@ const SECTION_NAME = {
 };
 
 /**
- * The only door to S5.
- *
- * The CLI ships two files and states the invariant plainly: the
- * feasibility report and the hider's guide never link to each other, because the
- * seekers read the first one. The port has one document, so the invariant becomes:
- * nothing in the report view mentions, links to or hints at this fragment. The guide
- * may link *back* — that link is only ever visible to someone already inside it.
+ * The only door to S5. The seekers read the report, so nothing in the report view
+ * may mention, link to or hint at this fragment. The guide may link back.
  */
 const STRATEGY_HASH = '#strategy';
 
@@ -245,7 +186,7 @@ const STRATEGY_HASH = '#strategy';
 
 /**
  * The report as far as the worker has got. Every field is pre-seeded with an empty
- * container so a renderer reached at stage 2 cannot trip over a missing key.
+ * container so an early renderer cannot trip over a missing key.
  * @returns {Object}
  */
 function emptyReport() {
@@ -256,17 +197,15 @@ function emptyReport() {
       agencyName: '', agencyUrl: '', timezone: '',
       feedStart: '', feedEnd: '', feedVersion: '', publisher: '',
     },
-    // Counts from the `'feed'` stage: the real `feed.stops` / `feed.routes` maps do
-    // not cross postMessage until `'done'`, so anything that just wants an N reads
-    // these. Both are kept in sync on `'done'`.
+    // Counts from the `'feed'` stage; the real `feed.stops` / `feed.routes` maps do
+    // not cross postMessage until `'done'`.
     feedCounts: { stops: 0, routes: 0, trips: 0 },
     proj: { lat0: 0, lon0: 0 },
     size: null,
     sizeInference: null,
     hub: null,
     border: null,
-    // The worker's tighter, reachability-aware box (CONTRACT §(b) SuggestedBorder),
-    // or null — null is the common case and every renderer prints nothing for it.
+    // The worker's reachability-aware box (CONTRACT §(b) SuggestedBorder), or null.
     suggestedBorder: null,
     days: [],
     selectedDay: '',
@@ -293,20 +232,16 @@ function emptyReport() {
     place: '',
     provenance: {},
     degradations: [],
-    // MAIN-SIDE, not a worker field: the `kind` of every `SourceRef` the run was
-    // started with, in the order they were posted. §05's suggestion callout reads it
-    // to know whether a re-run is possible at all — a `File` cannot survive the
-    // reload a re-run is — and nothing else does. Stamped in `startRun`, fixed for
-    // the run, so it can never move a rendered string.
+    // Main-side only: the `kind` of every `SourceRef` the run was started with. §05's
+    // suggestion callout reads it to know whether a re-run is possible (a `File`
+    // cannot survive the reload). Stamped in `startRun`, fixed for the run.
     sourceKinds: [],
   };
 }
 
 /**
- * The unavailable `GeoData`, main-thread copy. `osm/geodata.js` exports the real
- * `emptyGeoData` but it lives in the worker; duplicating the six-line literal is
- * cheaper than importing a worker module onto the main thread. Kept byte-identical to
- * CONTRACT §(b).
+ * The unavailable `GeoData`, main-thread copy of `osm/geodata.js`'s `emptyGeoData`.
+ * Kept byte-identical to CONTRACT §(b).
  * @returns {Object}
  */
 function emptyGeoLocal() {
@@ -322,12 +257,9 @@ function emptyGeoLocal() {
 }
 
 /**
- * Seconds of COMPLETE SILENCE from the worker before the run is called dead. Not a
- * wall-clock deadline on the run: a cold first visit legitimately spends minutes
- * reading world files, and cutting that off would be worse than the bug. What is never
- * legitimate is the worker going quiet — it announces every round trip through
- * `onProgress`, so silence means a fetch that will never return or a hang, and until
- * this existed the page span on that forever with nothing to click.
+ * Seconds of complete silence from the worker before the run is called dead. Not a
+ * wall-clock deadline: the worker announces every round trip through `onProgress`,
+ * so silence means a hung fetch, not a slow stage.
  */
 const WORKER_SILENCE_S = 120;
 
@@ -354,11 +286,9 @@ const state = {
    *  Empty means "not in the guide"; see `applyRoute`. */
   /** @type {string} */ strategyTitle: '',
   /**
-   * What this run was started with, retained verbatim so a re-run can replay it.
-   * `sources` and `options` are the two halves of the one `run` message; `source`
-   * is the display string §09 echoes; `note` is the previous run's handoff note
-   * when THIS run is itself a re-run (the `#run-history` chip reads it), else null.
-   * Null until `startRun` — no run, nothing to replay.
+   * What this run was started with, retained so a re-run can replay it. `source` is
+   * the display string §09 echoes; `note` is the previous run's handoff note when
+   * this run is itself a re-run (the `#run-history` chip reads it), else null.
    */
   run: {
     /** @type {Object[]|null} */ sources: null,
@@ -368,27 +298,22 @@ const state = {
   },
   /**
    * Landing-page feed picker. `selected` is `Map<string, SourceRef>` keyed by the
-   * ref's stable `id`, and it is the ONLY place a map pick lives. With no picker on
-   * the page it stays empty and every path below behaves exactly as it did before
-   * the picker existed: `readSources` falls through to the bring-your-own card.
+   * ref's stable `id`, the only place a map pick lives. With no picker on the page it
+   * stays empty and `readSources` falls through to the bring-your-own card.
    */
   landing: {
     /** @type {Map<string, Object>} */ selected: new Map(),
     /**
-     * The game-border frame the picker draws, or null while nothing is picked. The
-     * picker owns it and reports it through `onPickerBorder`; this is a read-only
-     * copy for `readOptions`. `mode` decides what crosses the wire: `'auto'` (the
-     * frame is fitted to the picks and the reader never touched it) sends
-     * `borderBbox: null`, so the worker infers the border exactly as it did before
-     * the frame existed; `'custom'` sends the rectangle. Null here does NOT mean "no
-     * border": with no frame — a bring-your-own zip or URL, which the picker has no
-     * bounding box to frame — `readOptions` falls back to the writable
+     * The game-border frame the picker draws, or null. The picker owns it and reports
+     * it through `onPickerBorder`. `'auto'` (fitted to the picks, untouched) sends
+     * `borderBbox: null` so the worker infers the border; `'custom'` sends the
+     * rectangle. With no frame `readOptions` falls back to the writable
      * `#opt-border-bbox` field.
      * @type {{bbox: [number,number,number,number], mode: 'auto'|'custom'}|null}
      */
     border: null,
-    /** The picker's handle — `{ setByo, resize, destroy }` — or null when the
-     *  catalogue never loaded and the bring-your-own card is the whole page. */
+    /** The picker's handle (`{ setByo, resize, destroy }`), or null when the
+     *  catalogue never loaded. */
     /** @type {Object|null} */ picker: null,
   },
 };
@@ -400,10 +325,8 @@ const state = {
 const $id = (id) => document.getElementById(id);
 
 /**
- * The run form. `index.html` is the one shell (AGENTS.md), so the form is addressed
- * exactly once, by the `data-role` its own comment calls app.js's only selector for
- * these nodes — dropping the attribute stops the form loudly rather than degrading
- * to whichever `<form>` happens to be first in the document.
+ * The run form, addressed only by its `data-role` so dropping the attribute fails
+ * loudly rather than falling back to whichever `<form>` comes first.
  */
 function runForm() {
   return document.querySelector('form[data-role="runform"]');
@@ -445,10 +368,9 @@ export function boot() {
       startRunFromForm(form);
     });
   }
-  // `#suggest-rerun` lives inside §05's rendered string, which is re-mounted on
-  // hydration, so it is delegated from the document rather than bound per mount.
-  // Wired HERE and never from `PAGE_RUNTIME_JS` (CONTRACT §05): the handoff is a
-  // main-thread concern that touches `state.run`, which the runtime cannot see.
+  // `#suggest-rerun` lives inside §05's re-mounted string, so it is delegated from the
+  // document. Wired here, not from `PAGE_RUNTIME_JS` (CONTRACT §05): the handoff
+  // touches `state.run`, which the runtime cannot see.
   document.addEventListener('click', (event) => {
     const target = event.target;
     const button = target && target.closest ? target.closest('#suggest-rerun') : null;
@@ -456,17 +378,12 @@ export function boot() {
     event.preventDefault();
     rerunWithSuggestion();
   });
-  // <wa-file-input> names the file and draws its own card, so all that is left here is
-  // the cross-field rule: a URL and a file together is an error, and choosing a file is
-  // the unambiguous half of that pair, so the URL box is cleared rather than making the
-  // reader do it. `change` is fired for both a dialog pick and a drop.
+  // A URL and a file together is an error, so choosing a file clears the URL box.
+  // `change` fires for a dialog pick, a drop and the remove control, so the re-sync
+  // happens on every change.
   const fileInput = findFileInput(form);
   if (fileInput) {
     fileInput.addEventListener('change', () => {
-      // `<wa-file-input>` fires `change` when its own remove control EMPTIES the
-      // selection too, and `#picks` mirrors that file — so the re-sync happens on
-      // every change, not only on a pick. Only the URL-clearing half is conditional:
-      // there is no cross-field conflict left to resolve once the file is gone.
       if (fileInput.files && fileInput.files.length) {
         const urlInput = findUrlInput(form);
         if (urlInput && urlInput.value) urlInput.value = '';
@@ -476,16 +393,11 @@ export function boot() {
     });
   }
   guardStrayDrops();
-  // Chrome, not form: it is `data-when="report"`, so it is unreachable until a run
-  // exists, and it survives every state the run can end in — including `failed`,
-  // where it is the only control left on the page.
+  // Chrome, not form: `data-when="report"`, and the only control left after `failed`.
   const reset = document.querySelector('wa-button[data-role="reset"]');
   if (reset) reset.addEventListener('click', resetToLanding);
-  // A re-run handed over by the previous document (`RERUN_KEY`) skips the picker
-  // entirely: the sources and options are already decided, the feeds are in the
-  // IndexedDB zip cache under their URLs, and the only thing left is to run. The key
-  // is gone by the time `takeRerunHandoff` returns, valid or not, so a reload from
-  // here — Reset included — is the plain landing.
+  // A re-run handed over by the previous document (`RERUN_KEY`) skips the picker. The
+  // key is gone by the time `takeRerunHandoff` returns, valid or not.
   const handoff = takeRerunHandoff();
   if (handoff) {
     state.run.note = handoff.note;
@@ -494,28 +406,17 @@ export function boot() {
   } else {
     initLanding();
   }
-  // The whole router. It has one route and one fallback, and on a cold load with no
-  // report the fallback is the landing form — silently, which is the point.
+  // The whole router: one route, one fallback (the landing form).
   window.addEventListener('hashchange', applyRoute);
   applyRoute();
   setProgress({ stage: '', label: 'Waiting for a feed', done: 0, total: 0 });
 }
 
 /**
- * A file dropped anywhere *other* than the drop zone must not navigate the page away
- * mid-run — the browser's default for a dropped file is to open it, which throws away
- * a report that can take minutes to build.
- *
- * Both types are cancelled, and that pairing is the point: `dragover` defaults to
- * *refusing* the drop, so cancelling it is what makes the rest of the page a legal
- * target, and cancelling `drop` is then what stops the browser opening the file. The
- * two together swallow the drop and do nothing, which is the intent.
- *
- * This is the whole of what app.js still does about dragging. `<wa-file-input>` owns
- * the zone itself: the dragenter/dragover/dragleave/drop handlers, the `dragging`
- * state the border colour keys off, walking a dropped directory, and re-checking
- * `accept` against what was dropped. It calls `stopPropagation()` on both of these,
- * so the ones that land on target never reach window and are unaffected.
+ * A file dropped outside the drop zone must not navigate the page away mid-run. Both
+ * events are cancelled: `dragover` to make the page a legal target, `drop` to stop the
+ * browser opening the file. `<wa-file-input>` owns the zone itself and stops
+ * propagation of its own drops.
  */
 function guardStrayDrops() {
   for (const type of ['dragover', 'drop']) {
@@ -528,9 +429,8 @@ function guardStrayDrops() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The catalogue snapshot. A **same-origin repo asset** (CONTRACT §0), generated
- * offline by `tools/mdb-snapshot.mjs` and reviewed as a diff — not a sixth external
- * dependency, and never fetched from upstream at runtime.
+ * The catalogue snapshot: a same-origin repo asset (CONTRACT §0) generated offline by
+ * `tools/mdb-snapshot.mjs`, never fetched from upstream at runtime.
  */
 const CATALOG_URL = new URL('./data/feeds.json', import.meta.url);
 
@@ -542,11 +442,7 @@ function borderMirror() {
 /**
  * Keep `#analyse` honest: enabled exactly when there is something to run, labelled
  * with the count when there is more than one, and mirroring the bring-your-own file
- * or URL into the picker's list so `#picks` is the single place that answers "what is
- * about to run".
- *
- * Called from every path that can change either half of the answer. Cheap, and safe
- * to call before the picker exists — `readByoSource` is the whole of the fallback.
+ * or URL into `#picks`. Safe to call before the picker exists.
  */
 function syncAnalyse() {
   const form = runForm();
@@ -557,9 +453,8 @@ function syncAnalyse() {
   const count = state.landing.selected.size + (ref ? 1 : 0);
   const button = $id('analyse');
   if (button) {
-    // A bring-your-own pair that is ALREADY wrong (a file and a URL at once) still
-    // counts as "something to run", so pressing Analyse surfaces the sentence that
-    // says why rather than leaving a dead button and no explanation.
+    // A file and a URL at once still counts as "something to run", so pressing
+    // Analyse surfaces the error instead of leaving a dead button.
     button.disabled = count === 0 && !byo.error;
     const label = button.querySelector('[data-role="analyselabel"]');
     if (label) label.textContent = count > 1 ? `Analyse ${num(count)} feeds` : 'Analyse';
@@ -568,16 +463,15 @@ function syncAnalyse() {
 }
 
 /**
- * The reader removed the bring-your-own row from `#picks`. That row is a mirror of a
- * control the picker does not own, so the clearing happens here.
+ * The reader removed the bring-your-own row from `#picks`. That row mirrors a control
+ * the picker does not own, so the clearing happens here.
  */
 function onPickerRemoveByo() {
   const form = runForm();
   const fileInput = findFileInput(form);
   if (fileInput) {
-    // `<wa-file-input>.files` is a reactive `File[]`, so assigning an empty array
-    // re-renders the card with nothing in it. The component blanks its own inner
-    // native input after every pick, so the same file stays re-choosable.
+    // `<wa-file-input>.files` is a reactive `File[]`; an empty array re-renders the
+    // card empty and the same file stays re-choosable.
     if (fileInput.localName === 'wa-file-input') {
       fileInput.files = [];
     } else {
@@ -598,13 +492,10 @@ function onPickerChange(next) {
 }
 
 /**
- * The picker moved the game-border frame, or dropped it. This is the ONLY writer of
- * `state.landing.border`, and the only writer of `#opt-border-bbox`: that field is
- * a read-only MIRROR of the frame since 2026-08-27, so a reader who opens Advanced
- * sees the same four numbers the map shows, with `data-border-mode` saying whether
- * they will be sent (`custom`) or the border inferred instead (`auto`). Nothing
- * reads the field's text back — `readOptions` reads the state — so the mirror can
- * never disagree with the run.
+ * The picker moved or dropped the game-border frame. The only writer of
+ * `state.landing.border` and of `#opt-border-bbox`, which mirrors the frame with
+ * `data-border-mode` saying whether it will be sent (`custom`) or inferred (`auto`).
+ * `readOptions` reads the state, never the mirror's text.
  */
 function onPickerBorder(border) {
   state.landing.border = border;
@@ -612,29 +503,20 @@ function onPickerBorder(border) {
   if (!mirror) return;
   mirror.value = border ? border.bbox.map((x) => String(coord(x))).join(', ') : '';
   mirror.setAttribute('data-border-mode', border ? border.mode : 'none');
-  // Read-only WHILE there is a frame, writable when there is not. A bring-your-own
-  // zip or URL never produces a frame — the picker has no bounding box for a feed it
-  // has not read — so with the field permanently readonly a BYO run had no way to set
-  // a border at all, which it had before the frame existed. The two never overlap: a
-  // frame means the map and `#border-row` are the editor, no frame means this field
-  // is, and `readOptions` reads whichever exists. Losing the frame clears the text
-  // rather than leaving four numbers behind that would now be sent as a hard border.
+  // Read-only while there is a frame, writable when there is not: a bring-your-own
+  // zip or URL never produces a frame, and this field is then its only border input.
+  // Losing the frame clears the text so stale numbers are not sent as a hard border.
   mirror.toggleAttribute('readonly', Boolean(border));
 }
 
 /**
  * Wire the landing panel, then try to build the picker on top of it.
  *
- * ORDER IS THE POINT. Everything the bring-your-own path needs is wired
- * SYNCHRONOUSLY, first, and cannot be skipped by a rejected import or a failed fetch.
- * Only then does the catalogue load, and a failure there is silent-and-degraded — the
- * map is hidden, the stage collapses back to a centred card, the bring-your-own
- * disclosure is opened instead, and the page is exactly what it was before this
- * feature existed. A grey box where a map should be is worse than no map.
- *
- * The three picker modules are imported dynamically for the same reason MapLibre is:
- * the `#strategy` route and every report reload would otherwise pay to parse a card
- * they never show.
+ * Order matters: the bring-your-own path is wired synchronously first, so a rejected
+ * import or failed catalogue fetch cannot skip it. A catalogue failure degrades
+ * silently: the map is hidden and the bring-your-own disclosure opens instead.
+ * The picker modules are imported dynamically so the `#strategy` route and report
+ * reloads never parse them.
  */
 function initLanding() {
   const form = runForm();
@@ -649,10 +531,8 @@ function initLanding() {
   const body = host && host.querySelector('[data-role="pickerbody"]');
   if (!host || !body) return;
 
-  // The catalogue is ~370 KB, and on a slow connection the panel promises a map that
-  // is not on the page yet. One line of copy holds the space, the same way the report
-  // skeletons cover their own load. `index.html` ships the same sentence, so this is
-  // a no-op on a cold load and the honest thing to say on a re-entry.
+  // The catalogue is ~370 KB; one line holds the space while it loads. `index.html`
+  // ships the same sentence, so this is a no-op on a cold load.
   body.innerHTML = '<p class="wa-caption-s wa-color-text-quiet" role="status">'
     + 'Loading the list of transit feeds…</p>';
 
@@ -672,14 +552,10 @@ function initLanding() {
     });
     syncAnalyse();
   })().catch((err) => {
-    // The MAP is hidden here, where `#picker` used to be. Since 2026-09-01 the host
-    // is the STAGE — the map and the floating panel both live inside it — and the
-    // panel carries the heading, the bring-your-own disclosure, Advanced and
-    // Analyse, none of which need a catalogue. Hiding the host would take the
-    // working half of the page down with the broken half. Hiding the map instead
-    // collapses the stage back to a centred card (styles.css §7 `NO MAP`, one rule
-    // shared with `giveUpOnMap`'s MapLibre failure). A grey box where a map should
-    // be is still worse than no map.
+    // Hide the map, not the host: the host is the stage and its panel carries the
+    // bring-your-own disclosure, Advanced and Analyse, none of which need a
+    // catalogue. Hiding the map collapses the stage to a centred card (styles.css §7
+    // `NO MAP`, shared with `giveUpOnMap`).
     const map = host.querySelector('#catalog-map');
     if (map) map.hidden = true;
     body.innerHTML = '';
@@ -691,20 +567,11 @@ function initLanding() {
 }
 
 /**
- * The bottom sheet's grab bar.
- *
- * Landing chrome, not picker chrome: the panel it collapses holds the bring-your-own
- * disclosure and Analyse as well as the picker's own controls, and it has to work on
- * a page whose catalogue never loaded. It is `display: none` above the sheet
- * breakpoint (styles.css §7), which also keeps it out of the tab order there, so
- * there is no media query to mirror here — the button simply cannot be pressed on a
- * desktop.
- *
- * Collapsing hides the scroller and leaves the foot, which is where Analyse lives, so
- * a collapsed sheet is still the whole of the page's primary action. The label is the
- * button's only accessible name (the bar itself is `aria-hidden`), so it has to say
- * what pressing it does now, not what state the panel is in — `aria-expanded` carries
- * that.
+ * The bottom sheet's grab bar. Landing chrome, not picker chrome: it must work when
+ * the catalogue never loaded. It is `display: none` above the sheet breakpoint
+ * (styles.css §7), so no media query is mirrored here. Collapsing leaves the foot,
+ * where Analyse lives. The label is the button's only accessible name, so it says
+ * what pressing does; `aria-expanded` carries the state.
  */
 function initPanelGrip() {
   const grip = document.querySelector('[data-role="panelgrip"]');
@@ -728,11 +595,7 @@ function ensureTooltipHost() {
   }
 }
 
-/**
- * `<wa-file-input>` first: its `.files` is a plain `File[]` rather than a `FileList`,
- * but everything here only ever reads `.files[0]` and `.files.length`, so the two are
- * interchangeable and the native fallbacks below still work unchanged.
- */
+/** `<wa-file-input>`'s `.files` is a `File[]`, interchangeable with a `FileList` here. */
 function findFileInput(form) {
   const scope = form || document;
   return scope.querySelector('wa-file-input');
@@ -748,13 +611,8 @@ function findUrlInput(form) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Read one control's value in the shape `key` wants.
- *
- * `[data-opt="<key>"]` is the whole of the addressing scheme — see `index.html`'s
- * note that these attributes are app.js's ONLY selector for the controls. The
- * `id="opt-…"` attributes are documentation anchors for the prose around them, NOT a
- * second address: they are kebab-case where the keys are camelCase, so a `#opt-${key}`
- * lookup names ids (`#opt-zoneRadiusM`) that no element carries.
+ * Read one control's value in the shape `key` wants. `[data-opt="<key>"]` is the only
+ * address; the kebab-case `id="opt-…"` attributes are documentation anchors.
  */
 function readControl(form, key) {
   const scope = form || document;
@@ -783,10 +641,7 @@ function orNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * `'a, b b, a'` → `['a', 'b']`. Sorted and deduped here, as CONTRACT §(c) requires,
- * because `parse_args` does it and the provenance echo prints the result.
- */
+/** `'a, b b, a'` → `['a', 'b']`. Sorted and deduped, as CONTRACT §(c) requires. */
 function idList(value) {
   const s = orNull(value);
   if (s === null) return [];
@@ -810,12 +665,9 @@ function readOptions(form) {
   const errors = [];
   const options = { ...DEFAULT_OPTIONS };
 
-  // Validated here rather than in the worker for the same reason every other field
-  // is: a bad value should come back as a sentence under the form, not as a failed
-  // fetch four stages in. Trailing slashes come off here even though `openWorld`
-  // strips them again — this is the string §(b) echoes into the provenance argv, and
-  // two runs of the same bucket typed with and without one must not read as two
-  // different sources.
+  // Validated here so a bad value is a sentence under the form, not a failed fetch
+  // four stages in. Trailing slashes come off so the provenance argv reads the same
+  // bucket the same way.
   const worldBaseUrl = orNull(readControl(form, 'worldBaseUrl'));
   if (worldBaseUrl !== null) {
     let parsed = null;
@@ -865,25 +717,13 @@ function readOptions(form) {
     else options.borderShape = shape;
   }
 
-  // The game border comes from the landing map's frame, and from its MODE, whenever
-  // there IS a frame — `#opt-border-bbox` is then a read-only mirror and is not
-  // parsed, so the mirror and the run cannot disagree. An `'auto'` frame (fitted to
-  // the picks, never touched) sends null, so a single feed with an untouched frame is
-  // byte-identical to a run made before the frame existed and the worker infers the
-  // border from what the start stop can reach. A `'custom'` frame — dragged, typed,
-  // overlap-seeded, boxed around a shape — sends its rectangle, and `borderShape` is
-  // forced to `bbox` because the reader set a rectangle and fitting a circle to it
-  // would be a different shape than the one on their map. With NO frame the field is
-  // the input again (see below): the picker only frames feeds it has a catalogue box
-  // for, and a dropped zip or a pasted URL must not lose the border it could always
-  // set. `borderSource` is provenance only.
+  // With a frame, the border comes from the frame and its mode; the mirror field is
+  // not parsed. `'auto'` sends null so the worker infers the border. `'custom'` sends
+  // the rectangle and forces `borderShape` to `bbox`, since the reader set a
+  // rectangle. With no frame (bring-your-own, or a failed catalogue) the field is the
+  // input. `borderSource` is provenance only.
   const frame = state.landing.border;
   if (!frame) {
-    // No frame at all: a bring-your-own zip or URL, or a run made after the catalogue
-    // fetch failed and the page degraded to the bring-your-own card. Then
-    // `#opt-border-bbox` is a real input again (`onPickerBorder` takes `readonly` off
-    // with the frame) and this is the pre-frame parse, unchanged: four numbers or a
-    // sentence under the form.
     const typed = orNull(readControl(form, 'borderBbox'));
     if (typed !== null) {
       const parts = typed.split(/[\s,]+/).filter((x) => x !== '').map(Number);
@@ -903,9 +743,7 @@ function readOptions(form) {
     } else if (b[0] >= b[2] || b[1] >= b[3]) {
       errors.push('The game border has no area: south must be below north and west left of east.');
     } else {
-      // `coord()`-quantised (6 dp, ~11 cm), so the rectangle sent is the one the
-      // fields and the mirror print — a dragged edge is otherwise a float the
-      // provenance argv would round anyway.
+      // `coord()`-quantised (6 dp), so the rectangle sent is the one the mirror prints.
       options.borderBbox = /** @type {[number,number,number,number]} */ (b.map((x) => coord(x)));
       options.borderShape = 'bbox';
       options.borderSource = 'landing';
@@ -938,17 +776,10 @@ function readOptions(form) {
 }
 
 /**
- * The one thing worth being strict about: the source has to be a GTFS zip.
- *
- * A `File` must end `.zip`. A URL only has to be http(s) — its path says nothing
- * reliable about what comes back. Plenty of agencies serve the zip from `/gtfs`,
- * `?format=zip`, or a script handler (`GTFS-Zip.ashx`, `feed.php`, `export.aspx`), so
- * the extension is not checked; if the bytes turn out not to be a zip, `unzip` in
- * gtfs/feed.js raises the honest error once the download lands.
- *
- * This is the bring-your-own half only — the file input and the URL box. It is
- * unchanged from when it was the whole of `readSource`, including both error
- * sentences, and it stays the fallback that works when the picker never loads.
+ * The bring-your-own half: the file input and the URL box. A `File` must end `.zip`.
+ * A URL only has to be http(s): many agencies serve the zip from an extensionless
+ * path or a script handler, so `unzip` in gtfs/feed.js raises the error if the bytes
+ * are not a zip.
  *
  * @returns {{ref: Object|null, error: string}} a `SourceRef` (CONTRACT.md §(d)), or null
  */
@@ -1005,16 +836,10 @@ function readByoSource(form) {
 }
 
 /**
- * Everything the run will read, as a `SourceRef[]` (CONTRACT.md §(d)).
- *
- * Two paths feed it and they ADD rather than replace: whatever the map picker put in
- * `state.landing.selected`, then the bring-your-own file or URL. A map pick and a
- * dropped zip together is a legal, useful combination — your city plus the feed your
- * regional operator has not published to the catalogue.
- *
- * The list is sorted by the refs' stable `id`, code-point, so the same selection
- * always produces the same message, the same run label and the same `Options.source`.
- * The MERGE order is decided independently inside the worker, from the feed bytes.
+ * Everything the run will read, as a `SourceRef[]` (CONTRACT.md §(d)). The map picks
+ * and the bring-your-own file or URL add rather than replace. Sorted by stable `id`
+ * so the same selection always posts the same message; the merge order is decided
+ * in the worker from the feed bytes.
  *
  * @returns {{sources: Object[], source: string, error: string}}
  */
@@ -1039,10 +864,8 @@ function readSources(form) {
         + 'or paste a link to one.',
     };
   }
-  // The cap is enforced HERE as well as in the picker, because the two halves add:
-  // the picker refuses an eleventh MAP pick, and a reader with ten of those can still
-  // drop a zip into "Or bring your own feed". Every feed past the tenth is memory and
-  // minutes the merge has no bound on, so this is a refusal, not a warning.
+  // Enforced here as well as in the picker: a reader with the maximum map picks can
+  // still drop a zip into "Or bring your own feed".
   if (sources.length > MAX_FEEDS_PER_RUN) {
     return {
       sources: [],
@@ -1054,17 +877,13 @@ function readSources(form) {
   }
   return {
     sources,
-    // The display string §09 echoes. `Options.source` has always been one string.
+    // The display string §09 echoes.
     source: sources.map((ref) => ref.label).join(' + '),
     error: '',
   };
 }
 
-/**
- * The callout itself is in the shell (index.html), the same way `#daybanner` is —
- * so there is nothing to build here, only something to reveal. The text node is
- * found inside the box, never document-wide, so it cannot bind to anything else.
- */
+/** The callout lives in the shell (index.html); there is only something to reveal. */
 function formErrorBox() {
   const box = document.querySelector('#landing-error');
   return { box, text: box && box.querySelector('[data-role="formerrortext"]') };
@@ -1073,8 +892,7 @@ function formErrorBox() {
 function showFormError(message) {
   const { box, text } = formErrorBox();
   if (!box || !text) return;
-  // Unhide first: the region must be in the a11y tree before the message lands,
-  // or `role="alert"` has nothing to announce.
+  // Unhide first, or `role="alert"` has nothing to announce.
   box.hidden = false;
   text.textContent = message;
 }
@@ -1083,8 +901,8 @@ function clearFormError() {
   const { box, text } = formErrorBox();
   if (!box) return;
   box.hidden = true;
-  // Blank it too — otherwise re-submitting an unfixed form writes the same string,
-  // mutates nothing, and the alert stays silent.
+  // Blank it too, or re-submitting an unfixed form mutates nothing and the alert
+  // stays silent.
   if (text) text.textContent = '';
 }
 
@@ -1093,11 +911,9 @@ function clearFormError() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Validate the form, spawn the worker and post the single `run` message.
- *
- * The `File` is transferred by reference. Reading it into an `ArrayBuffer` here
- * would double peak memory on a 65 MB feed for no gain — structured clone handles
- * `File` objects and the worker can stream it.
+ * Validate the form, spawn the worker and post the single `run` message. The `File`
+ * crosses by structured clone; reading it into an `ArrayBuffer` here would double
+ * peak memory.
  */
 function startRunFromForm(form) {
   if (state.running) return;
@@ -1118,10 +934,8 @@ function startRunFromForm(form) {
 
 /**
  * Spawn the worker and post the single `run` message for an already-validated
- * `SourceRef[]` and `Options`. Two callers: the landing form, through
- * `startRunFromForm`, and `boot()` replaying a re-run handoff — which is exactly why
- * the validation is not in here: the form validates against its controls, the
- * handoff against its stored shape, and both arrive here as the same two values.
+ * `SourceRef[]` and `Options`. Called by the landing form and by `boot()` replaying a
+ * re-run handoff; each validates its own input first.
  *
  * @param {Object[]} sources `SourceRef[]` (CONTRACT §(d)), sorted by `id`
  * @param {Object} options an `Options` (CONTRACT §(c))
@@ -1130,9 +944,7 @@ function startRunFromForm(form) {
 function startRun(sources, options, source) {
   if (state.running) return;
   state.run = { ...state.run, sources, options, source };
-  // `source` stays on this side: CONTRACT §(c) carries the inputs in the message's
-  // `sources` list, and keeping the display string apart from them is what makes the
-  // protocol readable.
+  // `source` stays on this side: CONTRACT §(c) carries the inputs in `sources`.
   state.report.opts = { ...options, source };
   state.report.sourceKinds = sources.map((ref) => String(ref.kind));
 
@@ -1177,24 +989,15 @@ function startRun(sources, options, source) {
 /**
  * "Re-run with this border": store the handoff and reload.
  *
- * A re-run is a NEW DOCUMENT, not a second run in this one — `resetToLanding` says
- * why the shell cannot be put back in place, and the same reasons apply to running
- * again inside it. So the whole of the run's inputs go through `RERUN_KEY`: the
- * same `SourceRef[]` (URL and OSM refs only — a `File` is not serialisable and
- * would not survive the reload; §05's button is disabled in that case and this is
- * the guard behind it), the same `Options` with the suggested box in `borderBbox`,
- * `borderShape` forced to `bbox` (the suggestion IS a rectangle), `sizeOverride`
- * cleared (the second run measures the in-border game itself), and `borderSource:
- * 'suggestion'` for provenance. The feeds come back from the IndexedDB zip cache
- * under their URLs, so the second run costs a parse and a RAPTOR pass, no download.
+ * A re-run is a new document (see `resetToLanding`), so the run's inputs go through
+ * `RERUN_KEY`: the same `SourceRef[]` (URL and OSM refs only; a `File` cannot survive
+ * the reload, which is why §05's button is disabled then), the same `Options` with
+ * the suggested box in `borderBbox`, `borderShape` forced to `bbox`, `sizeOverride`
+ * cleared so the second run measures the in-border game itself, and `borderSource:
+ * 'suggestion'`. `note` feeds the second run's `#run-history` chip.
  *
- * `note` is what the second run's `#run-history` chip says about this one. `run`
- * counts up so a re-run of a re-run reads "Run 3"; `prevBorderSource` says what
- * kind of border the previous run had.
- *
- * Storage can refuse (a private window with the quota at zero, a browser with site
- * data blocked). Then the box goes to the clipboard instead, with the sentence that
- * says where to paste it — the landing frame's four fields take exactly that line.
+ * If storage refuses, the box goes to the clipboard with a sentence saying where to
+ * paste it.
  */
 function rerunWithSuggestion() {
   const sb = state.report.suggestedBorder;
@@ -1229,11 +1032,8 @@ function rerunWithSuggestion() {
       note.textContent = `This browser would not keep the run for a reload. The border `
         + `${line} has been copied — press Reset and paste into the border fields on the `
         + 'landing map.';
-      // The page otherwise visibly does nothing: the button stays where it was and the
-      // only feedback is a paragraph that has just appeared below it. `#suggest-note` is
-      // `role="status"` so it is announced, and `tabindex="-1"` so the caret can be put
-      // ON the explanation — a keyboard reader who pressed the button lands on the
-      // sentence that says what happened instead of on the inert button. (2026-08-27.)
+      // `#suggest-note` is `role="status"` and `tabindex="-1"`, so a keyboard reader
+      // lands on the explanation instead of the inert button.
       try { note.focus({ preventScroll: true }); } catch { /* not focusable here */ }
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1245,9 +1045,8 @@ function rerunWithSuggestion() {
 }
 
 /**
- * A `SourceRef` as plain JSON: exactly the CONTRACT §(d) fields, `file` always
- * null, the `ring` only on an OSM ref. Anything else the picker may have hung on
- * the object stays behind.
+ * A `SourceRef` as plain JSON: exactly the CONTRACT §(d) fields, `file` always null,
+ * `ring` only on an OSM ref.
  * @param {Object} ref @returns {Object}
  */
 function portableSourceRef(ref) {
@@ -1264,9 +1063,8 @@ function portableSourceRef(ref) {
 }
 
 /**
- * Read, remove and validate the handoff, in that order — removal is unconditional
- * so a malformed value can never replay on every load, and it happens before any
- * exception the parse could throw.
+ * Read, remove and validate the handoff, in that order: removal is unconditional so
+ * a malformed value can never replay on every load.
  *
  * @returns {{sources: Object[], options: Object, source: string, note: Object}|null}
  */
@@ -1289,10 +1087,8 @@ function takeRerunHandoff() {
 }
 
 /**
- * The handoff's shape, checked with the SAME rules `readSources` and `readOptions`
- * apply to the form — the worker sees one message shape from two doors, so the two
- * doors must agree on what is legal. Any failure rejects the whole handoff: a
- * partially-honoured re-run would run something the reader did not ask for.
+ * The handoff's shape, checked with the same rules `readSources` and `readOptions`
+ * apply to the form. Any failure rejects the whole handoff.
  *
  * @param {*} h
  * @returns {{sources: Object[], options: Object, source: string, note: Object}|null}
@@ -1308,8 +1104,7 @@ function validateRerunHandoff(h) {
     if (!ref) return null;
     byId.set(ref.id, ref);
   }
-  // Sorted by id, code-point, exactly as `readSources` sorts — the same selection
-  // must post the same message whichever door it came through.
+  // Sorted by id exactly as `readSources` sorts.
   const sources = Array.from(byId.keys()).sort(cmpStr).map((id) => byId.get(id));
   const options = normaliseRerunOptions(h.options);
   if (!options) return null;
@@ -1329,9 +1124,8 @@ function validateRerunHandoff(h) {
 }
 
 /**
- * One stored `SourceRef` → a live one, or null. `'file'` is refused by name — the
- * button that writes the handoff never offers it, so its presence means a stale or
- * hand-edited value — and so is any kind the contract does not list.
+ * One stored `SourceRef` → a live one, or null. `'file'` and any kind the contract
+ * does not list are refused.
  * @param {*} raw @returns {Object|null}
  */
 function normaliseRerunSource(raw) {
@@ -1365,11 +1159,8 @@ function normaliseRerunSource(raw) {
 }
 
 /**
- * A stored `Options` → a live one over `DEFAULT_OPTIONS`, or null. Field by field
- * the rules are `readOptions`'s: the same enumerations, the same positivity checks,
- * the same `':00'` rule on `departure`, the same sort-and-dedupe on the id lists,
- * and `borderBbox` four finite numbers with area, quantised through `coord()`.
- * Unknown keys are dropped rather than forwarded.
+ * A stored `Options` → a live one over `DEFAULT_OPTIONS`, or null. The rules are
+ * `readOptions`'s, field by field. Unknown keys are dropped.
  * @param {*} raw @returns {Object|null}
  */
 function normaliseRerunOptions(raw) {
@@ -1434,10 +1225,8 @@ function normaliseRerunOptions(raw) {
 }
 
 /**
- * The `#run-history` chip: what this run is and what the previous one was, so a
- * reader looking at run 2 knows every number now describes the in-border game and
- * why the border is the one it is. Templated from the handoff — nothing is
- * measured here — and only ever mounted from `boot()`, once, for a re-run.
+ * The `#run-history` chip: what this run is and what the previous one was. Templated
+ * from the handoff and mounted once, from `boot()`, for a re-run.
  *
  * @param {{options: Object, note: Object}} handoff
  */
@@ -1451,9 +1240,8 @@ function mountRunHistory(handoff) {
     : handoff.options.borderSource === 'landing' ? 'from the landing map' : 'inferred';
   const prevBorder = note.prevBorderSource === 'suggestion' ? 'suggested border'
     : note.prevBorderSource === 'landing' ? 'your own border' : 'inferred border';
-  // A handoff always carries a box today, but the chip is templated from stored
-  // JSON: an older or hand-made one without a `borderBbox` must read "border
-  // inferred", not "border  inferred" with the hole where the numbers would be.
+  // A stored handoff without a `borderBbox` must read "border inferred", not
+  // "border  inferred".
   const where = line ? `border ${line} ${from}` : `border ${from}`;
   const text = `Run ${num(note.run || 2)} · ${where} · previous run: `
     + `${prevBorder}${note.prevSize ? `, ${note.prevSize}` : ''}`;
@@ -1480,32 +1268,17 @@ function clearWatchdog() {
 }
 
 /**
- * The header's Reset: back to the landing stage, by way of a fresh document load.
+ * The header's Reset: back to the landing stage by way of a fresh document load.
  *
- * Deliberately NOT a teardown. By the time this button is reachable the shell has
- * been *edited*, not just filled: `dropSection` has removed the sections that came
- * back empty and `pruneNav` their nav entries, two MapLibre instances are mounted,
- * §04's day views hold their own listeners, and `mountStrategy` may have inserted a
- * whole second view as a sibling of `<main>`. Putting the landing state back would
- * mean rebuilding markup this file deleted — from a shell only the server still has
- * a copy of. A load is the honest reset, and it is the one `fatalError`'s card
- * already asks the reader to perform by hand.
+ * Not a teardown: by now `dropSection` and `pruneNav` have deleted shell markup,
+ * MapLibre instances are mounted and `mountStrategy` may have inserted a second view,
+ * so a load is the only honest reset.
  *
- * The URL sheds its fragment first, so a reader deep-linked at `#verdict` — or at
- * `#strategy`, which `applyRoute` would otherwise take straight back into the guide
- * on the next boot — lands on the landing stage and not where they were. A
- * fragment-less URL can never be a same-document scroll (the spec's fragment branch
- * requires a non-null fragment), so this is a load even when the fragment was the
- * only difference, and `location.replace(href)` is a load even when there was no
- * difference at all — it is the reload idiom, and it keeps Reset out of the session
- * history. `reload()` is deliberately not used: it is the one navigation browsers
- * restore form state across, and a Reset that hands back the previous feed's URL
- * still sitting in the box is not one.
- *
- * The worker is terminated first. It dies with the document either way, but not
- * before the next one has started fetching, and a mid-run pipeline is exactly the
- * case where Reset is pressed — leaving it to compete with the new page for CPU and
- * the same IndexedDB cache is a slow first paint for no reason.
+ * The URL sheds its fragment first so a deep link (`#strategy` especially) does not
+ * come straight back. `location.replace` rather than `reload()`: a fragment-less URL
+ * is always a load, it stays out of session history, and browsers do not restore
+ * form state across it. The worker is terminated first so it does not compete with
+ * the new page for CPU and the IndexedDB cache.
  */
 function resetToLanding() {
   if (state.worker) {
@@ -1519,27 +1292,14 @@ function resetToLanding() {
 }
 
 /**
- * Move the shell from `landing` to `running`: hide the form, reveal the eight
- * skeletons, start the progress readout.
- *
- * `document.body.dataset.state` is the switch, and styles.css §7 is the only thing
- * that reads it — `body[data-state='landing'] [data-when='report']` is what keeps the
- * report out of the way before a feed exists, and it is `!important`, so nothing this
- * file does to an individual element can overrule it. Leaving the attribute at
- * `landing` hides every section on the page for the whole run.
- *
- * The wordmark's anchor rides along, for the same reason: `#top` is the hero, the
- * hero is `data-when="report"`, and that same `!important` rule makes it
- * `display: none` in the landing state — an anchor to a hidden element scrolls
- * nowhere and cannot take sequential focus. So the wordmark points at the landing
- * card while the landing stage is what there is to point at.
+ * Set `body[data-state]`, the switch styles.css §7 reads: its `!important`
+ * `[data-when='report']` rule hides the report in the landing state, so leaving the
+ * attribute at `landing` hides every section for the whole run. The wordmark's anchor
+ * rides along, since `#top` is hidden in the landing state.
  */
 function setShellState(value) {
   if (document.body) document.body.setAttribute('data-state', value);
-  // `data-view` is the orthogonal axis (see the secret route below). While it holds,
-  // it owns the wordmark's anchor — `#top` is `data-when="report"` and hidden there,
-  // so writing it would leave the one always-visible chrome element pointing at
-  // nothing. The lifecycle attribute above still changes; only the href is deferred.
+  // `data-view` (the secret route) owns the wordmark's anchor while it holds.
   if (document.body && document.body.hasAttribute('data-view')) return;
   const wordmark = document.getElementById('wordmark');
   if (wordmark) wordmark.setAttribute('href', value === 'landing' ? '#landing' : '#top');
@@ -1548,8 +1308,8 @@ function setShellState(value) {
 /** Hide the landing form, reveal the report skeletons, start the progress readout. */
 function enterRunningState(src) {
   setShellState('running');
-  // Before the card is hidden, not after: a hidden WebGL context, its tile requests
-  // and its two theme observers would otherwise be held for the whole run.
+  // Destroy the picker before hiding the card, or its WebGL context and observers
+  // are held for the whole run.
   if (state.landing.picker) {
     try { state.landing.picker.destroy(); } catch { /* nothing to do about it */ }
     state.landing.picker = null;
@@ -1558,15 +1318,9 @@ function enterRunningState(src) {
   if (landing) landing.hidden = true;
   const report = document.querySelector('main');
   if (report) report.hidden = false;
-  // The landing is one viewport tall and does not usually scroll, but it CAN — a
-  // short landscape viewport hits the stage's `min-block-size`, and the failed-
-  // catalogue state is an ordinary tall card. Swapping either for the report
-  // skeletons keeps the window's scroll offset, so without this the reader lands
-  // partway down a page they have never seen, with the header's progress bar out of
-  // view. `wa-page` scrolls the document itself (its sticky
-  // regions ride the window scroll), so the window is the right target. `instant`
-  // rather than the stylesheet's smooth default: this is a new view, not a move
-  // within one, and animating up from the middle of a skeleton is just a flicker.
+  // The landing can scroll, and swapping it for the skeletons keeps the offset, so
+  // the reader would land partway down with the progress bar out of view. `wa-page`
+  // scrolls the document itself. `instant`: this is a new view, not a move within one.
   window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   const first = (src.sources && src.sources[0]) || null;
   setProgress({
@@ -1583,14 +1337,8 @@ function enterRunningState(src) {
 }
 
 /**
- * Say how long the current step has been running.
- *
- * The pipeline is deterministic and reads no clock; this is page chrome, and nothing
- * it prints reaches the report. It exists because a stage can still go quiet for
- * longer than a reader will sit still — RAPTOR over a large feed, or a cold map whose
- * world-file reads are ~40 MB on a slow link — and an unchanging label reads as a
- * hang, which is the one thing this run is not. Nothing is printed for the first 30 s,
- * so a warm run never shows it at all.
+ * Say how long the current step has been running. Page chrome only; nothing it
+ * prints reaches the report. Silent for the first 30 s, so a warm run never shows it.
  */
 function startHeartbeat() {
   if (state.heartbeat) return;
@@ -1631,7 +1379,7 @@ function onWorkerMessage(msg) {
       applyStage(msg.stage, msg.payload || {});
       return;
     case 'log':
-      // Diagnostics are never report content. They go where diagnostics go.
+      // Diagnostics are never report content.
       // eslint-disable-next-line no-console
       (msg.level === 'warn' ? console.warn : console.info)('[worker]', msg.message);
       return;
@@ -1670,9 +1418,7 @@ function applyStage(stage, payload) {
         feedEnd: payload.feedEnd || '',
         feedVersion: payload.feedVersion || '',
         publisher: payload.publisher || '',
-        // One row per input feed, in merge order — length 1 for an ordinary run.
-        // Matches `wireFeed`'s `sources`, so the staged feed and the final report
-        // agree about what was read (CONTRACT.md §(b) `FeedSourceRow`).
+        // One row per input feed, in merge order (CONTRACT.md §(b) `FeedSourceRow`).
         sources: payload.feeds || [],
       };
       r.feedCounts = {
@@ -1697,9 +1443,8 @@ function applyStage(stage, payload) {
       r.metrics = payload.metrics || {};
       r.routeHeadways = payload.routeHeadways || [];
       r.travelSamples = payload.travelSamples || [];
-      // The map's three data layers. `zoneReach` is per-zone minutes from the
-      // round-start station per day; `routeSpokes` is already capped worker-side and
-      // `spokeCap` says by how much. (2026-08-23.)
+      // The map's data layers. `routeSpokes` is capped worker-side; `spokeCap` says
+      // by how much.
       r.zoneReach = payload.zoneReach || null;
       r.routeSpokes = payload.routeSpokes || [];
       r.spokeCap = payload.spokeCap || null;
@@ -1745,10 +1490,8 @@ function applyStage(stage, payload) {
 }
 
 /**
- * The complete `Report`. Everything up to here was a partial view of it, so the
- * authoritative copy replaces the accumulator — but every section is re-rendered
- * through the same comparison, so only sections whose markup actually changed touch
- * the DOM.
+ * The complete `Report` replaces the accumulator; every section is re-rendered
+ * through the same comparison, so only changed markup touches the DOM.
  */
 function finish(report) {
   if (report && typeof report === 'object') {
@@ -1760,11 +1503,8 @@ function finish(report) {
       trips: state.report.feedCounts.trips,
     };
     // `null` in the `done` report never wins over something a stage already
-    // delivered. CONTRACT §(d) says `done` is complete, but a degraded worker can
-    // send a `Report` with a null field it filled on its stage anyway — a missing
-    // scoring layer sends `provenance: null` after the `'provenance'` stage sent a
-    // real one — and taking that literally deletes a section that was already on the
-    // page and correct. A merge can only ever add here; it can never subtract.
+    // delivered: a degraded worker can send a null field its stage filled, and taking
+    // that literally would delete a correct section. The merge only adds.
     const merged = { ...state.report };
     for (const key of Object.keys(report)) {
       const value = report[key];
@@ -1786,8 +1526,7 @@ function finish(report) {
     state.arrived.add(stage);
   }
   hydrate('done');
-  // Nothing is going to fill these now. A hidden husk in the DOM is still a nav link
-  // that goes nowhere, so the last word on "no empty cards" is said here.
+  // Nothing will fill these now; a hidden husk is still a nav link that goes nowhere.
   for (const husk of [...document.querySelectorAll('[data-state="empty"]')]) {
     dropSectionHost(husk, husk.getAttribute('data-section'));
   }
@@ -1798,9 +1537,8 @@ function finish(report) {
   mountChrome();
   mountDayChrome();
   injectRuntime();
-  // `ready` retires the header progress block (`[data-when='running']`) and leaves
-  // the report visible; it must be set even if a section threw, because the
-  // alternative is a page stuck behind the running-state chrome.
+  // `ready` retires the header progress block; it must be set even if a section
+  // threw, or the page is stuck behind the running-state chrome.
   setShellState('ready');
   setProgress({ stage: 'done', label: 'Report complete', done: 1, total: 1 });
   clearWatchdog();
@@ -1808,8 +1546,7 @@ function finish(report) {
     state.worker.terminate();
     state.worker = null;
   }
-  // Last, after `setShellState('ready')`: a page that was loaded at `#strategy`
-  // before there was a feed enters the guide the moment the run completes.
+  // Last: a page loaded at `#strategy` enters the guide the moment the run completes.
   applyRoute();
 }
 
@@ -1818,11 +1555,8 @@ function finish(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Drive the header bar.
- *
- * `total` grows as work is discovered (CONTRACT §(d)), so the raw ratio can fall even
- * though nothing went backwards. The displayed percentage is therefore clamped
- * monotonically: a bar that retreats is worse than a bar that pauses.
+ * Drive the header bar. `total` grows as work is discovered (CONTRACT §(d)), so the
+ * displayed percentage is clamped monotonically.
  */
 function setProgress(msg) {
   state.waitedS = 0;
@@ -1865,10 +1599,8 @@ function sectionsFor(stage) {
 }
 
 /**
- * Render every section this stage unblocks and swap it into the page.
- *
- * A renderer that throws takes only its own section down: the rest of the report is
- * still true, and a blank card that says why beats a blank page.
+ * Render every section this stage unblocks and swap it into the page. A renderer
+ * that throws takes only its own section down.
  */
 function hydrate(stage) {
   let changed = false;
@@ -1905,13 +1637,8 @@ function sectionHost(id) {
 }
 
 /**
- * Take a section host off the page, and its nav link with it.
- *
- * Three sweeps end here: `dropSection` when a card rendered nothing and no stage is
- * still owed it, `finish` when the run is over, and `fatalError` when it is not. A
- * host carrying no `data-section` is removed and nothing else — `state.dropped` and
- * the rail are both keyed on the id — so the sweeps stay safe to run over whatever
- * their selector caught.
+ * Take a section host off the page, and its nav link with it. A host with no
+ * `data-section` is removed and nothing else, so sweeps are safe over anything.
  */
 function dropSectionHost(host, id) {
   if (host) host.remove();
@@ -1922,10 +1649,8 @@ function dropSectionHost(host, id) {
 
 /**
  * Evict the cached markup of every section host nested inside this one (§05's
- * `#glance`), because a host that is replaced or blanked takes its children with it.
- * Left in the cache, a nested section whose string had not changed would be skipped
- * as "unchanged" on the next `hydrate()` pass and would never come back.
- * (2026-08-23, with the §04→§05 merge.)
+ * `#glance`): a replaced host takes its children with it, and a cached nested
+ * section would otherwise be skipped as "unchanged" and never come back.
  */
 function evictNested(host, id) {
   if (!host.querySelectorAll) return;
@@ -1936,12 +1661,9 @@ function evictNested(host, id) {
 }
 
 /**
- * Replace a skeleton with real markup.
- *
- * Three things this must not do: jank the main thread (large fragments go in across
- * animation frames), lose the user's place (a section above the fold that grows
- * scrolls the page under them, so the scroll position is corrected by the height
- * delta), and flash (the swap fades, unless the reader asked for no motion).
+ * Replace a skeleton with real markup without janking (large tables go in across
+ * frames), losing the reader's place (scroll is corrected by the height delta) or
+ * flashing (the swap fades unless motion is reduced).
  */
 function mountSection(id, html) {
   const host = sectionHost(id);
@@ -1953,8 +1675,7 @@ function mountSection(id, html) {
   if (fragment.children.length === 1) {
     root = fragment.firstElementChild;
   } else {
-    // A renderer that joined several top-level blocks keeps all of them; taking only
-    // the first would silently drop content.
+    // A renderer that joined several top-level blocks keeps all of them.
     root = document.createElement('div');
     root.className = 'wa-stack wa-gap-l';
     root.appendChild(fragment);
@@ -1966,7 +1687,7 @@ function mountSection(id, html) {
   const before = rect.height;
   const above = rect.bottom < 0;
 
-  // Big sections — a 7,700-stop table, a 400-row question list — go in in pieces.
+  // Big tables go in in pieces.
   const heavy = [...root.querySelectorAll('tbody')].filter((b) => b.rows.length > 200);
   const parked = heavy.map((body) => {
     const rows = [...body.rows];
@@ -1974,25 +1695,17 @@ function mountSection(id, html) {
     return { body, rows };
   });
 
-  // The map is built once and guarded by `window.__jltg.mapBuilt`, which is exactly
-  // right until a later stage re-renders §05: the old `#netmap` goes out with the old
-  // markup and the flag would stop the new one ever being built, leaving a
-  // `height:0` div where the map was. Clearing the flag when the swap actually
-  // carries a map frame is what makes `redo: ['geo', 'score']` safe for §05.
-  //
-  // Since the §04→§05 merge this is the `geo`-stage path and a safety net, not a
-  // routine one: the tiles that used to move under the map every stage are a nested
-  // section of their own now, and the only thing that still rewrites §05's string is
-  // the km→mi flip at `geo`. The rail's own host never contains `#netmap`, so
-  // re-mounting it cannot reach this branch.
+  // The map is built once, guarded by `window.__jltg.mapBuilt`. When a re-render of
+  // §05 swaps `#netmap` out, the flag must be cleared or the new one is never built.
+  // Only the km→mi flip at `geo` rewrites §05's string; the rail's host never
+  // contains `#netmap`.
   const hadMap = host.querySelector && host.querySelector('#netmap');
   if (hadMap && root.querySelector && root.querySelector('#netmap')) {
     const runtime = window.__jltg;
     if (runtime) {
       runtime.mapBuilt = 0;
-      // The instance about to be orphaned is not the one to push data into: clearing
-      // these makes `refreshMapData()` a no-op until the rebuilt map republishes
-      // them. (2026-08-23, with the reach layer.)
+      // Clearing these makes `refreshMapData()` a no-op until the rebuilt map
+      // republishes them.
       runtime.map = null;
       runtime.mapReady = 0;
       runtime.paintMap = null;
@@ -2021,14 +1734,10 @@ function mountSection(id, html) {
     );
   }
 
-  // §07 and §08 ship sortable headers, a page-size control and filter state that
-  // survives a re-render; `deck.js` owns all three and has to be handed the freshly
-  // inserted nodes. It is idempotent and never dispatches `refilter`, so it composes
-  // with this file's own filter/search bindings rather than fighting them.
+  // `deck.js` owns §07/§08's sortable headers, page size and filter state and must
+  // be handed the fresh nodes. Idempotent, and never dispatches `refilter`. Both
+  // arguments matter: the payload is what its re-wire observer replays later.
   if (id === 'questions' || id === 'curses') {
-    // Both arguments matter: `root` is the freshly inserted subtree, and the payload
-    // is what deck.js's re-wire observer replays when a later stage swaps the markup
-    // out from under it. Called with neither, the observer re-wires against `null`.
     try { initDeckTables(root, state.report); } catch (err) { console.warn('[app] deck tables', err); }
   }
 }
@@ -2444,12 +2153,9 @@ function travelRows(report, dayKey) {
 }
 
 /**
- * A deterministic x-axis maximum for the ride-time chart.
- *
- * The hiding-period line must always be on the canvas, and one 3-hour outlier must
- * not squash every other bar, so the axis is the larger of 1.25 × the hiding period
- * and the p90 of every sampled time on every day, rounded up to a multiple of 15.
- * Bars past it are clipped and annotated at the axis end.
+ * Deterministic x-axis maximum for the ride-time chart: the larger of 1.25 × the
+ * hiding period and the p90 of every sampled time, rounded up to a multiple of 15.
+ * The hiding-period line always fits and one outlier cannot squash the other bars.
  */
 function chartMax(report) {
   const values = [];
@@ -2465,16 +2171,7 @@ function chartMax(report) {
   return Math.max(15, Math.ceil(top / 15.0) * 15);
 }
 
-/**
- * The stat rail's tile grid for one day.
- *
- * The CLI renders `_s4_tiles_html` per day and ships the strings, and so does this:
- * `s4TilesHtml` is the same exported function the rail itself renders through, called
- * with the day key directly. It used to render the whole of §04 per day type with
- * `report.selectedDay` swapped and lift `#tiles` back out of the result — one section
- * render and one `parseHtml` per day type per `writeDataBlocks`, for a string the
- * renderer would have handed over. (Simplified 2026-08-23 with the §04→§05 merge.)
- */
+/** The stat rail's tile grid for one day, from the same function the rail renders through. */
 function tilesHtmlFor(report, dayKey) {
   try {
     return s4TilesHtml(report, dayKey) || '';
@@ -2486,13 +2183,8 @@ function tilesHtmlFor(report, dayKey) {
 }
 
 /**
- * The map's "what to notice" caption for one day.
- *
- * Same discipline as `tilesHtmlFor`: the renderer owns the sentences, this side only
- * ships the string per day so a day switch is an innerHTML swap on `#netcaption` and
- * never a recompute. `renderNetworkMap` renders the representative day's copy into
- * that element itself, which is what stands before the score lands and there is no
- * day selector to switch with. (R6, 2026-08-23.)
+ * The map's "what to notice" caption for one day. The renderer owns the sentences;
+ * shipping the string per day makes a day switch an innerHTML swap on `#netcaption`.
  */
 function mapCaptionFor(report, dayKey) {
   try {
@@ -2509,25 +2201,20 @@ function mapCaptionFor(report, dayKey) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // One block per concern, so a page that only wants the verdict never parses the stop
-// list. The blocks are written into the live DOM because the map and the day switcher
-// read them exactly the way the CLI's page does.
+// list. The map and the day switcher read them from the live DOM.
 
 /** Above this the map draws zone centres only. (`_S4_MAX_MAP_STOPS`.) */
 const MAX_MAP_STOPS = 5000;
 /** Above this the zone circles become dots only. (`_S4_MAX_MAP_ZONE_RINGS`.) */
 const MAX_MAP_ZONE_RINGS = 1200;
-// The third map cap, the route spokes', is NOT here: `MAX_MAP_SPOKES` lives in
-// lib/core.js because it is applied worker-side, where the polylines are built, so
-// the bytes never cross `postMessage` at all. `#stops.spoke_cap` reports what it did.
+// The spoke cap, `MAX_MAP_SPOKES`, lives in lib/core.js: it is applied worker-side
+// so the bytes never cross `postMessage`. `#stops.spoke_cap` reports what it did.
 
 /**
- * The scalar metrics the page prints, flattened for `#data`. Deliberately not the
- * whole `metrics` dict: that carries per-day zone-centre id lists and hull rings,
- * which would triple the page weight for values nothing on index.html reads.
- *
- * `mec` is the one non-scalar in the list: three numbers, `[lat, lon, radiusM]`, and
- * the only geometry the *Network diameter* tile's note quotes. The map draws it when
- * that tile is highlighted, which is why it has to cross. (2026-08-23.)
+ * The scalar metrics the page prints, flattened for `#data`. Not the whole `metrics`
+ * dict: its per-day id lists and hull rings would triple the page weight unread.
+ * `mec` is the one non-scalar, `[lat, lon, radiusM]`, drawn when the *Network
+ * diameter* tile is highlighted.
  */
 const CURATED_METRIC_KEYS = [
   'servedStops', 'stopsInFeed', 'stations', 'nZones', 'nZonesHalfMile',
@@ -2559,10 +2246,8 @@ function curatedMetrics(report) {
 function dataPayload(report) {
   const f = report.fitness;
   const days = {};
-  // The per-day markup costs one tile render per day type, and it is not *true* until
-  // the score lands — the banner prints a fitness delta and the tiles count live
-  // questions. Before then the block ships `days: {}` and the runtime's `renderDay()`
-  // returns early, which is also what keeps the eight-minute OSM wait cheap.
+  // The per-day markup is not true until the score lands (the banner prints a fitness
+  // delta), so before then the block ships `days: {}` and `renderDay()` returns early.
   for (const key of state.arrived.has('score') ? dayOrder(report) : []) {
     const b = dayBanner(report, key);
     days[key] = {
@@ -2599,10 +2284,8 @@ function dataPayload(report) {
       inferred: size.inferred,
       chart_max_min: chartMax(report),
       scale_unit: imperial(report) ? 'imperial' : 'metric',
-      // The map's frequency layer bins per-stop headways on exactly the thresholds
-      // §06's headway grid uses, from the one constant both read. `Infinity` is not
-      // JSON, so the open-ended last bin ships as `null` and the runtime treats it as
-      // "everything above the one before". (2026-08-23.)
+      // The same thresholds §06's headway grid bins on. `Infinity` is not JSON, so
+      // the open-ended last bin ships as `null`.
       headway_bins_min: S4_HEADWAY_BINS.map(
         ([limit]) => (Number.isFinite(limit) ? limit : null),
       ),
@@ -2619,9 +2302,7 @@ function dataPayload(report) {
       stop_id: hub.stopId, name: hub.name, lat: coord(hub.lat), lon: coord(hub.lon),
       shape: hub.shape, dominant: hub.dominant, route_share: rhu(hub.routeShare, 4),
     } : null,
-    // The runtime's `border-suggested-line` reads `.bbox` and nothing else; the rest
-    // is here so the page is self-describing. Null when the worker offered nothing,
-    // and null for a malformed box — the runtime draws no line for null.
+    // The runtime's `border-suggested-line` reads `.bbox` only; null draws no line.
     suggestedBorder: suggestedBorderPayload(report.suggestedBorder),
     fitness: f ? {
       score: f.score === null ? null : rhu(f.score, 1),
@@ -2662,14 +2343,14 @@ function dataPayload(report) {
   };
 }
 
-/** A plain object rebuilt in sorted key order — `dict(sorted(x.items()))`. */
+/** A plain object rebuilt in sorted key order. */
 function sortedObject(obj) {
   const out = {};
   for (const k of Object.keys(obj || {}).sort(cmpStr)) out[k] = obj[k];
   return out;
 }
 
-/** The same, with a value transform. Key order is never left to `Object.keys`. */
+/** The same, with a value transform. */
 function sortedMap(obj, fn) {
   const out = {};
   for (const k of Object.keys(obj || {}).sort(cmpStr)) out[k] = fn(obj[k]);
@@ -2688,9 +2369,7 @@ function questionsPayload(report) {
     selector: q.selector, why: q.why,
     surv_mean: q.survMean === null || q.survMean === undefined ? null : rhu(q.survMean, 4),
     borderline: q.borderline,
-    // `draw` / `keep` are the card price from the catalogue: `auditQuestions` copies
-    // them onto every audit row from the question definition it scored, and they ride
-    // across the wire with the rest of the row.
+    // `draw` / `keep` are the card price from the catalogue, copied onto every audit row.
     draw: q.draw === undefined ? null : q.draw,
     keep: q.keep === undefined ? null : q.keep,
   }));
@@ -2711,9 +2390,8 @@ function cursesPayload(report) {
 }
 
 /**
- * `DATA.suggestedBorder`, or null. Guards the shape rather than trusting it: this
- * field crosses from a concurrently-built worker, and a missing bbox must degrade
- * to "no line" rather than to a runtime exception in `buildMap`.
+ * `DATA.suggestedBorder`, or null. Guards the shape: a missing bbox must degrade to
+ * "no line", not to an exception in `buildMap`.
  * @param {Object|null} sb a `SuggestedBorder`
  * @returns {Object|null}
  */
@@ -2736,20 +2414,13 @@ function suggestedBorderPayload(sb) {
 
 /**
  * `#stops` — `[lon, lat, name, route_count, frequent]` tuples plus the zone centres,
- * the per-day reach and headway columns, and the route spokes.
+ * the per-day reach and headway columns, and the route spokes. Tuples, not objects,
+ * for the byte count on a 20,000-stop feed.
  *
- * Tuples rather than objects: on a 1,500-stop feed that is a third of the bytes, and
- * on a 20,000-stop feed it is the difference between a page that opens and one that
- * does not. The zone centres ride along because the network map draws them and they
- * are the same geometry the strategy page ranks.
- *
- * `reach` and `hw` are **parallel arrays**, index-aligned with `zones` and `stops`
- * for exactly the reason the tuples are tuples: a key per row per day would be most
- * of the block. `reach[dayKey][i]` is minutes from the round-start station to
- * `zones[i]` (`null` = no journey); `hw[dayKey][i]` is `stops[i]`'s median headway in
- * minutes over 06:00–22:00 (`null` = no service that day). Over `MAX_MAP_STOPS` the
- * stop tuples are dropped, and `hw` goes with them — there is nothing to colour.
- * (Added 2026-08-23 with the map's reach and frequency layers.)
+ * `reach` and `hw` are parallel arrays, index-aligned with `zones` and `stops`.
+ * `reach[dayKey][i]` is minutes from the round-start station to `zones[i]` (`null` =
+ * no journey); `hw[dayKey][i]` is `stops[i]`'s median headway over 06:00–22:00
+ * (`null` = no service). Over `MAX_MAP_STOPS` the stop tuples and `hw` are dropped.
  */
 function stopsPayload(report) {
   const rows = report.stops || [];
@@ -2802,13 +2473,7 @@ function stopsPayload(report) {
   };
 }
 
-/**
- * Write (or rewrite) the five JSON blocks into the live DOM.
- *
- * They are written as `<script type="application/json">` so the page is
- * self-describing, and so the map, the day switcher and the table filters read their
- * data through exactly the same door the CLI's page uses.
- */
+/** Write (or rewrite) the five `<script type="application/json">` blocks into the DOM. */
 function writeDataBlocks() {
   const blocks = [
     ['data', dataPayload(state.report)],
@@ -2825,11 +2490,8 @@ function writeDataBlocks() {
     document.body.appendChild(host);
   }
   host.innerHTML = blocks.map(([id, payload]) => jsonBlock(id, payload)).join('\n');
-  // The sanctioned channel for map data that arrives after the map was built: the
-  // scored zone dots at `score`, and every per-day column. `#stops` has just been
-  // rewritten, and `refreshMapData` re-reads it and pushes it through `setData` —
-  // no re-render, no `setStyle`, and the reader's pan and zoom survive. It is a
-  // no-op until the map exists. (2026-08-23, with the reach layer.)
+  // Map data that arrives after the map was built goes through `refreshMapData`,
+  // which re-reads `#stops` and pushes it through `setData`; pan and zoom survive.
   try {
     const runtime = window.__jltg;
     if (runtime && typeof runtime.refreshMapData === 'function') runtime.refreshMapData();
@@ -2844,26 +2506,10 @@ function writeDataBlocks() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * `_s4_day_selector` and the `#daybanner` callout.
- *
- * The day-type radio group is built from the day types the feed actually
- * distinguishes. A single-day-type feed hides the control entirely — there is
- * nothing to choose, and an empty selector reads as a bug.
- *
- * Both elements are created here if the shell did not ship them, because both need
- * data that does not exist until the score lands.
- */
-/**
- * The two pieces of `page_chrome` that need a `Report`: the wordmark's
- * place name, and the status chip.
- *
- * `status_html` is "the page's one persistent grade readout" and the only part of the
- * chrome that differs between the two CLI pages, so it is ported verbatim including
- * the `Partly measurable` fallback — the score is `null` whenever more than 40% of the
- * hundred points could not be measured (CONTRACT §(f)), and printing a number there
- * would be exactly the guess the whole design refuses to make.
- *
- * The shell ships both spans empty and `hidden`; filling one is what reveals it.
+ * The two pieces of page chrome that need a `Report`: the wordmark's place name and
+ * the status chip. The score is `null` when more than 40% of the points could not be
+ * measured (CONTRACT §(f)), and the chip then says `Partly measurable` rather than
+ * printing a guess. The shell ships both spans empty and `hidden`.
  */
 function mountChrome() {
   const report = state.report;
@@ -2897,15 +2543,13 @@ function mountDayChrome() {
     const b = dayBanner(report, bestDay(report));
     banner.setAttribute('variant', b.variant);
     banner.innerHTML = dayBannerHtml(b);
-    // The shell ships it `hidden` — an empty callout above the verdict is worse than
-    // none — so filling it is also what reveals it. Without this the day strip never
-    // appears and the day switcher looks like it does nothing.
+    // The shell ships it `hidden`; filling it is what reveals it.
     banner.hidden = false;
   } else if (banner) {
     banner.hidden = true;
   }
 
-  // ── the selector, in the subheader ─────────────────────────────────────────
+  // ── the selector, in the subheader; hidden when there is nothing to choose ──
   if (keys.length < 2) {
     const existing = $id('daysel');
     if (existing) existing.remove();
@@ -2915,7 +2559,7 @@ function mountDayChrome() {
   const radios = keys.map((key) => {
     const label = dayLabel(report, key);
     const title = key in per
-      ? `${label} — this map rates ${num(per[key], 1)} of 100 on ${label} service`
+      ? `${label} — rated ${num(per[key], 1)} of 100 on ${label} service`
       : label;
     return el('wa-radio', esc(label), { value: key, appearance: 'button', size: 's', title });
   }).join('');
@@ -2936,36 +2580,21 @@ function mountDayChrome() {
 // The secret route
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// S5 (`render_strategy`) is a whole second page in the CLI, written to
-// `strategy.html`, linked from nothing. Here it is a second *view* of the same
-// document, reached only by `location.hash === '#strategy'`.
+// S5 (`render_strategy`) is a second *view* of the same document, reached only by
+// `location.hash === '#strategy'`, linked from nothing.
 //
-// Three decisions worth the words:
-//
-//   * It is a **view**, not a tenth section. `SECTIONS` drives `hydrate`,
-//     `mountSection`, `dropSection`, `renumberSections` and `pruneNav`; membership
-//     would mean an ordinal, a nav entry and a place in the reading order, which is
-//     the one thing this page must not have.
-//   * Visibility hangs off a **new attribute**, `body[data-view]`, not off
-//     `data-state`. `data-state` means the *run lifecycle* (`landing` / `running` /
-//     `ready` / `failed`), and a fourth value there would put the two axes into a
-//     fight over the same three `!important` rules in styles.css §7. Because
-//     `data-state` is never touched, the report is *hidden* while the guide is up —
-//     never re-rendered, never torn down. No listener is dropped, `#netmap` keeps its
-//     MapLibre instance, and coming back is free.
-//   * The route is **module code**, deliberately. `PAGE_RUNTIME_JS` already has a
-//     `hashchange` listener (`openTargeted`), and that source string is a verbatim
-//     port of the CLI's page JS — it must stay one, so it never learns that this view
-//     exists. The listener below lives here, outside the ported text.
+//   * It is a view, not a tenth section: membership in `SECTIONS` would give it an
+//     ordinal, a nav entry and a place in the reading order.
+//   * Visibility hangs off `body[data-view]`, not `data-state`. `data-state` is the
+//     run lifecycle, and leaving it alone means the report is hidden, never torn
+//     down: `#netmap` keeps its MapLibre instance and coming back is free.
+//   * The route is module code. `PAGE_RUNTIME_JS` is a verbatim port and must never
+//     learn that this view exists.
 
 /**
  * Build the guide once and insert it inside `<wa-page>`, as a sibling of `<main>`.
- *
- * The mount position is not what gives it the page measure — that comes from the root
- * being a `<section>`: `wa-page > section` is in the one measure rule in styles.css for
- * the `--content-width` cap and the inline gutter, and wa-page's own
- * `::slotted(section)` supplies the block padding. A `<div>` here matches neither and
- * renders flush and full-bleed. See `render/strategy.js`'s root element.
+ * The root must be a `<section>`: `wa-page > section` is what gets the page measure
+ * and block padding in styles.css; a `<div>` renders flush and full-bleed.
  *
  * @returns {HTMLElement|null} the `#strategy` root, or null when there is nothing to
  *   render (no zones, or the renderer threw). Callers gate on `state.finished`.
@@ -2977,8 +2606,7 @@ function mountStrategy() {
   try {
     html = renderStrategy(state.report);
   } catch (err) {
-    // A guide that cannot be built is not a reason to break the report the reader
-    // already has. Fall through to the report, quietly.
+    // A guide that cannot be built must not break the report. Fall through quietly.
     // eslint-disable-next-line no-console
     console.warn('[app] strategy', err);
     return null;
@@ -2997,12 +2625,8 @@ function mountStrategy() {
 /**
  * Read the fragment and put the right view on screen. Bound to `hashchange`, called
  * once in `boot()` for a deep link, and once more at the tail of `finish()`.
- *
- * The four ways back all arrive here: the guide's own `Back to the feasibility report`
- * (`href="#top"`), the browser Back button, editing the URL, and any other fragment.
- * `#strategy` with no finished report is the landing form — no error, no message, no
- * hint that anything else exists. If a feed is then run and the fragment is still
- * `#strategy`, `finish()` calls this again and the reader lands straight in the guide.
+ * `#strategy` with no finished report is the landing form, with no hint that
+ * anything else exists.
  */
 function applyRoute() {
   const body = document.body;
@@ -3010,39 +2634,27 @@ function applyRoute() {
   if (location.hash === STRATEGY_HASH && state.finished) {
     const host = mountStrategy();
     if (!host) { leaveStrategy(); return; }
-    // The attribute goes on BEFORE `initStrategy`: MapLibre reads its container size
-    // once, at construction, and a container inside a `display:none` subtree measures
-    // zero for ever.
+    // Before `initStrategy`: MapLibre reads its container size once, at construction,
+    // and a `display:none` container measures zero for ever.
     body.setAttribute('data-view', 'strategy');
     if (!state.strategyTitle) state.strategyTitle = document.title;
     const report = state.report;
     const place = report.place || report.feed.agencyName || 'This map';
     document.title = `${place} × Hide and Seek — Hider's Guide`;
-    // `#top` is the report hero, and the hero is `data-when="report"` — hidden here.
-    // Pointing the wordmark at the fragment itself keeps it inert rather than making
-    // the one always-visible chrome element a trapdoor out of the view.
+    // `#top` is the report hero, hidden here; pointing the wordmark at the fragment
+    // itself keeps it inert.
     const wordmark = $id('wordmark');
     if (wordmark) wordmark.setAttribute('href', STRATEGY_HASH);
     try {
       initStrategy(host, report);
     } catch (err) {
-      // `initStrategy` is idempotent and degrades on its own; this is the last net.
       // eslint-disable-next-line no-console
       console.warn('[app] strategy', err);
     }
-    // Two frames, not one, and a focus move.
-    //
-    // The page runtime's `openTargeted` is live in this document and is bound to
-    // `hashchange` too — it resolves `#strategy` to this very element and scrolls it
-    // `block: 'center'`, which on a many-screen root lands the reader in the middle of
-    // the guide. `applyRoute` is bound first, so a single rAF here is queued first and
-    // loses; a second frame puts this last.
-    //
-    // The focus move is the other half: this is a whole-document view change with a
-    // new `document.title`, and everything that had focus is inside the subtree the
-    // stylesheet just put to `display: none`, so the browser drops focus to `<body>`
-    // and a screen reader is told nothing. `tabindex="-1"` keeps the root out of the
-    // tab order while making it a legal focus target.
+    // Two frames: the runtime's `openTargeted` is also bound to `hashchange` and
+    // scrolls `#strategy` to `block: 'center'` one frame later, so this must queue
+    // after it. The focus move gives a screen reader the new view; `tabindex="-1"`
+    // keeps the root out of the tab order.
     host.tabIndex = -1;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       host.scrollIntoView({ block: 'start' });
@@ -3053,7 +2665,7 @@ function applyRoute() {
   leaveStrategy();
 }
 
-/** Put the report back. Idempotent, and cheap: nothing was destroyed. */
+/** Put the report back. Idempotent and cheap: nothing was destroyed. */
 function leaveStrategy() {
   const body = document.body;
   if (!body || !body.hasAttribute('data-view')) return;
@@ -3067,8 +2679,7 @@ function leaveStrategy() {
     wordmark.setAttribute('href',
       body.getAttribute('data-state') === 'landing' ? '#landing' : '#top');
   }
-  // The mirror of the focus move in `applyRoute`: whatever had focus is now inside a
-  // hidden subtree, so the report has to be handed a focus origin of its own.
+  // Mirror of the focus move in `applyRoute`.
   const back = document.querySelector('#top');
   if (back) {
     back.tabIndex = -1;
@@ -3082,17 +2693,11 @@ function leaveStrategy() {
 // The page runtime
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// A verbatim port of `SHARED_PAGE_JS` and `_S4_INDEX_JS`,
-// kept as one source string so it stays diffable against the CLI's own text. Rewriting
-// it as module code would let the browser port drift from `generate.py`'s output
-// silently, which is the one thing a port must not do.
-//
-// Two changes from the CLI's copy, both forced by progressive hydration:
-//   * every binding is idempotent — nodes are stamped `data-bound`, one-shot
-//     observers are flagged on `window.__jltg` — because this runs again each time a
-//     later stage lands new markup;
-//   * every `D()` read tolerates a missing block, because §09 arrives after §05.
-// Everything else, including the comments, is the CLI's.
+// A port of generate.py's `SHARED_PAGE_JS` and `_S4_INDEX_JS`, kept as one source
+// string. Two changes, both forced by progressive hydration: every binding is
+// idempotent (nodes stamped `data-bound`, one-shot observers flagged on
+// `window.__jltg`) because it runs again each time a stage lands new markup, and
+// every `D()` read tolerates a missing block.
 
 const PAGE_RUNTIME_JS = String.raw`
 const W = (window.__jltg = window.__jltg || {});
@@ -3119,11 +2724,8 @@ function bindTT(el, html) {
 }
 
 /* The Points Budget and the deck strip are <wa-chart> canvases (budgetBar in
-   render/html.js). chart.js registers no datalabels plugin, so the segment letters are
-   painted here; and Chart.js's own tooltip draws *inside* a 20px-tall canvas, where it
-   is clipped to nothing, so hover routes to the same #tt panel the heatmap uses. One
-   plugin, both jobs. wa-chart merges '.plugins' onto the config it parsed from the
-   slotted <script>, which is why the config itself can stay in the render layer. */
+   render/html.js). This plugin paints the segment letters, and hover routes to the
+   #tt panel because Chart.js's own tooltip is clipped inside a 20px canvas. */
 const budgetSeg = {
   id: 'budgetSeg',
   afterDatasetsDraw(chart) {
@@ -3136,8 +2738,7 @@ const budgetSeg = {
       const bar = chart.getDatasetMeta(i).data[0];
       if (!bar || !ds.letter) continue;
       const { base, x, y } = bar.getProps(['base', 'x', 'y'], true);
-      if (Math.abs(x - base) < 14) continue;   /* the font-size:0 rule, reborn — now per
-                                                  segment rather than all-or-nothing */
+      if (Math.abs(x - base) < 14) continue;   /* too narrow for a letter */
       ctx.fillStyle = ds.ink ? cssVar(ds.ink) : '#fff';
       ctx.fillText(String(ds.letter), (base + x) / 2, y);
     }
@@ -3145,9 +2746,8 @@ const budgetSeg = {
   },
 };
 
-/* Assigning '.plugins' is itself a property change, so the component re-renders on its
-   own — no awaiting whenDefined/updateComplete. The hover handler reads '.chart'
-   lazily, so it is correct even while the element is still upgrading. */
+/* Assigning '.plugins' re-renders the component on its own; the hover handler reads
+   '.chart' lazily, so it is correct while the element is still upgrading. */
 function bindBudgets() {
   for (const c of document.querySelectorAll('wa-chart[data-budget]')) {
     if (c.dataset.budgetBound) continue;
@@ -3175,12 +2775,9 @@ function loadDay(fallback) {
 }
 function saveDay(k) { try { localStorage.setItem(DAY_KEY, k); } catch (e) {} }
 
-/* The map's layer state, per viewer, the same way and for the same reason. It has to
-   outlive a re-mount: s4Imperial flips km to miles at the geo stage, which changes
-   §05's string, which tears the MapLibre instance down and builds it again — and a
-   reader who has just switched to the reach layer must not find it reset. It also
-   survives a trip into #strategy and back. MODES is the whitelist: a stale value in
-   storage from another build must not put the map in a mode it no longer has. */
+/* The map's layer state, per viewer. It has to outlive the geo-stage re-mount, which
+   rebuilds the MapLibre instance. MODES is the whitelist: a stale value in storage
+   must not put the map in a mode it no longer has. */
 const LAYER_KEY = 'jltg-netlayers';
 const MODES = ['base', 'reach', 'frequency'];
 function loadLayers() {
@@ -3193,7 +2790,7 @@ function loadLayers() {
       out.zones = Boolean(got.zones);
       out.spokes = Boolean(got.spokes);
     }
-  } catch (e) { /* no storage, or nonsense in it — the defaults are the answer */ }
+  } catch (e) { /* no storage, or nonsense in it */ }
   return out;
 }
 function saveLayers() {
@@ -3201,9 +2798,8 @@ function saveLayers() {
 }
 W.layers = W.layers || loadLayers();
 
-/* Open whatever the fragment is buried inside, then scroll to it. Without this, every
-   #prov-*, #trace-*, #sel-*, #pred-*, #q-*, #c-* and #axis-* link would land on a row
-   inside a closed disclosure and appear to do nothing. */
+/* Open whatever the fragment is buried inside, then scroll to it; otherwise a link
+   into a closed disclosure appears to do nothing. */
 function openTargeted() {
   const id = decodeURIComponent(location.hash.slice(1));
   if (!id) return;
@@ -3221,8 +2817,7 @@ function openTargeted() {
 }
 if (!W.hashBound) { W.hashBound = 1; addEventListener('hashchange', openTargeted); }
 
-/* Scrollspy: aria-current on the rail link of the section nearest the top. One
-   observer, no scroll listener, no timers. */
+/* Scrollspy: aria-current on the rail link of the section nearest the top. */
 function bindSpy() {
   if (W.spy) { W.spy.disconnect(); W.spy = null; }
   const links = [...document.querySelectorAll('nav[slot="navigation"] a[href^="#"]')];
@@ -3290,9 +2885,8 @@ function renderDay() {
   if (banner && d.banner_html) { banner.setAttribute('variant', d.variant); banner.innerHTML = d.banner_html; }
   const tiles = $('tiles');
   if (tiles && d.tiles_html) tiles.innerHTML = d.tiles_html;
-  /* The map's caption is the selected day's, pre-rendered. An empty string is a real
-     answer here — a feed with nothing to notice — so this assigns unconditionally and
-     lets #netcaption:empty take the row back. */
+  /* An empty caption is a real answer (nothing to notice), so this assigns
+     unconditionally and lets #netcaption:empty take the row back. */
   const cap = $('netcaption');
   if (cap && 'map_caption_html' in d) cap.innerHTML = d.map_caption_html || '';
   document.querySelectorAll('#dayscores [data-day]').forEach(t => {
@@ -3377,7 +2971,7 @@ const ttDecor = {
   },
 };
 
-/* the rich tooltip is the page's own #tt panel; canvas tooltips cannot carry markup */
+/* the rich tooltip is the page's #tt panel; canvas tooltips cannot carry markup */
 (function ttHover() {
   const el = $('ttchart');
   if (!el || el.dataset.hoverBound) return;
@@ -3414,8 +3008,7 @@ async function renderTT() {
       datasets: [{
         data: rows.map(r => r.avail ? r.minutes : 0),
         backgroundColor: rows.map(fill),
-        /* wa-chart auto-assigns a palette border to any dataset that omits one; these
-           bars carry semantic fills only, and ttDecor draws the no-service outline */
+        /* wa-chart auto-assigns a palette border to a dataset that omits one */
         borderColor: 'transparent',
         borderWidth: 0,
         borderRadius: { topLeft: 0, bottomLeft: 0, topRight: 4, bottomRight: 4 },
@@ -3489,15 +3082,9 @@ async function buildMap() {
   const host = $('netmap');
   if (!host || W.mapBuilt || !DATA || !STOPS || !DATA.border || !DATA.hub) return;
   W.mapBuilt = 1;
-  /* Undo the claim, so the next injectRuntime() gets to try again rather than
-     inheriting a flag that says a map already exists.
-
-     It also takes the map's own chrome off the page. The renderer ships a Colour by
-     group, two layer switches and a four-block colour key; with MapLibre blocked
-     none of them can do anything and the key would sit there describing a blank box,
-     frozen on the renderer's initial data-mode. The two copy buttons are NOT hidden:
-     the border is text and copies fine without a map. Same guard bindRail already
-     applies to the tiles. (Fixed 2026-08-23.) */
+  /* giveUp undoes the claim so the next injectRuntime() can retry, and hides the
+     map's own chrome (layer switches and colour key), which is useless without a
+     map. The copy buttons stay: the border is text. */
   const setChrome = (on) => {
     for (const id of ['netlayers', 'netlegend']) {
       const n = $(id);
@@ -3506,11 +3093,8 @@ async function buildMap() {
   };
   const giveUp = (msg, e) => { W.mapBuilt = 0; setChrome(false); console.warn(msg, e || ''); };
   let maplibregl;
-  /* ns.default ?? ns, never .default alone: maplibre-gl 6 dropped the default export
-     and ships named exports only, so .default is undefined on the unpinned CDN URL and
-     every map silently became "unavailable". The namespace object carries the same
-     Map / Marker / NavigationControl / ScaleControl either way. (No backticks in here:
-     this whole runtime is one String.raw template and a backtick would end it.) */
+  /* ns.default ?? ns: maplibre-gl 6 dropped the default export. (No backticks in
+     here: this whole runtime is one String.raw template.) */
   try {
     const ns = await import('__MAPLIBRE_JS__');
     maplibregl = ns.default ?? ns;
@@ -3526,8 +3110,8 @@ async function buildMap() {
     : [[bb[1], bb[0]], [bb[3], bb[0]], [bb[3], bb[2]], [bb[1], bb[2]], [bb[1], bb[0]]];
 
   const STYLES = { light: '__TILES_LIGHT__', dark: '__TILES_DARK__' };
-  /* the same values as styles.css §1/§2 — --ink-2, --surface, --gold-deep, --accent —
-     written out because MapLibre paint takes no var() */
+  /* the same values as styles.css --ink-2, --surface, --gold-deep, --accent, written
+     out because MapLibre paint takes no var() */
   const PAL = { light: { stop: '#556577', edge: '#fafafa', gold: '#906600', zone: '#202f40' },
                 dark:  { stop: '#b5bfcb', edge: '#202f40', gold: '#ffbf40', zone: '#91b5dd' } };
   const isDark = () => document.documentElement.classList.contains('wa-dark');
@@ -3553,10 +3137,8 @@ async function buildMap() {
   }
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(new maplibregl.ScaleControl({ unit: G.scale_unit }), 'bottom-left');
-  /* Published so the data layers can be repainted from outside this closure: a later
-     stage's injectRuntime() builds a NEW closure with a fresh STOPS, calls buildMap(),
-     and returns early on the mapBuilt guard — so the function that pushes new data
-     must reach the map through W, never through a captured local. */
+  /* Published: a later injectRuntime() builds a new closure and returns early on the
+     mapBuilt guard, so anything that pushes new data must reach the map through W. */
   W.map = map;
   W.mapReady = 1;
   /* A retry after an earlier giveUp() finds the chrome hidden; this gives it back. */
@@ -3570,14 +3152,10 @@ async function buildMap() {
     })),
   } : { type: 'FeatureCollection', features: [] };
 
-  /* sources and layers are rebuilt on every style.load, which fires again after
-     setStyle when the colour scheme flips */
-  /* PAL above hard-codes four hexes because it predates this and works. The layers
-     below read their ramps with cssVar() instead, for one reason: they are the SAME
-     tokens the ride chart and the headway grid paint from, and a second hard copy
-     would be the one that drifts. cssVar resolves the whole var() chain at computed
-     -value time and style.load re-fires after every setStyle, so both themes are free.
-     Two mechanisms in one function is a smell; this comment is the reason. */
+  /* Sources and layers are rebuilt on every style.load, which fires again after
+     setStyle on a theme flip. The ramps are read with cssVar() rather than
+     hard-coded like PAL because they are the same tokens the ride chart and the
+     headway grid paint from, and a second copy would drift. */
   let RAMP = null;
   const readRamp = () => ({
     reachOk: cssVar('--accent'),        /* fits the window with slack */
@@ -3593,9 +3171,8 @@ async function buildMap() {
     ink: cssVar('--ink'),              /* the ring that makes a fill a shape */
   });
 
-  /* The frequency layer bins on the thresholds #data carries, which app.js takes
-     from render/map.js's S4_HEADWAY_BINS — the constant the headway grid bins on. A
-     trailing null is the open-ended last bin (Infinity is not JSON). */
+  /* The headway grid's own thresholds, via #data. A trailing null is the open-ended
+     last bin (Infinity is not JSON). */
   const BINS = (G.headway_bins_min && G.headway_bins_min.length)
     ? G.headway_bins_min : [10, 15, 25, 35, 50, null];
   const binOf = v => {
@@ -3606,17 +3183,14 @@ async function buildMap() {
     return BINS.length;
   };
 
-  /* Which per-day columns #stops actually carried, last time paintMap read it. The
-     reach column is absent on a feed the RAPTOR could not sample; the headway column
-     goes with the stop tuples over MAX_MAP_STOPS. Cached rather than re-derived,
-     because applyMode runs on every tile hover and D('stops') is a 140 KB parse. */
+  /* Which per-day columns #stops carried, last time paintMap read it. Cached because
+     applyMode runs on every tile hover and D('stops') is a large parse. */
   let HAS_REACH = Boolean(STOPS.reach && Object.keys(STOPS.reach).length);
   let HAS_HW = Boolean(STOPS.hw && Object.keys(STOPS.hw).length);
 
-  /* Rebuild the two data-bearing sources from whatever #stops now holds, re-filter the
-     spokes to the selected day, then repaint for the current colour mode. Never
-     setStyle, never fitBounds: a day switch, a score landing and a tile click must not
-     move the viewport. */
+  /* Rebuild the two data-bearing sources from whatever #stops now holds, re-filter
+     the spokes to the selected day, then repaint. Never setStyle, never fitBounds:
+     nothing here may move the viewport. */
   const paintMap = () => {
     if (!W.map || !W.map.getSource) return;
     const S = D('stops') || STOPS || {};
@@ -3630,8 +3204,7 @@ async function buildMap() {
       zs.setData({
         type: 'FeatureCollection',
         features: (S.zones || []).map((z, i) => {
-          /* -1 is "no journey", never null: a MapLibre expression compares numbers,
-             and ['has', …] cannot tell an absent property from a null one. */
+          /* -1 is "no journey", never null: MapLibre expressions compare numbers */
           const t = reach && reach[i] !== null && reach[i] !== undefined ? reach[i] : null;
           return {
             type: 'Feature',
@@ -3651,9 +3224,7 @@ async function buildMap() {
       ss.setData({
         type: 'FeatureCollection',
         features: (S.stops || []).map((s, i) => {
-          /* hb 0 is "no service at this stop on this day" — the row set is the
-             busiest day's served stops on every day (CONTRACT §(d) StopRow), and a
-             null headway is how the other days say so. */
+          /* hb 0 is "no service at this stop on this day" (CONTRACT §(d) StopRow) */
           const v = hw && hw[i] !== null && hw[i] !== undefined ? hw[i] : null;
           return {
             type: 'Feature',
@@ -3667,62 +3238,40 @@ async function buildMap() {
         }),
       });
     }
-    /* The spokes' geometry never changes; only which of them run today does. So this
-       is a setFilter on a per-day property, not a setData — 'route 33 does not run on
-       a Sunday' becomes a line that is not on the Sunday map. The per-day trip counts
-       are flattened onto each feature as t_<dayKey> at build time, because a MapLibre
-       expression cannot index into a nested object. */
+    /* Spoke geometry never changes, only which run today: a setFilter on the per-day
+       t_<dayKey> property, flattened at build time because an expression cannot
+       index into a nested object. */
     if (W.map.getLayer && W.map.getLayer('n-spoke-line')) {
       W.map.setFilter('n-spoke-line', ['>', ['coalesce', ['get', 't_' + day], 0], 0]);
     }
     applyMode();
   };
 
-  /* The stop dots' own edge ramp, as added at style.load, and the slightly heavier
-     one the frequency layer needs so a 1.3 px dot at z9 still has an edge. Named
-     here because every branch below has to be able to put the other one back. */
+  /* The stop dots' edge ramp, and the heavier one the frequency layer needs so a
+     1.3 px dot at z9 still has an edge. */
   const STOP_EDGE_W = ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1];
   const STOP_EDGE_HB = ['interpolate', ['linear'], ['zoom'], 9, .6, 13, 1.2];
 
-  /* Colour only — setPaintProperty on two layers, no source churn and no re-layout.
-
-     The force argument lets a tile highlight put the map into the mode that makes its
-     fact visible WITHOUT writing that mode to W.layers or to storage: the reader's own
-     choice of layer is theirs, and dropping the highlight must give it straight back.
-     Everything the highlight does is a setPaintProperty or a setFilter, so there is
-     nothing else to restore. (2026-08-23, the tile-to-map highlight.) */
+  /* Colour only: setPaintProperty on two layers. The force argument lets a tile
+     highlight put the map into a mode without writing it to W.layers or storage,
+     so dropping the highlight gives the reader's own choice straight back. */
   const applyMode = (force) => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
     let mode = force || (W.layers && W.layers.mode) || 'base';
-    /* A mode with no column behind it paints every dot the absent-value colour, which
-       looks exactly like a broken map. #colourby drops the button in that case, but
-       W.layers can still be carrying the mode from another feed, so the paint refuses
-       it too. HAS_* are set by paintMap, which is the thing that reads #stops. */
+    /* A mode with no column behind it looks like a broken map; W.layers may still
+       carry it from another feed, so the paint refuses it too. */
     if (mode === 'reach' && !HAS_REACH) mode = 'base';
     if (mode === 'frequency' && !HAS_HW) mode = 'base';
     const set = (layer, prop, value) => {
       if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
     };
     if (mode === 'reach') {
-      /* Four bins that differ in HUE and in RING, and the ring is what carries them
-         when hue does not. The lightness order is NOT monotone in the light theme —
-         --gold-mark is lighter than --accent, which is nearly black — so lightness
-         cannot be the redundant channel and the stroke is: the tight bin wears a
-         --gold-deep ring, the bust bin a dark --ink one, and the no-journey bin is
-         nothing but a ring. (MapLibre has no dash on a circle stroke, so "hollow" is
-         the shape channel, not a dash — the legend key draws it solid to match.)
-
-         The strokes are also the contrast fix. Measured against the positron land
-         colour #f2efe9, the gold fill is 1.46:1 and the pale no-journey ring was
-         1.55:1 — both far under the 3:1 a graphical object whose COLOUR is the
-         information needs, and the reach layer's whole point is finding the zones
-         that fail. p.edge is a near-white halo and helped neither. --gold-deep is
-         4.6:1 on that ground, --ink-2 5.3:1 and --ink 12:1, in the light theme;
-         in dark every one of them is a light ink on a dark style. The fills are
-         untouched — they are §06's ride-chart tokens and stay quoted from it.
-         (Fixed 2026-08-23; the ramp's own measurements were taken against --paper,
-         and the map's ground is a tile basemap.) */
+      /* Four bins that differ in hue AND ring: lightness is not monotone in the
+         light theme, so the stroke is the redundant channel (tight wears --gold-deep,
+         bust wears --ink, no-journey is ring only). The strokes are also the contrast
+         fix: the fills alone are well under 3:1 on the basemap's land colour. Keep
+         the fills as §06's ride-chart tokens. */
       set('zone-dots', 'circle-color', ['case',
         ['<', ['get', 'frac'], 0], 'rgba(0,0,0,0)',
         ['<=', ['get', 'frac'], 0.75], RAMP.reachOk,
@@ -3745,22 +3294,15 @@ async function buildMap() {
       set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
       set('stop-dots', 'circle-opacity', 0.4);
     } else if (mode === 'frequency') {
-      /* A single-hue lightness ramp: CVD-safe by construction, and already
-         re-anchored for dark in styles.css §2 ("more service = lighter"). Same six
-         steps and same thresholds as the headway grid, so the two teach each other. */
+      /* A single-hue lightness ramp, CVD-safe, same six steps as the headway grid. */
       set('stop-dots', 'circle-color', ['case',
         ['<=', ['get', 'hb'], 0], RAMP.off,
         ['match', ['get', 'hb'],
           1, RAMP.hb[0], 2, RAMP.hb[1], 3, RAMP.hb[2],
           4, RAMP.hb[3], 5, RAMP.hb[4], 6, RAMP.hb[5], RAMP.hb[5]]]);
       set('stop-dots', 'circle-opacity', ['case', ['<=', ['get', 'hb'], 0], 0.35, 0.9]);
-      /* The hairline the grid's cells and its legend keys already carry, for the
-         reason styles.css measured: the light end of this ramp is 1.1:1 against
-         pale ground, and that bin is "a bus every ten minutes". The defect is the
-         mark's EDGE, not its fill, so it travels with the fills — and a 1.3 px dot
-         on a positron basemap needs it more than a 92x30 grid cell does. Without
-         it the four best-served bins were 1.1–2.9:1 and the best half of the
-         network was white specks on white. (Fixed 2026-08-23.) */
+      /* The hairline the grid's cells carry: the light end of this ramp is 1.1:1
+         against pale ground, and without an edge the best-served stops vanish. */
       set('stop-dots', 'circle-stroke-color', RAMP.spoke);
       set('stop-dots', 'circle-stroke-width', STOP_EDGE_HB);
       set('zone-dots', 'circle-color', p.zone);
@@ -3783,16 +3325,10 @@ async function buildMap() {
     if (legend) legend.setAttribute('data-mode', mode);
   };
   /* ── tile → map highlight ──────────────────────────────────────────────────
-     Six of the twelve stat tiles name a fact the map can point at — five facts, as
-     the map area and the network diameter both light the extent. Hovering or
-     focusing one previews that fact on the map; clicking it (or Enter/Space) pins
-     it, one at a time. Focus IS hover here, by construction — the same keyboard
-     idiom #dayscores [data-day] already uses, so the page has one, not two.
-
-     Every branch below is a setPaintProperty, a setFilter or a setLayoutProperty.
-     Nothing touches a source, nothing re-renders, nothing writes W.layers, and
-     nothing moves the viewport — so clearing a highlight is one applyMode() call
-     and two hidden layers, with nothing left over. (2026-08-23.) */
+     Some stat tiles name a fact the map can point at. Hover or focus previews it,
+     click or Enter/Space pins it, one at a time. Every branch below is paint, a
+     filter or a visibility flag: nothing touches a source, writes W.layers or moves
+     the viewport, so clearing a highlight is one applyMode() and two hidden layers. */
   const HL_NONE = ['==', ['literal', 0], ['literal', 1]];   /* matches no feature */
   const HL_LABEL = {
     zones: 'the hiding zones',
@@ -3807,8 +3343,7 @@ async function buildMap() {
   const applyHl = () => {
     if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
     let kind = hlPreview || hlPinned || null;
-    /* A highlight with no data behind it is not a dimmer subject — it is nothing to
-       show, and dimming the whole map to say so would be worse than doing nothing. */
+    /* a highlight with no data behind it shows nothing rather than dimming everything */
     if (kind === 'reach' && !HAS_REACH) kind = null;
     const set = (layer, prop, value) => {
       if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
@@ -3821,10 +3356,9 @@ async function buildMap() {
         W.map.setLayoutProperty(layer, 'visibility', on ? 'visible' : 'none');
       }
     };
-    /* Back to the reader's own layer state first, then add the emphasis on top. */
-    /* The frequency highlight's own job is the dimming — freq is the 15-minute flag,
-       which rides with the stop tuples — so it still works on a feed whose headway
-       column was dropped; it just does not force the ramp it cannot paint. */
+    /* Back to the reader's own layer state first, then the emphasis on top. The
+       frequency highlight dims on the freq flag, so it still works without the
+       headway column; it just does not force the ramp it cannot paint. */
     applyMode((kind === 'frequency' && HAS_HW) ? 'frequency'
       : kind === 'reach' ? 'reach' : null);
     filt('n-hl-zones', HL_NONE);
@@ -3834,8 +3368,7 @@ async function buildMap() {
       W.map.setPaintProperty('border-line', 'line-width', kind === 'extent' ? 3 : 1.6);
       W.map.setPaintProperty('border-line', 'line-opacity', kind === 'extent' ? 1 : .85);
     }
-    /* The extent tile thickens BOTH gold frames: the suggestion is part of the
-       "how big is this" answer. Paint only, like everything else in here. */
+    /* the extent tile thickens both gold frames */
     if (W.map.getLayer('border-suggested-line')) {
       W.map.setPaintProperty('border-suggested-line', 'line-width', kind === 'extent' ? 2.4 : 1.2);
       W.map.setPaintProperty('border-suggested-line', 'line-opacity', kind === 'extent' ? 1 : .9);
@@ -3846,13 +3379,12 @@ async function buildMap() {
       set('zone-dots', 'circle-opacity', .12);
       set('stop-dots', 'circle-opacity', .95);
     } else if (kind === 'frequency') {
-      /* freq is the 15-minute route-direction flag the tile's own value counts. */
+      /* freq is the 15-minute route-direction flag the tile counts */
       set('stop-dots', 'circle-opacity', ['case', ['>', ['get', 'freq'], 0], .95, .07]);
       set('zone-dots', 'circle-opacity', .1);
       filt('n-hl-stops', ['>', ['get', 'freq'], 0]);
     } else if (kind === 'reach') {
-      /* frac < 0 is "no journey at all"; frac > 1 busts the window. Everything that
-         fits drops away, so the tile's four zones are the only lit things. */
+      /* frac < 0 is "no journey"; frac > 1 busts the window. Only those stay lit. */
       const missed = ['any', ['<', ['get', 'frac'], 0], ['>', ['get', 'frac'], 1]];
       set('zone-dots', 'circle-opacity', ['case', missed, 1, .08]);
       set('stop-dots', 'circle-opacity', .06);
@@ -3862,20 +3394,15 @@ async function buildMap() {
       set('zone-dots', 'circle-opacity', .25);
       show('n-mec-line', true);
     }
-    /* A live region announces on MUTATION, not on change, and applyHl runs on every
-       hover, mouseout, focusin and focusout across the rail. Writing the identical
-       sentence a dozen times as the pointer crosses twelve tiles would narrate it a
-       dozen times, which is the opposite of "previews deliberately do not announce".
-       So write only when the text actually differs. (Fixed 2026-08-23.) */
+    /* A live region announces on mutation, and applyHl runs on every hover across
+       the rail, so write only when the text actually differs. */
     const note = $('netpin');
     const say = hlPinned ? 'Showing: ' + (HL_LABEL[hlPinned] || '') : '';
     if (note && note.textContent !== say) note.textContent = say;
   };
 
   /* Published for bindRail(), which lives outside this closure because #tiles is
-     rewritten on every day switch and the bindings have to be re-stamped from
-     renderDay(). Same reason W.map is published: a later injectRuntime() builds a
-     fresh closure and returns early on the mapBuilt guard. */
+     rewritten on every day switch and re-stamped from renderDay(). */
   W.highlight = (kind, pin) => {
     if (pin === 'pin') hlPinned = (hlPinned === kind) ? null : kind;
     else hlPreview = kind;
@@ -3888,27 +3415,19 @@ async function buildMap() {
   W.paintMap = paintAll;
   W.refreshMapData = paintAll;
 
-  /* Only NOW do the tiles become controls. bootPage() called bindRail() long before
-     this — buildMap is async and suspends on the MapLibre import — and renderDay()
-     will call it again on every day switch; both are no-ops until W.highlight is the
-     function above. This is the call that actually stamps them the first time. */
+  /* Only now do the tiles become controls: earlier bindRail() calls were no-ops
+     until W.highlight existed. */
   bindRail();
 
   map.on('style.load', () => {
-    /* The geo-stage re-mount builds a SECOND map and orphans this one, listeners and
-       all. Both would answer a theme flip, and everything below reaches the live map
-       through W.map — so the orphan's style.load would repaint the new map from its
-       own closure and, with hlPinned null in here, drop the reader's pinned tile.
-       A superseded instance does nothing. (Fixed 2026-08-23.) */
+    /* The geo-stage re-mount orphans this instance, listeners and all; an orphan's
+       style.load would repaint the live map from a stale closure. */
     if (W.map !== map) return;
     const p = PAL[isDark() ? 'dark' : 'light'];
     RAMP = readRamp();
 
-    /* Route spokes go in FIRST, so they sit under everything: they are context, the
-       dots are content. The line is a hairline that thickens with zoom, and a route
-       calling at the hub is gold and a shade heavier — which is what makes 'radial
-       hub' something the reader can see rather than a sentence they have to trust.
-       Hidden unless the reader asked for it; the filter comes from paintMap(). */
+    /* Route spokes go in first, so they sit under everything. A route calling at the
+       hub is gold and a shade heavier. Hidden unless asked for; paintMap() filters. */
     map.addSource('n-spokes', { type: 'geojson', data: {
       type: 'FeatureCollection',
       features: (STOPS.spokes || []).map(sp => {
@@ -3925,8 +3444,7 @@ async function buildMap() {
       paint: {
         'line-color': ['case', ['>', ['get', 'hub'], 0], RAMP.spokeHub, RAMP.spoke],
         'line-opacity': ['case', ['>', ['get', 'hub'], 0], .5, .35],
-        /* One zoom curve, branching per feature at each stop: a style may hold only
-           one zoom-based interpolate per expression, so the case goes inside. */
+        /* only one zoom-based interpolate per expression, so the case goes inside */
         'line-width': ['interpolate', ['linear'], ['zoom'],
           9, ['case', ['>', ['get', 'hub'], 0], 1.3, .7],
           13, ['case', ['>', ['get', 'hub'], 0], 1.8, 1.2],
@@ -3939,13 +3457,8 @@ async function buildMap() {
       paint: { 'line-color': p.gold, 'line-width': 1.6, 'line-opacity': .85, 'line-dasharray': [3, 2.4] } });
 
     /* The worker's suggested border, when it offered one: a second gold rectangle,
-       SOLID and thinner so the two frames read as different things. Built once here
-       from DATA.suggestedBorder at 'network' and static from then on -- the callout
-       under the map is the interactive half, and it is app.js's, not this runtime's.
-       No suggestion is the COMMON case and must draw nothing: the source is then an
-       empty FeatureCollection rather than a zero-coordinate LineString (which is not
-       valid GeoJSON), so the source and the layer exist either way and applyHl()
-       below can address the layer without branching on the data. */
+       solid and thinner. No suggestion is the common case: the source is then an
+       empty FeatureCollection so the layer exists either way for applyHl(). */
     const SB = DATA.suggestedBorder;
     const sbb = (SB && SB.bbox && SB.bbox.length === 4 && SB.bbox.every(Number.isFinite))
       ? SB.bbox : null;
@@ -3988,10 +3501,8 @@ async function buildMap() {
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.6, 14, 5, 16, 7],
         'circle-stroke-color': p.edge, 'circle-stroke-width': 1, 'circle-stroke-opacity': .85 } });
 
-    /* Two halo layers, always present and filtered to nothing until a tile asks for
-       them. A halo is additive — it never hides what is under it — which is what
-       lets the highlight be pure paint with nothing to restore. They sit on top of
-       the dots on purpose: the point is to find four zones in three hundred. */
+    /* Two halo layers, always present and filtered to nothing until a tile asks.
+       Additive, on top of the dots: the point is to find four zones in three hundred. */
     map.addLayer({ id: 'n-hl-zones', type: 'circle', source: 'zonedots',
       filter: ['==', ['literal', 0], ['literal', 1]],
       paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
@@ -4003,9 +3514,8 @@ async function buildMap() {
         'circle-stroke-width': 2, 'circle-stroke-opacity': .5,
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 3.3, 12, 4.4, 14, 5.6, 16, 7.4] } });
 
-    /* The smallest circle that holds the whole network — the radius the Network
-       diameter tile's own note quotes. Drawn only while that tile is highlighted,
-       from #data's metrics, through the same ringOf() the zone circles use. */
+    /* The smallest circle that holds the whole network, drawn only while the Network
+       diameter tile is highlighted. */
     const mec = (DATA.metrics || {}).mec;
     map.addSource('n-mec', { type: 'geojson', data: {
       type: 'Feature', properties: {}, geometry: { type: 'LineString',
@@ -4015,10 +3525,7 @@ async function buildMap() {
       paint: { 'line-color': RAMP.spokeHub, 'line-width': 1.4, 'line-opacity': .7,
         'line-dasharray': [2, 2] } });
 
-    /* The sources above carry the shape; this fills in everything that arrives later
-       or changes with the day, and applies the reader's saved colour mode. It runs on
-       every style.load, so a theme flip re-reads the ramp from the stylesheet — and
-       re-applies whatever tile the reader has pinned. */
+    /* Fill in what arrives later or changes with the day, and re-apply the pin. */
     paintMap();
     applyHl();
   });
@@ -4091,12 +3598,9 @@ async function buildMap() {
 
   const cb = $('colourby');
   if (cb) {
-    /* Attribute first, then property: a wa-radio-group that has not upgraded yet
-       reads the attribute, and one that has reads the property. The same order
-       render/deck.js's filters use. */
-    /* The modes THIS map offers, not the ones the build knows: a feed over
-       MAX_MAP_STOPS ships no Frequency button, and a value left in storage by a
-       feed that did must not put the map in a mode with no control. */
+    /* Attribute first, then property: an un-upgraded wa-radio-group reads the
+       attribute. Only the modes this map offers count: a feed over MAX_MAP_STOPS
+       ships no Frequency button, and storage must not select a mode with no control. */
     const offered = [].slice.call(cb.querySelectorAll('wa-radio'))
       .map(r => r.getAttribute('value'));
     if (offered.indexOf(W.layers.mode) < 0) {
@@ -4108,20 +3612,14 @@ async function buildMap() {
       const want = cb.value || 'base';
       W.layers.mode = offered.indexOf(want) >= 0 ? want : 'base';
       saveLayers();
-      /* applyHl(), never applyMode(): applyMode rewrites the very paint properties
-         the highlight overwrote, so calling it alone wiped a pinned tile's dimming
-         off the canvas while the tile still said aria-current and #netpin still
-         claimed the map was showing it. applyHl calls applyMode with the right
-         force argument and then re-applies the pin, which is why every other
-         repaint path (renderDay, style.load, refreshMapData) goes through it.
-         (Fixed 2026-08-23.) */
+      /* applyHl(), never applyMode(): applyMode alone would wipe a pinned tile's
+         dimming while the tile still said aria-current. */
       applyHl();
     });
   }
 
   const retheme = () => {
-    /* Same reason as style.load above: the orphaned instance keeps this listener and
-       its MutationObserver, and a setStyle on a map nobody can see is pure work. */
+    /* the orphaned instance keeps this listener too */
     if (W.map !== map) return;
     const d = isDark();
     if (d === dark) return;
@@ -4135,30 +3633,17 @@ async function buildMap() {
 }
 
 /* ── the stat rail's tiles, as map controls ──────────────────────────────────
-   Five of the twelve tiles name a fact the map can point at, and carry data-hl for
-   it. This turns those cards into controls: hover or focus previews the fact, click
-   or Enter/Space pins it, one at a time, aria-current says which.
-
-   DELEGATED on #glance, because renderDay() replaces #tiles' innerHTML wholesale on
-   every day switch and a per-card listener would be gone with it. The attributes DO
-   have to be re-stamped after each of those rewrites, which is why this is called
-   from renderDay() as well as from bootPage().
-
-   It stamps nothing unless the map actually built. With MapLibre blocked the tiles
-   stay inert text: styles.css hangs the pointer, the hover border and the focus ring
-   off [aria-current], not off [data-hl], so a highlight that cannot happen is never
-   advertised. */
+   Tiles carrying data-hl become controls: hover or focus previews, click or
+   Enter/Space pins, aria-current says which. Delegated on #glance because
+   renderDay() replaces #tiles wholesale; the attributes are re-stamped after each
+   rewrite. Stamps nothing unless the map built, so with MapLibre blocked the tiles
+   stay inert text. */
 function railCard(host, e, strict) {
   const t = e.target;
   const card = t && t.closest ? t.closest('[data-hl]') : null;
   if (!card || !host.contains(card)) return null;
-  // Every one of these tiles carries a provenance citation — a wa-link anchor into
-  // the sources section — and three of the six carry two. A click or an Enter that
-  // started on one of those belongs to the LINK: without this bail the delegated
-  // keydown preventDefault()ed the anchor's own activation and pinned a highlight
-  // instead, so the citation could not be followed by keyboard at all, and a mouse
-  // click both navigated and pinned. Hover and focus previews are not strict —
-  // previewing while the pointer is over the citation is right. (Fixed 2026-08-23.)
+  // A click or Enter that started on the tile's provenance link belongs to the
+  // link. Hover and focus previews are not strict.
   if (strict && t.closest) {
     const inner = t.closest('a[href], button, input, select, textarea, wa-button, wa-copy-button');
     if (inner && inner !== card && card.contains(inner)) return null;
@@ -4173,13 +3658,8 @@ function bindRail() {
     const pinned = W.highlightPinned ? W.highlightPinned() : null;
     host.querySelectorAll('[data-hl]').forEach(card => {
       card.setAttribute('tabindex', '0');
-      /* aria-current, NOT role=button + aria-pressed: every one of these cards holds
-         a real provenance link, and a button's children are presentational, so the
-         role would take the citation out of the accessibility tree while leaving it
-         in the tab order. aria-current is a GLOBAL attribute — valid on a plain
-         focusable element — it is what #dayscores [data-day] already uses for
-         exactly this "one of a set is the live one" state, and the pinned tile is
-         also announced in words by #netpin. (Changed 2026-08-23.) */
+      /* aria-current, not role=button: a button's children are presentational and
+         would take the card's provenance link out of the accessibility tree. */
       card.setAttribute('aria-current', card.dataset.hl === pinned ? 'true' : 'false');
     });
   };
@@ -4222,8 +3702,8 @@ function bindRail() {
 W.bindRail = bindRail;
 
 /* ── table filters ───────────────────────────────────────────────────────── */
-/* Rows are all rendered ahead of time and carry their own data-* key, so filtering is
-   a 'hidden' toggle: the table is complete and readable with scripting off. */
+/* Rows carry their own data-* key, so filtering is a 'hidden' toggle and the table
+   is complete with scripting off. */
 function bindFilter(groupId, tableId, key) {
   const grp = $(groupId), table = $(tableId);
   if (!grp || !table) return null;
@@ -4243,8 +3723,8 @@ function bindFilter(groupId, tableId, key) {
   return apply;
 }
 
-/* Free-text search over an already-rendered table. It only writes data-match; the
-   'hidden' decision stays in bindFilter, so the two controls cannot fight. */
+/* Free-text search. It only writes data-match; the 'hidden' decision stays in
+   bindFilter, so the two controls cannot fight. */
 function bindSearch(inputId, tableId, key) {
   const inp = $(inputId), tbl = $(tableId);
   if (!inp || !tbl || !tbl.tBodies.length) return;
@@ -4324,23 +3804,14 @@ function pageRuntimeSource() {
 }
 
 /**
- * Run the page runtime against whatever is currently in the DOM.
- *
- * Injected as an inline module rather than imported, for the same reason the CLI
- * inlines it: running the ported source string is what keeps this page and
- * `generate.py`'s output the same code path. Every binding it makes is idempotent, so
- * re-running it after a later section lands is safe and cheap; the map, in
- * particular, is built once and never rebuilt.
- *
- * It is not run before `#data` and `#stops` exist — `network` is the first stage that
+ * Run the page runtime against whatever is currently in the DOM, as an inline
+ * module. Every binding is idempotent, so re-running it after a later section lands
+ * is safe; the map is built once. Not run before `network`, the first stage that
  * gives the map a border, a hub and a stop list.
  */
 function injectRuntime() {
   if (!state.arrived.has('network')) return;
-  // An inline module runs once and the element is inert afterwards; the spent one is
-  // cleared first so the DOM never accumulates one dead <script> per stage. (It is
-  // removed *before* the new one is appended, never after: removing a module script
-  // element does not cancel its execution, but it does make the ordering unreadable.)
+  // The spent <script> is removed first so the DOM never accumulates one per stage.
   const spent = document.querySelector('script[data-jltg-runtime]');
   if (spent) spent.remove();
   const script = document.createElement('script');

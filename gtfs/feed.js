@@ -1,20 +1,14 @@
 /**
  * gtfs/feed.js — GTFS feed loading and normalisation.
  *
- * Port of `generate.py` (the small `_s1_*` helpers plus all of
- * "S1 · feed loading and normalisation"). Runs **inside the Web Worker**: no DOM,
- * no `window`, no `document`.
- *
- * Python gets `zipfile` and `csv.DictReader` for free. This module does not, so it
- * carries its own minimal ZIP reader (stored + deflate only) and its own streaming
- * RFC-4180/`csv`-dialect parser. Both are below and both are dependency-free.
+ * Port of `generate.py` (the `_s1_*` helpers plus "S1 · feed loading and
+ * normalisation"). Runs inside the Web Worker: no DOM. Carries its own minimal ZIP
+ * reader (stored + deflate) and streaming RFC-4180 CSV parser, both dependency-free.
  *
  * ── stop_times is stored COLUMNAR ───────────────────────────────────────────────
  *
- * The largest feed this must survive is MBTA: 7,770 stops and 2.15 million
- * `stop_times` rows. Two million plain objects with eight string keys each would
- * exhaust the tab. So `stop_times` — and *only* `stop_times`; every other table is
- * thousands of rows and stays as plain objects — lives in a `StopTimes` store of
+ * MBTA has 2.15 million `stop_times` rows, and that many plain objects would exhaust
+ * the tab. So `stop_times` — and only `stop_times` — lives in a `StopTimes` store of
  * parallel typed arrays, one slot per row, in file order:
  *
  *     trip   Uint32Array   index into `tripIds` (string-interning table)
@@ -26,19 +20,13 @@
  *     distv  Float64Array  shape_dist_traveled, NaN when blank; null when the
  *                          column is absent from the file entirely
  *
- * Times are seconds since midnight **of the service day** and are never reduced
- * mod 86400: GTFS legally runs past 24:00:00 and a wrap would silently reorder a
- * night network. Storing the integer instead of the `'H:MM:SS'` text is exact —
- * `hmsToS(hhmmss(n)) === n` for every integer, negatives included.
+ * Times are seconds since midnight of the service day and are never reduced mod
+ * 86400: GTFS legally runs past 24:00:00 and a wrap would reorder a night network.
  *
- * The interning tables are `Map<string, number>` internally. Their iteration order
- * is first-seen, which is a deterministic function of the input bytes, and nothing
- * that reaches output iterates them unsorted anyway.
- *
- * Downstream code should never touch the arrays directly. Use:
+ * Downstream code never touches the arrays directly. Use:
  *
  *     const st = stopTimesOf(feed);
- *     st.length                     // number of rows
+ *     st.length                     // number of rows — never `arrv.length`
  *     st.tripId(i) / st.stopId(i)   // strings
  *     st.arrival(i) / st.departure(i)  // seconds, or null when blank
  *     st.dist(i)                    // number, or null
@@ -46,41 +34,27 @@
  *     tripRows(feed)                // Map<trip_id, Int32Array of row indices,
  *                                   //     sorted by int(stop_sequence)>
  *
- * `st.length` is the row count — never `arrv.length`. The arrays are allocated in
- * whole steps and `compact()` leaves a small over-allocated tail where it is rather
- * than copying six of them to trim it, so the two can differ.
+ * `feed.tables.stop_times` is a lazy `Proxy` over the store that behaves like an
+ * array of row dicts. It is not structured-clone-safe (drop `Feed.tables` before
+ * `postMessage`, as CONTRACT.md §(b) allows), writing to it throws (mutate through
+ * `st.setArrival` / `st.setDeparture`), and `rowAt()` returns only the six columns
+ * the pipeline reads.
  *
- * `feed.tables.stop_times` is still present and still behaves like an array of row
- * dicts — it is a lazy `Proxy` over the store that materialises a row object on
- * index access, so `.length`, `for…of`, `.map`, `.filter` and `[i]` all work. Two
- * consequences, both deliberate:
- *   * it is **not** structured-clone-safe (a `Proxy` never is). `CONTRACT.md` §(b)
- *     already says `Feed.tables` MAY be dropped before `postMessage`; do that.
- *   * writing to it throws. Mutate through `st.setArrival` / `st.setDeparture`.
- *   * `rowAt()` returns only the six columns the pipeline reads (`trip_id`,
- *     `arrival_time`, `departure_time`, `stop_id`, `stop_sequence` and, when the
- *     file carries it, `shape_dist_traveled`). `pickup_type`, `stop_headsign` and
- *     friends are dropped at parse time; nothing in `generate.py` reads them.
- *
- * ── determinism ────────────────────────────────────────────────────────────────
  * No clock, no randomness. Every `Map`/`Set`/object is sorted before it is iterated
- * anywhere the result can reach output. `Array.prototype.sort` is stable in every
- * target engine, which is relied on exactly where CPython's stable `list.sort` is.
+ * anywhere the result can reach output; `Array.prototype.sort` is stable.
  */
 
 import { cmpStr, hhmmss, hmsToS, sha256Bytes } from '../lib/core.js';
 import { httpFetch } from '../lib/http.js';
 
 // ── logging ───────────────────────────────────────────────────────────────────
-// `generate.py` logs through the stdlib `log`. In the worker there is no console
-// worth writing to, so the sink is injectable and defaults to silence. The worker
-// wires it to `postMessage({type:'log', …})`.
+// The sink is injectable and defaults to silence; the worker wires it to
+// `postMessage({type:'log', …})`.
 
 let LOG = { info() {}, warn() {} };
 
 /**
- * Install the log sink used by this module. `sink.info(msg)` / `sink.warn(msg)`.
- * Passing null restores silence.
+ * Install the log sink used by this module. Passing null restores silence.
  * @param {{info:(m:string)=>void, warn:(m:string)=>void}|null} sink
  */
 export function setFeedLogger(sink) {
@@ -98,17 +72,11 @@ const MISSING = -2147483648;
 // ── small private helpers (generate.py) ─────────────────────────────
 
 /**
- * Median of a *measured distribution* — headways, gaps, travel times.
- *
- * This is the ordinary median (Python's `statistics.median`: the mean of the two
- * middle values for even n), and it is deliberately **not** `lowerMedian`. The
- * contract reserves `lowerMedian` for the two places where a tie must resolve
- * *down* to the quieter option — representative-day choice and the game-size vote —
- * because there the two middle values are alternative realities and averaging them
- * would invent a day the feed does not have. A headway distribution is not like
- * that: the middle of an even sample is genuinely between the two, and the
- * lower-median variant shifts the reference feed's frequent-stop count from 186 to
- * 191 and its ≤30-minute share from 57% to 60% against the measured values.
+ * Median of a measured distribution — headways, gaps, travel times. The ordinary
+ * median (mean of the two middle values), deliberately not `lowerMedian`, which the
+ * contract reserves for ties that must resolve down (representative day, size vote).
+ * The lower median here shifts the reference feed's frequent-stop count from 186
+ * to 191.
  * @param {number[]} values
  * @returns {number}
  */
@@ -194,10 +162,9 @@ function toU8(data) {
 // The ZIP reader
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// Locate the End Of Central Directory record by scanning backwards, walk the
-// central directory, and inflate members on demand. Exactly two compression
-// methods are supported — 0 (stored) and 8 (deflate, via DecompressionStream
-// 'deflate-raw'). ZIP64 is read properly rather than silently misread.
+// Scan backwards for the End Of Central Directory record, walk the central
+// directory, inflate members on demand. Methods 0 (stored) and 8 (deflate via
+// DecompressionStream 'deflate-raw') only; ZIP64 is read properly.
 
 const SIG_EOCD = 0x06054b50;
 const SIG_EOCD64 = 0x06064b50;
@@ -239,8 +206,8 @@ async function* inflateStream(slice) {
   }
   const ds = new DecompressionStream('deflate-raw');
   const writer = ds.writable.getWriter();
-  // Do not await the write before reading: the stream's queue is small and the
-  // reader is what drains it. Errors surface on the read side too.
+  // Do not await the write before reading: the reader is what drains the small
+  // queue. Errors surface on the read side too.
   const pump = (async () => { await writer.write(slice); await writer.close(); })()
     .catch(() => { /* reported by the reader */ });
   const reader = ds.readable.getReader();
@@ -257,15 +224,14 @@ async function* inflateStream(slice) {
 }
 
 /**
- * Read a ZIP archive's central directory and return one descriptor per member.
- *
- * Members are returned in ascending name order — `generate.py` iterates
- * `sorted(zf.namelist())` and later duplicates of a basename must win.
+ * Read a ZIP archive's central directory and return one descriptor per member, in
+ * ascending name order (`generate.py` iterates `sorted(zf.namelist())`; later
+ * duplicates of a basename win).
  *
  * @param {Uint8Array|ArrayBuffer} bytes the whole archive
  * @param {{filter?: (basename: string, name: string) => boolean}} [opts]
- *   `filter` is consulted per member; only members that pass are returned. Nothing
- *   is decompressed until you call `stream()`.
+ *   only members that pass `filter` are returned; nothing is decompressed until
+ *   `stream()` is called.
  * @returns {Promise<Array<{name:string, basename:string, method:number,
  *   compressedSize:number, size:number,
  *   stream:() => AsyncGenerator<Uint8Array>}>>}
@@ -404,18 +370,14 @@ function memberStream(buf, dv, entry) {
 // The CSV parser
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// Python's `csv.DictReader` under the default dialect. `line.split(',')` corrupts
-// real feeds: stop names carry commas and quotes constantly. Handled here:
-//   * quoted fields, embedded commas, embedded newlines inside quotes
-//   * `""` as an escaped quote
+// Python's `csv.DictReader` under the default dialect (`line.split(',')` corrupts
+// real feeds). Handled:
+//   * quoted fields, embedded commas and newlines, `""` as an escaped quote
 //   * CRLF, LF and lone CR line terminators
-//   * a quote in the middle of an *unquoted* field is literal, and text after a
-//     closing quote is appended — both are what CPython's csv module does
-//   * completely empty lines are skipped (DictReader loops `while row == []`)
-//   * short rows fill with '' (DictReader's restval, then `None → ''`), long rows
-//     drop the surplus (DictReader's restkey, which generate.py pops)
-//   * the UTF-8 BOM is stripped, or the first column would be named '﻿stop_id'
-//   * field names are trimmed
+//   * a quote mid-way through an unquoted field is literal, and text after a
+//     closing quote is appended (as CPython does)
+//   * empty lines are skipped; short rows fill with '', long rows drop the surplus
+//   * the UTF-8 BOM is stripped and field names are trimmed
 
 class CsvParser {
   /** @param {(fields: string[]) => void} onRecord */
@@ -578,13 +540,10 @@ export class StopTimes {
   /**
    * Size the arrays to exactly `want` rows, skipping the doubling ladder.
    *
-   * `readStopTimes` can name the row count to within about a tenth before it has
-   * finished the first trip — the zip entry declares the member's uncompressed size
-   * and the opening rows declare their own width — and MBTA's 2.15 M rows otherwise
-   * climb eleven doublings to a capacity nearly twice what they need, each step
-   * holding the old arrays and the new ones at once. Growth past this point still
-   * goes through `_reserve`, so an estimate that lands low costs one doubling and
-   * nothing else. Capacity reaches no value, so neither can move a number.
+   * `readStopTimes` estimates the row count from the member's declared size and the
+   * opening rows' width; MBTA's 2.15 M rows otherwise climb eleven doublings to
+   * nearly twice the capacity they need. An estimate that lands low costs one
+   * doubling through `_reserve`. Capacity reaches no value.
    */
   _reserveExact(want) {
     if (want > this._cap) this._grow(want);
@@ -641,13 +600,10 @@ export class StopTimes {
   /**
    * Trim the over-allocated tail once loading is finished.
    *
-   * Six slices copy the whole store, so a tail too small to be worth that is left
-   * where it is: every reader goes through `st.length` and none has ever asked a
-   * column for its own. The cut is an eighth, which is the headroom `readStopTimes`
-   * pre-sizes with plus the slack in its estimate, so a store that landed near its
-   * estimate keeps its tail. A store that came off the doubling ladder instead — a
-   * merge, a `frequencies.txt` rebuild — normally sits well above that and is
-   * trimmed exactly as before.
+   * A tail under an eighth is left in place: six slices copy the whole store, and
+   * every reader goes through `st.length`. An eighth is the headroom `readStopTimes`
+   * pre-sizes with, so a store near its estimate keeps its tail while one off the
+   * doubling ladder (a merge, a `frequencies.txt` rebuild) is trimmed.
    */
   compact() {
     const n = this.length;
@@ -663,15 +619,10 @@ export class StopTimes {
 
   /**
    * Bulk-append every row of another store, translating its interned keys through
-   * two remap tables. `tripRemap[k]` / `stopRemap[k]` are this store's keys for
-   * `other`'s trip/stop key `k` — the caller interns the (namespaced) strings once
-   * per distinct id, so this loop does no string work at all.
-   *
-   * One `_reserve` and one pass: O(rows), peak memory `1 × destination +
-   * 1 × largest source` rather than `2 × total`. `arrv`/`depv` carry the MISSING
-   * sentinel, so the raw `Int32` is copied and never interpreted. When this store
-   * tracks `shape_dist_traveled` and `other` does not, the appended rows get NaN,
-   * which `dist(i)` already reports as `null`.
+   * `tripRemap` / `stopRemap` (the caller interns the namespaced strings once per
+   * distinct id, so this loop does no string work). One `_reserve` and one pass.
+   * `arrv`/`depv` are copied raw, MISSING included; rows from a store without
+   * `shape_dist_traveled` get NaN.
    *
    * @param {StopTimes} other
    * @param {Uint32Array} tripRemap @param {Uint32Array} stopRemap
@@ -784,10 +735,7 @@ export function attachStopTimes(feed, st) {
 
 /**
  * Return `[zipBytes, sha256]` for a URL or a picked `File`/`Blob`/byte buffer.
- *
- * The CLI's third case — a directory, repacked in sorted name order so its hash is
- * stable — has no browser analogue and is dropped. A bare path string that is not a
- * URL is an error here: the worker has no filesystem.
+ * The CLI's directory case has no browser analogue; a non-URL string is an error.
  *
  * @param {string|File|Blob|ArrayBuffer|Uint8Array} source
  * @param {Object} cache
@@ -814,11 +762,8 @@ async function _s1ReadSource(source, cache) {
 
 /**
  * Every `*.txt` in the archive as a list of row dicts — except `stop_times`, which
- * goes into the columnar store and is exposed through a lazy view.
- *
- * The UTF-8 BOM is stripped (it would otherwise rename the first column to
- * `'﻿stop_id'`); quoted fields containing CRLF stay intact; the basename is
- * matched so a feed zipped with a top-level directory still works.
+ * goes into the columnar store behind a lazy view. The BOM is stripped and the
+ * basename is matched, so a feed zipped inside a directory still works.
  *
  * @param {Uint8Array} body
  * @param {{onProgress?: (info:{table:string, done:number, total:number}) => void}} [opts]
@@ -857,24 +802,19 @@ async function readTable(entry) {
   return rows;
 }
 
-/** Rows measured before the store is pre-sized — one trip's worth, near enough. */
+/** Rows measured before the store is pre-sized — about one trip's worth. */
 const RESERVE_SAMPLE_ROWS = 64;
 
 /**
- * A deflate ratio no CSV reaches. The pre-size below trusts the central directory's
- * uncompressed size, and a corrupt or hostile one would otherwise be an allocation
- * this reader makes on the archive's say-so; past the guard the doubling ladder
- * takes over, which is what a feed got before there was a pre-size at all.
+ * A deflate ratio no CSV reaches. The pre-size trusts the central directory's
+ * uncompressed size; past this guard the doubling ladder takes over.
  */
 const RESERVE_MAX_RATIO = 64;
 
 /**
- * A floor under the measured row width. The pre-size divides the member's declared
- * size by what the opening rows are wide, so a sample NARROWER than the rest of the
- * file scales the allocation up — blank times and one-character ids in the first
- * trip would size the store for rows the file does not contain. The narrowest
- * 64-row window in any cached feed averages 36 units, so this never binds on a real
- * feed; past it the doubling ladder takes over.
+ * Floor under the measured row width, so a first trip with blank times and short
+ * ids cannot scale the allocation up. The narrowest 64-row window in any cached
+ * feed averages 36 units.
  */
 const RESERVE_MIN_ROW_WIDTH = 24;
 
@@ -882,10 +822,9 @@ async function readStopTimes(entry) {
   const st = new StopTimes();
   let header = null;
   let iTrip = -1; let iArr = -1; let iDep = -1; let iStop = -1; let iSeq = -1; let iDist = -1;
-  // Row width, measured rather than assumed: a Rapid row is half an MBTA one and no
-  // single bytes-per-row constant is within reach of both. The measure under-counts
-  // slightly — UTF-16 units against a byte count, one terminator against CRLF — so
-  // the row estimate errs high, which is the safe direction and what `compact()` is.
+  // Row width is measured, not assumed: a Rapid row is half an MBTA one. The measure
+  // under-counts slightly (UTF-16 units against bytes, LF against CRLF), so the
+  // estimate errs high, which is the safe direction.
   let sampled = 0;
   let sampledWidth = 0;
   await streamCsv(entry, (fields) => {
@@ -906,7 +845,7 @@ async function readStopTimes(entry) {
       if (++sampled === RESERVE_SAMPLE_ROWS) {
         const bytes = Math.min(entry.size, entry.compressedSize * RESERVE_MAX_RATIO);
         // A sixteenth of headroom, so an estimate landing a shade low still fits
-        // without a doubling — and a tail this small is one `compact()` leaves.
+        // without a doubling.
         const width = Math.max(sampledWidth, sampled * RESERVE_MIN_ROW_WIDTH);
         const rows = Math.trunc((bytes * sampled * 17) / (width * 16));
         if (Number.isFinite(rows)) st._reserveExact(rows);
@@ -971,20 +910,13 @@ function _s1WindowDates(tables) {
 }
 
 /**
- * The agency row a feed should be named after.
+ * The agency row a feed should be named after: the one that runs the most trips,
+ * ties broken on agency_id. MBTA's feed lists Cape Cod RTA first, which would name
+ * a Boston-wide map after a bus operator 100 km away.
  *
- * A multi-agency feed is not "the first row in agency.txt". MBTA's feed lists Cape
- * Cod RTA first and MBTA second, which named a Boston-wide map after a bus operator
- * 100 km away. Pick the agency that actually runs the most trips; ties break on
- * agency_id so the choice is deterministic. Single-agency feeds are unaffected.
- *
- * Lifted out of `loadFeed` verbatim so the rule reads as one named question rather
- * than a block in the middle of a 300-line loader. It is PRIVATE: `gtfs/merge.js`
- * does not use it, and must not — a merged feed takes its timezone and agency name
- * from the primary FEED (the one running the most trips), not from a re-vote over
- * the pooled agency rows, which would let a big neighbour's timezone rename a map.
- * A feed with no `agency.txt` at all answers with an empty row, which is what
- * `loadFeed` has always used.
+ * PRIVATE: `gtfs/merge.js` must not use it — a merged feed takes its timezone and
+ * agency name from the primary FEED, not from a re-vote over pooled agency rows.
+ * A feed with no `agency.txt` answers with an empty row.
  *
  * @param {Object} tables a Feed's `tables`
  * @returns {Object<string,string>} the primary agency row
@@ -1027,17 +959,15 @@ function pickPrimaryAgency(tables) {
 /**
  * Fetch (or open) a GTFS zip and parse every `*.txt` into a `Feed`.
  *
- * Returns a fully normalised `Feed`: `tables` holds the raw rows, `stops`/`routes`
- * the typed views, and `sha256` the hash of the zip bytes (which goes on the page as
- * provenance). Reads as UTF-8 with the BOM stripped, tolerates files nested in a
- * top-level directory, and treats every optional column as optional. Downloads go
- * through the shared cache under `gtfs/<sha256(url)>.zip`.
+ * `tables` holds the raw rows, `stops`/`routes` the typed views, and `sha256` the
+ * hash of the zip bytes (printed as provenance). Downloads go through the shared
+ * cache under `gtfs/<sha256(url)>.zip`.
  *
  * @param {string|File|Blob|ArrayBuffer|Uint8Array} source a GTFS URL or a picked file
  * @param {Object} cache the worker's `Cache`
  * @param {{onProgress?: (info:{table:string, done:number, total:number}) => void}} [opts]
- *        called once per `*.txt` before it is parsed, and once more when the last
- *        one is done — `done`/`total` count tables, not bytes.
+ *        called once per `*.txt` before parsing and once when done; counts tables,
+ *        not bytes.
  * @returns {Promise<Object>} a `Feed` (CONTRACT.md §(b))
  */
 export async function loadFeed(source, cache, opts = {}) {
@@ -1099,8 +1029,7 @@ export async function loadFeed(source, cache, opts = {}) {
       longName,
       routeType,
       color: String(row.route_color || '').trim(),
-      // Python exposes these as properties; materialised here so a Route stays
-      // clone-safe (CONTRACT.md §(b)).
+      // Materialised rather than computed so a Route stays clone-safe (CONTRACT.md §(b)).
       label: shortName || longName || rid,
       isRail: _S1_RAIL_TYPES.includes(routeType),
     };
@@ -1136,10 +1065,8 @@ export async function loadFeed(source, cache, opts = {}) {
 // ── per-feed derived caches (attached to the Feed object, never serialised) ────
 
 /**
- * Memoise a derived structure on the Feed. Pure, so this cannot affect output.
- *
- * The store is a non-enumerable own property, which keeps it out of
- * `structuredClone` and out of `JSON.stringify`.
+ * Memoise a derived structure on the Feed, in a non-enumerable own property so it
+ * stays out of `structuredClone` and `JSON.stringify`.
  * @param {Object} feed @param {string} key @param {() => any} build @returns {any}
  */
 export function s1Cache(feed, key, build) {
@@ -1210,10 +1137,8 @@ export function normaliseTimes(feed) {
   if (feed._s1Normalised) return;
 
   _s1ExpandFrequencies(feed);
-  // Both passes walk the same trips in the same order, so the index and the sorted
-  // id list are built once here and handed to both. They stay two passes on purpose:
-  // the fill loop's two early `continue`s would swallow the monotone check on
-  // exactly the well-formed trips, which are most of them.
+  // Two passes on purpose: the fill loop's early `continue`s would skip the monotone
+  // check on exactly the well-formed trips.
   const byTrip = tripRows(feed);
   const tids = Array.from(byTrip.keys()).sort(cmpStr);
   _s1FillBlankTimes(feed, byTrip, tids);
@@ -1228,15 +1153,10 @@ export function normaliseTimes(feed) {
 /**
  * Turn every `frequencies.txt` row into concrete trips.
  *
- * The template trip's own `stop_times` rows are **dropped**, not kept alongside —
- * keeping them would double-count the first headway slot. `exact_times` makes no
- * difference to an earliest-arrival model: expanding at the stated headway is the
- * correct conservative reading of both 0 and 1.
- *
- * Note the surprise carried over from the CLI: a template whose frequency row is
- * unusable (no headway, inverted window) still has its original stop_times dropped
- * and gets no replacements — `dropped` is built from every template id, before the
- * per-row validity test.
+ * The template trip's own `stop_times` rows are dropped, or the first headway slot
+ * would be double-counted. `exact_times` makes no difference to an earliest-arrival
+ * model. As in the CLI, a template whose frequency row is unusable still loses its
+ * original stop_times and gets no replacements.
  */
 function _s1ExpandFrequencies(feed) {
   const freq = (feed.tables.frequencies || []).filter((r) => String(r.trip_id || '').trim());
@@ -1280,8 +1200,7 @@ function _s1ExpandFrequencies(feed) {
     }
   }
 
-  // Rebuild the store: surviving rows in file order, then the expansions — the same
-  // ordering the CLI's list concatenation produces.
+  // Surviving rows in file order, then the expansions — the CLI's concatenation order.
   for (let i = 0; i < st.length; i++) {
     if (templateSet.has(st.tripId(i))) continue;
     out.pushRaw(st.trip[i], st.stop[i], st.seqv[i], st.arrv[i], st.depv[i],
@@ -1325,8 +1244,8 @@ function _s1FillBlankTimes(feed, byTrip, tids) {
   for (const tid of tids) {
     const rows = byTrip.get(tid);
     const n = rows.length;
-    // `departure or arrival` — a departure of exactly 0 is falsy in Python too and
-    // falls through to the arrival. The quirk is load-bearing; keep it.
+    // `departure or arrival`: a departure of exactly 0 falls through to the arrival,
+    // as in Python. Load-bearing; keep it.
     const times = new Array(n);
     let anyBlank = false;
     for (let i = 0; i < n; i++) {
@@ -1401,12 +1320,9 @@ function _s1CheckMonotone(feed, byTrip, tids) {
 }
 
 /**
- * Resolve the feed's validity window and the analysis date.
- *
- * Returns `[start, end, asOf]` as GTFS date strings. Priority for the window:
- * `feed_info` dates, else min/max over `calendar`, else min/max over
- * `calendar_dates`. `asOf` defaults to `start` and is clamped into the window.
- * **Never reads the clock** — that is the whole reason this function exists.
+ * Resolve the feed's validity window and the analysis date as `[start, end, asOf]`
+ * GTFS date strings. `asOf` defaults to `start` and is clamped into the window.
+ * Never reads the clock.
  *
  * @param {Object} feed @param {string|null} asOf @returns {[string, string, string]}
  */

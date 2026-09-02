@@ -1,25 +1,22 @@
 /**
  * S1 · the service day and the RAPTOR structures.
  *
- * Port of `generate.py` (the per-feed derived caches, the calendar
- * and the day-type grouping), 2713–3290 (the service day itself) and 3294–3366
- * (`cluster_stations`). Nothing here reads a clock, a locale or the DOM.
+ * Port of `generate.py` (derived caches, calendar, day-type grouping, the service
+ * day, `cluster_stations`). Nothing here reads a clock, a locale or the DOM.
  *
- * `ServiceDay.patterns / patternAtStop / footpaths / stopIndex` are S1-private,
- * exactly as contract.md §3.2 says. Their concrete shapes are:
+ * `ServiceDay.patterns / patternAtStop / footpaths / stopIndex` are S1-private
+ * (contract.md §3.2). Shapes:
  *
  *   stopIndex        {byId: Map<stop_id, i>, ids: [stop_id, …]}   — ids is sorted
  *   patterns         [_S1Pattern, …]  — column-major so the board lookup is a bisect
  *   patternAtStop    CSR over stop index → (patternIndex, offset) pairs, sorted
  *   footpaths        CSR over stop index → (otherIndex, seconds) pairs, sorted
  *
- * and one extra object, `day.extras`, carries the per-day analysis vectors that
- * would otherwise be recomputed by three different callers.
+ * `day.extras` carries the per-day analysis vectors shared by several callers.
  *
- * The two CSR structures replace the Python's tuple-of-tuples. They are the one
- * shape change in this file and they exist because RAPTOR runs several times per
- * report over up to 7,770 stops: a `Int32Array` triple is ~40× cheaper to walk than
- * an array of two-element arrays. Layout:
+ * The CSR structures replace the Python's tuple-of-tuples: RAPTOR runs several
+ * times per report over thousands of stops, and an `Int32Array` triple is ~40×
+ * cheaper to walk than an array of pairs. Layout:
  *
  *   patternAtStop = {ptr: Int32Array(n+1), pat: Int32Array(m), off: Int32Array(m)}
  *   footpaths     = {ptr: Int32Array(n+1), to:  Int32Array(m), w:   Int32Array(m)}
@@ -55,9 +52,8 @@ const S1_DOW_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
   'Saturday', 'Sunday'];
 
 /**
- * Tuple keys are joined with U+0000, which is below every character a GTFS id can
- * legally hold, so sorting the joined strings reproduces Python's element-wise
- * tuple ordering exactly — including the prefix case (`('a',) < ('a','b')`).
+ * Tuple keys are joined with U+0000, below every legal GTFS id character, so sorting
+ * the joined strings reproduces Python's tuple ordering, prefix case included.
  */
 const SEP = '\u0000';
 
@@ -90,10 +86,8 @@ export function s1Gaps(times) {
 }
 
 /**
- * One departure per trip (the first), sorted.
- *
- * 592 of the reference feed's 5,620 trips revisit a stop; without this a loop
- * terminus reports a fake 0-minute headway.
+ * One departure per trip (the first), sorted. Without this a loop terminus reports
+ * a fake 0-minute headway.
  * @param {Array<[string, number]>} pairs
  * @returns {number[]}
  */
@@ -107,14 +101,9 @@ export function s1Dedupe(pairs) {
 }
 
 /**
- * The busiest day of a run — `max(days, key=(trips, day_type.key))`, the Python's
- * tuple order, so a tie on trips is broken by the LARGER day key.
- *
- * This rule decides which day every headline number describes — the metric table's
- * `best`, the route-headway column, the one-route cap, the travel-time chart's sort
- * — so it is written once. `days` must be non-empty: what an empty run means is the
- * caller's to say and the callers genuinely disagree (throw, `[]`, `null`), so each
- * guards before it asks.
+ * The busiest day of a run — `max(days, key=(trips, day_type.key))`, so a tie on
+ * trips is broken by the LARGER day key. Every headline number describes this day,
+ * so the rule is written once. `days` must be non-empty; each caller guards first.
  *
  * @param {object[]} days non-empty `ServiceDay`s; only `trips` and `dayType.key` are read
  * @returns {object} the winning element of `days`
@@ -129,11 +118,9 @@ export function busiestDay(days) {
 }
 
 // ── per-feed derived caches ─────────────────────────────────────────────────
-// There is exactly one memo mechanism on the worker side and it lives in
-// `gtfs/feed.js`: `s1Cache(feed, key, build)`, held in a non-enumerable own
-// property so it never reaches `structuredClone`, and dropped wholesale by
-// `s1Invalidate` whenever the columnar store is rebuilt. Everything this module
-// derives from a Feed goes through it, so a key can only ever mean one thing.
+// The one worker-side memo is `s1Cache(feed, key, build)` in `gtfs/feed.js`
+// (non-enumerable, never reaches `structuredClone`, dropped by `s1Invalidate`).
+// Everything derived from a Feed goes through it, so a key means one thing.
 
 /**
  * `service_id → trips rows`.
@@ -174,10 +161,9 @@ export function s1CalendarIndex(feed) {
 /**
  * The set of `service_id`s running on `date`, as a **sorted array**.
  *
- * Handles both conventions in one pass: `calendar.txt` weekday bitmasks within the
- * row's date range, then `calendar_dates.txt` exceptions (type 1 adds, type 2
- * removes). A feed with only `calendar_dates` signals a no-service day by the
- * date's *absence*, so an empty result is meaningful, not an error.
+ * `calendar.txt` weekday bitmasks within the row's date range, then `calendar_dates`
+ * exceptions (type 1 adds, type 2 removes). A `calendar_dates`-only feed signals a
+ * no-service day by absence, so an empty result is meaningful, not an error.
  * @param {object} feed @param {string} date 'YYYYMMDD'
  * @returns {string[]} sorted
  */
@@ -225,12 +211,9 @@ export function s1DateProfiles(feed, start, end) {
  * Pick the representative date of a group: lower-median trip count, then the
  * **middle** date among the ones tied at that count.
  *
- * Lower median is the rulebook-safe choice — a tie between a busy and a quiet
- * pattern must resolve to the quiet one, or the page promises service it does not
- * have (the reference feed's two Sunday patterns differ by 3½ hours of span).
- * Taking the middle tied date rather than the first avoids landing on a partial
- * first week, which is a common feed artefact; it is still a pure function of the
- * sorted date list.
+ * Lower median so a busy/quiet tie resolves to the quiet pattern, or the page
+ * promises service it does not have. The middle tied date avoids landing on a
+ * partial first week.
  * @param {Array<[string, string[], number]>} dates
  * @returns {[string, string[], number]}
  */
@@ -246,14 +229,11 @@ function s1Representative(dates) {
 /**
  * Group the validity window into distinguishable service-day types.
  *
- * For each day-of-week, list every date whose active-service set is non-empty,
- * count trips, and pick the date with the **lower median** trip count (tie-break
- * earliest) as representative. Day types with identical service-id sets and trip
- * counts are merged (a Mon–Fri feed yields one 'weekday' type, not five).
- *
- * Returns them in calendar order (weekday, Saturday, Sunday, …). This matters more
- * than it looks: the reference feed has two Sunday patterns whose spans differ by
- * 3½ hours, and picking "the first Sunday" would flip a headline fact.
+ * Per day-of-week, list every date with a non-empty active-service set, count trips,
+ * and pick the **lower median** date as representative. Mon–Fri merge into one
+ * 'weekday' type when they run similar amounts of service. Returned in calendar
+ * order (weekday, Saturday, Sunday, …). The reference feed has two Sunday patterns
+ * whose spans differ by 3½ hours, so "the first Sunday" would flip a headline fact.
  * @param {object} feed @param {string} start @param {string} end
  * @returns {import('./service.js').DayType[]}
  */
@@ -378,9 +358,8 @@ export function noServiceDates(feed, start, end) {
  * @property {Object<string, [string, string]>} tripRoute   // trip_id → [route_id, direction_id]
  * @property {Object<string, number[]>} dedup               // stop_id → one departure per trip
  * @property {Array<[[string, string, string], number[]]>} routeDirStop
- *   Sorted array of `[[routeId, directionId, stopId], departures]`. The Python is a
- *   dict keyed by a 3-tuple and every caller iterates `sorted(...)`; a sorted array
- *   of entries is the faithful JS form — destructure it exactly like the Python.
+ *   Sorted array of `[[routeId, directionId, stopId], departures]` — the Python's
+ *   3-tuple-keyed dict, iterated `sorted(...)`.
  * @property {Object<string, string[]>} stopRoutes
  * @property {Object<string, string>} stopName              // stop_id → display name
  * @property {Object<string, string>} routeLabel            // route_id → Route.label
@@ -426,14 +405,12 @@ export function s1Positions(feed, projLike) {
 /**
  * Geometric transfer graph: every stop pair within `WALK_RADIUS_M`.
  *
- * Weight is `straight_line × WALK_CIRCUITY ÷ WALK_SPEED_MPS`. `transfers.txt`, when
- * populated, overrides: `transfer_type=3` deletes the edge, `2` raises its weight to
- * at least `min_transfer_time`, and an explicitly listed pair is added even if it is
- * beyond the walk radius. The graph is symmetric and identical on every service day,
- * so it is built once per feed.
+ * Weight is `straight_line × WALK_CIRCUITY ÷ WALK_SPEED_MPS`. `transfers.txt`
+ * overrides: `transfer_type=3` deletes the edge, `2` raises its weight to at least
+ * `min_transfer_time`, and a listed pair is added even beyond the walk radius.
+ * Symmetric and day-independent, so built once per feed.
  *
- * Returned as CSR (see the module header): the edges of stop `i` are the slice
- * `[ptr[i], ptr[i + 1])` of `to` / `w`, sorted by `(to, w)`.
+ * Returned as CSR (see the module header), edges sorted by `(to, w)`.
  * @param {object} feed @param {Projection|{lat0:number,lon0:number}} projLike
  * @returns {{ptr: Int32Array, to: Int32Array, w: Int32Array}}
  */
@@ -533,14 +510,13 @@ export function s1Footpaths(feed, projLike) {
  * `stop_id → the shortest median headway any single route-direction achieves there`,
  * over the `HEADWAY_WINDOW` slice of `routeDirStop`.
  *
- * One route-direction at a time, exactly as gtfs.md §1.9 requires: a stop served by
- * two unrelated half-hourly routes is not a 15-minute stop. Fewer than two
- * departures inside the window is not a headway at all, so the entry is skipped and
- * the stop stays absent from the map rather than present with a fake value.
+ * One route-direction at a time (gtfs.md §1.9): two unrelated half-hourly routes do
+ * not make a 15-minute stop. Fewer than two departures in the window is no headway,
+ * so the stop stays absent rather than present with a fake value.
  *
- * The two readers cut the same measurement at different thresholds on purpose —
- * `buildServiceDay`'s `frequent` at `FREQUENT_HEADWAY_MIN` (15 min), `s1DayMetrics`'
- * `within30` at 30. Do not reconcile them.
+ * `buildServiceDay`'s `frequent` (`FREQUENT_HEADWAY_MIN`) and `s1DayMetrics`'
+ * `within30` cut the same measurement at different thresholds on purpose. Do not
+ * reconcile them.
  *
  * @param {Array<[[string, string, string], number[]]>} routeDirStop `day.extras.routeDirStop`
  * @returns {Map<string, number>} seconds
@@ -563,15 +539,10 @@ export function s1BestDirGaps(routeDirStop) {
 /**
  * Materialise one service day, including the RAPTOR structures.
  *
- * Builds: per-stop departure vectors, routes, headways and the frequent flag;
- * RAPTOR patterns (trips sharing an identical stop sequence, sorted by first
- * departure) and the geometric footpath graph (`WALK_RADIUS_M` straight-line ×
- * `WALK_CIRCUITY` ÷ `WALK_SPEED_MPS`, honouring `transfers.txt` when populated:
- * `transfer_type=3` deletes an edge, `2` raises its weight).
- *
- * Also asserts once, at build time, that trips within a pattern do not overtake;
- * if any do, the earliest-trip lookup falls back to a linear scan instead of a
- * bisect. Measured cost on the reference feed: 0.29 s.
+ * Builds per-stop departure vectors, routes, headways and the frequent flag; RAPTOR
+ * patterns (trips sharing a stop sequence, sorted by first departure); and the
+ * footpath graph (`s1Footpaths`). Checks once that trips within a pattern do not
+ * overtake; if any do, the earliest-trip lookup falls back to a linear scan.
  *
  * @param {object} feed
  * @param {object} day  a `DayType`
@@ -597,11 +568,9 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
   }
 
   // ── one ordered pass over the day's stop_times ────────────────────────────
-  // Straight off the columnar store: `tripRows` hands back row indices already
-  // sorted by int(stop_sequence), and `st.arrival/.departure` are the stored
-  // integer seconds, so there is no row dict to allocate and no 'H:MM:SS' to
-  // re-parse. `stopId` still gets the `.trim()` the row-dict version did — a feed
-  // with padded stop ids matches its `stops` table only after it.
+  // Straight off the columnar store: rows come sorted by int(stop_sequence) with
+  // integer seconds. `stopId` still gets `.trim()`: a feed with padded stop ids
+  // matches its `stops` table only after it.
   /** @type {Map<string, number[]>} */          const departures = new Map();
   /** @type {Map<string, Array<[string, number]>>} */ const tripDeps = new Map();
   /** @type {Map<string, Set<string>>} */       const stopRoutes = new Map();
@@ -646,8 +615,8 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
   }
 
   // ── per-stop facts ────────────────────────────────────────────────────────
-  // one departure per (trip, stop) per route-direction, exactly as gtfs.md §1.9
-  // requires — a loop terminus otherwise reports a fake 0-minute headway
+  // one departure per (trip, stop) per route-direction (gtfs.md §1.9); a loop
+  // terminus otherwise reports a fake 0-minute headway
   const rdsKeys = Array.from(rds.keys()).sort(cmpStr);
   /** @type {Array<[[string, string, string], number[]]>} */
   const rdsClean = [];
@@ -719,9 +688,8 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
       colsDep[off] = depCol;
       colsArr[off] = arrCol;
     }
-    // Patterns are keyed on the stop sequence alone (the RAPTOR definition), so a
-    // pattern can in principle carry trips of two different routes. Keep the
-    // per-trip route so a reconstructed journey never names the wrong line.
+    // Patterns are keyed on the stop sequence alone, so one can carry trips of two
+    // routes; keep the per-trip route so a journey never names the wrong line.
     const tripRoutes = ids.map((t) => tripRoute.get(t)[0]);
     const head = tripRoute.get(ids[0]);
     const pi = patterns.length;
@@ -813,12 +781,10 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Synthesise stations by single-link clustering of stops within `STATION_CLUSTER_M`.
- *
- * Honours `parentStation` first when the feed populates it; otherwise pure
- * geometry. Union-find over grid-accelerated pairs. Measured knee on the reference
- * feed: 100 m → 822 stations from 1,493 stops. **Do not** single-link at the zone
- * radius — chaining collapses whole corridors (402 m gives 111, which is nonsense).
+ * Synthesise stations by single-link clustering of stops within `STATION_CLUSTER_M`,
+ * honouring `parentStation` first. Union-find over grid-accelerated pairs. **Do not**
+ * single-link at the zone radius: chaining collapses whole corridors (on the
+ * reference feed 100 m gives 822 stations, 402 m gives 111).
  *
  * @param {object[]} stops  `Stop` records
  * @param {Projection|{lat0:number,lon0:number}} projLike

@@ -1,54 +1,33 @@
 // render/simulator.js — the secret hider's guide, after it is on the page.
 //
-// Ported from generate.py S5's page script:
-//   _S5_STRATEGY_JS       15108  — the whole client twin, verbatim below:
-//                                    hav / band / nearestIn      15150–14940
-//                                    answerFor                   15161–14992
-//                                    drawMap / ring / addBorder  15268–15060
-//                                    placeSeeker / paint         15310–15098
-//                                    readout                     15375–15120
-//                                    renderList                  15405–15170
-//                                    select / renderDossier      15471–15270
-//                                    tableRows / renderTable     15570–15334
-//                                    optionChips + the bindings  15337–15405
+// Ported from generate.py S5's page script (`_S5_STRATEGY_JS`): hav / band /
+// nearestIn, answerFor, drawMap / ring / addBorder, placeSeeker / paint, readout,
+// renderList, select / renderDossier, tableRows / renderTable (now `COLUMNS` +
+// `wireGrid` on a `wa-data-grid`), optionChips and the bindings.
 //
-// WHAT THIS FILE IS. `render/strategy.js` prints the guide; this file makes it move.
-// The interesting half is the simulator: the rulebook says a seeker asks a question
-// and the hider must answer truthfully, and `rules/audit.js`'s `survivalFractions`
-// answers it for a *sample* of seekers to score a zone. This runs the identical
-// arithmetic for exactly **one** seeker — the one the reader just dropped on the map —
-// so the colour partition on screen is the same computation the score came from, with
-// the sample size set to one. That is why the maths below is a transcription and not
-// an approximation: a reader checking the page against the rulebook will check this.
+// `render/strategy.js` prints the guide; this file makes it move. The simulator runs
+// the same arithmetic as `rules/audit.js`'s `survivalFractions` for exactly one
+// seeker, the one the reader dropped on the map, so the colour partition is the score's
+// own computation with the sample size set to one. The maths is a transcription.
 //
-// WHERE IT DELIBERATELY LEAVES THE CLI BEHIND. Three places where `generate.py`'s page
-// script did not agree with `rules/audit.js`, and therefore did not agree with the
-// rulebook: measuring anchored BOTH distances on the seeker's nearest feature; the
-// tentacle mode never tested the hider's own distance and so could never return the
-// rulebook's "not within reach"; and the tentacle reach was one number per game size
-// when a LARGE deck holds a 1-mile family and a 15-mile family at once. All three are
-// corrected below and each is marked DIVERGENCE, so that AGENTS.md's rule — a JS/Python
-// disagreement is a JS bug — does not misread them as regressions.
+// Three places are marked DIVERGENCE where the CLI's page script disagreed with
+// `rules/audit.js` and the rulebook (anchored BOTH distances on one feature; never
+// returned the tentacle "not within reach"; one tentacle reach per game size). They
+// are corrections, not regressions, for AGENTS.md's "a JS/Python disagreement is a JS
+// bug" rule.
 //
-// WHY IT RECOMPUTES INSTEAD OF READING AN ANSWER MATRIX. `worker.js:461–477`
-// builds `signatures` and `surv` as worker-local consts and never posts them. It does
-// not need to: the CLI's simulator never consumed them either (its `#zdata` carries no
-// answer matrix), because a seeker the reader placed a second ago is not in any
-// precomputed sample. Everything here comes out of `state.report` in memory —
-// `geo.pois` via `poiCategories()`, zone centres via `zoneViews()` — which is also why
-// the guide ships no `<script type="application/json">` block of its own.
+// Answers are recomputed rather than read from an answer matrix: the worker never
+// posts `signatures` / `surv`, and a seeker placed a second ago is in no precomputed
+// sample. Everything comes from `state.report` via `zoneViews()` and `poiCategories()`.
 //
-// THE ONE STRUCTURAL DIFFERENCE FROM THE CLI. The CLI has one document per page and
-// can bind to bare ids at parse time. The browser port has both pages in one document
-// and a view that is mounted once and then hidden, so every id here is namespaced
-// `s-` (see the DOM contract in the spec), the wiring is idempotent, and the reader's
-// mode, selection, sort, filter and page all survive leaving and re-entering the view.
+// Both pages share one document and this view is mounted once and then hidden, so
+// every id is namespaced `s-`, the wiring is idempotent, and reader state (mode,
+// selection, sort, filter, page) survives leaving and re-entering the view.
 //
-// DOM DISCIPLINE. This is the only module under `render/` that mutates the DOM, and it
-// does it the way `initDeckTables` (`render/deck.js:1840`) does: markup is built with
-// the sanctioned helpers in `./html.js`, never with hand-rolled strings, and every
-// number goes through a formatter from `../lib/core.js`. No `toFixed`, no `Intl`, no
-// clock, no randomness, and no unsorted iteration of anything.
+// This is the only module under `render/` that mutates the DOM. Markup is built with
+// the helpers in `./html.js`, every number goes through a formatter from
+// `../lib/core.js`, and there is no `toFixed`, `Intl`, clock, randomness or unsorted
+// iteration.
 //
 // @module render/simulator
 
@@ -66,17 +45,14 @@ import {
 import {
   zoneViews, modeChips, poiCategories,
   AXIS_IDS, AXIS_PLAIN, FLAG_TEXT,
-  TABLE_PAGE, TABLE_PAGE_ABOVE, MAX_MAP_ZONES,
+  TABLE_LABELS, TABLE_PAGE, TABLE_PAGE_ABOVE, MAX_MAP_ZONES,
 } from './strategy.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Presentation constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * The instruction each seeker mode prints until it has what it needs
- * (generate.py). `explore` needs nothing and never reaches here.
- */
+/** The prompt each seeker mode prints until it has what it needs (generate.py). `explore` needs nothing. */
 const MODE_NEED = Object.freeze({
   radar: 'Click the map to place the seekers, or use the button above.',
   match: 'Click the map to place the seekers, or use the button above.',
@@ -87,11 +63,8 @@ const MODE_NEED = Object.freeze({
 
 /**
  * Arrow key → [Δlatitude, Δlongitude] in degrees, before the cosine correction.
- *
- * ~55 m a press, ~550 m with shift held: a fraction of the smallest rulebook radius
- * (a quarter mile is 402 m) and a walk between two questions respectively. Degrees
- * rather than metres because the seeker is stored as a lat/lon pair and the map is
- * the only thing that would convert.
+ * ~55 m a press, ~550 m with shift: a fraction of the smallest rulebook radius, and a
+ * walk between two questions. Degrees because the seeker is stored as lat/lon.
  */
 const NUDGE_DEG = Object.freeze({
   ArrowUp: Object.freeze([0.0005, 0]),
@@ -101,11 +74,8 @@ const NUDGE_DEG = Object.freeze({
 });
 
 /**
- * The answer partition, as an icon **and** a word.
- *
- * `--q-edge` measures 2.38:1 against the page surface and cannot carry a signal by
- * itself (html.js:447 states the rule); every colour on the map is therefore repeated
- * as a word in the readout chip.
+ * The answer partition as an icon and a word: `--q-edge` cannot carry a signal by
+ * colour alone (html.js:447), so every map colour is repeated as a word in the readout.
  * @type {Object<string, [string, string, string]>}  answer → [word, variant, icon]
  */
 const ANSWER_TEXT = Object.freeze({
@@ -116,38 +86,29 @@ const ANSWER_TEXT = Object.freeze({
 });
 
 /**
- * The same partition in tentacle words.
- *
- * A tentacle answer is never yes or no: it is the NAME of a location, or — rulebook,
- * `seeking/tentacle_questions` — "If the hider is not within reach of the tentacle
- * question, they may simply answer that they are not within reach." Same three keys,
- * same variants and icons as `ANSWER_TEXT` so the colours cannot drift apart; only the
- * words differ, because the word is the channel a reader who cannot see the colour gets.
+ * The same partition in tentacle words. A tentacle answer is a location's NAME or the
+ * rulebook's "not within reach"; same keys, variants and icons as `ANSWER_TEXT` so the
+ * colours cannot drift apart.
  * @type {Object<string, [string, string, string]>}
  */
 const TENTACLE_TEXT = Object.freeze({
   yes: Object.freeze(['mostly a name in reach', 'success', 'circle-check']),
   no: Object.freeze(['mostly not within reach', 'danger', 'circle-xmark']),
   edge: Object.freeze(['mostly on the edge', 'warning', 'scale-balanced']),
-  /* NOT "no answer yet": by the time this chip is drawn a category is selected and a
-     seeker is placed, so `un` here can only be the engine's class `-2` — the seekers
-     named a category with nothing inside their own circle, and "there is nothing to
-     name" is an answer every in-reach zone gives alike. See `majorityGroup`. */
+  /* not "no answer yet": here `un` is the engine's class `-2`, the seekers named a
+     category with nothing inside their own circle. See `majorityGroup`. */
   un: Object.freeze(['mostly nothing in reach to name', 'neutral', 'circle-question']),
 });
 
 /**
- * Score bands and answers share the fallback circle layer when a map is too big for
- * label pills, so their keys are namespaced before they meet in one `match`
- * expression: `b:` is a score band, `a:` is an answer. `un` means different things on
- * the two sides and must never collide.
+ * Score bands (`b:`) and answers (`a:`) share the fallback dot layer, so their keys are
+ * namespaced before they meet in one `match` expression; `un` differs on the two sides.
  * @type {Array<[string, string]>}  key → the CSS custom property that colours it
  */
 const DOT_COLOUR = Object.freeze([
   Object.freeze(['b:top', '--gold-mark']),
   Object.freeze(['b:good', '--accent']),
-  /* `fair` is its own step, as `generate.py` gives it — collapsing it onto
-     `good`'s colour rendered a five-band scale in three colours */
+  /* `fair` is its own step (generate.py); collapsing it onto `good` left five bands in three colours */
   Object.freeze(['b:fair', '--warn']),
   Object.freeze(['b:weak', '--off']),
   Object.freeze(['b:un', '--off']),
@@ -156,15 +117,6 @@ const DOT_COLOUR = Object.freeze([
   Object.freeze(['a:edge', '--q-edge']),
   Object.freeze(['a:un', '--q-un']),
 ]);
-
-/** The eleven table columns, in the order `data-sort` numbers them (generate.py). */
-const SORT_RANK = 0;
-const SORT_NAME = 1;
-const SORT_SCORE = 2;
-const SORT_AXIS_FIRST = 3;
-const SORT_AXIS_LAST = 8;
-const SORT_FLAGS = 9;
-const SORT_TRAVEL = 10;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Module-level helpers (pure, or DOM-generic)
@@ -176,12 +128,8 @@ function cssVar(name) {
 }
 
 /**
- * A closed ring of `[lon, lat]` pairs approximating a circle, for the border outline
- * and the selected zone's true-radius disc. Ports `ring`, generate.py.
- *
- * The metres-per-degree constants are S5's own (111320 on both axes). `buildMap` in
- * app.js uses 111132 for latitude, which is the better figure, but the two differ by
- * 0.17 % — under a metre at a quarter-mile radius — and this is a transcription.
+ * A closed ring of `[lon, lat]` pairs approximating a circle. Ports `ring`, generate.py.
+ * 111320 m/degree on both axes is S5's own figure; app.js's 111132 differs by 0.17 %.
  *
  * @param {number} lat @param {number} lon @param {number} metres @param {number} [steps=64]
  * @returns {Array<[number, number]>}
@@ -197,23 +145,19 @@ function ringOf(lat, lon, metres, steps = 64) {
   return out;
 }
 
-/** A GeoJSON `Feature` wrapper, so the four `setData` calls below read as one thing. */
+/** A GeoJSON `Feature` wrapper. */
 function feature(geometry, properties = {}) {
   return { type: 'Feature', properties, geometry };
 }
 
 /**
- * The hover panel.
+ * The hover panel. MapLibre markers live outside every shadow root and map features
+ * are canvas, so `wa-tooltip` cannot anchor to them (styles.css:210); `#tt` is the
+ * page's one-off panel. Not a call into app.js's `bindTT`, which lives inside the
+ * verbatim `PAGE_RUNTIME_JS`.
  *
- * MapLibre markers are DOM nodes MapLibre owns, outside every shadow root, and a map
- * feature is canvas rather than DOM — so `wa-tooltip`, which anchors to an element,
- * cannot be used (styles.css:210 records the reason). `#tt` is the page's existing
- * one-off panel; this is a local ten-line binder rather than a call into app.js's
- * `bindTT`, because that function lives inside `PAGE_RUNTIME_JS`, a verbatim port of
- * the CLI's page JS that must stay one and never learn that this view exists.
- *
- * `htmlFor` is a *function*: markers are built once and repainted in place, so the
- * tip has to read the current mode and answer rather than a string captured at build.
+ * `htmlFor` is a function: markers are built once and repainted, so the tip reads the
+ * current mode and answer.
  *
  * @param {HTMLElement} node @param {() => string} htmlFor @returns {void}
  */
@@ -251,33 +195,22 @@ function rankKey(view) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The one wired view, or null.
- *
- * State lives here rather than in the DOM for the same reason `DECK_STATE` does
- * (deck.js:1487): the reader's mode, selection, sort, filter and page must survive
- * leaving the view, and re-entering must not rebuild anything. It also gives the
- * MapLibre instance an owner — `buildMap` (app.js:2434) has no teardown and leaks a
- * `Map` plus two theme listeners every time §05 is re-rendered, which is exactly the
- * bug this file's idempotence contract exists to avoid.
+ * The one wired view, or null. State lives here rather than in the DOM, as
+ * `DECK_STATE` does (deck.js), so reader state survives leaving the view; it also gives
+ * the MapLibre instance an owner, where `buildMap` (app.js) has no teardown and leaks.
  * @type {{root: HTMLElement, resize: () => void, destroy: () => void}|null}
  */
 let instance = null;
 
 /**
- * Wire the whole secret view: the map, the six question modes, the ranked rail, the
- * dossier, and the sortable/filterable table. IDEMPOTENT.
- *
- * First call: builds everything, including the MapLibre instance. Later calls with
- * the same `root`: resize the map and return — nothing is rebuilt, no listener is
- * added twice, and every scrap of reader state survives. A call with a different
+ * Wire the whole secret view: map, question modes, ranked rail, dossier, table.
+ * IDEMPOTENT: a later call with the same `root` only resizes the map; a different
  * `root` tears the previous instance down first.
  *
- * MUST be called only when `root` is visible and laid out: MapLibre reads its
- * container size once, at construction (html.js:242–245). app.js guarantees this by
- * flipping `body[data-view="strategy"]` before calling.
+ * MUST be called only when `root` is visible and laid out: MapLibre reads its container
+ * size once, at construction. app.js flips `body[data-view="strategy"]` before calling.
  *
- * Never throws: MapLibre's dynamic import is wrapped and the map degrades to hidden,
- * which the map caption already warns about.
+ * Never throws: the MapLibre import is wrapped and the map degrades to hidden.
  *
  * @param {HTMLElement} root  the `#strategy` element
  * @param {Object} report     the complete Report
@@ -291,12 +224,8 @@ export function initStrategy(root, report) {
 }
 
 /**
- * Everything above, once.
- *
- * One long closure rather than a class: every piece — `answerFor`, `paint`, the rail,
- * the dossier, the table — reads the same eight variables, and the CLI's script is
- * one closure for exactly that reason. Splitting it would mean threading a context
- * object through thirty functions to buy nothing.
+ * Everything above, once. One long closure rather than a class, as the CLI's script
+ * is: every piece reads the same handful of variables.
  *
  * @param {HTMLElement} root @param {Object} report
  * @returns {{root: HTMLElement, resize: () => void, destroy: () => void}}
@@ -312,17 +241,9 @@ function buildInstance(root, report) {
   const size = report.size || {};
   const RAD = Number(size.zoneRadiusM) || 0;
   /**
-   * Category key → THAT tentacle question's own reach, in metres.
-   *
-   * Never one `REACH_M` per game size from `size.tentacleReachMi`, which is what this
-   * used to do and what it measured every tentacle question against. The rulebook does
-   * not work that way: it lists Museums / Libraries / Movie Theaters /
-   * Hospitals **Within 1 Mile**, and then "For LARGE Sized Games, Add the Following:
-   * Metro Lines Within 15 Miles / Zoos … / Aquariums … / Amusement Parks Within 15
-   * Miles" — so a LARGE deck asks both, and one number misstates half of it. The engine
-   * has always read the per-question `param` (`rules/audit.js:980`); `modeChips` now
-   * carries the same figure as `reachMi`, so this side reads it too.
-   * `size.tentacleReachMi` is left alone — it is still the deck's headline number.
+   * Category key → THAT tentacle question's own reach, in metres. Never one reach per
+   * game size from `size.tentacleReachMi`: a LARGE deck holds 1-mile and 15-mile
+   * tentacles at once, and the engine reads the per-question `param` (`rules/audit.js`).
    */
   const tentacleReachM = new Map((chips.tentacle || [])
     .map((c) => [c.key, (Number(c.reachMi) || 0) * M_PER_MILE]));
@@ -334,27 +255,23 @@ function buildInstance(root, report) {
 
   // ── reader state (generate.py) ─────────────────────────────────
   let mode = 'explore';
-  /* the first dossier zone, but only if it is one we can actually show; a zoneId in
-     `dossierZoneIds` with no `ZoneScore` would otherwise leave `selected` naming a zone
-     `byId` does not hold, and the dossier with nothing to render. */
+  /* the first dossier zone, but only one `byId` can actually show */
   const opening = (report.dossierZoneIds || []).find((id) => byId.has(id));
   let selected = opening || (views[0] && views[0].id) || null;
   let seeker = null;
   let thermoA = null;
   let thermoB = null;
-  /* The initial radius is the first usable one-mile chip, else the first usable chip,
-     else one mile — a dead radar map still opens on a legible number. */
+  /* first usable one-mile chip, else first usable chip, else one mile */
   const usableRadar = (chips.radar || []).filter((r) => r.usable);
   const opt = {
     radar: (usableRadar.find((r) => r.miles === 1) || usableRadar[0] || { miles: 1 }).miles,
     cat: null,
   };
-  let sortCol = SORT_SCORE;
-  let sortDir = -1;
+  /* The grid owns the sort. Page and filter live here because the grid is not built
+     until it upgrades, and `syncPager` writes the grid's 0-based page back. */
   let page = 0;
   let filter = '';
-  /* `optionGroup` builds markup but cannot bind it — the nodes do not exist until the
-     caller writes them — so it leaves the group id and its handler here. */
+  /* `optionGroup` builds markup but cannot bind it, so it leaves the group id and handler here */
   let optionBind = null;
 
   /** zoneId → the current answer, refreshed by `computeAnswers` before every paint. */
@@ -362,11 +279,9 @@ function buildInstance(root, report) {
   /** zoneId → the tentacle feature whose name the hider would have to say. */
   const tentacleNames = new Map();
   /**
-   * zoneId → the IDENTITY of that feature, `lon,lat`, which is what decides whether
-   * two zones gave the same answer. Never group by the name: `rules/audit.js`'s
-   * `survivalFractions` classes a zone by `flat.owner`, the feature's own index, so two
-   * branches both called "Kent District Library" are two answers, and a feature with no
-   * `name` tag at all is not the same answer as every other unnamed one.
+   * zoneId → that feature's IDENTITY, `lon,lat`, which decides whether two zones gave
+   * the same answer. Never group by name: `survivalFractions` classes by `flat.owner`,
+   * so two branches with one name are two answers and unnamed features are not one.
    */
   const tentacleFeatures = new Map();
   let counts = { yes: 0, no: 0, edge: 0, un: 0 };
@@ -389,12 +304,10 @@ function buildInstance(root, report) {
   // ═════════════════════════════════════════════════════════════════════════
 
   /**
-   * The three-valued answer for a signed distance past a boundary, in metres.
-   *
-   * NOT a boolean, and the tolerance is exactly one zone radius: `edge` means the
-   * boundary passes through the zone's own rulebook circle, so the honest answer
-   * depends on where inside it the hider is standing. This is the single most
-   * important line in the port (generate.py).
+   * The three-valued answer for a signed distance past a boundary, in metres. The
+   * tolerance is one zone radius: `edge` means the boundary passes through the zone's
+   * rulebook circle, so the honest answer depends on where inside it the hider stands
+   * (generate.py).
    *
    * @param {number} delta @returns {'yes'|'no'|'edge'}
    */
@@ -404,16 +317,10 @@ function buildInstance(root, report) {
   }
 
   /**
-   * The nearest of a list of features to a point, and by how much it wins.
-   *
-   * `margin` is second-nearest minus nearest: when it is inside two zone radii, a
-   * different feature could win from elsewhere in the same circle, which is what
-   * turns a matching or tentacle answer into an `edge`. Features are
-   * `[lon, lat, name]` — lon first.
-   *
-   * The list is a parameter rather than a category because the tentacle branch scans
-   * a *subset* — only the features inside the seekers' reach — and its `edge` rule is
-   * the same `margin` rule, so both must come from one scan.
+   * The nearest of a list of `[lon, lat, name]` features to a point, and by how much it
+   * wins. A `margin` inside two zone radii means a different feature could win from
+   * elsewhere in the circle, which makes a matching or tentacle answer `edge`. Takes a
+   * list, not a category, because the tentacle branch scans only the in-reach subset.
    *
    * @param {Array[]|null|undefined} features @param {number} lat @param {number} lon
    * @returns {{feature: Array, d: number, margin: number}|null}
@@ -442,13 +349,10 @@ function buildInstance(root, report) {
   }
 
   /**
-   * What this zone's hider would have to answer, for the question the reader has
-   * loaded and the seeker they have placed. Ports `answerFor`, generate.py.
-   *
-   * `explore` is the odd one out and returns a *score* band, not an answer; every
-   * other mode returns `yes` / `no` / `edge` / `un`, and `un` means "the question
-   * cannot be asked yet", never "no". In the tentacle mode `no` is the rulebook's
-   * "not within reach" — see that branch — which is why nothing prints these keys raw.
+   * What this zone's hider would answer, for the loaded question and the placed seeker.
+   * Ports `answerFor`, generate.py. `explore` returns a score band; every other mode
+   * returns `yes` / `no` / `edge` / `un`, where `un` means "cannot be asked yet" and,
+   * in tentacle mode, `no` is the rulebook's "not within reach".
    *
    * @param {Object} view @returns {string}
    */
@@ -483,46 +387,27 @@ function buildInstance(root, report) {
     }
 
     if (mode === 'measure') {
-      /* Two nearest-feature lookups, not one. Calling `nearestIn` once on the seeker and
-         measuring BOTH sides to that one feature — which this used to do — answers "how
-         far are you from the seekers' nearest park", a question nobody asked. The rulebook's measuring
-         question is "Compared to me, are you closer to or further from ____?", and each
-         player measures to the instance nearest THEM: "If you are in a large park, a
-         mile from the park icon, you might have to say you are a mile away from any
-         park despite the fact that you are in a park." Two independent nearest-feature
-         distances, which is exactly what the engine compares — `osm_distance`
-         (rules/audit.js:727) stores each zone's OWN nearest distance and `survMeasuring`
-         (:851) ranks those against the seeker's. */
+      /* DIVERGENCE. Two nearest-feature lookups, one per side: the rulebook's measuring
+         question has each player measure to the instance nearest THEM, which is what
+         `osm_distance` and `survMeasuring` in rules/audit.js compare. */
       const mine = nearestIn(opt.cat, seeker.lat, seeker.lon);
       const theirs = nearestIn(opt.cat, view.lat, view.lon);
       if (!mine || !theirs) return 'un';
-      /* `edge` still means what it means everywhere else: the nearest-feature distance
-         is 1-Lipschitz in the hider's position, so anywhere inside the rulebook circle
-         it can move by up to one radius — and inside that band the honest answer really
-         does depend on where in the circle the hider is standing. It is also where the
-         engine's third class lives: a zone level with the seeker answers neither closer
-         nor further (`measuring_ties_are_their_own_answer`). */
+      /* `edge` as everywhere: the nearest-feature distance is 1-Lipschitz in position,
+         so it can move by up to one radius inside the circle. It is also the engine's
+         third class, a tie (`measuring_ties_are_their_own_answer`). */
       return bandOf(theirs.d - mine.d);
     }
 
     if (mode === 'tentacle') {
-      /* The FEATURE reach anchors on the seekers — "Within ___ miles of me, which ___
-         are you nearest to?" — so a target well outside the hider's zone can still be
-         the name they have to give. But the question does not stop there. It ends
-         "(You must also be within ___ miles)", and the rulebook spells the consequence
-         out: "If the hider is not within reach of the tentacle question, they may
-         simply answer that they are not within reach."
+      /* The FEATURE reach anchors on the seekers, so a target outside the hider's zone
+         can still be the name they give. But "(You must also be within ___ miles)", and
+         a hider outside that reach answers "not within reach".
 
-         Filtering only the features and then returning `edge` or `yes` for every zone —
-         which this used to do — left that rulebook answer unreachable in the shipped
-         tool. The engine has always had it — `rules/audit.js:999` classes an
-         out-of-reach zone `-1`, its own class, and `s3Answer` (:1073) prints "not
-         within reach" — and this is that class: `no`, distinct from both in-reach
-         groups, which is what the map legend's `--q-no` "out of reach" already promised.
-
-         The reach ring gets the same treatment as every other boundary on this page: a
-         hider whose circle straddles it answers one way from one half of it and the
-         other way from the other half, which is `edge`. */
+         DIVERGENCE. That answer is `no`: the engine's own class `-1` (`rules/audit.js`,
+         `s3Answer` prints "not within reach"), distinct from both in-reach groups, and
+         what the legend's `--q-no` "out of reach" promises. A circle straddling the
+         reach ring is `edge`, like every other boundary here. */
       const reachM = tentacleReachM.get(opt.cat) || 0;
       if (!reachM) return 'un';
       const reachBand = bandOf(
@@ -533,32 +418,28 @@ function buildInstance(root, report) {
       const inReach = c.features.filter(
         (f) => haversineM(seeker.lat, seeker.lon, f[1], f[0]) <= reachM,
       );
-      /* in reach of the seekers, but the seekers named a category with nothing inside
-         their own circle — there is no name to give (the engine's class `-2`) */
+      /* in reach, but the seekers named a category with nothing inside their own
+         circle: no name to give (the engine's class `-2`) */
       if (!inReach.length) return 'un';
       /* `inReach` is non-empty, so the scan always names a feature */
       const near = nearestOf(inReach, view.lat, view.lon);
       tentacleNames.set(view.id, near.feature[2]);
       tentacleFeatures.set(view.id, `${near.feature[0]},${near.feature[1]}`);
       if (reachBand === 'edge') return 'edge';
-      /* two names within a circle's width of each other ⇒ which one is nearest depends
-         on where in the circle the hider stands */
+      /* two names within a circle's width of each other ⇒ which is nearest depends on
+         where in the circle the hider stands */
       return near.margin <= 2 * RAD ? 'edge' : 'yes';
     }
   }
 
   /**
-   * The biggest set of zones whose answer is IDENTICAL, and the words for it.
+   * The biggest set of zones whose answer is IDENTICAL, and the words for it. This is
+   * the readout's survival number, the quantity `survivalFractions` averages over a
+   * sample of seekers; here the sample is one.
    *
-   * This is the readout's survival number, and it is the same quantity the score is
-   * built from: `survivalFractions` averages the size of the hider's own answer class
-   * over a sample of seekers, and here the sample is the one seeker on the map.
-   *
-   * `edge` is never a group — its zones have no decided answer to share. Tentacles are
-   * why this cannot be `max(yes, no)`: the in-reach zones do NOT all say the same
-   * thing, they each name a feature, so the `yes` colour is really one group per
-   * FEATURE, exactly as `rules/audit.js:1016` counts them. The out-of-reach zones, by
-   * contrast, all give one and the same answer and are frequently the largest group.
+   * `edge` is never a group. Tentacles are why this cannot be `max(yes, no)`: the
+   * in-reach zones each name a feature, so `yes` is one group per FEATURE, as
+   * `rules/audit.js` counts them; the out-of-reach zones all give one answer.
    *
    * @param {{yes:number,no:number,edge:number,un:number}} tally
    * @returns {{size: number, word: string}}
@@ -566,17 +447,11 @@ function buildInstance(root, report) {
   function majorityGroup(tally) {
     if (mode !== 'tentacle') return { size: Math.max(tally.yes, tally.no), word: '' };
     let best = { size: tally.no, word: 'not within reach' };
-    /* `un` is a third real group here, not a gap: it is the engine's class `-2`
-       (`rules/audit.js`, `survTentacle`) — the seekers named a category with nothing
-       inside their own circle, so every zone that IS in reach gives the identical
-       answer "there is nothing to name". Only the tentacle mode can hold a partial
-       `un`; every other mode's `un` is all-or-nothing and `renderReadout` has already
-       returned by then. Leaving it out reported 0% survival on a map where every zone
-       agreed. */
+    /* `un` is a real third group here, the engine's class `-2` (`survTentacle`): every
+       in-reach zone answers "there is nothing to name". Only tentacle mode can hold a
+       partial `un`; leaving it out reported 0% survival where every zone agreed. */
     if (tally.un > best.size) best = { size: tally.un, word: 'nothing in reach to name' };
-    /* Keyed by feature identity, not by name — see `tentacleFeatures`. Grouping by name
-       merged every unnamed feature into one bogus group and reported survival over a set
-       of zones that do not share an answer. */
+    /* keyed by feature identity, not name — see `tentacleFeatures` */
     const byFeature = new Map();
     for (const v of views) {
       if (answers.get(v.id) !== 'yes') continue;
@@ -608,11 +483,8 @@ function buildInstance(root, report) {
   }
 
   /**
-   * One zone's current answer, in the words that answer is actually given in.
-   *
-   * Only the tentacle mode needs the translation, and it needs it badly: `no` there is
-   * the rulebook's "not within reach", not a plain no, and a marker tip that said "no"
-   * would be telling the reader the opposite of what their hider would say.
+   * One zone's current answer, in the words it is actually given in: in tentacle mode
+   * `no` is "not within reach", and a tip saying "no" would say the opposite.
    */
   function answerWord(view) {
     const a = answers.get(view.id) || 'un';
@@ -650,9 +522,8 @@ function buildInstance(root, report) {
 
   /**
    * Sources and layers, added inside `style.load` so a `setStyle` theme flip re-adds
-   * them rather than losing them — `buildMap`'s pattern (app.js:2497). Every id is
-   * prefixed `s-` so nothing can collide with the network map's `border` / `stops` /
-   * `zonedots`, which live in the same document.
+   * them (`buildMap`'s pattern). Every id is prefixed `s-` so nothing collides with the
+   * network map's layers in the same document.
    */
   function addLayers() {
     const b = report.border || {};
@@ -708,10 +579,8 @@ function buildInstance(root, report) {
       },
     });
 
-    /* Above MAX_MAP_ZONES the label pills stop being readable and start being a
-       performance problem, so the partition is drawn as plain dots instead. The CLI
-       drew nothing at all at that size (generate.py); a coloured dot is still
-       the answer, and it is the same answer. */
+    /* Above MAX_MAP_ZONES label pills are unreadable and slow, so the partition is
+       drawn as plain dots. The CLI drew nothing at that size (generate.py). */
     if (!mapLabels) {
       map.addSource('s-zonedots', { type: 'geojson', data: zonePointData() });
       map.addLayer({
@@ -754,11 +623,8 @@ function buildInstance(root, report) {
   }
 
   /**
-   * Build one marker per zone, once.
-   *
-   * The CLI removes and recreates all of them on every paint (generate.py);
-   * at MAX_MAP_ZONES that is 1,200 elements and 1,200 `Marker`s per click. They are
-   * built here once and repainted in place instead, which is the same picture.
+   * Build one marker per zone, once, and repaint in place. The CLI recreates all of
+   * them on every paint (generate.py), which at MAX_MAP_ZONES is 1,200 `Marker`s a click.
    */
   function buildMarkers() {
     if (!map || !mapLabels || markers.length) return;
@@ -772,11 +638,8 @@ function buildInstance(root, report) {
   }
 
   /**
-   * Repaint the partition.
-   *
-   * `data-band` and `data-answer` are mutually exclusive: explore sets the first and
-   * clears the second, every question mode does the reverse, so no rule can ever see
-   * a marker claiming both a score band and an answer.
+   * Repaint the partition. `data-band` and `data-answer` are mutually exclusive:
+   * explore sets the first and clears the second, every question mode the reverse.
    */
   function repaintMarkers() {
     for (const m of markers) {
@@ -816,12 +679,9 @@ function buildInstance(root, report) {
 
   /**
    * The draggable seeker crosshair. Dragging it re-answers every question live.
-   *
-   * MapLibre gives a custom marker element no focusability of its own and drags it
-   * with the pointer, so the node is made a real control here: `tabindex="0"`, a name,
-   * and arrow keys that nudge it. Together with the "Place the seekers at …" button in
-   * `#s-opts` that is the whole keyboard path — without it the readout below the map
-   * asked for a click for ever and the simulator could not be operated at all.
+   * MapLibre gives a custom marker no focusability, so the node is made a real control:
+   * `tabindex="0"`, a name, and arrow keys that nudge it. With the "Place the seekers
+   * at …" button in `#s-opts` that is the whole keyboard path.
    */
   function placeSeeker() {
     if (!map) return;
@@ -844,15 +704,12 @@ function buildInstance(root, report) {
       const step = NUDGE_DEG[ev.key];
       if (!Array.isArray(step)) return;
       ev.preventDefault();
-      /* MapLibre's own keyboard handler is bound to the map container, which is this
-         node's ancestor, and pans on the same four keys — without this the seeker and
-         the viewport would both move on one press */
+      /* MapLibre's own keyboard handler on the map container pans on the same keys */
       ev.stopPropagation();
-      /* a shifted nudge is ten times the step, which is how far a seeker walks
-         between two questions rather than between two guesses */
+      /* a shifted nudge is ten times the step: a walk between two questions */
       const scale = ev.shiftKey ? 10 : 1;
-      /* longitude degrees shrink with latitude; scaling by cos keeps a horizontal
-         nudge the same distance on the ground as a vertical one */
+      /* longitude degrees shrink with latitude; cos keeps a horizontal nudge the same
+         ground distance as a vertical one */
       const shrink = Math.max(Math.cos((seeker.lat * Math.PI) / 180), 0.05);
       seeker = {
         lat: seeker.lat + step[0] * scale,
@@ -903,19 +760,15 @@ function buildInstance(root, report) {
   }
 
   /**
-   * Construct the map.
-   *
-   * On any failure the container is hidden and everything else keeps working — the
-   * rail, the dossier and the table need no map, and the map card's caption already
-   * tells the reader that.
+   * Construct the map. On any failure the container is hidden and everything else
+   * keeps working; the map card's caption says so.
    */
   async function drawMap() {
     const host = $('s-map');
     if (!host) return;
     try {
       const ns = await import(MAPLIBRE_JS);
-      /* ns.default ?? ns, never .default alone: maplibre-gl 6 ships named exports
-         only and .default is undefined on the unpinned CDN URL (app.js:2444). */
+      /* ns.default ?? ns: maplibre-gl 6 ships named exports only (app.js) */
       maplibregl = ns.default ?? ns;
     } catch (err) {
       console.warn('[strategy] MapLibre unavailable — map omitted', err);
@@ -981,23 +834,18 @@ function buildInstance(root, report) {
     if (mode === 'radar') return `Within ${s4Val(opt.radar)} mi: `;
     if (mode === 'thermo') return 'Hotter (closer to the end of your leg): ';
     if (mode === 'match') return `Same nearest ${label}: `;
-    /* NOT "that ${label}": there is no shared feature. Each side measures to the
-       instance nearest itself, which is the whole point of the question. */
+    /* not "that ${label}": each side measures to the instance nearest itself */
     if (mode === 'measure') return `Nearer their own ${label} than you are to yours: `;
-    /* NOT "zones with an answer": every zone has one, and for most of them it is "I am
-       not within reach". This counts the zones that must name something. */
+    /* counts the zones that must name something; the rest answer "not within reach" */
     if (mode === 'tentacle') return `Within reach, and so having to name a ${label}: `;
     return '';
   }
 
   /**
-   * The sentence under the map.
-   *
-   * The closing percentage is the client twin of `survivalFractions`: the share of the
-   * whole field held by the largest group of zones giving the IDENTICAL answer (see
-   * `majorityGroup`), with the edge zones in no group at all because their answer is
-   * not decided. It is `aria-live="polite"`, so a reader who cannot see the colours
-   * still gets every repaint read to them.
+   * The sentence under the map. The closing percentage is the client twin of
+   * `survivalFractions`: the share of the field held by the largest group giving the
+   * IDENTICAL answer (`majorityGroup`), edge zones in no group. `aria-live="polite"`,
+   * so every repaint is read out.
    */
   function renderReadout() {
     const host = $('s-readout');
@@ -1010,10 +858,8 @@ function buildInstance(root, report) {
       host.textContent = MODE_NEED[mode] || '';
       return;
     }
-    /* `opt.cat` is shared by the three category modes, so it can arrive here naming a
-       category this mode has no question for — a park is a matching and a measuring
-       subject but never a tentacle one. The option row already shows nothing checked;
-       without this the readout would report a field of zeroes as if it were an answer. */
+    /* `opt.cat` is shared by the three category modes, so it can name a category this
+       mode has no question for (a park is never a tentacle subject) */
     if ((mode === 'match' || mode === 'measure' || mode === 'tentacle')
       && !(chips[mode] || []).some((c) => c.key === opt.cat)) {
       host.textContent = 'Pick a category above.';
@@ -1023,15 +869,14 @@ function buildInstance(root, report) {
     const yes = counts.yes || 0;
     const no = counts.no || 0;
     const edge = counts.edge || 0;
-    /* the dominant answer as a word, so the map's colours are never the only channel */
+    /* the dominant answer as a word, so colour is never the only channel */
     let top = 'un';
     for (const k of ['yes', 'no', 'edge', 'un']) {
       if ((counts[k] || 0) > (counts[top] || 0)) top = k;
     }
     const words = mode === 'tentacle' ? TENTACLE_TEXT : ANSWER_TEXT;
     const [word, variant, icon] = words[top] || words.un;
-    /* the tentacle mode's third answer is a real answer, not a gap in the map, so it is
-       counted out loud rather than left to be inferred from the other two */
+    /* the tentacle mode's third answer is a real answer, so it is counted out loud */
     const notInReach = mode === 'tentacle' && no
       ? `. ${el('b', num(no))} are not within reach of the seekers and say so`
       : '';
@@ -1055,13 +900,9 @@ function buildInstance(root, report) {
   // ═════════════════════════════════════════════════════════════════════════
 
   /**
-   * The forty best zones, as a real listbox.
-   *
-   * `#s-list` is announced as a listbox, so it owes the reader the listbox
-   * interaction model: exactly ONE tab stop (roving `tabindex`), Up/Down/Home/End
-   * moving the selection, Enter/Space selecting. Selecting re-renders the rail, so
-   * focus is captured before the rebuild and restored after it — otherwise the first
-   * arrow press would drop focus to the body.
+   * The forty best zones, as a real listbox: one tab stop (roving `tabindex`),
+   * Up/Down/Home/End move the selection, Enter/Space select. Selecting re-renders the
+   * rail, so focus is captured before the rebuild and restored after.
    */
   function renderList() {
     const host = $('s-list');
@@ -1129,10 +970,7 @@ function buildInstance(root, report) {
   // The dossier
   // ═════════════════════════════════════════════════════════════════════════
 
-  /**
-   * The travel sentence. DERIVED from metric R1, never re-measured: the guide must
-   * never print a travel time the score did not use (generate.py).
-   */
+  /** The travel sentence, DERIVED from metric R1 and never re-measured (generate.py). */
   function travelText(view) {
     if (view.travelMin === null || view.travelMin === undefined) {
       return 'not reachable in the hiding period';
@@ -1209,14 +1047,10 @@ function buildInstance(root, report) {
   }
 
   /**
-   * Block 6 — service.
-   *
-   * Scope-reduced against the CLI, deliberately: the CLI's block is per-zone ×
-   * per-day (first and last departure, a departure count and a 24-bin sparkline) and
-   * reads `ServiceDay.stopDays`, which `daySummary` (worker.js:643) strips before
-   * anything crosses `postMessage`. What is left is what was already scored — metrics
-   * S1, S2 and S3 plus the frequent-stop count — and the block says which day that
-   * was measured on rather than pretending the number is day-independent.
+   * Block 6 — service. Scope-reduced against the CLI's per-zone × per-day block, which
+   * reads `ServiceDay.stopDays`; `daySummary` strips that before `postMessage`. What is
+   * left is what was scored (S1, S2, S3 and the frequent-stop count), and the block
+   * names the day it was measured on.
    */
   function serviceBlock(view) {
     const svc = view.service || {};
@@ -1277,11 +1111,7 @@ function buildInstance(root, report) {
     );
   }
 
-  /**
-   * The eight blocks, in the order the scouting report needs them: what this zone is,
-   * what betrays it, what it scored, and only then the metric rows behind every
-   * number (generate.py).
-   */
+  /** The eight blocks in scouting-report order: what the zone is, what betrays it, what it scored, then the evidence (generate.py). */
   function renderDossier() {
     const body = $('s-body');
     const title = $('s-title');
@@ -1319,137 +1149,205 @@ function buildInstance(root, report) {
   }
 
   // ═════════════════════════════════════════════════════════════════════════
-  // The full table
+  // The full table — a `wa-data-grid` (render/strategy.js)
   // ═════════════════════════════════════════════════════════════════════════
 
-  /** The sort key for one row under the current column (generate.py). */
-  function sortKey(view) {
-    if (sortCol === SORT_RANK) return rankKey(view);
-    if (sortCol === SORT_NAME) return view.name.toLowerCase();
-    if (sortCol === SORT_SCORE) return view.overall;
-    if (sortCol >= SORT_AXIS_FIRST && sortCol <= SORT_AXIS_LAST) {
-      return view.axes[AXIS_IDS[sortCol - SORT_AXIS_FIRST]];
-    }
-    if (sortCol === SORT_FLAGS) return view.flags.length;
-    return view.travelMin === null || view.travelMin === undefined ? Infinity : view.travelMin;
-  }
+  /** Every numeric column sorts on the same code-point `cmp` the old `sortKey` did. */
+  const cmpNum = (a, b) => cmp(a, b);
 
   /**
-   * Filter, then sort. Ties always break on rank ascending, so the order is total.
+   * The eleven columns, built ONCE: `columns` is memoised on array identity and the
+   * comparators are part of that key.
    *
-   * DIVERGENCE, deliberate, recorded in CONTRACT.md §(g). `generate.py` reads
-   * `if (ka < kb) return sortDir; if (ka > kb) return -sortDir;` with `sortDir = -1`,
-   * which sorts ASCENDING — against its own comment ("everything else descends"), its
-   * own `sortDir = (c === 1 ? 1 : -1)` intent, and the `aria-sort="descending"` it
-   * writes two lines later (15317). So the CLI opens the table on the worst zones and
-   * tells assistive tech the opposite. The sign is corrected here: `sortDir = -1` now
-   * means descending in the rows AND in `aria-sort`. File it against generate.py.
+   * `value` is the SORT KEY and `formatter` is what a reader sees. An unmeasurable axis
+   * still sorts on its number but prints an em dash, as do a null rank and travel time.
+   * Rank and travel use `Infinity` for a missing value, not `sortUndefined: 'last'`, so
+   * an unranked zone stays last ascending and first descending, as before. Flags sort
+   * on `flags.length`.
+   *
+   * Formatter strings are escaped by the component, so no `esc()` here. Every
+   * comparator is explicit: table-core's `'auto'` samples the first ten rows to pick an
+   * algorithm, which is not a sort. Only Zone is searchable; see `searchMatches`.
    */
-  function tableRows() {
-    const f = filter.trim().toLowerCase();
-    const rows = f
-      ? views.filter((v) => `${v.name} ${v.routeNames.join(' ')} ${v.flags.join(' ')}`
-        .toLowerCase().includes(f))
-      : views.slice();
-    return rows.sort((a, b) => {
-      const c = cmp(sortKey(a), sortKey(b));
-      if (c !== 0) return c * sortDir;
-      return rankKey(a) - rankKey(b);
-    });
-  }
-
-  /** One axis cell. An unmeasurable axis prints an em dash, never a scored-and-lost 0.0. */
-  function axisCell(view, axis) {
-    return el('td', view.axisMax[axis] ? num(view.axes[axis], 1) : '—');
-  }
+  const COLUMNS = Object.freeze([
+    {
+      id: 'rank', label: TABLE_LABELS[0], align: 'end', width: 88, searchable: false,
+      value: (v) => rankKey(v), comparator: cmpNum,
+      formatter: (_x, v) => (v.rank === null || v.rank === undefined ? '—' : num(v.rank)),
+    },
+    {
+      id: 'name', field: 'name', label: TABLE_LABELS[1], flex: 3, minWidth: 150,
+      /* the one alphabetical column, so the one that opens ascending */
+      sortDescFirst: false,
+      comparator: (a, b) => cmp(String(a).toLowerCase(), String(b).toLowerCase()),
+    },
+    {
+      id: 'score', field: 'overall', label: TABLE_LABELS[2], align: 'end', width: 100,
+      searchable: false, comparator: cmpNum, formatter: (x) => num(x, 1),
+    },
+    ...AXIS_IDS.map((a, i) => ({
+      id: `axis-${a}`, label: TABLE_LABELS[3 + i], align: 'end', width: 128,
+      searchable: false, value: (v) => v.axes[a], comparator: cmpNum,
+      formatter: (x, v) => (v.axisMax[a] ? num(x, 1) : '—'),
+    })),
+    {
+      id: 'flags', label: TABLE_LABELS[9], flex: 2, minWidth: 150, searchable: false,
+      value: (v) => v.flags.length, comparator: cmpNum,
+      formatter: (_x, v) => v.flags.map((f) => (FLAG_TEXT[f] || [f])[0]).join(', '),
+    },
+    {
+      id: 'travel', label: TABLE_LABELS[10], align: 'end', width: 112, searchable: false,
+      value: (v) => (v.travelMin === null || v.travelMin === undefined
+        ? Infinity : v.travelMin),
+      comparator: cmpNum,
+      formatter: (_x, v) => (v.travelMin === null || v.travelMin === undefined
+        ? '—' : mins(v.travelMin, 1)),
+    },
+  ]);
 
   /**
-   * Rewrite the page of rows, the header's `aria-sort`, the count and the pager.
+   * The rows, rank-ascending, which is where the sort's TOTALITY lives. The tie-break
+   * is the DATA ORDER, not a comparator: table-core negates a comparator's whole return
+   * for a descending column, but `compareRows` ends `rowA.index - rowB.index` outside
+   * that branch, and filtering and paging never renumber. So a rank-ascending `data`
+   * array is the tie-break in both directions.
    *
-   * A row opens a dossier, so it is a control: Enter and Space reach it the same way
-   * the rail's rows do, and the focused row survives the re-render that selecting it
-   * causes.
+   * DIVERGENCE, recorded in CONTRACT.md §(g): generate.py's sign is inverted and opens
+   * the table ascending while writing `aria-sort="descending"`. The port corrected the
+   * sign; row order, `aria-sort` and the arrow now derive from one `desc` boolean.
+   *
+   * `zoneViews` already returns this order, so the sort is a no-op today; it is written
+   * out so a change to `zoneViews` cannot silently take the tie-break away. `cmp`, not
+   * subtraction: `Infinity - Infinity` is `NaN`.
    */
-  function renderTable() {
-    const body = $('s-tbody');
-    if (!body) return;
-    const focusId = document.activeElement
-      && body.contains(document.activeElement)
-      && document.activeElement.dataset
-      ? document.activeElement.dataset.id
-      : null;
+  const tableData = views.slice().sort((a, b) => cmp(rankKey(a), rankKey(b)));
 
-    const rows = tableRows();
-    const pages = paged ? Math.max(1, Math.ceil(rows.length / TABLE_PAGE)) : 1;
-    if (page > pages - 1) page = pages - 1;
-    if (page < 0) page = 0;
-    const start = paged ? page * TABLE_PAGE : 0;
-    const slice = paged ? rows.slice(start, start + TABLE_PAGE) : rows;
+  /**
+   * The global filter: name, route names, flag keys. A `searchFn` because `routeNames`
+   * is not a column. It runs once per SEARCHABLE column per row, OR-ed, so every column
+   * but Zone is `searchable: false`. Assigned once: the component memoises on function
+   * identity. The component does not trim `searchTerm`.
+   */
+  const searchMatches = (_value, term, view) => {
+    const f = term.trim().toLowerCase();
+    if (!f) return true;
+    return `${view.name} ${view.routeNames.join(' ')} ${view.flags.join(' ')}`
+      .toLowerCase().includes(f);
+  };
 
-    body.innerHTML = slice.map((v) => el('tr', join(
-      el('td', v.rank === null ? '—' : num(v.rank)),
-      el('td', esc(v.name)),
-      el('td', num(v.overall, 1)),
-      AXIS_IDS.map((a) => axisCell(v, a)).join(''),
-      el('td', esc(v.flags.map((f) => (FLAG_TEXT[f] || [f])[0]).join(', '))),
-      el('td', v.travelMin === null || v.travelMin === undefined ? '—' : mins(v.travelMin, 1)),
-    ), { tabindex: '0', dataId: v.id, dataSel: v.id === selected || null })).join('');
+  /** True once `wa-data-grid` has upgraded and `wireGrid` has run. */
+  let gridReady = false;
 
-    body.querySelectorAll('tr').forEach((tr) => {
-      tr.addEventListener('click', () => select(tr.dataset.id));
-      tr.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(tr.dataset.id); }
-      });
-    });
-    if (focusId) {
-      const again = body.querySelector(`tr[data-id="${CSS.escape(focusId)}"]`);
-      if (again) again.focus();
-    }
-
-    /* the sort state was otherwise invisible: eleven identical headers, no indicator */
-    root.querySelectorAll('#s-table thead th').forEach((th, i) => {
-      th.setAttribute(
-        'aria-sort',
-        i === sortCol ? (sortDir > 0 ? 'ascending' : 'descending') : 'none',
-      );
-    });
-
+  /**
+   * `#s-tableinfo`, the page's one count. The component's own pager prints a bare
+   * "1–100 of 237" in a span with no CSS part, so `part="footer"` is hidden wholesale in
+   * styles.css. `page` is reset by a watcher on the next update, so every caller reaches
+   * here through `updateComplete`.
+   */
+  function tableInfo() {
+    const grid = $('s-table');
     const info = $('s-tableinfo');
-    if (info) {
-      info.textContent = paged
-        ? `Showing ${num(start + 1)}–${num(Math.min(start + TABLE_PAGE, rows.length))}`
-          + ` of ${num(rows.length)}`
-        : `${num(rows.length)} ${s4Plural(rows.length, 'zone')}`;
-    }
+    if (!grid || !info || !gridReady) return;
+    const total = grid.filteredCount;
+    const start = paged ? grid.page * TABLE_PAGE : 0;
+    info.textContent = paged
+      ? `Showing ${num(start + 1)}–${num(Math.min(start + TABLE_PAGE, total))}`
+        + ` of ${num(total)}`
+      : `${num(total)} ${s4Plural(total, 'zone')}`;
+  }
 
+  /**
+   * The external pager, a `wa-pagination format="compact"`. BUILT ONCE and mutated
+   * thereafter: the component restores focus to the current page item in `updated()`,
+   * before `wa-page-change` fires, so re-creating it from its own handler would drop
+   * focus to `<body>`. Setting `page` programmatically does not re-emit the event.
+   * `wa-pagination` counts pages from 1 and `wa-data-grid` from 0, hence the `± 1`.
+   */
+  function syncPager() {
     const pager = $('s-pager');
-    if (!pager || !paged) return;
-    /* `wa-pagination format="compact"` is Previous / "1 of 12" / Next with the end-stops
-       disabled for us. It is BUILT ONCE and mutated thereafter, never rewritten: the
-       component restores focus to the current page item in its `updated()`, which runs
-       BEFORE `wa-page-change` fires, so re-creating the element from inside its own
-       handler would tear out the node that was just focused and drop the keyboard to
-       `<body>`. Writing `page` back is safe — setting it programmatically does not
-       re-emit `wa-page-change` (pagination.md 308–310) — and `page` was already clamped
-       to this row set above, so a filter that shrinks the table cannot strand it.
-       `with-summary` is omitted because `#s-tableinfo` above already prints the count
-       with the noun the component's bare "1–20 of 237" leaves out. */
+    const grid = $('s-table');
+    if (!pager || !grid || !paged || !gridReady) return;
+    const total = grid.filteredCount;
     let pg = pager.querySelector('wa-pagination');
     if (!pg) {
       pager.innerHTML = el('wa-pagination', '', {
-        total: rows.length,
+        total,
         pageSize: TABLE_PAGE,
-        page: page + 1,
+        page: grid.page + 1,
         format: 'compact',
         label: 'Zone table pages',
       });
       pg = pager.querySelector('wa-pagination');
-      pg.addEventListener('wa-page-change', (e) => { page = e.detail.page - 1; renderTable(); });
+      pg.addEventListener('wa-page-change', (e) => {
+        grid.page = e.detail.page - 1;
+        void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+      });
     } else {
-      pg.total = rows.length;
+      pg.total = total;
       pg.pageSize = TABLE_PAGE;
-      pg.page = page + 1;
+      pg.page = grid.page + 1;
     }
+    page = grid.page;
+  }
+
+  /**
+   * The selected row's tint. `selectable` stays `none`: `single` would add a checkbox
+   * column and rebind Space. With selection off the row template still stamps
+   * `data-selected`, which the component paints, and the `selectedKeys` setter never
+   * dispatches `wa-row-select`, so there is no feedback loop. `aria-selected` is gated
+   * on selection being enabled and is not written; the rail announces selection.
+   */
+  function syncTableSelection() {
+    const grid = $('s-table');
+    if (!grid || !gridReady) return;
+    grid.selectedKeys = selected ? [selected] : [];
+  }
+
+  /**
+   * Hand the grid its columns, rows and opening sort ONCE, after it upgrades. `sort`
+   * and `selectedKeys` are plain accessors, not reactive properties: assigning one
+   * before upgrade creates an own property that shadows the accessor for good, and the
+   * opening sort would silently never apply. `buildInstance` runs once per root, so the
+   * listeners are bound once.
+   */
+  function wireGrid() {
+    const grid = $('s-table');
+    if (!grid || destroyed) return;
+
+    grid.columns = COLUMNS;
+    grid.searchFn = searchMatches;
+    grid.data = tableData;
+    grid.paginate = paged;
+    grid.pageSize = TABLE_PAGE;
+    /* one option, so the component's rows-per-page <wa-select> never renders */
+    grid.pageSizeOptions = [TABLE_PAGE];
+    /* restore the mirror `syncPager` and the `#s-filter` handler keep; the grid clamps
+       `page` and a non-empty `searchTerm` resets it, so neither can strand */
+    grid.page = page;
+    grid.searchTerm = filter;
+
+    gridReady = true;
+
+    /* best zones first, `aria-sort="descending"` on Score, arrow down: one `desc` for all three */
+    grid.sort = [{ id: 'score', desc: true }];
+    syncTableSelection();
+
+    /* `wa-cell-click` fires on a pointer click and on Enter on the focused cell. Rows
+       are keyed by `row-key`, so the focused cell survives the repaint. */
+    grid.addEventListener('wa-cell-click', (e) => select(e.detail.row.id));
+
+    /* sorting does not reset the page by itself; the old header handler did */
+    grid.addEventListener('wa-sort-change', () => {
+      grid.page = 0;
+      void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+    });
+
+    /* the only `wa-page-change` the grid itself emits is the reset a search causes */
+    grid.addEventListener('wa-page-change', () => {
+      void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+    });
+
+    void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
   }
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -1457,19 +1355,11 @@ function buildInstance(root, report) {
   // ═════════════════════════════════════════════════════════════════════════
 
   /**
-   * One mutually-exclusive option row, as the native pair.
-   *
-   * A `wa-radio-group` of button-appearance radios, exactly as `s4ChipGroup`
-   * (render/deck.js 259) builds the report's filter rows — the group carries the role,
-   * the accessible label, arrow-key navigation and a real checked state, which a row
-   * of `wa-button`s swapping `appearance` carried in fill colour alone. The helper
-   * itself cannot be reused because it has no way to disable an option, and a dead
-   * radius or category shown disabled-with-its-reason is the point of this row.
-   *
-   * The reasons are PRINTED, not put in a `title`: a disabled control is not
-   * focusable, so a tooltip on one is reachable by hovering with a pointer and by
-   * nothing else. "This map cannot ask that" is the most useful thing the guide can
-   * say about a question, so it is said out loud.
+   * One mutually-exclusive option row: a `wa-radio-group` of button-appearance radios,
+   * as `s4ChipGroup` (render/deck.js) builds. Not reused because it cannot disable an
+   * option, and a dead radius or category shown disabled-with-reason is the point.
+   * The reasons are PRINTED, not put in a `title`: a disabled control is not focusable,
+   * so a tooltip on it is reachable by pointer hover and nothing else.
    *
    * @param {string} groupId @param {string} label
    * @param {ReadonlyArray<{value:string,text:string,usable:boolean,why:string}>} items
@@ -1507,22 +1397,16 @@ function buildInstance(root, report) {
   }
 
   /**
-   * The per-mode option row, plus the keyboard path to the seeker.
-   *
-   * The seeker is otherwise placed only by clicking the canvas or dragging its marker,
-   * both pointer-only — which left every question mode permanently stuck on its "click
-   * the map" prompt for anyone using a keyboard, i.e. the whole simulator unusable.
-   * The button seeds it at the round-start station, which is also the most useful
-   * opening guess; from there the marker itself is focusable and the arrow keys nudge
-   * it (see `placeSeeker`).
+   * The per-mode option row, plus the keyboard path to the seeker: clicking the canvas
+   * and dragging the marker are pointer-only, so the button seeds the seeker at the
+   * round-start station, from where the marker is focusable and the arrow keys nudge it.
    */
   function optionChips() {
     const host = $('s-opts');
     if (!host) return;
     optionBind = null;
 
-    /* clustered, not stacked: `wa-stack` stretches its children, and a full-bleed
-       button reads as the primary action of the card rather than a convenience */
+    /* clustered, not stacked: a full-bleed button reads as the card's primary action */
     const seedButtonHtml = mode === 'thermo'
       ? waButton(`Run the leg from ${hubName} to the selected zone`, {
         size: 's', appearance: 'outlined', dataSeed: 'leg',
@@ -1571,8 +1455,7 @@ function buildInstance(root, report) {
           drawLeg();
         } else {
           seeker = { lat: h.lat, lon: h.lon };
-          /* focus follows the thing the button just created, so the arrow keys the
-             marker's label promises work without hunting for it */
+          /* focus follows the marker the button just created */
           const node = placeSeeker();
           if (node) node.focus();
         }
@@ -1582,25 +1465,21 @@ function buildInstance(root, report) {
     if (optionBind) {
       const group = host.querySelector(`#${optionBind.groupId}`);
       const { onPick } = optionBind;
-      // The group is NOT re-rendered on a pick: it owns the checked state itself, and
-      // rebuilding it under a keyboard user would throw away their focus mid-row.
+      // Not re-rendered on a pick: the group owns the checked state, and a rebuild
+      // would throw away a keyboard user's focus.
       if (group) group.addEventListener('change', () => { if (group.value) onPick(group.value); });
     }
   }
 
   /**
-   * Recompute and redraw everything the current question touches.
+   * Recompute and redraw everything the current question touches. NOTHING IS EVER
+   * REMOVED: elimination is a colour partition plus a survival percentage, because the
+   * rulebook eliminates zones from a *seeker's* map, not from the hider's options.
    *
-   * NOTHING IS EVER REMOVED. Elimination is expressed as a colour partition plus a
-   * survival percentage; the rail and the table show the same zones in the same order
-   * whatever question is loaded, because the rulebook eliminates zones from a
-   * *seeker's* map, not from the hider's options.
-   *
-   * Which is why neither is rebuilt here. `renderList` and `renderTable` read only
-   * `views`, `selected` and the table's own filter/sort/page state — never an answer,
-   * a mode, the seekers or the option — and every mutation of those re-renders them
-   * itself. Rebuilding forty listbox cards and a page of rows, listeners and all, on
-   * each arrow-key nudge of the seekers only reprinted the same bytes.
+   * The rail and the grid are not rebuilt here: they read only `views`, `selected` and
+   * the table's own state, and every mutation of those re-renders them itself.
+   * Reassigning `data` would rebuild every row model and reset the indices the
+   * tie-break rides on, so `data` is assigned exactly once, in `wireGrid`.
    */
   function paint() {
     computeAnswers();
@@ -1616,7 +1495,7 @@ function buildInstance(root, report) {
     updateCircle();
     renderList();
     renderDossier();
-    renderTable();
+    syncTableSelection();
     repaintMarkers();
     /* on a phone the dossier is below the rail, so a tap otherwise looks like a no-op */
     if (window.matchMedia('(max-width: 920px)').matches) {
@@ -1627,40 +1506,32 @@ function buildInstance(root, report) {
 
   // ── one-time bindings ──────────────────────────────────────────────────────
 
-  /* `#s-modes` is a `wa-radio-group`: the checked state is the group's own, so nothing
-     here rewrites an appearance, and a dead mode is unreachable by arrow key as well
-     as by pointer. */
+  /* `#s-modes` is a `wa-radio-group`: the checked state is the group's own, and a dead
+     mode is unreachable by arrow key as well as by pointer */
   const modeGroup = $('s-modes');
   if (modeGroup) {
     modeGroup.addEventListener('change', () => {
       if (!modeGroup.value || modeGroup.value === mode) return;
       mode = modeGroup.value;
-      /* entering the thermometer always starts a fresh leg; the other seeker modes
-         share one seeker and keep it */
+      /* entering the thermometer starts a fresh leg; the other modes share one seeker */
       if (mode === 'thermo') { thermoA = null; thermoB = null; drawLeg(); }
       optionChips();
       paint();
     });
   }
 
-  root.querySelectorAll('#s-table [data-sort]').forEach((b) => b.addEventListener('click', () => {
-    const c = Number.parseInt(b.dataset.sort, 10);
-    if (!Number.isFinite(c)) return;
-    /* alphabetical ascends, everything else descends — a new column should open on
-       its most useful end */
-    if (c === sortCol) sortDir = -sortDir;
-    else { sortCol = c; sortDir = c === SORT_NAME ? 1 : -1; }
-    page = 0;
-    renderTable();
-  }));
-
   const filterInput = $('s-filter');
   if (filterInput) {
     filterInput.value = filter;
     filterInput.addEventListener('input', () => {
       filter = filterInput.value;
-      page = 0;
-      renderTable();
+      const grid = $('s-table');
+      if (!grid || !gridReady) return;
+      /* setting `searchTerm` behaves like typing in the component's own box (page reset,
+         active cell clamped) but does NOT emit `wa-filter-change`, so the count and the
+         pager are refreshed from here */
+      grid.searchTerm = filter;
+      void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
     });
   }
 
@@ -1676,7 +1547,7 @@ function buildInstance(root, report) {
   optionChips();
   renderList();
   renderDossier();
-  renderTable();
+  void customElements.whenDefined('wa-data-grid').then(wireGrid);
   paint();
   drawMap();
 

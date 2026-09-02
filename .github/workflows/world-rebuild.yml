@@ -1,63 +1,36 @@
-# .github/workflows/world-rebuild.yml — Phase 6 (see tools/osm-world/DESIGN.md
-# §Phase 6). The orchestrator: one dispatch rebuilds the whole world with nothing
-# left for a workstation —
+# .github/workflows/world-rebuild.yml — Phase 6 orchestrator (DESIGN.md §Phase 6):
+# one dispatch rebuilds the whole world.
 #
 #   world-feature-shards ─┐
 #   world-density-shards ─┼──► world-merge
 #   world-admin ──────────┤
 #   world-transit ────────┘
 #
-# All five are reusable workflows (`workflow_call`) called on this ref with
-# `secrets: inherit`; each keeps its own matrix, timeouts, retries and loud
-# preflights — this file adds ONLY the ordering. The ordering is not cosmetic:
-# the merge must see a COMPLETE, CONSISTENT shard set (its plan job hard-checks
-# the R2 manifest set against shards.json in both directions), and running it
-# before the shard workflows finish would fail that check — or worse, pass it
-# against last month's shards. Which is also why nothing here passes
-# skip_cover_check.
+# All five are reusable workflows called on this ref with `secrets: inherit`; each
+# keeps its own matrix, timeouts and preflights. This file adds only the ordering:
+# the merge's plan job hard-checks the R2 manifest set against shards.json, so it
+# must run after a complete shard wave (and never with skip_cover_check).
 #
-# Scale (2026-08-22 measured constants): 88 feature jobs (longest canada,
-# 220.9 min) + 114 density jobs (longest 47 min) + 1 admin + 1 transit + ~43
-# merge jobs (36 layers + 4 density bands at the measured 119.47M cells +
-# plan/assemble/finalize) ≈ 247 jobs. The two shard workflows run 20-parallel
-# each — 40 concurrent at the account ceiling — so expect ~4 h of shard phase
-# (canada is the long pole), then the merge phase's ~2 h (green's merge is its
-# long pole). Job-level 6 h caps apply per job; a workflow RUN may take much
-# longer.
+# Scale (2026-08-22): ~247 jobs. Shard phase ~4 h (canada is the long pole, 20-parallel
+# per shard workflow), then merge ~2 h. Job caps are 6 h each; the run takes longer.
 #
-# The admin build runs every rebuild even though boundaries move on a timescale
-# of years — it is minutes of work, and rebuilding it beats merging against a
-# stale prefix nobody remembers refreshing. Its Overture release stays PINNED in
-# world-admin.yml; a pruned release fails loudly there, naming what still exists.
-#
-# The transit build is the opposite case and joins here for the opposite reason:
-# route relations are re-tagged constantly, so `transit_route` goes stale between
-# rebuilds in a way admin does not. It costs a planet download of its own — the
-# shard workflows never hold one, so there is nothing to share — but it starts
-# with the shard wave and finishes long inside it, so it adds to the bill and not
-# to the critical path. It is chained rather than left to a memory because a
-# world merged against a months-old transit prefix looks exactly like a fresh
-# one: the OSM fallback tier would simply be missing whichever lines opened
-# since.
+# Admin is rebuilt every time (minutes of work; its Overture release is pinned in
+# world-admin.yml). Transit is chained because route relations go stale between
+# rebuilds and a world merged against an old transit prefix looks fresh.
 #
 # Each calling job carries a job-level `concurrency` group matching the called
-# workflow's own group, so a rebuild queues behind (never races) a standalone
-# dispatch of the same workflow. cancel-in-progress stays false everywhere: a
-# half-cancelled shard wave leaves R2 half-updated, which the merge's cover
-# check would then refuse.
+# workflow's, so a rebuild queues behind a standalone dispatch. cancel-in-progress
+# stays false: a half-cancelled shard wave leaves R2 half-updated.
 #
 # R2 secrets required (inherited by every called workflow):
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
 #
-# NOT verified by running this file: I cannot execute GitHub Actions from here.
-# YAML syntax was checked with PyYAML; reusable-workflow wiring is unverified
-# until dispatched.
+# Reusable-workflow wiring is unverified until dispatched.
 
 name: world-rebuild
 
 on:
-  # Dispatch only — the monthly cadence belongs to the shard workflows'
-  # (currently disabled) schedules, and a full rebuild is deliberate.
+  # Dispatch only; a full rebuild is deliberate.
   workflow_dispatch:
     inputs:
       world_prefix:

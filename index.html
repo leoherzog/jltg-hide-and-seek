@@ -2,30 +2,19 @@
 <!--
   index.html — the static shell for the browser port of generate.py.
 
-  The head is `document()` (generate.py 1369) unchanged: the same WebAwesome Pro
-  kit, the same MapLibre stylesheet, the same theme classes, the same
-  `COLOR_SCHEME_JS`. The body is `render_index`'s slot structure (13643) and
-  `page_chrome`'s header/subheader (13539) — but built as a shell that ships
-  BEFORE any data exists, because the pipeline now runs in the reader's browser
-  instead of on a laptop.
+  The head is `document()` unchanged: the same WebAwesome Pro kit, MapLibre stylesheet,
+  theme classes and colour-scheme script. The body is `render_index`'s slot structure
+  and `page_chrome`'s header, shipped BEFORE any data exists.
 
-  Three states, driven by one attribute on <body> (see styles.css §7):
-    landing  — a full-bleed feed map with one floating panel of controls on it
-               (pick a city off the map, or bring your own .zip / URL)
+  Three states, driven by `data-state` on <body> (styles.css §7):
+    landing  — a full-bleed feed map with one floating panel of controls
     running  — the eight sections as skeletons, header progress bar live
     ready    — the same eight sections, hydrated
 
-  IMPORTANT, and different from the CLI: generate.py DROPS a section that
-  produced nothing, and its nav entry disappears with it ("no empty cards",
-  render_index 13653). This shell cannot know in advance which sections will be
-  empty, so it ships ALL NINE plus every nav entry — that is what makes the rail
-  complete and every #fragment resolvable before the worker has said anything.
-  app.js is responsible for removing the sections that come back empty, and the
-  nav links that point at them, and any nav group left with no links.
-
-  Ordinals (`data-n`) are likewise provisional: the CLI assigns them AFTER the
-  drop so the printed sequence never has a hole. app.js must renumber the
-  survivors 01…n for the same reason.
+  This shell cannot know which sections will be empty, so it ships ALL of them plus
+  every nav entry; app.js removes empty sections, their nav links, and any nav group
+  left empty. Ordinals (`data-n`) are provisional: app.js renumbers the survivors 01…n
+  so the printed sequence has no hole.
 -->
 <html lang="en" class="wa-theme-default wa-palette-default wa-light wa-cloak">
 <head>
@@ -54,37 +43,24 @@
 
 
   <header slot="header" class="wa-split">
-    <!-- `#top` is the hero, which is `data-when="report"` and therefore display:none
-         until a feed exists — so the shipped href points at the landing stage and
-         app.js swaps it in `setShellState`. verdict.js re-creates `id="top"` (801)
-         when the hero hydrates, so the report-state target survives hydration. -->
+    <!-- `#top` is the hero, hidden until a feed exists, so the shipped href points at
+         the landing stage and app.js swaps it in `setShellState`. verdict.js re-creates
+         `id="top"` when the hero hydrates. -->
     <a href="#landing" id="wordmark" class="wa-caption-s wa-text-uppercase wa-cluster wa-gap-2xs wa-link-plain">
       <span id="wordmark-place" hidden></span>
       <span id="wordmark-x" style="color:var(--gold-deep)" hidden>×</span>
       <span>Hide+Seek</span>
     </a>
 
-    <!-- `#run-history`: the one line a RE-RUN prints about the run before it
-         ("Run 2 · border S, W, N, E from the suggestion · previous run: inferred
-         border, medium"). Filled by app.js's `mountRunHistory` from the
-         `jltg.rerun` handoff in `boot()`, once, and only on a re-run — on an
-         ordinary run it stays hidden and empty. `data-when="report"` because a
-         re-run is never in the landing state. -->
+    <!-- `#run-history`: the one line a re-run prints about the run before it. Filled
+         by app.js's `mountRunHistory` from the `jltg.rerun` handoff; otherwise hidden. -->
     <span id="run-history" data-when="report" class="wa-cluster wa-gap-2xs" hidden></span>
 
-    <!-- THE PROGRESS BAR LIVES IN THE HEADER. `total` may grow as the worker
-         discovers work (CONTRACT §(d)), so the label carries the words and the
-         bar carries the fraction; neither is allowed to look finished early. -->
-    <!-- The `data-role` attributes are now app.js's ONLY selector for these nodes
-         (see `runForm()` / `readControl()`); the id-based fallback that used to build a
-         progress block at runtime is gone, and as of 2026-08-26 so is every other
-         id-based fallback selector in app.js — several named ids this document never
-         carried (`#runform`, `#report`, `#dayselslot`), so they could not have fired.
-         Renaming or dropping one of these attributes silently stops the bar rather
-         than degrading to a second copy.
-         `progressnote` and `progresswait` are the two readouts — the per-stage note,
-         and the "still working, N min on this step" heartbeat that keeps a quiet
-         stretch of a cold run from reading as a hang. -->
+    <!-- The progress bar lives in the header. `total` may grow as the worker discovers
+         work (CONTRACT §(d)), so the label carries the words and the bar the fraction.
+         The `data-role` attributes are app.js's ONLY selector for these nodes; renaming
+         one silently stops the bar. `progressnote` is the per-stage note and
+         `progresswait` the "still working" heartbeat. -->
     <div id="hydration" data-role="progress" data-when="running" class="wa-stack wa-gap-3xs">
       <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress"></wa-progress-bar>
       <span id="hydration-status" data-role="progresslabel" class="wa-caption-xs wa-color-text-quiet wa-text-truncate" role="status" aria-live="polite">Starting…</span>
@@ -93,12 +69,8 @@
     </div>
 
     <div class="wa-cluster wa-gap-2xs">
-      <!-- Report chrome, hence `data-when="report"`: on the landing state there is
-           nothing to reset, and a control that reloaded the landing stage into itself
-           would be the browser's own reload button wearing a costume. In the `running`
-           state it IS the cancel button — the only one the page has.
-           app.js binds it in `boot()`; `resetToLanding` says why a reset is a document
-           load and not a teardown. -->
+      <!-- Report chrome only: on the landing state there is nothing to reset. In the
+           `running` state this is the cancel button. app.js binds it in `boot()`. -->
       <wa-button data-role="reset" data-when="report" appearance="plain" size="s" variant="neutral">
         <wa-icon slot="start" name="arrow-rotate-left"></wa-icon>Reset
       </wa-button>
@@ -115,9 +87,8 @@
       <wa-button data-toggle-nav appearance="plain" size="s" variant="neutral" class="wa-mobile-only">
         <wa-icon slot="start" name="bars"></wa-icon>Menu
       </wa-button>
-      <!-- `_s4_day_selector` builds `#daysel` in here once the feed's day types
-           are known. A feed with one day type gets no control at all: an empty
-           selector reads as a bug. -->
+      <!-- `_s4_day_selector` builds `#daysel` in here once the day types are known;
+           a feed with one day type gets no control. -->
       <div id="dayselect" data-role="dayselector" class="wa-cluster wa-gap-2xs"></div>
     </div>
     <!-- the page's one persistent grade readout -->
@@ -125,28 +96,16 @@
     <wa-progress-bar id="readbar" value="0" label="Reading progress" style="--track-height:3px"></wa-progress-bar>
   </div>
 
-  <!-- navigation rail · complete from the first paint of the REPORT. The groups
-       are `_S4_NAV_ORDER` (13577) and the links are `render_index`'s `built` list
-       (13655) with §03 split into its two in-section anchors, exactly as
-       `nav_source` does. app.js prunes what turns out to be empty.
+  <!-- Navigation rail, complete from the first paint of the report; app.js prunes
+       what turns out to be empty.
 
-       LINK ORDER IS DOCUMENT ORDER, and that is load-bearing, not tidiness:
-       `bindSpy` (app.js) walks these links in order and keeps the LAST one whose
-       section is within 140px of the top, so a rail out of page order highlights
-       the wrong entry all the way down. Every group is therefore a CONTIGUOUS RUN
-       of the section order in §(e) of CONTRACT.md — which is why "Getting Around"
-       sits under Your Game and the point-by-point trace sits with the receipts
-       (regrouped 2026-08-23 with the section reorder; it was The Answer / The Map /
-       The Deck / The Receipts when the verdict opened the page).
+       LINK ORDER IS DOCUMENT ORDER: `bindSpy` (app.js) keeps the LAST link whose
+       section is within 140px of the top, so every group must be a CONTIGUOUS RUN of
+       the section order in CONTRACT.md §(e). `#glance`, `#recs` and `#findings` are
+       in-section anchors and follow their sections for the same reason.
 
-       `data-when="report"` for the same reason every other piece of report chrome
-       has it: in the landing state styles.css §7 hides all eight sections, so an
-       ungated rail would advertise ten anchors into `display:none` and every one
-       of them would scroll nowhere.
-
-       `#glance` is an in-section anchor, the way `#recs` and `#findings` are: it is
-       the stat rail INSIDE the map section, so it follows `#network` here for the
-       same document-order reason (folded in from §04 on 2026-08-23). -->
+       `data-when="report"`: in the landing state styles.css §7 hides every section,
+       so an ungated rail would advertise anchors into `display:none`. -->
   <nav slot="navigation" data-when="report" class="wa-stack wa-gap-l">
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Map</span>
@@ -185,10 +144,9 @@
     </div>
   </nav>
 
-  <!-- ══ HERO · the page's answer, above everything else (index_hero, 11455) ══
-       Stage `feed` gives it its wordmark, kicker and place; stage `score` gives
-       it the dial, the budget, the meters and the day tiles. app.js renders it
-       twice for that reason. -->
+  <!-- ══ HERO · the page's answer (index_hero) ══
+       Stage `feed` gives it its wordmark, kicker and place; stage `score` gives it the
+       dial, budget, meters and day tiles, so app.js renders it twice. -->
   <header id="top" data-when="report" data-section="hero" data-stage="feed" data-state="pending" aria-busy="true" class="wa-stack wa-gap-l">
     <div class="wa-split wa-gap-2xl wa-align-items-start">
       <div class="wa-stack wa-gap-xs" style="flex:1 1 24rem">
@@ -247,56 +205,40 @@
 
     <!-- ══════════════════════════════════════════════════════════════════════
          THE LANDING STATE — a full-bleed map, with everything else floating on it.
+         `#picker` is a one-cell grid the height of the viewport under the header,
+         `#catalog-map` fills it, and `.landing-panel` floats on top (a left column on
+         a desktop, a bottom sheet on a phone). styles.css §7 owns all the geometry.
 
-         Until 2026-09-01 this was a centred 72rem card: lede, then a picker card
-         holding a 56vh map, then two disclosures, then Analyse — a column several
-         screens tall whose most useful control was the one you had to scroll past
-         prose to reach. The map is the product, so the map is now the page: `#picker`
-         is a one-cell grid the height of the viewport under the header, `#catalog-map`
-         fills it, and `.landing-panel` floats on top of it (a column on the left on a
-         desktop, a bottom sheet on a phone). styles.css §7 is the whole of the
-         geometry; nothing here positions anything.
+         `#catalog-map` is static markup here; every other picker id is built by
+         `render/landing.js`. The map must survive `app.js` replacing
+         `[data-role=pickerbody]` wholesale. `initPicker`'s root is `#picker`, so it
+         reaches both.
 
-         THREE THINGS THAT LOOK ODD AND ARE NOT:
+         `#picker` never ships `hidden`: the panel's heading, bring-your-own
+         disclosure, Advanced and Analyse do not depend on the catalogue.
+         `#catalog-map[hidden]` is the ONE failure signal — `initLanding`'s catch sets
+         it when the catalogue never arrives, `giveUpOnMap` when MapLibre does not
+         load — and styles.css §7 collapses the stage to a plain centred card.
 
-         `#catalog-map` is static markup HERE, and every other picker id is built by
-         `render/landing.js`. The map is the page's hero and must exist before — and
-         survive — `app.js` replacing `[data-role=pickerbody]` wholesale, which is the
-         one node the catalogue fetch owns. `initPicker`'s root is `#picker`, so its
-         `root.querySelector` reaches both without caring which door an id came in by.
-
-         `#picker` no longer ships `hidden`. The panel inside it carries the heading,
-         the bring-your-own disclosure, Advanced and Analyse — none of which depend on
-         the catalogue — so hiding the host would take the working half of the page
-         down with the broken half. `#catalog-map[hidden]` is the state instead, and
-         it is the ONE signal for both ways this can fail: `initLanding`'s catch sets
-         it when the catalogue never arrives, `giveUpOnMap` sets it when MapLibre
-         does not load, and styles.css §7 collapses the stage back to a plain centred
-         card either way. A grey box where a map should be is still worse than no map.
-
-         The panel is ONE `<form>`'s worth of controls in two boxes — a scroller and a
-         foot — so the primary action is never scrolled away from the reader. Both are
-         inside `<form id="landing-form">`; a second form anywhere in here would steal
-         `boot()`'s submit listener and `readOptions`' eleven `[data-opt]` lookups.
+         Everything is inside one `<form id="landing-form">`, split into a scroller
+         and a foot so the primary action is never scrolled away. A second form in
+         here would steal `boot()`'s submit listener and `readOptions`' `[data-opt]`
+         lookups.
          ══════════════════════════════════════════════════════════════════ -->
     <div id="landing" data-when="landing">
       <form id="landing-form" data-role="runform" novalidate>
         <div id="picker">
 
-          <!-- The hero. Empty until `render/picker.js` lazily imports MapLibre into
-               it; `tabindex="-1"` because MapLibre's canvas takes focus itself and the
-               map is a convenience, never the only path — the search box does
-               everything the map does, works before MapLibre loads, and works if it
-               never loads. -->
+          <!-- Empty until `render/picker.js` lazily imports MapLibre into it.
+               `tabindex="-1"` because MapLibre's canvas takes focus itself; the search
+               box does everything the map does and works if MapLibre never loads. -->
           <div id="catalog-map" tabindex="-1" aria-label="Map of transit feeds. Every feed on it can also be found with the search box in the panel."></div>
 
           <div class="landing-panel">
 
-            <!-- The sheet's grab bar, and the only control on this page that is a bare
-                 <button>: it is a 100%-wide 20px strip, which is not a shape any
-                 <wa-button> appearance produces. `display:none` above the sheet
-                 breakpoint, so it is out of the tab order entirely on a desktop.
-                 app.js's `initPanelGrip` owns it. -->
+            <!-- The sheet's grab bar: a bare <button> because no <wa-button> appearance
+                 produces a 100%-wide 20px strip. `display:none` above the sheet
+                 breakpoint. app.js's `initPanelGrip` owns it. -->
             <button type="button" class="panel-grip" data-role="panelgrip" aria-expanded="true" aria-controls="panel-scroll">
               <span class="panel-grip-bar" aria-hidden="true"></span>
               <span class="wa-visually-hidden" data-role="panelgriplabel">Hide the panel</span>
@@ -307,38 +249,31 @@
               <header class="panel-intro wa-stack wa-gap-3xs">
                 <p class="kicker wa-caption-s wa-text-uppercase">Jet Lag: The Game · Hide+Seek</p>
                 <h1 class="wa-heading-xl">Is your city a good map?</h1>
-                <!-- One sentence and a promise. What a GTFS feed IS belongs to the
-                     bring-your-own disclosure, which is the only place it matters. -->
+                <!-- What a GTFS feed IS belongs to the bring-your-own disclosure. -->
                 <p id="landing-lede" class="wa-body-s">Pick a transit system for a 100-point read on its hiding places, its questions and its curses. Everything runs in this browser; the feed is never uploaded.</p>
               </header>
 
-              <!-- THE PICKER'S CONTROLS. `app.js` fills this from
-                   `render/landing.js` once `data/feeds.json` has actually loaded.
-                   The line below is what a reader sees until then, and is replaced
-                   by the same sentence from `initLanding` a frame later, so a slow
-                   catalogue reads as loading rather than as a blank. -->
+              <!-- `app.js` fills this from `render/landing.js` once `data/feeds.json`
+                   has loaded. `initLanding` replaces the line below with the same
+                   sentence a frame later, so a slow catalogue reads as loading. -->
               <div data-role="pickerbody"><p class="wa-caption-s wa-color-text-quiet" role="status">Loading the list of transit feeds…</p></div>
 
-              <!-- The original one-feed flow, intact and demoted to a disclosure: it is
-                   the fallback that works when the catalogue never loads, when MapLibre is
-                   blocked, and when the feed you want was never published to the Mobility
-                   Database. A pick on the map and a zip from here ADD — app.js's
-                   `readSources` concatenates them. -->
+              <!-- The one-feed flow, demoted to a disclosure: the fallback when the
+                   catalogue never loads, MapLibre is blocked, or the feed was never
+                   published to the Mobility Database. A map pick and a zip from here
+                   ADD — app.js's `readSources` concatenates them. -->
               <wa-details summary="Or bring your own feed" id="byo" appearance="plain">
                <div class="wa-stack wa-gap-l">
 
-              <!-- <wa-file-input> is the drop zone. It renders a `<label for>` wrapped
-                   around a native file input, so click, tap and keyboard activation are
-                   all the browser's own — there is no `fileInput.click()` anywhere in the
-                   open path, which is precisely what used to leave this dead on Chrome and
-                   Firefox for Android. It also owns the drag handling and renders the
-                   chosen file as a card, so app.js no longer draws either.
+              <!-- <wa-file-input> renders a `<label for>` around a native file input, so
+                   click, tap and keyboard activation are the browser's own; there must
+                   be no `fileInput.click()` in the open path, which left this dead on
+                   Android browsers. It also owns drag handling and the chosen-file card.
 
-                   `accept` deliberately omits `application/x-zip-compressed`: Android
-                   resolves the picker intent from these MIME types and that non-standard
-                   one is not in its MimeTypeMap. The component re-checks `accept` against
-                   the file *name* after the fact (fileMatchesAccept), so a zip the picker
-                   hands back typed as application/octet-stream still gets through. -->
+                   `accept` omits `application/x-zip-compressed`: Android resolves the
+                   picker intent from these MIME types and that one is not in its
+                   MimeTypeMap. The component re-checks `accept` against the file NAME
+                   afterwards, so a zip typed as application/octet-stream still passes. -->
               <wa-file-input id="dropzone" name="file" accept=".zip,application/zip" label="GTFS feed file" class="wa-visually-hidden-label">
                 <div slot="dropzone" class="wa-stack wa-gap-2xs">
                   <wa-icon name="file-zipper"></wa-icon>
@@ -348,38 +283,27 @@
                 <span slot="hint" class="wa-caption-s wa-color-text-quiet">A GTFS feed is a zip of CSV files — <code>stops.txt</code>, <code>trips.txt</code>, <code>stop_times.txt</code> and friends. Nothing else is read.</span>
               </wa-file-input>
 
-              <!-- two wa-dividers rather than a bespoke grid with ::before/::after rules.
-                   --spacing:0 because the wa-stack parent owns the vertical rhythm; flex:1
-                   makes each divider eat the free space either side of the word. -->
+              <!-- Two wa-dividers: --spacing:0 because the wa-stack owns the rhythm,
+                   flex:1 so each eats the space either side of the word. -->
               <div class="wa-cluster wa-gap-s">
                 <wa-divider style="--spacing:0;flex:1"></wa-divider>
                 <span class="wa-caption-xs wa-text-uppercase wa-color-text-quiet">or</span>
                 <wa-divider style="--spacing:0;flex:1"></wa-divider>
               </div>
 
-              <!-- `data-opt="url"` is load-bearing here, not decoration. `findUrlInput`
-                   used to reach this field through a light-DOM fallback,
-                   `input[type="url"]` — and a <wa-input>'s real input lives in a shadow
-                   root, where that selector cannot see it. There is no bare <input> of any
-                   kind in this document, so that fallback and its `#feedurl` sibling were
-                   deleted 2026-08-26 and the attribute is now the only address. Without it
-                   `readSource` reads no URL at all and Analyse answers a pasted link by
-                   claiming nothing was supplied.
+              <!-- `data-opt="url"` is the ONLY address app.js has for this field: a
+                   <wa-input>'s real input lives in a shadow root, where no light-DOM
+                   selector can see it. Without it `readSource` reads no URL at all.
 
-                   Deliberately NOT `type="url"` any more. This field now ships inside a
-                   COLLAPSED <wa-details>, and a typeMismatch on a control the reader
-                   cannot see suppresses the submit event with no focusable control to hang
-                   the browser's bubble on — the form simply stops working, which is
-                   exactly the trap #opt-world-base-url and #opt-zone-radius already
-                   describe further down. `inputmode="url"` keeps the phone keyboard, and
-                   `readSources` validates with `new URL()` and answers in a sentence. -->
+                   Deliberately NOT `type="url"`: the field ships inside a COLLAPSED
+                   <wa-details>, and a typeMismatch on a control the reader cannot see
+                   suppresses the submit event with nowhere to hang the browser's bubble,
+                   so the form silently stops working. `inputmode="url"` keeps the phone
+                   keyboard; `readSources` validates with `new URL()`. -->
               <wa-input type="text" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
-              <!-- Page prose, deliberately NOT `slot="hint"`: 72ch of CORS explanation
-                   belongs beside the field, not inside its accessible description and
-                   not inside its width. -->
-              <!-- Honest, because the failure is not the reader's fault and not fixable
-                   from this page. -->
-              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and plenty of them do not. When that happens, download the zip yourself and drop it in above.</p>
+              <!-- Page prose, not `slot="hint"`: 72ch of CORS explanation does not belong
+                   inside the field's accessible description or its width. -->
+              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and many do not. If it fails, download the zip yourself and drop it in above.</p>
               <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Looking for a feed? Try the <a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database</a> or <a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland</a>.</p>
 
                </div>
@@ -387,24 +311,18 @@
 
               <wa-details summary="Advanced" id="advanced" appearance="plain">
                 <div class="wa-stack wa-gap-l">
-                  <!-- Two different claims, and only one of them is true of every field:
-                       eight of these are genuinely inferred and ship blank with an
-                       inferring placeholder; departure time, board slack and border shape
-                       ship hardcoded constants (generate.py 207, 214-216) that no
-                       inference produces. Saying "inferred from the feed" of all eleven
-                       tells a reader that 09:00 came from their agency's service span. -->
-                  <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most of them are inferred from the feed if you leave them alone; departure time, board slack and border shape are fixed defaults instead. Change one and you are saying you know better than the feed, which is sometimes true.</p>
+                  <!-- Eight fields are inferred and ship blank; departure time, board
+                       slack and border shape ship hardcoded defaults. The sentence must
+                       not claim all eleven are inferred. -->
+                  <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most are inferred from the feed if left alone; departure time, board slack and border shape are fixed defaults. Change one only if you know better than the feed.</p>
 
                   <div id="landing-fields" class="wa-grid wa-gap-m" style="--min-column-size:220px">
 
-                    <!-- "Infer from the map" is the PLACEHOLDER, not a fourth option with
-                         an empty value: `wa-option` documents that values may not contain
-                         spaces because they are space-delimited when `multiple` is set, so
-                         an empty one is a shape the component never promises to round-trip.
-                         Unselected, `.value` is `''`, `orNull` (app.js 407) turns that into
-                         null, and readOptions leaves `sizeOverride` alone — which is what
-                         inferring *is*. `with-clear` is what gets the reader back there
-                         after picking a size; its button only appears once one is set. -->
+                    <!-- "Infer from the map" is the PLACEHOLDER, not an option with an
+                         empty value, which `wa-option` never promises to round-trip.
+                         Unselected, `.value` is `''`, `orNull` makes it null, and
+                         readOptions leaves `sizeOverride` alone, which is what inferring
+                         is. `with-clear` gets the reader back there after picking a size. -->
                     <wa-select id="opt-size" data-opt="sizeOverride" name="size" label="Game size"
                                placeholder="Infer from the map" with-clear
                                hint="Sets the deck, the hiding period and the zone radius unless you override those too.">
@@ -413,14 +331,10 @@
                       <wa-option value="large">Large</wa-option>
                     </wa-select>
 
-                    <!-- `step="any"`, and it matters: HTML's step base is `min`, so
-                         `min="1" step="10"` would validate 1, 11, 21 … and reject 400,
-                         500, 800 and the rulebook's own 402.336. A stepMismatch inside a
-                         collapsed <wa-details> suppresses the submit event with no
-                         focusable control to hang a bubble on, so the form would simply
-                         stop working. app.js 513 already rejects `<= 0` in words.
-                         wa-input declares `step` as a plain property, so the literal
-                         string "any" survives to the inner input untouched. -->
+                    <!-- `step="any"` matters: HTML's step base is `min`, so `min="1"
+                         step="10"` would reject 400, 500 and the rulebook's 402.336, and a
+                         stepMismatch inside a collapsed <wa-details> kills the submit
+                         silently. app.js rejects `<= 0` in words. -->
                     <wa-input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" min="1" step="any" inputmode="decimal" placeholder="from the game size" label="Zone radius" hint="Metres. How far from a stop a hider may be."></wa-input>
 
                     <wa-input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" min="1" step="1" inputmode="numeric" placeholder="from the game size" label="Hiding period" hint="Minutes the hider gets before the seekers start."></wa-input>
@@ -431,43 +345,33 @@
                       <span slot="hint">A <code>stop_id</code> from the feed. Overrides the inferred round-start station.</span>
                     </wa-input>
 
-                    <!-- The group's own `label` is the visible one now, so the field is
-                         labelled once instead of twice — a caption span that labelled
-                         nothing, plus a duplicate label hidden with
-                         `wa-visually-hidden-label`. `hint` puts the sentence in the
-                         fieldset's `aria-describedby`, where it was in no accessible
-                         relationship to the control before. -->
+                    <!-- The group's own `label` is the visible label and `hint` lands in
+                         the fieldset's `aria-describedby`; do not add a second label. -->
                     <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Out-of-border features do not exist for this game, so this changes real answers.">
                       <wa-radio value="bbox" appearance="button">Rectangle</wa-radio>
                       <wa-radio value="circle" appearance="button">Circle</wa-radio>
                     </wa-radio-group>
 
-                    <!-- A MIRROR of the frame on the landing map since 2026-08-27, and
-                         the bring-your-own flow's only way to set a border. app.js
-                         writes the frame's four numbers here and stamps
-                         `data-border-mode` (`auto` = sent as null, the border inferred;
-                         `custom` = sent as typed) — and makes the field `readonly` WHILE
-                         a frame exists, because then #border-row's fields and the map
-                         are the editor and two inputs for one rectangle could disagree.
-                         With no frame (a dropped zip or a pasted URL, which the picker
-                         has no bounding box for) the field is writable and readOptions
-                         parses it: the ability to give a BYO feed a border predates the
-                         frame and must not be lost to it. -->
+                    <!-- A MIRROR of the frame on the landing map, and the bring-your-own
+                         flow's only way to set a border. app.js writes the frame's four
+                         numbers here, stamps `data-border-mode` (`auto` = sent as null,
+                         `custom` = sent as typed), and makes the field `readonly` WHILE a
+                         frame exists so two editors cannot disagree. With no frame (a
+                         zip or a pasted URL) the field is writable and readOptions
+                         parses it; that path must not be lost. -->
                     <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four numbers: south, west, north, east. With a feed picked on the map, edit the frame there instead — this mirrors it. Blank means the border is fitted to the network." data-border-mode="none"></wa-input>
 
                     <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="When the clock starts on the representative day."></wa-input>
 
                     <!-- `step="1"`: the unit is seconds and any non-negative integer is
-                         legal (generate.py 216, `type=int`). `step="30"` would have made
-                         45 a stepMismatch and killed the submit silently, exactly as
-                         described on the zone-radius field above. -->
+                         legal. `step="30"` would make 45 a stepMismatch and kill the
+                         submit silently, as on the zone-radius field. -->
                     <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Seconds of grace for making a connection. Zero assumes you sprint."></wa-input>
 
-                    <!-- Blank is the feed's own start date (feed.js 1282, generate.py
-                         2567; README 265). Nothing anywhere ranks dates by busyness —
-                         `s1Representative` (service.js 309) deliberately breaks a tie
-                         toward the QUIETER day; the hint says so. -->
-                    <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for. Kept within the feed's own window; blank uses the feed's own start date, which is not necessarily a representative one."></wa-input>
+                    <!-- Blank is the feed's own start date. Nothing ranks dates by
+                         busyness; `s1Representative` (service.js) breaks ties toward the
+                         QUIETER day, and the hint says so. -->
+                    <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for, kept within the feed's window. Blank uses the feed's start date, which is not necessarily representative."></wa-input>
 
                     <!-- Slotted hints again, for the <code> the attribute cannot carry. -->
                     <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops">
@@ -478,44 +382,27 @@
                       <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
                     </wa-input>
 
-                    <!-- Full width via the `wa-span-grid` utility (grid-column: 1 / -1): a URL
-                         is the one value here that does not fit a 220px column.
-
-                         Deliberately NOT `type="url"`, unlike the feed field above. That
-                         one is the primary control and sits outside <wa-details>; this one
-                         is an override inside a panel that ships collapsed, where a
-                         typeMismatch is precisely the failure the zone-radius note
-                         describes — the submit event is suppressed with no focusable
-                         control to hang the browser's bubble on, so the form appears to
-                         stop working. `readOptions` validates it in words instead, and
-                         says which field is wrong.
-
-                         Blank means the published bucket, named once in
-                         `osm/worldfile.js` as DEFAULT_WORLD_BASE_URL. The placeholder does
-                         not repeat it: two copies of a URL is one copy too many, and the
-                         one that would go stale is this one. -->
+                    <!-- Full width via `wa-span-grid`: a URL does not fit a 220px column.
+                         NOT `type="url"`, for the collapsed-<wa-details> reason on the
+                         feed URL field; `readOptions` validates it in words. Blank means
+                         DEFAULT_WORLD_BASE_URL in `osm/worldfile.js`; the placeholder does
+                         not repeat it, so there is only one copy to go stale. -->
                     <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="wa-span-grid" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
                       <span slot="hint">Where the map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one.</span>
                     </wa-input>
 
                   </div>
 
-                  <!-- The explanation is the switch's own `hint` slot, not a sibling span:
-                       slotted, it is what the switch's `aria-describedby` points at, so the
-                       prose is finally read out with the control instead of sitting beside
-                       it unassociated. It has to stay a DIRECT child — slot detection is
-                       `:scope > [slot="hint"]` — and it keeps its caption classes so it
-                       matches the ten hints above it; the reading width now comes from
-                       `#advanced wa-switch::part(hint)` in styles.css. -->
+                  <!-- The explanation is the switch's own `hint` slot, so it is in the
+                       switch's `aria-describedby`. It must stay a DIRECT child (slot
+                       detection is `:scope > [slot="hint"]`); its reading width comes
+                       from `#advanced wa-switch::part(hint)` in styles.css. -->
                   <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore the cached transit feed
-                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused. Turn this on to download it again — worth doing when the operator has published a new one. It does not affect the map files, which are always read from the network.</span>
+                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused. Turn this on to download it again, for instance when the operator has published a new one. Map files are always read from the network regardless.</span>
                   </wa-switch>
 
-                  <!-- `offline` is live end to end — app.js 526, worker.js 244,
-                       cache.js 159 — and CONTRACT §(c) does NOT list it among the options
-                       dropped as meaningless in a browser. Without a control here
-                       `readControl` returns undefined and app.js 560-561 is a dead branch
-                       the reader can never reach. -->
+                  <!-- `offline` is live end to end (app.js, worker.js, cache.js) and
+                       CONTRACT §(c) does not drop it, so it needs a control. -->
                   <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
                     <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
                   </wa-switch>
@@ -525,28 +412,23 @@
 
             </div><!-- /.panel-scroll -->
 
-            <!-- THE FOOT. Outside the scroller on purpose: the page's primary action
-                 and the one sentence that says why it failed must not be reachable
-                 only by scrolling a panel whose length the reader does not control. -->
+            <!-- THE FOOT. Outside the scroller on purpose: the primary action and the
+                 error sentence must not be reachable only by scrolling the panel. -->
             <div class="panel-foot wa-stack wa-gap-2xs">
-              <!-- The callout is shipped here rather than built as a string: `showFormError`
-                   (app.js 579) now only unhides it and writes the message text.
-                   `role="alert"` is explicit because wa-callout carries no implicit role —
-                   its render() is two bare divs — and without it the primary action of the
-                   page silently does nothing for a screen-reader user. app.js unhides
-                   BEFORE writing, so the region is in the a11y tree when the message
-                   arrives, and blanks the text on clear so re-submitting an unfixed form
-                   is still a mutation the AT can see. It sits ABOVE the button because a
-                   message under the fold of a sticky foot is a message nobody reads. -->
+              <!-- Shipped here rather than built as a string: `showFormError` (app.js)
+                   only unhides it and writes the text. `role="alert"` is explicit because
+                   wa-callout carries no implicit role. app.js unhides BEFORE writing so
+                   the region is in the a11y tree when the message arrives, and blanks the
+                   text on clear so a re-submit is still a visible mutation. It sits above
+                   the button so it is never under the fold of the sticky foot. -->
               <wa-callout id="landing-error" data-role="formerror" role="alert" variant="danger" appearance="filled-outlined" hidden>
                 <wa-icon slot="icon" name="triangle-exclamation"></wa-icon>
                 <p class="wa-body-s" data-role="formerrortext"></p>
               </wa-callout>
 
-              <!-- Ships `disabled` because on a cold landing there is nothing to
-                   analyse yet. `initLanding` (app.js) wires the enable/disable rule
-                   SYNCHRONOUSLY, before it fetches anything, so the bring-your-own path
-                   is never left holding a dead button if the catalogue fetch fails. -->
+              <!-- Ships `disabled`: nothing to analyse yet. `initLanding` wires the
+                   enable rule SYNCHRONOUSLY, before any fetch, so the bring-your-own path
+                   never holds a dead button if the catalogue fetch fails. -->
               <wa-button id="analyse" type="submit" variant="brand" appearance="filled" size="m" disabled>
                 <wa-icon slot="start" name="play"></wa-icon><span data-role="analyselabel">Analyse</span>
               </wa-button>
@@ -561,46 +443,30 @@
     <!-- ══════════════════════════════════════════════════════════════════════
          THE REPORT — all eight sections, shipped at once as skeletons.
 
-         [data-section] is app.js's SECTION ID — the key it looks a host up by
-         (`sectionHost`), and the value it stamps back onto the markup it swaps
-         in. It is NOT the stage name: two sections share a stage, and a
-         `[data-section="<stage>"]` lookup would hand the map to the questions.
-         It is not a top-level element either: `#glance`, the map's stat rail, is a
-         NESTED host with its own hydration clock, and every piece of the machinery
-         below treats it exactly like a section because all of it walks
-         `[data-section]` globally.
-         [data-stage] records which worker stage first fills the section
-         (CONTRACT §(d)); it is documentation, nothing reads it.
-         [data-state="skeleton"] holds until app.js swaps in real markup, and
-         the real id, kicker, heading and ordinal are there from the first paint.
+         [data-section] is app.js's SECTION ID (`sectionHost`), not the stage name:
+         two sections share a stage. `#glance`, the map's stat rail, is a NESTED host
+         with its own hydration clock; all the machinery walks `[data-section]`
+         globally. [data-stage] records which worker stage first fills the section
+         (CONTRACT §(d)); nothing reads it. [data-state="skeleton"] holds until app.js
+         swaps in real markup; the real id, kicker and heading are there from the
+         first paint.
 
-         SECTION ORDER IS PAGE ORDER, and it is stated in two places that must
-         be kept in lockstep: the order of these <section> elements, and app.js's
-         `NUMBERED` array — which is what `renumberSections` actually walks, so
-         moving a section here without moving it there prints ordinals out of
-         sequence. The rail above must be moved with them too (`bindSpy` takes
-         the LAST link whose section is above the fold, in LINK order).
-         These banners name each section by its `data-section` id, which is the
-         only name that survives a reorder — and the only one that cannot be
-         confused with the `§NN` nicknames app.js and render/*.js still use for
-         the CLI's original numbering (§01 verdict … §09 sources; CONTRACT.md
-         §(e) is the id → printed-ordinal map). The shipped `data-n` is
-         provisional: app.js assigns the real ordinals AFTER the empty sections
-         are dropped.
-         Reordered 2026-08-23 so the page opens with the map instead of the
-         verdict, and §04 folded into §05 the same day: network, yourgame,
-         transit, verdict, questions, curses, trace, sources. Eight, not nine —
-         At a Glance is the rail inside the map section now, and takes no ordinal.
+         SECTION ORDER IS PAGE ORDER, stated in two places that must stay in lockstep:
+         these <section> elements and app.js's `NUMBERED` array, which
+         `renumberSections` walks. Move the rail links with them too. The banners
+         below name each section by its `data-section` id; the `§NN` nicknames in
+         app.js and render/*.js are the CLI's original numbering (CONTRACT.md §(e)
+         maps id to printed ordinal). The shipped `data-n` is provisional: app.js
+         assigns real ordinals AFTER empty sections are dropped. Order: network,
+         yourgame, transit, verdict, questions, curses, trace, sources. At a Glance is
+         the rail inside the map section and takes no ordinal.
          ══════════════════════════════════════════════════════════════════ -->
 
-    <!-- the day strip is card-weight and sits in the content, not full-bleed in
-         `main-header` where it out-shouted the verdict -->
+    <!-- the day strip is card-weight and sits in the content, not in `main-header` -->
     <wa-callout id="daybanner" data-when="report" appearance="filled-outlined" variant="neutral" hidden></wa-callout>
 
-    <!-- A fatal worker error lands here (app.js `fatalError`): the source could not
-         be fetched, the zip could not be opened, or the feed has no stop_times.txt.
-         app.js also removes the still-skeleton sections when it fills this, because
-         a stopped run must not leave eight shimmering cards behind. -->
+    <!-- A fatal worker error lands here (app.js `fatalError`); app.js also removes
+         the still-skeleton sections so a stopped run leaves no shimmering cards. -->
     <div id="run-error" data-role="runerror" data-when="report" hidden></div>
 
     <!-- `network` · never wrap the map frame in a wa-scroller or a disclosure:
@@ -611,15 +477,9 @@
         <h2 class="wa-heading-2xl" data-n="01">The map you’re playing on</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
-      <!-- ONE card, since 2026-08-23: the border card that used to sit under this one
-           was dissolved onto the map frame — its two copies are buttons in the toolbar
-           above the map, its coordinates a collapsed disclosure inside this card. The
-           skeleton keeps the same rows the real card has (toolbar, map, legend, and
-           the legend's own one-line note, the generated caption) so nothing jumps
-           when it lands. The
-           toolbar's first chip is the `Colour by` radio group, added with the reach
-           layer on 2026-08-23; the fifth is the `Route spokes` switch, added with the
-           spoke layer the same day. -->
+      <!-- ONE card: the border controls live in the toolbar above the map and a
+           collapsed disclosure inside this card. The skeleton keeps the same rows as
+           the real card (toolbar, map, legend, note, caption) so nothing jumps. -->
       <div class="wa-stack wa-gap-s sk-body">
         <wa-card>
           <div class="wa-stack wa-gap-s">
@@ -642,18 +502,15 @@
         </wa-card>
       </div>
 
-      <!-- THE STAT RAIL — a NESTED [data-section] host, and the only one on the
-           page (folded in from §04 on 2026-08-23). It is looked up, mounted,
-           renumbered (it takes no ordinal), pruned and swept by exactly the same
-           machinery as a top-level section, because all of that walks
-           `[data-section]` / `[data-state]` globally — and it hydrates on its OWN
-           clock, which is the whole point: the tiles are corrected at `days`,
-           `geo`, `rules`, `score` and on every day click, and §05's markup must not
-           move at any of them or MapLibre is torn down and rebuilt each time.
-           `#tiles` is the id `renderDay()` rewrites the innerHTML of. -->
+      <!-- THE STAT RAIL — the only NESTED [data-section] host. It is looked up,
+           mounted, pruned and swept by the same machinery as a section (it takes no
+           ordinal) and hydrates on its OWN clock: the tiles are corrected at `days`,
+           `geo`, `rules`, `score` and on every day click, and the map's markup must
+           not move at any of them or MapLibre is torn down. `#tiles` is the id
+           `renderDay()` rewrites. -->
       <div id="glance" data-section="glance" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-s">
         <h3 class="wa-heading-s wa-color-text-quiet wa-text-uppercase">At a glance</h3>
-        <p class="wa-body-s wa-color-text-quiet" style="max-inline-size:72ch">Measured on the service day selected above, on the map you are looking at. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come straight from the rulebook.</p>
+        <p class="wa-body-s wa-color-text-quiet" style="max-inline-size:72ch">Measured on the service day selected above. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come from the rulebook.</p>
         <div id="tiles" class="wa-stack wa-gap-l sk-body">
           <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
             <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton><wa-skeleton style="inline-size:95%"></wa-skeleton></div>
@@ -806,7 +663,7 @@
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The curse deck</p>
         <h2 class="wa-heading-2xl" data-n="06">The curse deck</h2>
-        <p class="wa-body-l">Every curse in the hider's deck, checked against this map's geography and this feed's network. A count is the number of qualifying features inside the border — outside does not count, because outside does not exist for this game.</p>
+        <p class="wa-body-l">Every curse in the hider's deck, checked against this map's geography and this feed's network. A count is the number of qualifying features inside the border; outside does not exist for this game.</p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
         <!-- the deck strip: one segment per curse, keep / flag / remove -->
@@ -888,12 +745,9 @@
 
   </main>
 
-  <!-- `data-state="pending"`, not `skeleton`, and the hero (149) matches: `fatalError`
-       (app.js 1350) sweeps away every `[data-state="skeleton"]` element on a stopped
-       run, which is right for the eight report sections and wrong for the two chrome
-       hosts — it would take `#top` (the wordmark's and this footer's anchor) and
-       `#footer-credit`, the OpenStreetMap/ODbL attribution that is true of every run,
-       off the error page. app.js settles these two in place instead. -->
+  <!-- `data-state="pending"`, not `skeleton`, like the hero: `fatalError` (app.js)
+       sweeps every `[data-state="skeleton"]` on a stopped run, and that must not take
+       `#top` or `#footer-credit` (the ODbL attribution) off the error page. -->
   <footer slot="footer" data-when="report" data-section="footer" data-stage="feed" data-state="pending" aria-busy="true">
     <div class="wa-stack wa-gap-m">
       <div id="footer-figures" class="wa-grid wa-gap-m" style="--min-column-size:230px">
@@ -903,8 +757,8 @@
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:10rem"></wa-skeleton></span>
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:11rem"></wa-skeleton></span>
       </div>
-      <!-- app.js prepends the "Generated by … from …'s GTFS feed" sentence, which
-           needs the feed. Everything after it is true of every run. -->
+      <!-- app.js prepends the "Built from …'s GTFS feed" sentence; the rest is true of
+           every run. -->
       <p id="footer-credit" class="wa-body-s" style="max-width:88ch">Map features from OpenStreetMap contributors, ODbL. Administrative divisions from the Overture Maps Foundation. Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking on the day.</p>
       <a href="#top" class="wa-link wa-caption-s wa-cluster wa-gap-2xs"><wa-icon name="arrow-up"></wa-icon>Back to top</a>
     </div>
@@ -913,15 +767,9 @@
 </wa-page>
 
 <!-- The degradation notice. `wa-toast` is a fixed-position stack, so it lives OUTSIDE
-     <wa-page> rather than in the `banner` slot — one stack for the whole page, which
-     is what the component expects.
-
-     The toast is the attention-getter, not the record: §09 Sources renders the same
-     `report.degradations` under "What this data does not know" (deck.js 1359) and
-     `buildProvenance` writes them into #provenance, so dismissing this loses nothing.
-     That is what makes a toast defensible here at all — the component's own docs are
-     blunt that transient notices get missed. app.js sets `duration="0"` on every item
-     for the same reason: it stays until the reader closes it. -->
+     <wa-page>. It is the attention-getter, not the record: §09 renders the same
+     `report.degradations` under "What this data does not know", so dismissing it
+     loses nothing. app.js sets `duration="0"` on every item so it stays until closed. -->
 <wa-toast id="degradations" placement="bottom-start"></wa-toast>
 
 <!-- MapLibre feature-hover cannot anchor a <wa-tooltip>; bindTT reads offsetWidth. -->

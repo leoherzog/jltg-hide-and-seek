@@ -1,42 +1,25 @@
 /**
- * render/map.js — the map section (its stat rail and its map) and §06 Getting Around.
+ * render/map.js — the map section (map plus `#glance` stat rail) and §06 Getting Around.
  *
- * Ported from generate.py S4:
- *   index_key_numbers      + _s4_legend, _s4_swatch,
- *                            _s4_card_header             → the `#glance` stat rail
- *   index_network_map                                    → §05 `#network`
- *   index_transit_reality  + _s4_headway_bin, _s4_heatmap_rows,
- *                            _s4_heatmap_table, _s4_heatmap,
- *                            _s4_chart_max               → §06 `#transit`
- *   the per-day views        (_s4_day_view … _s4_tiles_html)
+ * Ported from generate.py S4: `index_key_numbers`, `index_network_map`,
+ * `index_transit_reality` and their `_s4_*` helpers. Shared formatting and day-view
+ * helpers live in `./verdict.js`, so there is one implementation of each.
  *
- * The shared S4 formatting helpers (`_s4_dist`, `_s4_area`, `_s4_val`, `_s4_plural`,
- * `_s4_natural_key`, `_s4_swatch`, `_s4_card_header`), the day-view helpers and the
- * deterministic `fnum` guard live in `./verdict.js`; they are imported from there
- * rather than written a second time, so there is exactly one implementation of each
- * on the page.
+ * PROGRESSIVE HYDRATION. The browser's `Report` grows as worker stages land; every
+ * renderer degrades on a partial one and returns `''` when it has nothing to show,
+ * so app.js can drop the section and its nav entry.
  *
- * PROGRESSIVE HYDRATION. The CLI has one finished `Report`; the browser has a partial
- * one that grows as the worker's stages land. Every renderer here takes that partial
- * report and degrades: a piece it has not been handed yet is not printed, and a
- * section with nothing to show returns `''` so app.js can drop it and its nav entry.
+ * FORMATTING. Every number goes through one formatter from `../lib/core.js`: no
+ * `toFixed`, no `Intl`, no arithmetic inside a template literal.
  *
- * FORMATTING DISCIPLINE. Every number goes through exactly one formatter from
- * `../lib/core.js`. No `toFixed`, no `Intl`, no arithmetic inside a template literal.
+ * DETERMINISM. No clock, no randomness, no unsorted iteration over object keys.
  *
- * DETERMINISM. No clock, no randomness, and no unsorted iteration of an object whose
- * key order could vary. The sort below (`_s4_heatmap_rows`) carries the Python's full
- * tie-break tuple for exactly that reason.
- *
- * §04 WAS FOLDED INTO §05 on 2026-08-23. `index_key_numbers` no longer renders a
- * numbered section of its own: `renderGlanceRail` returns the twelve stat tiles as a
- * plain `#glance` div that lives INSIDE the map section, through its own nested
- * `data-section="glance"` host with its own hydration clock (`needs: 'network'`, its
- * own `redo` — see app.js's `SECTIONS`). The two cannot share one clock: §05's string
- * must not move at `rules` or `score`, because a changed string re-mounts the section
- * and tears the MapLibre instance down with it, and the tiles move at both. `#tiles`
- * keeps its exact id because `renderDay()` rewrites that container's innerHTML on
- * every day switch.
+ * The stat rail is a plain `#glance` div INSIDE the map section, mounted through its
+ * own nested `data-section="glance"` host with its own hydration clock (app.js
+ * `SECTIONS`). They cannot share one: §05's string must not move at `rules` or
+ * `score`, because a changed string re-mounts the section and tears down the MapLibre
+ * instance, and the tiles move at both. `#tiles` keeps its id because `renderDay()`
+ * rewrites that container's innerHTML on every day switch.
  *
  * @module render/map
  */
@@ -61,11 +44,7 @@ import {
 // Presentation constants (generate.py)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * The rail's three tile groups. `s4Tiles` tags every tile with a `g` key; the grouping is
- * produced here rather than around `#tiles`, because `renderDay()` replaces that
- * container's `innerHTML` wholesale and would overwrite any chrome outside this string.
- */
+/** The rail's three tile groups; `s4Tiles` tags every tile with a `g` key. */
 const S4_TILE_GROUPS = Object.freeze([
   Object.freeze(['map', 'The map']),
   Object.freeze(['clock', 'The clock']),
@@ -74,8 +53,7 @@ const S4_TILE_GROUPS = Object.freeze([
 
 /**
  * The two placeholder tiles the deck group shows before the `rules` stage lands.
- * Widths are literals for the same reason every other skeleton's are: the markup
- * must be byte-stable, and nothing here may read a clock or a random number.
+ * Widths are literals so the markup stays byte-stable.
  */
 const S4_DECK_SKELETON_WIDTHS = Object.freeze([
   Object.freeze(['82%', '70%']),
@@ -83,16 +61,12 @@ const S4_DECK_SKELETON_WIDTHS = Object.freeze([
 ]);
 
 /**
- * Headway heatmap bins in minutes. The middle element is the `data-hb` value the cell
- * carries; the six ramp steps are styled by `[data-hb='N']`, unscoped so the 92x30 grid
- * cell and the 11px `.sw` legend key share one fill rule.
+ * Headway heatmap bins in minutes. The middle element is the cell's `data-hb` value;
+ * `[data-hb='N']` styles both the grid cell and the `.sw` legend key.
  *
- * Exported since 2026-08-23: the map's frequency layer bins per-stop headways on
- * these thresholds and paints them from `--seq-100`…`--seq-650`, the same six tokens
- * `[data-hb='1']`…`[data-hb='6']` use. `app.js` ships the thresholds into `#data` as
- * `game.headway_bins_min` rather than letting `PAGE_RUNTIME_JS` keep a second copy —
- * a map that binned at different edges from the grid two cards down would be a lie
- * that nothing on the page could catch.
+ * Exported because the map's frequency layer bins per-stop headways on the same
+ * thresholds: app.js ships them into `#data` as `game.headway_bins_min` so the map
+ * and the grid can never bin at different edges.
  */
 export const S4_HEADWAY_BINS = Object.freeze([
   Object.freeze([10.0, '1', '≤10 min']),
@@ -108,13 +82,10 @@ export const S4_HEADWAY_BINS = Object.freeze([
 const S4_MAX_MAP_STOPS = 5000;
 /** Above this the zone circles become dots only. (`_S4_MAX_MAP_ZONE_RINGS`.) */
 const S4_MAX_MAP_ZONE_RINGS = 1200;
-/** Above this the heatmap grid shows the busiest 25 and drawers the rest. */
-/**
- * How many unreachable zones the map's caption will name before it stops naming them
- * and prints the count alone. (2026-08-23, with the generated caption.)
- */
+/** Above this the map caption prints the unreachable-zone count instead of names. */
 const S4_MAX_NAMED_ZONES = 6;
 
+/** Above this the heatmap grid shows the busiest 25 and drawers the rest. */
 const S4_MAX_HEATMAP_ROUTES = 25;
 /** Below this the heatmap becomes one sentence. */
 const S4_MIN_HEATMAP_ROUTES = 3;
@@ -124,11 +95,8 @@ const S4_MIN_HEATMAP_ROUTES = 3;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * `len(report.feed.routes)`.
- *
- * The real `feed.routes` map does not cross `postMessage` until the `'done'` message,
- * so before then the count comes from the `'feed'` stage's scalar. Same number, and
- * the tile reads correctly from stage 1 onward instead of printing "of 0".
+ * `len(report.feed.routes)`. `feed.routes` only crosses `postMessage` at `'done'`,
+ * so before then the count comes from the `'feed'` stage's scalar.
  */
 function feedRouteCount(report) {
   const routes = (report.feed && report.feed.routes) || {};
@@ -138,11 +106,8 @@ function feedRouteCount(report) {
 }
 
 /**
- * The number of stops with service on `day`.
- *
- * The CLI reads `len(day.served_stop_ids)`; a `DaySummary` cannot carry the id list
- * across `postMessage` (CONTRACT §(d)) and carries the count instead. The `StopRow[]`
- * map layer is the same set, so it is the fallback.
+ * The number of stops with service on `day`. A `DaySummary` carries the count, not
+ * the id list (CONTRACT §(d)); the `StopRow[]` map layer is the same set and the fallback.
  */
 function servedStopCount(report, day) {
   const n = day ? fnum(day.servedStops) : null;
@@ -151,18 +116,9 @@ function servedStopCount(report, day) {
 }
 
 /**
- * The round-start station's display name.
- *
- * The CLI reads `report.feed.stops[start_stop_id]` and falls back to `hub.name`. In
- * the browser `feed.stops` is empty until `'done'`, so the `StopRow[]` map layer —
- * which carries the same names and arrives at the `'network'` stage — sits between
- * the two. The printed name is identical either way.
- */
-/**
- * The worker's `SuggestedBorder`, or null — and null for anything that is not the
- * shape CONTRACT §(b) describes. Every renderer above treats null as "print nothing",
- * so a report from a worker that predates the field, or one that emitted a partial
- * object, degrades to the page as it was rather than to a half-filled sentence.
+ * The worker's `SuggestedBorder`, or null for anything that is not the shape
+ * CONTRACT §(b) describes. Null renders nothing, so a partial object degrades to the
+ * page as it was rather than to a half-filled sentence.
  *
  * @param {Object} report
  * @returns {Object|null}
@@ -179,9 +135,8 @@ function s4SuggestedBorder(report) {
 }
 
 /**
- * `S, W, N, E` — the suggested rectangle as the one line the landing frame's four
- * fields accept, so the copied text pastes straight back in. Six decimals, no
- * thousands separators, the same digits the Exact coordinates table prints.
+ * `S, W, N, E` — the suggested rectangle as the one line the landing frame's fields
+ * accept, in the same digits the Exact coordinates table prints.
  *
  * @param {number[]} bbox `[S, W, N, E]`
  * @returns {string}
@@ -191,18 +146,14 @@ function s4BboxLine(bbox) {
 }
 
 /**
- * `#border-suggest` — the worker found a tighter border and this is the offer.
+ * `#border-suggest` — the worker found a tighter border and this is the offer:
+ * measurement, consequence, what is left out, then two actions. Copy the four
+ * numbers, and `#suggest-rerun`, which app.js wires (CONTRACT §05). The re-run is a
+ * fresh document load replaying the sources from the feed cache, so it needs every
+ * source addressable by URL: a chosen `File` cannot survive a reload, and the button
+ * says so instead of failing later.
  *
- * ONE sentence of measurement, one of consequence, one of what is left out, then
- * two actions: copy the four numbers (for the landing frame's fields, or for a
- * player's map app), and `#suggest-rerun`, which app.js wires — never this module
- * and never `PAGE_RUNTIME_JS` (CONTRACT §05, 2026-08-27). The re-run is a fresh
- * document load that replays the run's sources from the browser's feed cache, so it
- * is only possible when every source is addressable by URL: a `File` the reader
- * chose cannot survive a reload, and the button says so instead of failing later.
- *
- * Every figure is the worker's: the renderer formats `coreStops`, `eventShare`, the
- * candidate's own hull/T90/zone vote, and never derives one from another.
+ * Every figure is the worker's; the renderer never derives one from another.
  *
  * @param {Object} report
  * @param {Object|null} suggested the already-validated `SuggestedBorder`, or null
@@ -216,23 +167,16 @@ function s4SuggestCallout(report, suggested) {
   const startName = startStopName(report);
   const dayLabel = s4DayLabel(report, sb.dayKey);
   const byFeed = Array.isArray(sb.trimmedByFeed) ? sb.trimmedByFeed : [];
-  // "mostly X (n)" is only information when there is more than one feed to
-  // attribute the trimmed stops to; on a single feed it would name the only feed.
+  // "mostly X (n)" only informs when there is more than one feed to attribute to.
   const mostly = byFeed.length > 1 && byFeed[0]
     ? ` — mostly ${byFeed[0].agencyName} (${num(byFeed[0].count)})`
     : '';
-  // Both size words are upper-cased, the way every other size name on the page is
-  // (`s4Tiles`, \u00a707's deck sentences, the strategy view): SMALL / MEDIUM / LARGE is
-  // the rulebook's own spelling, and the two halves of "a MEDIUM game rather than
-  // LARGE" have to be spelled alike to be read as the comparison they are.
+  // Upper-cased like every other size name on the page (the rulebook's spelling).
   const suggestWord = String(sb.sizeName || '').toUpperCase();
   const currentWord = String(size.name || '').toUpperCase();
-  // A core that votes the run's OWN size is a legitimate emission, not a bug:
-  // `suggestBorder` only ever offers a box at least `SUGGEST_MIN_TRIM_SHARE` tighter
-  // than the whole feed, and "the same game on a much smaller box" is worth the
-  // reader's attention. But the comparison clause degenerates to "a MEDIUM game …
-  // rather than MEDIUM", which reads as a rendering fault and undermines the offer
-  // sitting under it — so the same-size case gets its own half-sentence. (2026-08-27.)
+  // A core voting the run's OWN size is legitimate (`suggestBorder` only offers a box
+  // at least `SUGGEST_MIN_TRIM_SHARE` tighter), but "a MEDIUM game rather than
+  // MEDIUM" reads as a fault, so the same-size case gets its own half-sentence.
   const measured = `Measured on those stops alone this is `
     + `${suggestWord === currentWord ? 'still a' : 'a'} ${suggestWord} game `
     + `(${s4Area(report, Number(vote.hullSqM || 0))}, ${num(vote.nZones || 0)} zones, `
@@ -260,14 +204,10 @@ function s4SuggestCallout(report, suggested) {
       disabled: hasFile,
     }),
   ), { className: 'wa-cluster wa-gap-s wa-align-items-center' });
-  // `#suggest-note` ships with the file sentence, or empty; app.js writes into it
-  // when the handoff cannot be stored (the clipboard fallback). `:empty` hides it.
-  //
-  // `role="status"` and `tabindex="-1"` are both for that fallback path: pressing
-  // `#suggest-rerun` in a private window with the quota at zero writes an explanation
-  // here and returns, leaving a page that visibly did nothing. Live, the sentence is
-  // announced; focusable, app.js can put the caret on it, so a keyboard reader lands
-  // on the explanation instead of on a button that appeared inert. (2026-08-27.)
+  // `#suggest-note` ships with the file sentence, or empty; app.js writes into it when
+  // the handoff cannot be stored (the clipboard fallback), and `:empty` hides it.
+  // `role="status"` announces that write; `tabindex="-1"` lets app.js focus it, so a
+  // keyboard reader lands on the explanation instead of on an inert-looking button.
   const note = el('p', hasFile
     ? esc('Re-running needs feeds picked by URL \u2014 a file you chose cannot survive a reload. '
       + 'Copy the border and set it in the landing frame\u2019s fields instead.')
@@ -304,13 +244,10 @@ function startStopName(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * A `wa-cluster` of `.sw` swatches — the drafts' map legend.
+ * A `wa-cluster` of `.sw` swatches — the map legend, as a real `<ul>`.
  *
- * A real `<ul>`/`<li>` with `wa-list-plain`, not a div with `role="list"`: native
- * semantics need no ARIA override. CAVEAT: the `<ul>`'s own block margin from
- * `native.css` is zeroed only because `wa-cluster`/`wa-split` reset child margins, and
- * both current parents carry one. Drop this legend into an unclassed parent and it
- * picks up list margins that the old `<div>` never had.
+ * CAVEAT: the `<ul>`'s `native.css` block margin is zeroed only because
+ * `wa-cluster`/`wa-split` parents reset child margins; an unclassed parent brings it back.
  * @param {ReadonlyArray<[string,string]>} items `[swatchHtml, plainText]`
  * @returns {string}
  */
@@ -327,10 +264,7 @@ export function s4Legend(items) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The day summary for one key, or `null`. (`_s4_day_by_key`.)
- *
- * The CLI returns a full `ServiceDay`; in the browser `report.days` holds the
- * clone-safe `DaySummary` (CONTRACT §(d)), which carries every field §04–§06 read.
+ * The `DaySummary` (CONTRACT §(d)) for one key, or `null`. (`_s4_day_by_key`.)
  *
  * @param {Object} report @param {string} dayKey @returns {Object|null}
  */
@@ -342,15 +276,11 @@ export function s4DayByKey(report, dayKey) {
 }
 
 /**
- * The twelve stat tiles for one service day (pages.md §3.3).
+ * The twelve stat tiles for one service day (pages.md §3.3). Seven move with the
+ * day; the other five are map-wide or rulebook constants.
  *
- * Seven of the twelve move with the day; the other five are map-wide or rulebook
- * constants and are repeated so that one list renders the whole grid.
- *
- * `hl` is on exactly the tiles that name a fact the map can point at, and is the
- * `data-hl` the runtime binds tile↔map highlighting to (added 2026-08-23 with the
- * §04→§05 merge). The other tiles deliberately carry nothing: a tile that lights
- * nothing must not look like a control.
+ * `hl` is the `data-hl` the runtime binds tile↔map highlighting to, and is set only
+ * on tiles that name a fact the map can point at.
  *
  * @param {Object} report @param {string} dayKey
  * @returns {Array<{g:string,day:string,prov:string,v:string,l:string,n:string,hl?:string}>}
@@ -501,12 +431,8 @@ export function s4Tiles(report, dayKey) {
       prov: 'A2',
       hl: 'reach',
       v: pct(reachShare),
-      // The value is a share of ZONES and the note used to count STOPS — two
-      // different quantities in one tile. It counts zones now, from `ZoneReach`'s
-      // worker-computed `reachableZones` (a renderer may look a count up; it may not
-      // subtract one measured quantity from another), and keeps the stop figure as
-      // the parenthetical looser test it always was. (Fixed 2026-08-23 with the
-      // map's reach layer.)
+      // The value is a share of ZONES, so the note counts zones too, from the
+      // worker-computed `reachableZones`; the stop figure stays as the looser test.
       l: 'Zones reachable in the hiding period',
       n: (reach === null
         ? `${num(reachN)} of ${num(served)} served stops are within `
@@ -516,7 +442,7 @@ export function s4Tiles(report, dayKey) {
           + `${num(size.hidingPeriodMin || 0)} minutes of ${startName} at ${departure} `
           + `on a ${label} — the ${num(reach.unreachableZoneIds.length)} that are not are `
           + "red on the map's reach layer, hollow where there is no journey at all. "
-          + `(${num(reachN)} of ${num(served)} served stops are, which is the looser test.)`),
+          + `(${num(reachN)} of ${num(served)} served stops are, a looser test.)`),
     },
     {
       g: 'deck',
@@ -540,17 +466,13 @@ export function s4Tiles(report, dayKey) {
 }
 
 /**
- * The tile grid's inner markup for one day, in its three labelled groups.
+ * The tile grid's inner markup for one day, in its three labelled groups. Grouping
+ * happens here, not around `#tiles`, because `renderDay()` replaces that container's
+ * `innerHTML` wholesale.
  *
- * The grouping is produced here rather than around `#tiles`, because `renderDay()`
- * replaces that container's `innerHTML` wholesale and would overwrite any chrome that
- * lived outside this string.
- *
- * The deck group's two tiles count questions and curses, which do not exist until the
- * `rules` stage — three stages after the rail itself lands. They are drawn as
- * skeletons until then rather than as a truthful-but-useless "0 of 0", and rather
- * than being dropped, so the rail does not change height under the reader when the
- * audit arrives. (Added 2026-08-23 with the §04→§05 merge.)
+ * The deck group's tiles count questions and curses, which do not exist until the
+ * `rules` stage; they are skeletons until then, so the rail neither prints "0 of 0"
+ * nor changes height when the audit arrives.
  *
  * @param {Object} report @param {string} dayKey @returns {string}
  */
@@ -585,12 +507,10 @@ export function s4TilesHtml(report, dayKey) {
 }
 
 /**
- * A deterministic x-axis maximum for the ride-time chart.
- *
- * The hiding-period line must always be on the canvas, and one 3-hour outlier must not
- * squash every other bar, so the axis is the larger of 1.25 × the hiding period and the
- * p90 of every sampled time on every day, rounded up to a multiple of 15. Bars past it
- * are clipped and annotated at the axis end.
+ * A deterministic x-axis maximum for the ride-time chart: the larger of 1.25 × the
+ * hiding period and the p90 of every sampled time on every day, rounded up to a
+ * multiple of 15, so the hiding-period line is always on the canvas and one outlier
+ * cannot squash every other bar. Bars past it are clipped and annotated.
  *
  * @param {Object} report @returns {number}
  */
@@ -613,20 +533,13 @@ export function s4ChartMax(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The twelve stat tiles in three groups, each with value, label, note and chip.
- *
- * Was §04, a numbered section of its own, until 2026-08-23; it is now the rail under
- * the map, and therefore returns a plain `<div id="glance">` — no `section()`, no
- * `S4_ORDINAL`, no `data-n`, no kicker. app.js mounts it through its own nested
+ * The twelve stat tiles in three groups, as a plain `<div id="glance">` (no
+ * `section()`, no `data-n`). app.js mounts it through its nested
  * `data-section="glance"` host inside §05 and stamps `data-section` / `data-state`
- * onto this root itself.
+ * onto this root.
  *
- * The old §04 answer line went with the merge: it said "N places to hide across
- * A km², served by R of M routes", which is the hero's headline and, two cards up,
- * §05's own answer. The rail states its measuring conditions and then shows numbers.
- *
- * Its gate is unchanged and is why the rail's `needs` is `network` and not `rules`:
- * `size`, `metrics` and `days` all land at the `network` stage.
+ * The gate is why the rail's `needs` is `network`, not `rules`: `size`, `metrics`
+ * and `days` all land at the `network` stage.
  *
  * @param {Object} payload the (possibly partial) `Report`
  * @returns {string} HTML, or '' when there is nothing to show yet
@@ -642,10 +555,8 @@ export function renderGlanceRail(payload) {
   const caption = 'Measured on the service day selected above, on the map you are '
     + 'looking at. Tiles with a gold rule and a “changes by day” chip move when you '
     + 'change the day; the rest are map-wide or come straight from the rulebook. '
-    // Promised when the rail was folded in, delivered with the runtime that makes it
-    // true; the six tiles that name a place carry `data-hl`. (2026-08-23.)
     + 'Where a tile names a place, hovering it lights that place on the map above — '
-    + 'or move to it with the keyboard and press Enter to pin it there.';
+    + 'or focus it and press Enter to pin it there.';
   return el('div', join(
     subhead('At a glance'),
     el('p', esc(caption), {
@@ -747,13 +658,9 @@ export function s4HeatmapTable(report, rows, tableId) {
 }
 
 /**
- * The frequency card's body: legend, grid, method, and the overflow routes.
- *
- * The legend leads, because a reader needs the scale before the grid. The busiest
- * `S4_MAX_HEATMAP_ROUTES` rows are the grid; **every remaining route renders in full**
- * in a second, complete table below it rather than collapsing into a "N more routes
- * not shown" line. A report whose whole claim is completeness does not get to truncate
- * its own evidence.
+ * The frequency card's body: legend, grid, method, and the overflow routes. The
+ * busiest `S4_MAX_HEATMAP_ROUTES` rows are the grid; every remaining route renders in
+ * full in a second table below it, never as a "N more not shown" line.
  *
  * @param {Object} report @param {string} methodHtml @returns {string}
  */
@@ -761,8 +668,7 @@ export function s4Heatmap(report, methodHtml) {
   const rows = s4HeatmapRows(report);
   const shown = rows.slice(0, S4_MAX_HEATMAP_ROUTES);
   const extra = rows.slice(S4_MAX_HEATMAP_ROUTES);
-  // the fills live on `[data-hb]` alone (styles.css), so a `.sw` key gets the bin
-  // colour and the contrast hairline at 11px with no geometry override.
+  // the fills live on `[data-hb]` alone (styles.css), so a `.sw` key needs no override.
   const legend = s4Legend([
     ...S4_HEADWAY_BINS.map(([, binId, label]) => [
       el('span', '', { className: 'sw', dataHb: binId }), label,
@@ -786,18 +692,14 @@ export function s4Heatmap(report, methodHtml) {
 /**
  * §06 — the ride-time bar chart and the headway-by-day heatmap.
  *
- * Chart A: travel time from the start location to a deterministic 14-destination
- * sample, with a dashed line at the hiding period; bars are brand when they fit, gold
- * when they fit with a caveat, danger when they bust the window, and hollow dashed when
- * there is no service that day. Chart B: `table.hw`, routes × day types, binned
- * `[data-hb='1']`–`[data-hb='6']`, hatched `[data-hb='none']` for no service.
+ * Chart A: travel time from the start to a fixed destination sample, with a dashed
+ * line at the hiding period; bars are brand when they fit, gold with a caveat, danger
+ * when they bust the window, hollow dashed for no service. Chart B: `table.hw`,
+ * routes × day types, binned `[data-hb='1']`–`[data-hb='6']`, hatched for no service.
  *
- * Both cards read title → graphic → legend → method: the encoding note is the same
- * words it always was, but a reader meets the picture and its key first and the 95-word
- * explanation only if they want it. The `wa-chart` keeps the full caption as its
- * `description`, so assistive tech loses nothing either way. Neither graphic is ever
- * inside a disclosure — Chart.js and MapLibre size themselves once, at construction,
- * and a collapsed container has no size.
+ * Both cards read title → graphic → legend → method; the `wa-chart` keeps the full
+ * caption as its `description`. Neither graphic goes inside a disclosure: Chart.js
+ * sizes itself once, at construction.
  *
  * @param {Object} payload the (possibly partial) `Report`
  * @returns {string} HTML, or '' when there is nothing to show yet
@@ -813,20 +715,18 @@ export function renderTransitReality(payload) {
   const cards = [];
 
   if (samples.length) {
-    // The RAPTOR sentence is the README's own ("Read the schedule"): these minutes are
-    // a real sequence of buses over the real timetable, including the wait for the
-    // transfer, and a reader must not be able to mistake them for a straight-line guess.
+    // A reader must not be able to mistake these minutes for a straight-line guess.
     const caption = `Scheduled minutes from ${startName} at ${departure} on the selected `
       + `day, to a fixed sample of ${num(samples.length)} busy zones — the same `
       + 'sample every day, so the bars are comparable across the selector. '
       + `Blue = the ride fits inside the ${hp}-minute hiding period with slack; `
       + 'gold = it fits but uses more than three quarters of the window or needs two changes; '
-      + 'red = it busts the window outright; '
+      + 'red = it busts the window; '
       + 'a hollow dashed outline = no service to that stop on the selected day. '
       + `Dashed line = the ${hp}-minute hiding period. Times are scheduled, not observed: `
       + 'treat each bar as a centre point, not a ceiling. '
-      + 'Each ride is a real sequence of buses over the timetable, including the '
-      + 'transfer wait — not a straight-line guess.';
+      + 'Each ride is a real sequence of buses over the timetable, transfer wait '
+      + 'included — not a straight-line guess.';
     const chart = el('wa-chart', '', {
       id: 'ttchart',
       type: 'bar',
@@ -866,16 +766,15 @@ export function renderTransitReality(payload) {
   const headways = report.routeHeadways || [];
   const nRoutes = headways.length;
   if (nRoutes >= S4_MIN_HEATMAP_ROUTES) {
-    // "Median … between 10:00 and 14:00" is the CLI's own wording and is the whole
-    // honesty of this grid; the "not averages" clause is the README's gloss on it.
+    // "Median … between 10:00 and 14:00" is the CLI's own wording; keep it.
     let cap = 'Median minutes between departures per route — how often a bus comes — measured at '
       + "the route's own stops between 10:00 and 14:00, one column per service day this "
       + 'feed distinguishes. The technical name is headway. '
-      + 'These are medians, not averages: a route that runs every 10 minutes at rush hour '
-      + 'and once an hour at noon averages out to a figure that describes neither. That '
-      + 'window is when you will be playing. '
-      + 'Darker = less frequent. A hatched cell means the route does not run that day at '
-      + 'all. The selected day is highlighted; hover any cell for its trip count.';
+      + 'Medians, not averages: a route that runs every 10 minutes at rush hour '
+      + 'and hourly at noon averages out to a figure that describes neither, and '
+      + 'midday is when you will be playing. '
+      + 'Darker = less frequent. A hatched cell means the route does not run that day. '
+      + 'The selected day is highlighted; hover any cell for its trip count.';
     let subtitle = 'How often a bus comes, per route, per service day.';
     if (nRoutes > S4_MAX_HEATMAP_ROUTES) {
       const extra = nRoutes - S4_MAX_HEATMAP_ROUTES;
@@ -895,10 +794,10 @@ export function renderTransitReality(payload) {
     const labels = s4JoinWords(headways.map((h) => String(h.shortName || h.routeId || '')));
     cards.push(waCard(el('p', esc(
       `This network has ${num(nRoutes)} route${nRoutes !== 1 ? 's' : ''} — ${labels} — `
-      + 'which is too few for a frequency heatmap to say anything a sentence cannot. '
-      + 'Median headways are in the tile above; with this few routes the Transit Line '
-      + 'matching question is close to degenerate and both sides should expect it to '
-      + 'identify a zone rather than narrow the field.',
+      + 'too few for a frequency heatmap to say anything a sentence cannot. '
+      + 'Median headways are in the tile above. With this few routes the Transit Line '
+      + 'matching question is close to degenerate: expect it to identify a zone rather '
+      + 'than narrow the field.',
     ), { className: 'wa-body-s' }), {
       headerHtml: s4CardHeader('How often the buses come',
         'Too few routes for a grid.'),
@@ -907,14 +806,12 @@ export function renderTransitReality(payload) {
 
   if (!cards.length) return '';
 
-  // The map's reach layer now colours every zone by travel time from the start, with
-  // the hiding period as the cliff — so this section stopped repeating that and says
-  // what only it has instead: specific rides, and specific waits. (R7, 2026-08-23.)
-  const lede = `These are measured from ${startName}${departure ? ` at ${departure}` : ''} `
+  // The map's reach layer already shows reach; this section says what only it has:
+  // specific rides, and specific waits.
+  const lede = `Measured from ${startName}${departure ? ` at ${departure}` : ''} `
     + '— the same origin as the map’s reach layer, in specific rides rather than in '
-    + 'colour. Later rounds '
-    + 'start from the previous hider’s zone, so re-read them from that stop rather than '
-    + 'from the hub.';
+    + 'colour. Later rounds start from the previous hider’s zone, so re-read them from '
+    + 'that stop rather than from the hub.';
   const answer = el('p', esc(
     `The map says how far ${hp} minutes gets you. This chart says how long `
     + `${num(samples.length)} specific rides take, and the grid under it says how long `
@@ -930,11 +827,8 @@ export function renderTransitReality(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * `ZoneReach.perDay[dayKey]`, or `null`.
- *
- * A lookup, not a computation: every count the page prints (`reachableZones`,
- * `unreachableZoneIds.length`, `furthestMinutes`) was computed worker-side precisely
- * so a renderer never subtracts one measured quantity from another.
+ * `ZoneReach.perDay[dayKey]`, or `null`. A lookup, not a computation: every count the
+ * page prints was computed worker-side so a renderer never subtracts two measurements.
  *
  * @param {Object} report @param {string} dayKey @returns {Object|null}
  */
@@ -945,28 +839,20 @@ export function s4ReachDay(report, dayKey) {
 }
 
 /**
- * "What to notice" — two or three deterministic sentences under the map (R6).
+ * "What to notice" — two or three deterministic sentences under the map: which zones
+ * the hiding period cannot reach, whether there is a hub worth camping, and whether
+ * another service day is worse.
  *
- * The map carries the report's findings now, and a picture that says nothing is a
- * picture nobody reads. This is the caption that names what the layers are showing:
- * which zones the hiding period cannot reach, whether the network has a hub worth
- * camping, and whether another service day is worse.
+ * NETWORK-STAGE FACTS ONLY (`zones`, `zoneReach`, `hub`, `size`, `metrics`,
+ * `routeSpokes`): this string renders inside §05, and a string that moves at `rules`
+ * or `score` re-mounts the section and tears down the MapLibre instance.
  *
- * NETWORK-STAGE FACTS ONLY — `zones`, `zoneReach`, `hub`, `size`, `metrics`,
- * `routeSpokes` — for the same reason `renderNetworkMap` is held to that list: this
- * string is rendered inside §05, and a string that moves at `rules` or `score`
- * re-mounts the section and tears the MapLibre instance down with it.
+ * It counts, filters, sorts and slices; it does no arithmetic. Every quantity is
+ * carried or the length of a filtered list — sentence three is a filter over two
+ * carried id lists, never a subtraction of two counts.
  *
- * IT COUNTS, FILTERS, SORTS AND SLICES; IT DOES NOT DO ARITHMETIC. Every quantity it
- * prints is either carried (`reachableZones`, `unreachableZoneIds`) or the length of
- * a list it filtered. Sentence three in particular is "how many of the worse day's
- * unreachable zones are NOT unreachable today", which is a filter over two carried
- * id lists — never a subtraction of two measured counts.
- *
- * Per-day variants are pre-rendered into `DATA.days[k].map_caption_html` by app.js's
- * `dataPayload`, so a day switch is an innerHTML swap and never a recompute. Before
- * the `score` stage `DATA.days` is empty and this renderer's own copy — for the
- * representative day — is what stands, which is correct: there is no day selector yet.
+ * app.js pre-renders per-day variants into `DATA.days[k].map_caption_html`, so a day
+ * switch is an innerHTML swap. Before `score` this renderer's own copy stands.
  *
  * @param {Object} report @param {string} dayKey
  * @returns {string} HTML, or '' when there is nothing worth noticing yet
@@ -992,12 +878,8 @@ export function s4MapCaption(report, dayKey) {
         + `${startName} inside the ${hp}-minute hiding period on a ${label}, which is `
         + 'unusual and makes distance a weak question on this map.');
     } else {
-      // A name lookup, the same move render/strategy.js already makes for its
-      // dossiers. The ids arrive sorted, so the naming is sorted too.
-      //
-      // Naming stops at six. "A, B and two others" is a fact a reader can hold; "A, B
-      // and 141 others" is a number wearing two names, and on a Sunday this feed has
-      // 143 of them. Past the threshold the count and the layer say it better.
+      // The ids arrive sorted, so the naming is sorted too. Naming stops at
+      // `S4_MAX_NAMED_ZONES`: "A, B and 141 others" is a number wearing two names.
       const byId = new Map(zones.map((z) => [z.zoneId, z.name || z.zoneId]));
       const named = missed.length <= S4_MAX_NAMED_ZONES
         ? missed.map((id) => String(byId.get(id) || id))
@@ -1031,13 +913,8 @@ export function s4MapCaption(report, dayKey) {
   }
 
   // ── 3. the day that is worse ────────────────────────────────────────────────
-  // Two tests, not one. Ranking on the set difference ALONE named a strictly better
-  // day as the worse one: on the reference feed a Sunday reader was told "on a
-  // Saturday, another 6 zones fall outside the window" when Saturday's own total is
-  // 81 against Sunday's 143 — true as a set difference, false as the impression.
-  // A day only qualifies now if it is worse overall as well as additive. Both are
-  // lengths of carried lists, so this stays a filter and a comparison, never
-  // renderer arithmetic. (Fixed 2026-08-23.)
+  // Two tests, not one: a day qualifies only if it is worse overall AND adds zones.
+  // Ranking on the set difference alone named a strictly better day as the worse one.
   const here = new Set((reach && reach.unreachableZoneIds) || []);
   let worstKey = null;
   let worstExtra = 0;
@@ -1062,12 +939,9 @@ export function s4MapCaption(report, dayKey) {
 
 /**
  * The spoke layer's honesty sentences: what was drawn, and out of how many.
- *
- * `MAX_MAP_SPOKES` is applied worker-side (lib/core.js), so a capped feed never even
- * ships the polylines it dropped — which is exactly why the page has to say so. The
- * same rule the stop cap follows: a layer that quietly draws part of the network is
- * indistinguishable from a broken one. Counting and comparing two carried numbers,
- * never subtracting them. (2026-08-23, the spoke layer.)
+ * `MAX_MAP_SPOKES` is applied worker-side (lib/core.js), so a capped feed never ships
+ * the dropped polylines, and a layer that quietly draws part of the network is
+ * indistinguishable from a broken one.
  *
  * @param {Object} report @returns {string[]} zero, one or two sentences
  */
@@ -1087,17 +961,12 @@ export function s4SpokeNotes(report) {
 }
 
 /**
- * The map's legend, one block per colour mode plus the always-on items.
+ * The map's legend, one block per colour mode plus the always-on items. Every block
+ * is emitted; `#netlegend[data-mode]` decides which is visible, and the runtime
+ * writes that attribute when the `#colourby` radio moves.
  *
- * Every block is emitted; `#netlegend[data-mode]` decides which one is visible, and
- * the runtime writes that attribute when the reader moves the `#colourby` radio.
- * Rendering all of them means the legend never lags the map by a frame and needs no
- * data of its own.
- *
- * The reach block's four labels are **quoted from §06's ride-chart legend, verbatim**,
- * and its four colours are the same four tokens. The map and the chart are two
- * pictures of one measurement — same origin, same departure, same hiding period — so
- * they may not describe it in two different vocabularies.
+ * The reach block's labels and colours are §06's ride-chart legend's: the map and the
+ * chart are two pictures of one measurement and may not use two vocabularies.
  *
  * @param {Object} report
  * @param {{stopsShown: boolean, ringsShown: boolean, spokesShown: boolean}} flags
@@ -1113,7 +982,7 @@ export function s4MapLegends(report, flags) {
   const departure = String((report.opts || {}).departure || '').slice(0, 5);
 
   // A legend block: the swatch list in its own `wa-cluster` parent (s4Legend's <ul>
-  // relies on that for its margins), with an optional caption under it.
+  // relies on that for its margins), with an optional caption.
   const block = (mode, items, note) => el('div', join(
     el('div', s4Legend(items), { className: 'wa-cluster wa-gap-m' }),
     note ? el('p', esc(note), { className: 'wa-caption-xs wa-color-text-quiet' }) : '',
@@ -1127,10 +996,8 @@ export function s4MapLegends(report, flags) {
     ), 'Zone circle (toggle)']);
   }
   if (spokesShown) {
-    // Two swatches, because the layer paints two things: a plain route line and the
-    // gold, slightly heavier line of a route that actually calls at the hub. The
-    // hub emphasis is the whole reason the layer is worth drawing, so the key names
-    // it rather than leaving the reader to notice the weight. (2026-08-23.)
+    // Two swatches: a plain route line, and the gold heavier line of a route that
+    // calls at the hub.
     always.push(
       [s4Swatch('background:var(--ink-2);block-size:2px;border-radius:1px'), 'Route line (toggle)'],
       [s4Swatch('background:var(--gold-deep);block-size:3px;border-radius:1px'),
@@ -1141,9 +1008,8 @@ export function s4MapLegends(report, flags) {
     [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
     [s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
   );
-  // The suggested frame is a second, thinner, SOLID gold line — solid so the two
-  // gold rectangles read as different things at a glance. Only when the worker
-  // offered one (2026-08-27).
+  // The suggested frame is a thinner, SOLID gold line, so the two gold rectangles
+  // read as different things.
   if (suggestShown) {
     always.push([s4Swatch('background:transparent;border:1px solid var(--gold-deep)'),
       'Suggested border']);
@@ -1158,17 +1024,12 @@ export function s4MapLegends(report, flags) {
   const blocks = [block('base', baseItems, '')];
 
   if (s4ReachDay(report, s4BestDay(report)) !== null) {
-    // Every key draws exactly what the canvas draws, which is why three of these
-    // four carry a ring: the map strokes the gold bin --gold-deep, the red bin
-    // --ink and the no-journey bin --ink-2, because the fills alone are 1.5:1 on a
-    // pale basemap and because a ring is the channel that survives a colour-blind
-    // reading. The no-journey key is SOLID, not dashed: MapLibre has no dash on a
-    // circle stroke, so the map cannot draw one and the key must not promise it.
+    // Every key draws exactly what the canvas draws: three carry the ring the map
+    // strokes (fills alone are 1.5:1 on a pale basemap), and the no-journey key is
+    // SOLID because MapLibre has no dash on a circle stroke.
     //
-    // The gold label is the one label here that is NOT quoted verbatim from §06's
-    // ride chart ("Fits, but tight or two changes"). The chart bins on the window
-    // AND on transfers; this layer bins on the window alone, so the shared wording
-    // would promise a meaning the canvas does not encode. (Both fixed 2026-08-23.)
+    // The gold label differs from §06's "Fits, but tight or two changes" on purpose:
+    // the chart also bins on transfers, this layer bins on the window alone.
     blocks.push(block('reach', [
       [s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'),
         `Fits the ${hp}-minute window`],
@@ -1188,33 +1049,27 @@ export function s4MapLegends(report, flags) {
       + `back so the zones read. Zones are ${radius} circles.`));
   }
 
-  // The frequency block. Its window is NAMED, because §06's grid is the median per
-  // route-direction between 10:00 and 14:00 and this is the median per STOP over all
-  // routes between 06:00 and 22:00 — two honest measurements of "how often", which
-  // legitimately disagree (Wyoming: 60 midday, 43 all-day). Unnamed, the map would
-  // contradict the grid two cards down and neither would be wrong.
+  // The frequency block names its window: §06's grid is the median per
+  // route-direction between 10:00 and 14:00, this is the median per STOP over all
+  // routes between 06:00 and 22:00, and the two legitimately disagree.
   if (stopsShown) {
     blocks.push(block('frequency', [
       ...S4_HEADWAY_BINS.map(([, binId, label]) => [
         el('span', '', { className: 'sw', dataHb: binId }), label,
       ]),
-      // Flat --off, faded, with the same hairline the six bins carry — because that
-      // is what applyMode() paints. The grid's 45-degree hatch belongs to a table
-      // cell; a reader scanning the canvas for hatched dots would find none.
-      // (Fixed 2026-08-23.)
+      // Flat --off with the bins' hairline, because that is what applyMode() paints;
+      // the grid's hatch belongs to a table cell.
       [s4Swatch('background:color-mix(in srgb, var(--off) 45%, transparent);'
         + 'box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent)'),
         'No service that day'],
     ], 'Stops, coloured by the median minutes between departures at that one stop, all '
       + 'routes together, between 06:00 and 22:00 on the selected day. Lighter = more '
-      + 'service. The grid under Getting around measures a different thing — one route '
-      + "direction at a time, between 10:00 and 14:00 — so the two legitimately "
-      + 'disagree. Zone dots fade back so the stops read.'));
+      + 'service. The grid under Getting around measures one route direction at a time, '
+      + 'between 10:00 and 14:00, so the two legitimately disagree. Zone dots fade back '
+      + 'so the stops read.'));
   }
 
-  // The always-on block carries the cap sentence when a cap bit, because that block
-  // is the one part of the legend no colour mode hides. A dropped layer that says
-  // nothing is indistinguishable from a broken one.
+  // The always-on block carries the cap sentence, because no colour mode hides it.
   const capNotes = [];
   if (!stopsShown) {
     capNotes.push(`Over ${num(S4_MAX_MAP_STOPS)} served stops the individual dots are not `
@@ -1227,36 +1082,23 @@ export function s4MapLegends(report, flags) {
 }
 
 /**
- * §05 — the MapLibre network map plus the copy-pasteable border.
+ * §05 — the MapLibre network map plus the copy-pasteable border: a toolbar above the
+ * map, a legend below, the border as two `wa-copy-button`s and a collapsed table of
+ * decimal degrees. Every player must use the exact same border, so it is copied, not
+ * retyped.
  *
- * Served stops as small circles, zone-cover centres as larger marked circles with their
- * radius drawn (behind a `wa-switch`), the hub as the ★ marker, and the border as a
- * dashed gold ring. A toolbar above the map, a legend below it, and the border as two
- * `wa-copy-button`s in that toolbar plus a collapsed table of decimal degrees — the
- * rulebook's hard requirement is that every player uses the exact same border, and the
- * way to make that true is to copy it rather than retype it.
- *
- * This function only emits the `#netmap` host and the copy around it; MapLibre itself is
- * attached afterwards by `buildMap` inside app.js's `PAGE_RUNTIME_JS`, which guards on
- * MapLibre being absent and omits the map rather than throwing. The builder lives in
- * that inlined runtime and not in this module on purpose: the runtime is a verbatim
- * port of the CLI's page JS, and the CLI builds its map there. A second copy here
- * would be the one that never runs.
- *
- * Never wrap the map in a `wa-scroller`.
+ * This emits only the `#netmap` host and the copy around it; `buildMap` in app.js's
+ * `PAGE_RUNTIME_JS` attaches MapLibre afterwards and omits the map when the library
+ * is blocked. Never wrap the map in a `wa-scroller`.
  *
  * WHAT THIS FUNCTION MAY READ, and nothing else: `border`, `hub`, `size`, `zones`,
- * `days` / `selectedDay`, `metrics`, `stops`, `zoneReach`, `routeSpokes`,
- * `spokeCap` and `suggestedBorder` — every one of them a `network`-stage field —
- * plus `geo.admin.countryCode` reaching it through `s4Dist`/`s4Area`, and the
- * main-side `sourceKinds` list app.js stamps on the report before the worker starts
- * (fixed for the run, so it cannot move the string either). Quoting
- * a question count, a curse, a score or a finding here would change this string at
- * `rules` or `score`, and a changed string re-mounts the section, which destroys the
- * MapLibre instance and throws away the reader's pan and zoom. That is why the stat
- * rail — which counts all four — is a NESTED section host with its own clock, and it
- * is the invariant CONTRACT §(d) records. Anything arriving later reaches the map
- * through `#stops` and the runtime, never through this string.
+ * `days` / `selectedDay`, `metrics`, `stops`, `zoneReach`, `routeSpokes`, `spokeCap`
+ * and `suggestedBorder` — all `network`-stage fields — plus `geo.admin.countryCode`
+ * through `s4Dist`/`s4Area` and the main-side `sourceKinds` list, fixed for the run.
+ * Quoting a question count, curse, score or finding would change this string at
+ * `rules` or `score`, re-mount the section and destroy the MapLibre instance with the
+ * reader's pan and zoom (CONTRACT §(d)). That is why the stat rail is a NESTED host
+ * with its own clock; anything later reaches the map through `#stops` and the runtime.
  *
  * @param {Object} payload the (possibly partial) `Report`
  * @returns {string} HTML, or '' when there is nothing to show yet
@@ -1274,12 +1116,9 @@ export function renderNetworkMap(payload) {
   const served = servedStopCount(report, day);
   const stopsShown = served <= S4_MAX_MAP_STOPS;
   const ringsShown = zones.length <= S4_MAX_MAP_ZONE_RINGS;
-  // The spoke layer exists when the worker carried polylines for it. It is capped
-  // there, not here (lib/core.js `MAX_MAP_SPOKES`), because the geometry must not
-  // cross `postMessage` only to be thrown away on this side.
+  // The spoke layer is capped worker-side (lib/core.js `MAX_MAP_SPOKES`).
   const spokesShown = (report.routeSpokes || []).length > 0;
-  // The worker's tighter, reachability-aware box, or null. Null is the common case
-  // and renders NOTHING here: no caption sentence, no legend row, no callout.
+  // The worker's tighter box, or null — the common case, which renders nothing.
   const suggested = s4SuggestedBorder(report);
   const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
 
@@ -1292,8 +1131,7 @@ export function renderNetworkMap(payload) {
   const captionParts = [
     'Live basemap.',
     // The row set is the BUSIEST day's served stops on every day (CONTRACT §(d)
-    // `StopRow`), so "the selected day" was a small lie here. The reach layer is what
-    // reads the selected day. (Corrected 2026-08-23 with the reach layer.)
+    // `StopRow`); only the reach layer reads the selected day.
     stopsShown
       ? `Grey dots = each of the ${num(served)} stops with service on a ${bestLabel}, the `
         + 'representative day (hover for the name and route count).'
@@ -1302,7 +1140,7 @@ export function renderNetworkMap(payload) {
         + `${num(zones.length)} zone centres are plotted.`,
     ringsShown
       ? `Blue dots = the ${num(zones.length)} designated hiding zones; the switch draws each `
-        + `one's true ${radius} rulebook circle.`
+        + `one's ${radius} rulebook circle.`
       : `Blue dots = the ${num(zones.length)} designated hiding zones. There are too many to `
         + 'draw every circle, so the radius toggle is unavailable.',
     reachDay === null
@@ -1313,19 +1151,16 @@ export function renderNetworkMap(payload) {
     stopsShown
       ? 'Colour by Frequency recolours the stops instead, on the same six steps as the '
         + 'headway grid under Getting around — but measured per stop over all routes '
-        + 'between 06:00 and 22:00, which is a different question from that grid’s.'
+        + 'between 06:00 and 22:00, a different question from that grid’s.'
       : `Over ${num(S4_MAX_MAP_STOPS)} stops the individual dots are dropped, so the `
-        + 'frequency layer is unavailable on this feed and the colour selector offers '
-        + 'Plain and Reach only.',
+        + 'frequency layer is unavailable and the colour selector offers Plain and Reach only.',
     !spokesShown ? ''
       : 'Route spokes draws each route-direction\u2019s own line under the dots, filtered '
-        + 'to the day you picked — so a route that does not run on a Sunday is not on the '
-        + 'Sunday map. Lines that call at the hub are gold and a shade heavier.',
+        + 'to the day you picked. Lines that call at the hub are gold and a shade heavier.',
     !spokesShown ? '' : s4SpokeNotes(report).join(' '),
     `★ = ${hub.name}, the inferred round-start station.`,
-    // The same three-way split as the border sentence below the map: on a fallback run
-    // the frame is still drawn, but "nothing outside it exists" is exactly the claim
-    // the run did not honour.
+    // The same three-way split as the border sentence below the map: on a fallback
+    // run the frame is drawn but "nothing outside it exists" is not true.
     (border.derivation === 'option_fallback'
       ? 'Dashed gold frame = the box you set. It kept fewer than half this network, so it '
         + 'was drawn and not applied: the stops, zones and counts here are the whole network.'
@@ -1337,24 +1172,17 @@ export function renderNetworkMap(payload) {
   ];
   const caption = captionParts.filter((x) => x).join(' ');
 
-  // Colour modes are exclusive — two ramps at once is mush and needs two legends —
-  // so this is a radio group, not switches, and it says so instead of leaving the
-  // reader to discover it.
-  //
-  // It offers exactly the modes THIS feed has a column for, and it exists whenever
-  // that is more than none. Gating the whole group on reach alone lost the frequency
-  // layer on any feed whose RAPTOR pass degraded — the per-stop headways still cross
-  // in `#stops`, the legend block was still emitted, and nothing could ever switch
-  // to it. Same rule as the stop cap, applied to the other column.
-  // (Fixed 2026-08-23.)
+  // Colour modes are exclusive (two ramps at once needs two legends), so this is a
+  // radio group. It offers exactly the modes THIS feed has a column for, and exists
+  // whenever that is more than none: gating on reach alone lost the frequency layer
+  // on any feed whose RAPTOR pass degraded.
   const modeButtons = join(
     el('wa-radio', esc('Plain'), { value: 'base', appearance: 'button', size: 's' }),
     reachDay === null
       ? ''
       : el('wa-radio', esc('Reach'), { value: 'reach', appearance: 'button', size: 's' }),
-    // No Frequency button when the stop layer was dropped over `MAX_MAP_STOPS`: the
-    // per-stop headways ride with the stops and there is nothing to colour. The
-    // caption says so rather than leaving a control that does nothing.
+    // No Frequency button over `MAX_MAP_STOPS`: the per-stop headways ride with the
+    // stops and there is nothing to colour. The caption says so.
     stopsShown
       ? el('wa-radio', esc('Frequency'), { value: 'frequency', appearance: 'button', size: 's' })
       : '',
@@ -1371,8 +1199,7 @@ export function renderNetworkMap(payload) {
   const layerControls = join(
     colourBy,
     // Geometry, not a recolouring, so it is orthogonal to `Colour by` and stays a
-    // switch. It ships unchecked: the spokes are context for a question the reader
-    // has not asked yet, and the dots are the content. (2026-08-23.)
+    // switch. It ships unchecked: the dots are the content, the spokes context.
     spokesShown ? waSwitch('Route spokes', { checked: false, id: 'spokesw' }) : '',
     ringsShown ? waSwitch(`Draw the ${radius} zone circles`, { checked: false, id: 'zonesw' }) : '',
   );
@@ -1393,30 +1220,19 @@ export function renderNetworkMap(payload) {
   ), { className: 'wa-stack wa-gap-3xs' })).join(''), { className: 'wa-cluster wa-gap-xl' });
 
   const geojsonText = jdump(border.geojson);
-  // The plain-text twin of the table below, from the same `degRows` and therefore the
-  // same digits — the copied artefact and the printed one can never disagree.
+  // The plain-text twin of the table, from the same `degRows` and therefore the same
+  // digits: the copied artefact and the printed one can never disagree.
   const degText = degRows.map(([label, value]) => `${label} ${value}`).join('\n');
 
-  // The border used to be a card of its own under the map, which printed the four
-  // degrees a second time (§03's house rule was the third) and put the action a
-  // scroll away from the thing it describes. It is on the map frame now: the two
-  // copies are buttons in the toolbar, the coordinates are a collapsed disclosure in
-  // the same card, and the pad/area sentence moved into "How to read this map" with
-  // its provenance chip. `#geocopy` keeps its id. (R5, 2026-08-23.)
   const toolbar = el('div', join(
-    // `#netlayers` so the runtime can take the whole layer group away when MapLibre
-    // is blocked: a Colour by group and two switches for a map that was never drawn
-    // are dead controls. The copy buttons beside them work without a map and stay.
-    // (2026-08-23.)
+    // `#netlayers` so the runtime can remove the whole layer group when MapLibre is
+    // blocked; the copy buttons beside them work without a map and stay.
     el('div', layerControls, {
       id: 'netlayers', className: 'wa-cluster wa-gap-s wa-align-items-center',
     }),
     el('div', join(
-      // Slotted triggers, not the component's icon-only default: side by side the
-      // two defaults are the same glyph twice, and the payloads are not
-      // interchangeable — one is a GeoJSON Feature, the other four labelled
-      // degrees. The old border card said which was which in its own copy; this
-      // says it on the buttons. (Fixed 2026-08-23.)
+      // Slotted triggers, not the icon-only default: the two payloads are different
+      // things and the buttons have to say which is which.
       waCopyButton(geojsonText, {
         label: 'Copy GeoJSON', id: 'geocopy',
         trigger: waButton('Copy GeoJSON'),
@@ -1428,16 +1244,10 @@ export function renderNetworkMap(payload) {
     ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
   ), { id: 'netcontrols', className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s' });
 
-  // `Border.derivation` (CONTRACT §(b), 2026-08-27): `'option'` means the reader set
-  // the rectangle on the landing map and the worker used it as given — no padding,
-  // so the padded-box sentence would be describing a construction that did not
-  // happen. `'reach'` is the inferred box and the sentence it always had.
-  //
-  // `'option_fallback'` is the third case and the one that must never be silent: the
-  // box was drawn but kept under `IN_PLAY_MIN_SHARE` of the served stops, so the
-  // worker measured the whole network instead. Saying "every count is measured inside
-  // your box" there would be false, and the reader's only other signal is a
-  // degradation banner. (2026-08-27.)
+  // `Border.derivation` (CONTRACT §(b)): `'option'` is the reader's rectangle used as
+  // given, with no padding; `'reach'` is the inferred, padded box; `'option_fallback'`
+  // is a box that kept under `IN_PLAY_MIN_SHARE` of the served stops, so the worker
+  // measured the whole network instead — and that must never be silent.
   const borderArea = s4Area(report, Number(border.areaSqM || 0));
   const borderSentence = border.derivation === 'option_fallback'
     ? `The border is the box you set on the landing map (no padding), and it covers `
@@ -1471,24 +1281,19 @@ export function renderNetworkMap(payload) {
         className: 'wa-stack wa-gap-3xs',
       }),
       // A colour change on a <canvas> is invisible to a screen reader, so a PINNED
-      // tile highlight says what it is showing, here, politely. Previews (hover and
-      // focus) deliberately do not announce: tabbing across five tiles must not
-      // narrate five times. Ships empty; `:empty` takes the row back. (2026-08-23.)
+      // tile highlight is announced here. Hover and focus previews deliberately are
+      // not. Ships empty; `:empty` hides the row.
       el('p', '', {
         id: 'netpin',
         ariaLive: 'polite',
         className: 'wa-caption-s wa-color-text-quiet',
       }),
-      // "What to notice", generated. The renderer's own copy is the representative
-      // day's; once `score` lands, `renderDay()` swaps in the selected day's
-      // pre-rendered variant from `DATA.days[k].map_caption_html`. `:empty` hides the
-      // row on a feed with nothing to say. (R6, 2026-08-23.)
+      // "What to notice" for the representative day; once `score` lands `renderDay()`
+      // swaps in the selected day's pre-rendered variant. `:empty` hides the row.
       el('div', s4MapCaption(report, bestKey), {
         id: 'netcaption', className: 'wa-body-s wa-color-text-quiet',
       }),
-      // The suggestion sits under the reading notes and above the coordinates:
-      // it is an offer about the border, and the coordinates are the border. An
-      // empty string when there is no suggestion — `join` drops it.
+      // '' when there is no suggestion; `join` drops it.
       s4SuggestCallout(report, suggested),
       waDetails('How to read this map', howToRead, { appearance: 'plain' }),
       waDetails('Exact coordinates', degrees, { appearance: 'plain', id: 'mapborder' }),
@@ -1497,8 +1302,7 @@ export function renderNetworkMap(payload) {
       headerHtml: s4CardHeader(
         `${num(served)} served stops, ${num(zones.length)} hiding zones and the border`,
         `Everything that runs on a ${bestLabel}, the representative day. The reach layer `
-        + 'follows the day selector. Copy the border — every player must use the same '
-        + 'rectangle.',
+        + 'follows the day selector. Copy the border: every player must use the same one.',
       ),
     },
   );
@@ -1513,9 +1317,7 @@ export function renderNetworkMap(payload) {
       : ', with no single dominant interchange')
     + '.';
   // `unreachableZoneIds.length` is a lookup on a worker-computed list, not a
-  // subtraction: the count and the ids are carried precisely so this line and the
-  // reach layer cannot disagree. It is a `network`-stage fact, so quoting it here does
-  // not move this string at `rules` or `score`.
+  // subtraction, and a `network`-stage fact, so it does not move this string later.
   const missed = reachDay === null ? null : reachDay.unreachableZoneIds.length;
   const answer = el('p', esc(
     `${num(zones.length)} places to hide`
@@ -1526,10 +1328,8 @@ export function renderNetworkMap(payload) {
     + " The numbers under the map are the same day's measurements; copy the border "
     + 'before anyone draws a card.',
   ), { className: 'wa-body-s' });
-  // The stat rail's host, empty. app.js mounts `renderGlanceRail` into it in the same
-  // hydration pass that mounts this section, and re-mounts it on its own clock
-  // afterwards (`days`, `geo`, `rules`, `score` and every day click) without this
-  // string — and therefore the map — moving at all.
+  // The stat rail's host, empty. app.js mounts `renderGlanceRail` into it and
+  // re-mounts it on its own clock without this string — or the map — moving.
   const glanceHost = el('div', '', {
     id: 'glance',
     dataSection: 'glance',

@@ -1,55 +1,38 @@
 #!/usr/bin/env node
-// ═══════════════════════════════════════════════════════════════════════════════
-// tools/smoke.mjs — headless end-to-end harness
-// ═══════════════════════════════════════════════════════════════════════════════
+// tools/smoke.mjs — headless end-to-end harness.
 //
 // Runs `runPipeline` from worker.js against the cached reference feed with the map
-// files pointed at a host that cannot resolve (`DEAD_WORLD_URL`), and asserts
-// generated/generate.py's own golden numbers from `selftest()`. The OSM layer has
-// no off switch — every run reads the world files — so an unreachable bucket is how
-// this harness stays offline, deterministic and identical to the run the numbers
-// were measured on: §(f)1's failure path yields the same empty `GeoData`. Those numbers are measured, not guessed: a change to
-// any of them means an algorithm changed, which may be correct but must be
-// deliberate. Never adjust an assertion to make it pass.
+// files pointed at an unresolvable host (`DEAD_WORLD_URL`), and asserts the golden
+// numbers from generate.py's `selftest()`. The OSM layer has no off switch, so the
+// dead bucket is what keeps the run offline and deterministic (§(f)1's failure path
+// yields an empty `GeoData`). The numbers are measured, not guessed: a change means
+// an algorithm changed. Never adjust an assertion to make it pass.
 //
 //   node tools/smoke.mjs [--feed <path>] [--quiet] [--json]
 //                        [--no-merge] [--merge-pipeline]
 //
-// After the goldens, and before the merge phases, the BORDER scenario (B1) runs the
-// same feed a second time with `borderBbox` set to a box that clips about 20 % of
-// the served stops off the south edge. It asserts the in-play facts CONTRACT.md
-// §(b) Metrics "Stop set" promises — the measured set shrank, the whole-feed count
-// is still reported, the border is the reader's box unpadded — as SHAPE checks and
-// relations, never as golden numbers: a clipped run is not a stable reference.
+// B1 (border) re-runs the feed with `borderBbox` clipping ~20 % of served stops off
+// the south edge and asserts CONTRACT.md §(b) "Stop set" as shape checks and
+// relations, never goldens: a clipped run is not a stable reference.
 //
-// After the goldens it runs the MERGE phases, which cover `gtfs/merge.js` and carry
-// their own pass/fail count, reported on its own line so the 19 above stay legible:
+// The MERGE phases cover `gtfs/merge.js` and report their own pass/fail line:
 //
-//   M1  self-merge — the reference feed merged with itself. Identical bytes mean
-//       identical hashes and a 100% id collision, which is the strongest namespacing
-//       test available and needs no second fixture.
-//   M2  two feeds — the reference plus Rochester, when that zip is cached. Additivity,
-//       the window intersection, the mixed-timezone warning, referential integrity.
-//   M3  end to end (`--merge-pipeline`) — a merged run reaching `done`. A SHAPE check,
-//       never a golden: a merged map is not a stable reference and must never grow one.
-//   M4  the failure path (`--merge-pipeline`) — three sources of which one cannot be
-//       downloaded. The run must survive it AND must credit the two feeds that
-//       actually loaded, because §09 exists so a merged report cannot lie about what
-//       it read; an index into the loaded list is not an index into the source list.
-//   M5  the big pair (`--merge-pipeline`) — the reference feed merged with MBTA, the
-//       one cached pair whose trip-count primary ships no `fare_attributes.txt`. It
-//       covers the fare fallback, which no self-merge or same-shaped pair can.
+//   M1  self-merge — identical bytes, identical hashes, 100 % id collision.
+//   M2  two feeds — reference plus Rochester, when cached. Additivity, window
+//       intersection, mixed-timezone warning, referential integrity.
+//   M3  end to end (`--merge-pipeline`) — a merged run reaching `done`; shape only.
+//   M4  failure path (`--merge-pipeline`) — one of three sources dead. The run must
+//       survive and §09 must credit exactly the two feeds that loaded.
+//   M5  big pair (`--merge-pipeline`) — reference plus MBTA, whose trip-count primary
+//       ships no `fare_attributes.txt`; covers the fare fallback.
 //
-// `--merge-pipeline` opts into all three of the slow phases (each loads or runs a
-// whole pipeline; M5 alone reads an 18 MB feed). M1 and M2 are seconds and run by
-// default. `cache/` is gitignored, so a fixture that is not on this machine prints
-// SKIP and does not fail. `--no-merge` skips the phases entirely.
+// `--merge-pipeline` opts into the slow phases (M5 alone reads an 18 MB feed). M1 and
+// M2 run by default. A fixture missing from `cache/` prints SKIP, not FAIL.
+// `--no-merge` skips the phases entirely.
 //
-// Node has no `Worker`, no `indexedDB` and no `File`. All three are handled without
-// shimming the pipeline: `runPipeline` takes its message sink as an argument,
-// `lib/cache.js` falls back to an in-memory Map, and the zip is handed in as a
-// `Blob`, which is the same duck type (`.arrayBuffer()`, `.name`) a picked `File`
-// presents.
+// Node has no `Worker`, `indexedDB` or `File`: `runPipeline` takes its message sink
+// as an argument, `lib/cache.js` falls back to a Map, and the zip is handed in as a
+// `Blob` with the same duck type (`.arrayBuffer()`, `.name`) as a picked `File`.
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -65,8 +48,7 @@ import { mergeFeeds, mergeOrder, feedSourceRows, MERGE_TABLES } from '../gtfs/me
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 
-// The Rapid, summer 2026 — 2.7 MB. The reference feed every golden number below
-// was measured on.
+// The Rapid, summer 2026 — 2.7 MB. Every golden number was measured on it.
 const REFERENCE_FEED = path.join(REPO, 'cache', 'gtfs', 'c25d617e4716161f.zip');
 
 const argv = process.argv.slice(2);
@@ -77,34 +59,23 @@ const FEED_PATH = feedArg >= 0 && argv[feedArg + 1] ? argv[feedArg + 1] : REFERE
 const NO_MERGE = argv.includes('--no-merge');
 const MERGE_PIPELINE = argv.includes('--merge-pipeline');
 
-// Rochester, summer 2026 — 508 KB, a different timezone and no id in common with the
-// reference feed. Optional: `cache/` is gitignored.
+// Rochester, summer 2026 — 508 KB, a different timezone, no ids in common. Optional.
 const SECOND_FEED = path.join(REPO, 'cache', 'gtfs', '7da582fb8508a2f9.zip');
 
-// MBTA, summer 2026 — 18 MB, 83,098 trips and NO `fare_attributes.txt`. The only
-// cached feed that outruns the reference on trips while shipping no fares, which is
-// what makes it the fixture for the fare fallback (M5). Optional, and slow.
+// MBTA, summer 2026 — 18 MB, 83,098 trips, no `fare_attributes.txt`. The only cached
+// feed that out-trips the reference while shipping no fares (M5). Optional, slow.
 const BIG_FEED = path.join(REPO, 'cache', 'gtfs', '3e729bcf6f763c38.zip');
 
-// A host that cannot resolve, so M4's dead source fails in DNS rather than hanging on
-// a real server. `.invalid` is reserved by RFC 2606 and can never be registered.
+// `.invalid` is reserved by RFC 2606: M4's dead source fails in DNS, never hangs.
 const DEAD_FEED_URL = 'https://feed.invalid/dead.zip';
 
-// A world-file host that cannot resolve. The OSM layer has no off switch any more
-// (worker.js S2, 2026-09-01) — every run reads the map files — so the way a harness
-// stays offline and deterministic is to point it at a bucket that is not there and
-// take the documented failure path: CONTRACT.md §(f)1, `nonFatal('geo')` plus a
-// degradation, `emptyGeoData`, `geo.available === false`. That is the SAME GeoData
-// the old `useOsm: false` produced, which is why all 19 golden numbers below are
-// unchanged and still measured with the E and A axes dropped from the denominator.
-// `.invalid` is reserved by RFC 2606, like `DEAD_FEED_URL` above: it fails in DNS
-// rather than reaching a real server, so a machine with a working network and one
-// without produce the same report.
+// An unresolvable world-file host. The pipeline takes CONTRACT.md §(f)1's failure
+// path (`nonFatal('geo')`, `emptyGeoData`, `geo.available === false`), which is the
+// GeoData the goldens were measured on, with the E and A axes dropped from the
+// denominator. Fails in DNS, so online and offline machines produce the same report.
 const DEAD_WORLD_URL = 'https://world.invalid/world';
 
-// Every `runPipeline` call in this file passes these; only `source` differs (a
-// merged run names 'merged', a single-feed run names the zip). Written once so the
-// goldens and the merge assertions cannot drift onto three different option sets.
+// Shared by every `runPipeline` call here; only `source` differs.
 const PIPELINE_OPTS = {
   worldBaseUrl: DEAD_WORLD_URL,
   asOf: null,
@@ -122,11 +93,9 @@ const PIPELINE_OPTS = {
   refresh: false,
 };
 
-// The B1 border: the reference feed's served stops span S 42.837874 → N 43.043655,
-// and the 20th percentile of their latitudes is 42.898863 (measured 2026-08-27), so
-// a south edge at 42.8989 keeps ~1,190 of 1,490 stops — enough to stay MEDIUM and
-// well clear of `IN_PLAY_MIN_SHARE`, which is the point: the scenario is "the reader
-// trimmed the map", not "the reader missed the city". W/N/E are the feed's own box.
+// The B1 border: a south edge at the 20th latitude percentile of served stops keeps
+// ~1,190 of 1,490, staying MEDIUM and clear of `IN_PLAY_MIN_SHARE` — "the reader
+// trimmed the map", not "missed the city". W/N/E are the feed's own box.
 const BORDER_CLIP_BBOX = Object.freeze([42.8989, -85.88913, 43.043655, -85.530098]);
 
 // ── console helpers ──────────────────────────────────────────────────────────
@@ -139,7 +108,7 @@ const colour = process.stdout.isTTY ? (c, s) => `${c}${s}${RESET}` : (_c, s) => 
 
 function line(text) { if (!JSON_OUT) process.stdout.write(`${text}\n`); }
 
-/** Fixed-width without `toFixed` semantics leaking into the pipeline's own output. */
+/** Display form of a value; rounds floats to 6 places. */
 function show(value) {
   if (value === null || value === undefined) return String(value);
   if (typeof value === 'number') {
@@ -149,11 +118,8 @@ function show(value) {
 }
 
 // ── stage timing ─────────────────────────────────────────────────────────────
-//
-// Wall-clock, deliberately, and ONLY here: the harness reports how long each stage
-// took. Nothing it measures reaches a pipeline value, and the pipeline itself
-// contains no clock at all — that is the property this file exists to protect, not
-// to violate.
+// Wall-clock, ONLY here: nothing measured reaches a pipeline value, and the
+// pipeline itself contains no clock.
 
 const STAGES = ['feed', 'days', 'network', 'geo', 'rules', 'score', 'provenance'];
 
@@ -183,12 +149,8 @@ function idSet(rows, col) {
 }
 
 /**
- * `gtfs/merge.js`, asserted.
- *
- * Every number below is additive or structural — the sum of two measured feeds, or a
- * property that must hold whatever the feeds are. `merge.two.stopTimes` is asserted
- * BOTH as its measured value and as the relation `a + b`, so a refreshed fixture
- * reports honestly instead of silently.
+ * `gtfs/merge.js`, asserted. Every number is additive or structural;
+ * `merge.two.stopTimes` is asserted both as a value and as `a + b`.
  *
  * @returns {Promise<{results: Array<object>, skips: string[]}>}
  */
@@ -204,8 +166,8 @@ async function mergePhases() {
   const cache = await openCache({ offline: false, refresh: false });
 
   // ── M1 · self-merge ───────────────────────────────────────────────────────
-  // Identical bytes: identical sha256 (so `mergeOrder`'s label tie-break is what
-  // decides the tags) and every single id colliding. Nothing available is this hostile.
+  // Identical sha256 (so `mergeOrder`'s label tie-break decides the tags) and
+  // every id colliding.
   const refA = await feedFile(REFERENCE_FEED, 'ref-a.zip');
   const refB = await feedFile(REFERENCE_FEED, 'ref-b.zip');
   if (!refA || !refB) {
@@ -215,7 +177,7 @@ async function mergePhases() {
     const a = await loadFeed(refA, cache);
     const b = await loadFeed(refB, cache);
 
-    // THE invariant the 19 goldens rest on: one source in, the SAME OBJECT out.
+    // One source in, the SAME OBJECT out: the invariant the goldens rest on.
     is('merge.identity', (await mergeFeeds([a])) === a, true);
 
     /** @type {string[]} */
@@ -227,8 +189,7 @@ async function mergePhases() {
     is('merge.self.trips', merged.tables.trips.length, 11240);
     is('merge.self.stopTimes', stopTimesOf(merged).length, 401532);
 
-    // Every id prefixed, and every id still distinct: 2n distinct values out of two
-    // copies of n is the whole claim the namespacing scheme makes.
+    // Every id prefixed and still distinct: 2n values out of two copies of n.
     const cols = [
       ['stops', 'stop_id'], ['routes', 'route_id'], ['trips', 'trip_id'],
       ['trips', 'service_id'], ['trips', 'shape_id'],
@@ -245,8 +206,7 @@ async function mergePhases() {
     const kept = Object.keys(merged.tables).sort(cmpStr);
     const subset = kept.every((t) => MERGE_TABLES.includes(t));
     const fares = (merged.tables.fare_attributes || []).length;
-    // The primary feed's rows, NOT both feeds' — the house rule quotes one price as
-    // the fare for the whole map.
+    // The primary feed's fare rows only: the house rule quotes one price per map.
     is('merge.self.tables', subset && fares === (a.tables.fare_attributes || []).length, true);
 
     is('merge.self.window', `${merged.feedStart}/${merged.feedEnd}`, '20260724/20260830');
@@ -278,16 +238,14 @@ async function mergePhases() {
     is('merge.two.stopTimesSum', stopTimesOf(m).length,
       stopTimesOf(a).length + stopTimesOf(b).length);
 
-    // The INTERSECTION, not the union: `dayTypes` picks a representative date by trip
-    // count over the window, and a union would happily pick one nobody runs on.
+    // The INTERSECTION: a union would let `dayTypes` pick a date nobody runs on.
     is('merge.two.window', `${m.feedStart}/${m.feedEnd}`, '20260729/20260828');
 
     const tzNote = notes.find((n) => /time ?zone/i.test(n)) || '';
     is('merge.two.timezone',
       tzNote.includes('America/New_York') && tzNote.includes('America/Chicago'), true);
 
-    // Referential integrity. The stop_times sweep is at a fixed stride, which is
-    // deterministic and still crosses both feeds' halves of the store.
+    // Referential integrity; the stop_times sweep strides across both halves.
     let refsOk = true;
     for (const row of m.tables.trips) {
       if (!(String(row.route_id) in m.routes)) { refsOk = false; break; }
@@ -312,10 +270,8 @@ async function mergePhases() {
       && Object.keys(swapped.stops).sort(cmpStr).join(' ')
         === Object.keys(m.stops).sort(cmpStr).join(' '), true);
 
-    // ONE feed's fare table, never both concatenated, and the merge says whose:
-    // the house rule quotes `fare_attributes[0]` as the price for the whole map.
-    // Here the trip-count primary (the reference feed) is the one that has fares;
-    // M5 covers the other direction, where the primary ships none.
+    // ONE feed's fare table, and the merge says whose. Here the primary has fares;
+    // M5 covers the primary shipping none.
     is('merge.two.fares',
       `${(m.tables.fare_attributes || []).length}/${m.fareAgency}`,
       `${(a.tables.fare_attributes || []).length}/${a.agencyName}`);
@@ -328,8 +284,8 @@ async function mergePhases() {
   }
 
   // ── M3 · end to end ───────────────────────────────────────────────────────
-  // A SHAPE check and never a golden: a merged map is not a stable reference and must
-  // never grow one.
+  // Shape checks only: a merged map is not a stable reference and must never grow
+  // a golden.
   if (!MERGE_PIPELINE) {
     skips.push('M3 end-to-end — pass --merge-pipeline to run it');
   } else if (!twoA || !twoB) {
@@ -353,8 +309,7 @@ async function mergePhases() {
       is('merge.pipe.fitness', score !== null && score !== undefined, true);
       is('merge.pipe.zones', (rep.zones || []).length > 0
         && (rep.rankedZoneIds || []).length > 0, true);
-      // Labels, not just a count: a count of 2 stays green even when both rows are
-      // attributed to the wrong source. §09 is the record of what was read.
+      // Labels, not a count: a count of 2 stays green with both rows misattributed.
       is('merge.pipe.feeds',
         ((rep.provenance || {}).feeds || []).map((r) => r.label).join(','),
         `${path.basename(REFERENCE_FEED)},${secondName}`);
@@ -362,11 +317,8 @@ async function mergePhases() {
   }
 
   // ── M4 · one source of three cannot be downloaded ──────────────────────────
-  // The path D8 was written for. What is asserted is not that it survives — M3
-  // already shows a merged run completing — but that the report NAMES the two feeds
-  // that loaded and nothing else: `feedSourceRows` walks the merge order, whose
-  // indices address the loaded list, so the source metadata has to travel beside the
-  // feed it produced rather than be looked up by position afterwards.
+  // Asserts the report NAMES the two feeds that loaded and nothing else: merge-order
+  // indices address the loaded list, so source metadata must travel with its feed.
   if (!MERGE_PIPELINE) {
     skips.push('M4 a dead source — pass --merge-pipeline to run it');
   } else if (!twoA || !twoB) {
@@ -395,16 +347,14 @@ async function mergePhases() {
     // Each row must describe the feed it names, not the one beside it.
     is('merge.dead.sources', feeds.map((r) => r.source).join(','),
       `${path.basename(REFERENCE_FEED)},${secondName}`);
-    // One failure, one line — the sentence that names the feed and the consequence.
+    // One failure, one degradation line.
     is('merge.dead.degraded',
       degradations.filter((d) => d.includes('Dead Mirror Transit')).length, 1);
   }
 
   // ── M5 · the big pair, for the fare fallback ───────────────────────────────
-  // The reference feed (5,620 trips, one fare row) merged with MBTA (83,098 trips, no
-  // `fare_attributes.txt`). The primary is MBTA, so taking the primary's table alone
-  // would silently delete the `carry_fare` house rule that Grand Rapids produces on
-  // its own — the commonest shape of merge is a small city beside a big neighbour.
+  // MBTA is the primary and ships no fares; taking its table alone would silently
+  // drop the `carry_fare` house rule Grand Rapids produces on its own.
   const bigFeed = MERGE_PIPELINE ? await feedFile(BIG_FEED, path.basename(BIG_FEED)) : null;
   if (!MERGE_PIPELINE) {
     skips.push('M5 the big pair — pass --merge-pipeline to run it');
@@ -415,7 +365,7 @@ async function mergePhases() {
     const small = await loadFeed(await feedFile(REFERENCE_FEED, path.basename(REFERENCE_FEED)), cache);
     const big = await loadFeed(bigFeed, cache);
     const m = await mergeFeeds([small, big]);
-    // The primary really is the fare-less feed, or the assertion below proves nothing.
+    // The primary must be the fare-less feed, or the next assertion proves nothing.
     is('merge.big.primary',
       big.tables.trips.length > small.tables.trips.length
       && (big.tables.fare_attributes || []).length === 0, true);
@@ -440,10 +390,8 @@ async function main() {
     return 2;
   }
 
-  // A `Blob` with a `name` is what `_s1ReadSource` (gtfs/feed.js) duck-types a picked `File` as:
-  // it has `.arrayBuffer()`, so the bytes are read directly with no network and no
-  // cache. Node 24 has `Blob` and `File` globally; `File` is used when available so
-  // the harness exercises exactly the browser path.
+  // `_s1ReadSource` (gtfs/feed.js) duck-types a picked `File` as a named `Blob`;
+  // `File` is used when available so the harness follows the browser path exactly.
   const source = typeof File === 'function'
     ? new File([bytes], path.basename(FEED_PATH), { type: 'application/zip' })
     : Object.assign(new Blob([bytes], { type: 'application/zip' }),
@@ -532,12 +480,9 @@ async function main() {
     ['hub_route_share', report.hub ? report.hub.routeShare : null, 0.750, 0.01],
   ];
 
-  // The scoring layer is not covered by generate.py's own selftest, so these are
-  // measured against a real `python3 generate.py <reference feed> --no-osm` run —
-  // the flag is gone from this codebase, but the run it named is exactly what an
-  // unreachable world bucket reproduces, so the numbers still stand.
-  // Every one of them is an exact integer-tenths quantity — a drift of 0.1 here is
-  // a bug in a ramp, in `tenths()`, or in the drop-and-renormalise rule.
+  // The scoring layer, measured against a `generate.py <reference feed> --no-osm`
+  // run, which the unreachable world bucket reproduces. Every value is exact
+  // integer tenths: a 0.1 drift is a bug in a ramp, `tenths()`, or renormalisation.
   const fit = report.fitness || {};
   exact.push(
     ['fitness.score', fit.score === undefined ? null : fit.score, 76.0],
@@ -603,10 +548,8 @@ async function main() {
   }
 
   // ── B1 · a supplied border ────────────────────────────────────────────────
-  // The second scenario: the same feed with `borderBbox` clipping the south fifth.
-  // Every assertion is a relation to the plain run above or a shape — the served
-  // count fell, the unfiltered count is still 1,490, the border is the box itself
-  // with no padding and says so, and no row of the stop table lies outside it.
+  // The same feed with `borderBbox` clipping the south fifth. Every assertion is a
+  // relation to the plain run or a shape.
   /** @type {Array<{name:string,expected:string,actual:string,pass:boolean}>} */
   const borderResults = [];
   {
@@ -615,21 +558,18 @@ async function main() {
       name, expected: show(want), actual: show(got), pass: got === want,
     });
 
-    // Additive (2026-08-27): the Border and Metrics fields the in-play set added,
-    // read off the PLAIN run above. There the set is null all the way down, so
-    // these describe the whole feed; they live here rather than among the goldens
-    // so the 19 stay the 19.
+    // The in-play Border and Metrics fields read off the PLAIN run, where the set
+    // is null and these describe the whole feed. Kept out of the goldens.
     const b = report.border || {};
     bis('plain.trimmedStopIds', Array.isArray(b.trimmedStopIds), true);
     bis('plain.derivation', b.derivation || null, 'reach');
     bis('plain.rawBbox', Array.isArray(b.rawBbox) && b.rawBbox.length === 4, true);
     bis('plain.allServedStops', m.allServedStops, 1490);
     bis('plain.inPlayFallback', m.inPlayFallback, false);
-    // `suggestBorder` (2026-08-27) on the reference feed: 1,484 of its 1,490 served
-    // stops are within one 60-minute hiding period of Central Station one-way, a
-    // 0.4 % trim under `SUGGEST_MIN_TRIM_SHARE`, so the gate says nothing to offer.
-    // Measured, not assumed; the field is present and null, and a run that starts
-    // offering a border here has moved the reach model or the threshold.
+    // `suggestBorder` on the reference feed: 1,484 of 1,490 stops are within one
+    // hiding period of Central Station, a 0.4 % trim under `SUGGEST_MIN_TRIM_SHARE`,
+    // so the field is present and null. A run that offers a border here has moved
+    // the reach model or the threshold.
     bis('plain.suggestedBorder', 'suggestedBorder' in report && report.suggestedBorder === null, true);
 
     line('  B1 · the same feed inside a border clipping the south fifth');
@@ -656,8 +596,7 @@ async function main() {
       const cb = clipped.border || {};
       const allServed = Number(m.servedStops) || 0;
       const served = Number(cm.servedStops) || 0;
-      // Fewer than the whole feed, more than the fallback floor — the clip was a
-      // trim, not a miss, and no fallback fired.
+      // Fewer than the feed, above the fallback floor: a trim, not a miss.
       bis('border.served_stops', served < allServed && served > 0.5 * allServed, true);
       bis('border.allServedStops', cm.allServedStops, 1490);
       bis('border.inPlayFallback', cm.inPlayFallback, false);
@@ -667,28 +606,24 @@ async function main() {
       bis('border.bbox', JSON.stringify(cb.bbox), JSON.stringify(BORDER_CLIP_BBOX));
       bis('border.rawBbox', JSON.stringify(cb.rawBbox), JSON.stringify(cb.bbox));
       bis('border.trimmedStopIds', Array.isArray(cb.trimmedStopIds), true);
-      // The stop table and the zones are the in-play set, not the feed: nothing
-      // south of the box may appear on the map.
+      // The stop table is the in-play set: nothing south of the box may appear.
       const [bs, bw, bn, be] = BORDER_CLIP_BBOX;
       const inside = (r) => bs <= r.lat && r.lat <= bn && bw <= r.lon && r.lon <= be;
       bis('border.stops_inside', (clipped.stops || []).every(inside), true);
       bis('border.stops_rows', (clipped.stops || []).length, served);
-      // The hub run covers the whole network whatever the in-play set is, so the reach
-      // counts have to be narrowed to the set as well: §05 and the A2 finding print
-      // `reachWithinHidingPeriod` and `servedStops` against each other, and this used
-      // to read "1,486 of 1,190 served stops". A count can never exceed its own
-      // denominator. (2026-08-27.)
+      // The hub run covers the whole network, so reach counts must be narrowed to
+      // the set too: §05 and A2 print them against `servedStops`, and a count can
+      // never exceed its own denominator.
       bis('border.reach_le_served', cm.reachWithinHidingPeriod <= served, true);
       bis('border.reach_by_size_le_served',
         Object.values(cm.reachWithinHidingPeriodBySize || {}).every((n) => n <= served), true);
-      // Zone MEMBERS are the in-play set too, not just the zone centres: a stop the box
-      // deleted must not go on contributing its departures to a zone's headway and its
-      // id to the strategy view's "N stops inside the circle".
+      // Zone MEMBERS are the in-play set too, not just centres: a clipped stop must
+      // not feed a zone's headway or the strategy view's stop count.
       const known = new Set((clipped.stops || []).map((r) => r.stopId));
       bis('border.zone_members_in_play',
         (clipped.zones || []).every((z) => (z.stopIds || []).every((sid) => known.has(sid))), true);
       bis('border.zones_fewer', (clipped.zones || []).length < (report.zones || []).length, true);
-      // The hub is still the reference hub — Central Station is well inside the box.
+      // Central Station is well inside the box, so the hub is unchanged.
       bis('border.hub', clipped.hub ? clipped.hub.stopId : null, '1');
     }
     for (const r of borderResults) {
@@ -699,8 +634,7 @@ async function main() {
   }
 
   // ── the merge phases ──────────────────────────────────────────────────────
-  // Reported on their own line: the 19 above are the algorithm's fingerprint and
-  // must stay legible, and a merge assertion is a different kind of claim.
+  // Reported on their own line so the goldens stay legible.
   /** @type {Array<{name:string,expected:string,actual:string,pass:boolean}>} */
   let mergeResults = [];
   /** @type {string[]} */

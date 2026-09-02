@@ -1,16 +1,12 @@
 /**
- * rules/score.js — the scoring layer.
+ * rules/score.js — the scoring layer: ramps, the 100-point city fitness model,
+ * the per-zone rating, findings, house rules and the provenance block.
+ * Ported from generate.py's S3 scoring section.
  *
- * Port of generate.py's S3 scoring section: the ramps, the 100-point
- * city fitness model (`score_fitness`), the per-zone rating
- * (`score_zones`), the findings and house rules and the
- * provenance block (`build_provenance`).
- *
- * Worker side — no DOM. Every number here is an INTEGER NUMBER OF TENTHS of a
- * point from `tenths()` onward, so sub-scores and totals are exact integer sums
- * and the printed rows always add up to the printed total. Degradation is
- * drop-and-renormalise, never impute: an unavailable metric leaves the
- * denominator, it is never scored as zero.
+ * Worker side, no DOM. From `tenths()` onward every number is an integer number
+ * of tenths of a point, so printed rows always add up to the printed total.
+ * Degradation is drop-and-renormalise, never impute: an unavailable metric
+ * leaves the denominator rather than scoring zero.
  *
  * CONTRACT.md §(a), §(b) "Scoring layer", §(d) stages 6 and 7.
  */
@@ -79,10 +75,7 @@ export function plateau(x, a, b, c, d) {
 }
 
 /**
- * Convert a ramp output to integer tenths of a point.
- *
- * `floor(frac * max * 10 + 0.5)`. Every point in the program is an integer number
- * of tenths from here on, so sub-scores and totals are exact integer sums.
+ * Convert a ramp output to integer tenths of a point: `floor(frac * max * 10 + 0.5)`.
  * (generate.py `tenths`)
  * @param {number} fraction @param {number} maxPoints @returns {number}
  */
@@ -110,25 +103,14 @@ export const S3_BANDS = Object.freeze([
 export const S3_GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
- * The fitness metrics that are a pure function of a synthesized timetable.
- *
- * On a run with a source built from OpenStreetMap (`metrics.assumedSchedule`),
- * the departures behind these seven are invented — assumed headways over an
- * assumed 06:00–22:00 window on a uniform 14-day calendar — so scoring them
- * would grade the assumption, not the city, and in both directions at once:
- * the uniform calendar fabricates perfection on D3 and E1 while a
- * weekday-shaped assumption would fabricate a penalty on E2. They are dropped
- * (`available: false`, out of the denominator — the same rule an unavailable
- * OSM layer already follows, CONTRACT.md's degradation ladder), never imputed
- * and never scored at a discount. Metrics that ride real geometry through an
- * assumed wait — C2, the RAPTOR-derived zone axes — stay, relabelled or
- * covered by the `osm_synth_*` interpretation rows: an assumed wait on real
- * track is a model, and models are what `interp` means here.
- *
- * The zone-score twin of this list is the single S3 departure-gap row in
- * `scoreZones`. Together they leave `availablePoints` at 75 — C keeps its
- * block weight on C2 alone while D and E leave whole — comfortably above the
- * 60-point floor below which the headline honestly refuses to print.
+ * Fitness metrics that are a pure function of the timetable. On an
+ * OSM-synthesized source (`metrics.assumedSchedule`) they would only grade the
+ * assumed headways and calendar, so they are dropped (`available: false`, out of
+ * the denominator per CONTRACT.md's degradation ladder), never imputed or
+ * discounted. Metrics that ride real geometry through an assumed wait (C2, the
+ * RAPTOR zone axes) stay, relabelled `interp` or covered by the `osm_synth_*`
+ * interpretation rows. The zone-score twin is the S3 row in `scoreZones`.
+ * Together they leave `availablePoints` at 75, above the 60-point headline floor.
  */
 const S3_ASSUMED_TIMETABLE_METRICS = Object.freeze(['C1', 'C3', 'D1', 'D2', 'D3', 'E1', 'E2']);
 
@@ -168,16 +150,9 @@ function s3Metric(mid, name, raw, unit, frac, maxPoints, kind, args, source, not
 }
 
 /**
- * The four B-metric inputs, from the audit rows. `unknown` never enters a denominator.
+ * The four B-metric inputs, from the audit rows. `unknown` never enters a denominator,
+ * and `unaskable` must not be folded into the functional pool: it cannot be asked.
  * (generate.py `_s3_question_stats`)
- *
- * `unaskable` used to be counted into the functional pool at both sites below, because
- * there was exactly one `unaskable` question — Transit Line, forced there by a curse
- * that only bites once drawn and played — and folding it back in was how the pool kept a
- * live question at full weight. `rules/audit.js` no longer emits that status for a map
- * with routes, so the clause is gone; carrying it would silently
- * restore full weight to any question a future rule does class `unaskable`, which is by
- * definition a question that cannot be asked.
  * @param {Object[]} questions @param {Object} size @returns {Object}
  */
 function s3QuestionStats(questions, size) {
@@ -260,11 +235,8 @@ function s3View(metrics, dayKey, size) {
 
 /**
  * The largest share of served stops any single route reaches, on the best day.
- *
- * Per-route trip totals are not on the metric table, so the one-route cap is
- * evaluated on stop reach instead. A route touching nine stops in ten is a
- * one-dimensional map either way; this is the `one_route_cap_is_stop_share`
- * interpretation.
+ * Per-route trip totals are not on the metric table, so the one-route cap uses
+ * stop reach (the `one_route_cap_is_stop_share` interpretation).
  * (generate.py `_s3_one_route_share`)
  * @param {Object[]} days @returns {number}
  */
@@ -301,9 +273,8 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
   questionsAvailable) {
   const hidingH = size.hidingPeriodMin / 60.0;
   const required = size.requiredHours;
-  // `s3View` copies the whole metrics table onto every view, so the run-level
-  // flag rides along without a signature change — the per-day recomputation in
-  // `scoreFitness` gets exactly the same honesty boundary as the head table.
+  // `s3View` copies the whole metrics table onto every view, so the per-day
+  // recomputation sees the run-level flag too.
   const assumed = Boolean(get(view, 'assumedSchedule'));
 
   const nZones = get(view, 'nZones');
@@ -376,10 +347,8 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       + 'purpose: Tokyo and London are the rulebook\'s own showcase maps, so frequency '
       + 'is never the flaw.',
       nullish(headway) !== null),
-    // C2 is normally one of the two `feed` (Measured) rows on the page. On an
-    // assumed-schedule run T90 is RAPTOR over real track distances but invented
-    // waits — a model, not a measurement — so the chip honestly reads "Our call"
-    // instead. The closed three-value basis enum is not widened.
+    // On an assumed-schedule run T90 uses invented waits, so C2 is `interp`
+    // ("Our call") rather than `feed`; the basis enum is not widened.
     s3Metric('C2', 'Traverse ratio (T90 ÷ hiding period)', traverse, 'ratio',
       traverse === null ? null : plateau(traverse, 0.40, 0.80, 2.50, 4.50), 7,
       'plateau', [0.40, 0.80, 2.50, 4.50], assumed ? 'interp' : 'feed',
@@ -399,15 +368,9 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
   const evening = get(view, 'eveningZoneShare');
   const fullDays = get(view, 'fullServiceDateShare');
   const spanRatio = (nullish(span) === null || required <= 0) ? null : Number(span) / required;
-  // The rulebook gives a size's length only as prose — SMALL "lasts 4–8 hours", MEDIUM
-  // "lasts about 1 day", LARGE "lasts 2 to 4 days" (GUIDE.md "Choosing Game Size", lines
-  // 28/33/38). It never prints a playing-hours figure, so `requiredHours` is OURS: those
-  // durations read as a single playing DAY, which is the unit D1 needs because it divides
-  // ONE day's service span. SMALL's 6 sits inside the stated 4–8; 10 and 12 stay under the
-  // ~14 hours a playing day can hold once the rulebook's own "minimum of 10 hours" of rest
-  // (GUIDE.md "Considering Rest Periods", line 167) comes out of the 24. So D1 and its
-  // 0.60/1.00 bounds are tagged `interp` — "Our call" — not `rulebook`; the numbers are
-  // unchanged.
+  // The rulebook states a size's length only as prose (GUIDE.md "Choosing Game
+  // Size"), never as playing hours, so `requiredHours` is our reading of one
+  // playing day and D1 is tagged `interp`, not `rulebook`.
   const stated = get(Object.freeze({
     small: 'lasts 4–8 hours', medium: 'lasts about 1 day', large: 'lasts 2 to 4 days',
   }), size.name);
@@ -478,12 +441,9 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       nullish(multi) !== null),
   ];
 
-  // The honesty boundary of the OSM fallback tier. Applied after the rows are
-  // built rather than woven into each call site, so the drop list reads as one
-  // rule in one place — and so it wins over E1's no-weekend-collapse full-marks
-  // path, which on a synthesized feed's uniform calendar would otherwise turn
-  // the assumption itself into a perfect score. The computed values never reach
-  // a denominator; the trace still prints every dropped row with this reason.
+  // Applied after the rows are built so the drop list is one rule in one place,
+  // and so it wins over E1's no-weekend-collapse full-marks path. The trace
+  // still prints every dropped row with this reason.
   if (assumed) {
     for (const rows of [c, d, e]) {
       for (const m of rows) {
@@ -539,15 +499,10 @@ function nullish(v) { return (v === undefined || v === null) ? null : v; }
  *     A Zone supply 20 · B Question health 25 · C Mobility & tempo 20
  *     D Round viability 15 · E Schedule resilience 10 · F Structural fairness 10
  *
- * Every threshold is a ratio against a rulebook parameter or against the feed
- * itself, so the model ports from a 1,493-stop bus feed to a national rail network
- * without editing. Frequency is deliberately **monotone**; map *collapse* lives
- * entirely on `C2 = T90 / hiding_period`, a plateau, so there is no absolute size
- * constant anywhere.
- *
- * Five named caps can only *lower* the score, and the trace shows both values.
- * Degradation is drop-and-renormalise; above 40% missing points, no headline number
- * is printed at all.
+ * Every threshold is a ratio against a rulebook parameter or the feed itself;
+ * there is no absolute size constant. Frequency is monotone and map collapse
+ * lives entirely on the C2 plateau. Caps only lower the score. Above 40%
+ * missing points no headline number is printed.
  * (generate.py `score_fitness`)
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
@@ -556,11 +511,8 @@ function nullish(v) { return (v === undefined || v === null) ? null : v; }
  */
 export function scoreFitness(metrics, questions, zones, zoneScores, size, days) {
   const qstats = s3QuestionStats(questions, size);
-  // B is only meaningful when most of the catalogue could actually be evaluated.
-  // With no map data readable, two thirds of the questions are `unknown`, and scoring the
-  // remainder as if it were the whole toolkit would be a fiction. Drop the whole
-  // sub-score instead and let the headline say "computed from 75 of 100 points"
-  // (scoring.md §1.10.2).
+  // B is dropped whole when most of the catalogue is `unknown` (no map data);
+  // the headline then says "computed from 75 of 100 points" (scoring.md §1.10.2).
   const questionsAvailable = qstats.total >= 6 && qstats.total >= 0.5 * size.catalogueSize;
 
   const n = zones.length;
@@ -657,11 +609,9 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
 }
 
 /**
- * All five guard rails, fired or not, each with the sentence that explains it.
- *
- * `scoreFitness` consumes the fired rows; the renderer prints the whole list, so
- * "CAP_CATEGORIES — not evaluated" is visible rather than silently absent. A cap
- * can only ever *lower* a score. Sorted by id.
+ * All five guard rails, fired or not, each with its explaining sentence, sorted by id.
+ * `scoreFitness` consumes the fired rows; the renderer prints the whole list so a
+ * cap that was not evaluated is visible. A cap can only lower a score.
  * (generate.py `fitness_caps`)
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
@@ -872,18 +822,12 @@ const S3_AXIS_OF = Object.freeze({
  *     IR information resistance 30 · R reachability 15 · S redundancy & exit 15
  *     E endgame spots 15 · A amenities 15 · X exposure 10
  *
- * IR replaces the hand-assigned "hideability" of the drafts with the computed
- * survival model. R1 and X3 deliberately pull in opposite directions and the page
- * must say why: the hider travels with certainty at the start, the seekers travel
- * under uncertainty later, so the best zone is cheap for you to reach now and
- * expensive for them to reach then.
- *
- * Flags cap rather than override: `pinned` caps at 45, `no_legal_spot` at 40.
- * `unreachable` and `no_service` zones are *excluded* from the ranking and listed
- * separately with their times — never silently dropped.
- *
- * Side effect, by design: this is the only function that sees both the audit rows
- * and the survival table, so it fills `QuestionAudit.survMean` in place.
+ * R1 and X3 deliberately pull in opposite directions: the hider travels with
+ * certainty at the start, the seekers under uncertainty later.
+ * Flags cap rather than override (`pinned` 45, `no_legal_spot` 40). `unreachable`
+ * and `no_service` zones are excluded from the ranking but never dropped.
+ * Side effect by design: fills `QuestionAudit.survMean` in place, since only this
+ * function sees both the audit rows and the survival table.
  * (generate.py `score_zones`)
  *
  * @param {Object[]} zones @param {Object[]} questions
@@ -929,8 +873,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
   const hidingMin = Number(size.hidingPeriodMin);
   const radiusM = Number(size.zoneRadiusM);
   const t90 = Number(get(metrics, 't90Min') || 0.0);
-  // The zone-score arm of the assumed-schedule honesty boundary — see
-  // `S3_ASSUMED_TIMETABLE_METRICS` for the rule and the reasoning.
+  // Zone-score arm of the assumed-schedule drop; see `S3_ASSUMED_TIMETABLE_METRICS`.
   const assumed = Boolean(get(metrics, 'assumedSchedule'));
   const borderBbox = (geo.bbox && geo.bbox.length)
     ? geo.bbox : bboxOf(zones.map((z) => [z.lat, z.lon]));
@@ -941,8 +884,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
   const firstDep = Number(get(metrics, 'firstDepartureS') || 0.0);
   const gameEndS = firstDep + size.requiredHours * 3600.0;
 
-  // `_s3_zone_last_arrival_s` is called three times per zone in the Python (median,
-  // no_service flag, strands_seekers). Same value each time — computed once here.
+  // Computed once per zone; the Python recomputes it three times.
   const lastArrivalOf = zones.map((z) => s3ZoneLastArrivalS(z, day));
   const lastArrivals = lastArrivalOf.filter((a) => a !== null);
   const medianLast = lastArrivals.length ? quantile(lastArrivals, 0.5) : null;
@@ -1043,12 +985,8 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
     metricsRows.push(s3Metric(
       'S1', 'Distinct routes inside the zone', routes, 'routes',
       routes ? s1Frac : null, 6, 'table', [1, 2, 3], 'rulebook',
-      // Both clauses are hider-negative, which is why one route scores 0.2. The U-Turn card's
-      // parenthetical is a let-off for the SEEKERS — they disembark only "as long as that
-      // station is serviced by another form of transit" inside the window — so a one-route
-      // zone is where that escape hatch is always open and the curse fizzles. F3 above and
-      // audit.js's u_turn finding read it the same way; this sentence used to say the
-      // opposite. The 0.2/0.6/1.0 table is unchanged.
+      // Both clauses are hider-negative, hence 0.2 for one route. The U-Turn escape
+      // hatch is the seekers' let-off, read the same way as F3 and audit.js's u_turn.
       'One route means the Transit Line matching question names you, and Curse of the U-Turn '
       + 'fizzles here: with no second form of transit at the station, the card\'s escape hatch '
       + 'is always open and the seekers stay on board.',
@@ -1065,11 +1003,9 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       + 'mean something.',
       exitMargin !== null,
     ));
-    // The one zone metric that is a pure function of the timetable: on an
-    // assumed-schedule run the gap between departures IS the assumed headway
-    // read back, so it is dropped exactly like C1 on the city table. S2 stays —
-    // the last ride home rides RAPTOR over real geometry, which the
-    // `osm_synth_timetable` interpretation row covers as a model.
+    // The one zone metric that is purely the timetable: on an assumed-schedule
+    // run it is the assumed headway read back, so it is dropped like C1. S2 stays
+    // (RAPTOR over real geometry, covered by `osm_synth_timetable`).
     const onward = s3ZoneHeadwayMin(zone, day, hwLo, hwHi);
     metricsRows.push(s3Metric(
       'S3', 'Median gap between departures from the zone', onward, 'min',
@@ -1171,8 +1107,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       true,
     ));
     const seekerFrac = (travelMin === null || t90 <= 0) ? null : travelMin / t90;
-    // X3 is C2's zone-level twin and the other normally-Measured row; the same
-    // relabel applies for the same reason — assumed waits make T90 a model.
+    // X3 is C2's zone-level twin; the same `interp` relabel applies on an assumed run.
     metricsRows.push(s3Metric(
       'X3', 'Seeker travel cost to reach you, ÷ T90', seekerFrac, 'ratio',
       seekerFrac === null ? null : ramp(seekerFrac, 0.20, 0.80), 3, 'ramp', [0.20, 0.80],
@@ -1265,11 +1200,8 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
 }
 
 /**
- * Rank key `(−overallTenths, −IR, −R, zoneId)`. Fully deterministic.
- *
- * Excluded zones (unreachable, or no service on the selected day) are left out of
- * the ranking; they are never dropped from `zoneScores`, so the page can list them
- * separately with their times.
+ * Rank key `(−overallTenths, −IR, −R, zoneId)`. Excluded zones are left out of the
+ * ranking but stay in `zoneScores` so the page can list them separately.
  * (generate.py `rank_zones`)
  *
  * @param {Object<string, Object>} zoneScores @returns {string[]}
@@ -1283,14 +1215,10 @@ export function rankZones(zoneScores) {
 }
 
 /**
- * Choose the diversified dossier set by deterministic maximal marginal relevance.
- *
- * Walk the ranked list and accept a zone when it is at least `8 × zoneRadius` from
- * every already-accepted zone, or when it scores ≥5 points better than the nearest
- * accepted one. Target `min(12, max(6, round(n / 25)))`. Then append the **axis
- * winners** — the top zone on each of IR, R, S, E, A, X — so the most
- * information-resistant zone on the map appears even if it ranks 60th overall
- * because it has no toilet.
+ * Choose the diversified dossier set by deterministic maximal marginal relevance:
+ * walk the ranked list, accept a zone at least `8 × zoneRadius` from every accepted
+ * zone or ≥5 points better than the nearest one, target `min(12, max(6, round(n / 25)))`,
+ * then append the top zone on each axis so an axis winner appears even if it ranks low overall.
  * (generate.py `select_dossiers`)
  *
  * @param {string[]} ranked @param {Object<string, Object>} zoneScores
@@ -1455,15 +1383,10 @@ function s3DaySensitive(metricId, metrics) {
 }
 
 /**
- * Emit the findings quadrants from threshold crossings, not from prose.
- *
- * A metric earning `< 0.35` of its maximum emits a *minus* (or a *concern* when the
- * static mitigation table has an entry for its id); `> 0.85` emits a *plus*.
- * Returns rows sorted by `(quadrant, −severity, metricId)`.
- *
- * The **benefit** quadrant has no computable source beyond `fare_attributes.txt`,
- * which this function is not handed, so it is dropped rather than invented — which
- * is what the contract asks for when the source is absent.
+ * Emit the findings quadrants from threshold crossings. A metric earning `< 0.35`
+ * of its maximum is a *minus* (a *concern* if `S3_MITIGATION` has its id); `> 0.85`
+ * is a *plus*. Sorted by `(quadrant, −severity, metricId)`. The *benefit* quadrant
+ * has no computable source here and is dropped rather than invented.
  * (generate.py `derive_findings`)
  *
  * @param {Object} fitness @param {Object} metrics @param {Object[]} questions
@@ -1514,9 +1437,7 @@ export function deriveFindings(fitness, metrics, questions) {
 
 /**
  * Fire the house rules whose preconditions hold, in fixed priority order.
- *
- * One rule **always** fires: agree the safety exclusions — the rulebook demands
- * that conversation and explicitly refuses to automate the polygon.
+ * `safety_exclusions` always fires: the rulebook refuses to automate that polygon.
  * (generate.py `derive_recommendations`)
  *
  * @param {Object} reportParts `{metrics, fitness, size, hub, border, curses, questions, feed}`
@@ -1535,9 +1456,8 @@ export function deriveRecommendations(reportParts) {
   const perDay = get(metrics, 'perDay') || {};
   const bestKey = get(metrics, 'bestDay') || '';
   const bestLabel = get(get(perDay, bestKey) || {}, 'dayLabel') || bestKey || 'the busiest day';
-  // A house rule that quotes a departure time or a headway is quoting the
-  // synthesized timetable on an assumed-schedule run, so the rules below either
-  // say so or stand down — the same boundary the metric table draws.
+  // On an assumed-schedule run a rule quoting a time or headway quotes the
+  // synthesized timetable, so such rules either say so or stand down.
   const assumed = Boolean(get(metrics, 'assumedSchedule'));
   const out = [];
 
@@ -1546,11 +1466,8 @@ export function deriveRecommendations(reportParts) {
   };
 
   // 1 · which day
-  // Gated on the honesty flag exactly as check_timetable is: E1 is on the
-  // assumed-run drop list — the fitness table prints it as "Not measured on this
-  // run" — and a recommendation quoting it would smuggle the dropped,
-  // partly-invented ratio back in as a house rule. The else branch quotes no
-  // schedule judgement, so an assumed run falls through to it.
+  // E1 is on the assumed-run drop list, so an assumed run falls through to the
+  // else branch, which quotes no schedule judgement.
   const weekend = nullish(get(metrics, 'weekendRatio'));
   if (!assumed && weekend !== null && Number(weekend) < 0.60) {
     add('play_day', 10,
@@ -1583,16 +1500,9 @@ export function deriveRecommendations(reportParts) {
 
   // 3 · the border
   if (border !== null) {
-    // The four decimal degrees used to be spelled out here, which made this the third
-    // place the page printed them (the map's own coordinate table and the GeoJSON block
-    // being the other two). The map is now their single home; this rule points at it and
-    // the renderer appends them to the COPIED checklist, so the copy-paste artefact
-    // still stands alone. (2026-08-23.)
-    // The evidence line has to follow `Border.derivation` (CONTRACT §(b)) the way §05's
-    // sentence and the `map_border_derivation` interpretation do. On a reader-supplied
-    // box `padM` is 0, and "padded by 0 m — one hiding-zone radius" is false twice
-    // over: nothing was padded, and without the pad a zone centred near the edge really
-    // does extend past the border. (2026-08-27.)
+    // The coordinates live on the map only; the renderer appends them to the copied
+    // checklist. The evidence line must follow `Border.derivation` (CONTRACT §(b)):
+    // a reader-supplied box has `padM` 0 and was not padded.
     const derivation = get(border, 'derivation');
     const borderBasis = derivation === 'option_fallback'
       ? 'border set on the landing map but not applied — it kept under half the served '
@@ -1613,9 +1523,8 @@ export function deriveRecommendations(reportParts) {
   if (fitness !== null && fitness.score !== null && fitness.score < 35.0) {
     add('consider_variant', 34,
       `This system rates ${num(fitness.score, 1)} out of 100 — ${fitness.band.toLowerCase()}. `
-      + 'Before you house-rule around it, read the rulebook\'s cars or on-foot variant: with '
-      + 'no transit system the map is just borders and hiding zones centre on street '
-      + 'termini, which is a better game than a broken transit one.',
+      + 'Before you house-rule around it, read the rulebook\'s cars or on-foot variant: a '
+      + 'map that is just borders and street termini beats a broken transit game.',
       `fitness ${num(fitness.score, 1)} / 100, band “${fitness.band}”`, true);
   }
 
@@ -1653,10 +1562,8 @@ export function deriveRecommendations(reportParts) {
       + 'removed by the rulebook.',
       'Curse deck audit, tiers 1 and 2', true);
   }
-  // Only the two spending curses count as this rule's trigger: the text below is
-  // exclusively about paying for things, and `u_turn` carries the same
-  // 'player-choice' action on an assumed-schedule run — a timetable caveat that
-  // must not switch a spending rule on for curses the audit may just have removed.
+  // Only the two spending curses trigger this rule: `u_turn` also carries
+  // 'player-choice' on an assumed-schedule run and must not switch it on.
   const choices = curses.filter((c) => c.action === 'player-choice'
     && (c.id === 'egg_partner' || c.id === 'impressionable_consumer'));
   if (choices.length) {
@@ -1675,9 +1582,7 @@ export function deriveRecommendations(reportParts) {
       `Set an end-of-game timer at ${hhmm(Number(medianLast) - 1800)}. That is 30 minutes `
       + 'before the median last departure, which is the point after which a hider in an '
       + 'average zone can no longer get anywhere — including home.'
-      // Still worth having — a round needs an end — but on an assumed schedule the
-      // quoted time is the synthesizer's service window read back, and saying a
-      // clock time without saying so would be the one lie this tier must not tell.
+      // On an assumed schedule the quoted time is the synthesizer's window read back.
       + (assumed
         ? ' On this run the timetable is assumed from OpenStreetMap, so treat this time as '
           + 'a default to agree on, not a measurement — and check the real last departures.'
@@ -1686,11 +1591,8 @@ export function deriveRecommendations(reportParts) {
   }
 
   // 9 · fares
-  // On a merged run `fare_attributes` holds ONE feed's rows (see gtfs/merge.js): the
-  // primary's when it has fares, otherwise the first feed in merge order that does.
-  // This rule quotes one price as the fare for the whole map, so when the merge says
-  // which operator it quoted (`feed.fareAgency`, merged runs only) the sentence names
-  // them rather than saying "this feed" of a feed that is several.
+  // On a merged run `fare_attributes` holds one feed's rows (gtfs/merge.js), so
+  // the sentence names that operator via `feed.fareAgency` when it is known.
   if (feed !== null) {
     const fares = (feed.tables && get(feed.tables, 'fare_attributes')) || [];
     if (fares.length) {
@@ -1725,9 +1627,7 @@ export function deriveRecommendations(reportParts) {
     'rulebook, hider deck');
 
   // 11 · frequency and reachability warnings
-  // Gated off entirely on an assumed schedule: C1 is dropped from the score for
-  // being the assumption read back, and a house rule quoting the same number
-  // would smuggle it in through the side door.
+  // Gated off on an assumed schedule: C1 is dropped there for the same reason.
   const headway = nullish(get(metrics, 'medianHeadwayMin'));
   if (!assumed && headway !== null && Number(headway) > 30) {
     add('check_timetable', 62,
@@ -1773,11 +1673,9 @@ export function deriveRecommendations(reportParts) {
       `There is no rail mode in this feed, so ${names} are dead. Brief the seekers: that is `
       + `${num(railDead.length)} question${railDead.length !== 1 ? 's' : ''} that pay the `
       + 'hider a card and teach nothing.',
-      // On an assumed-schedule run part of the mode set was read off OSM route
-      // relations rather than a published feed, and the evidence line is where a
-      // reader goes to check the claim — so it names the real source. (A purely
-      // synthesized source is all rail by construction and never lands here;
-      // this arm is for a merged real-plus-OSM run.)
+      // A merged real-plus-OSM run read part of the mode set off OSM route
+      // relations, so the evidence names that source. A purely synthesized
+      // source is all rail and never lands here.
       assumed
         ? 'Route types, partly synthesized from OSM route tags: none in the rail-like set'
         : 'GTFS route types: no route_type in the rail-like set');
@@ -1806,16 +1704,10 @@ export function deriveRecommendations(reportParts) {
 }
 
 /**
- * The browser's stand-in for `sys.argv`: a synthesised echo of the Options form.
- *
- * CONTRACT.md §(c) drops `argv` from `Options`, but §(b) `Provenance.argv` must
- * still show what was asked for. Only non-default fields are echoed, in a fixed
- * key order, so two identical form submissions produce identical provenance.
- *
- * A merged run echoes one `--feed <label>` per source, in merge order, instead of
- * the single positional: `Options.source` is a display string that joins the labels
- * with ' + ', and a reader who wants to reproduce the run needs them separated. A
- * single-source run is byte-identical to what it was before the merge existed.
+ * The browser's stand-in for `sys.argv`: an echo of the Options form for
+ * `Provenance.argv` (CONTRACT.md §(b)). Only non-default fields, in a fixed key
+ * order, so identical submissions give identical provenance. A merged run echoes
+ * one `--feed <label>` per source in merge order instead of the single positional.
  */
 function synthArgv(opts, feeds = []) {
   const argv = [];
@@ -1824,11 +1716,7 @@ function synthArgv(opts, feeds = []) {
     for (const f of feeds) argv.push('--feed', String(f.label || f.source || ''));
   } else if (typeof src === 'string' && src) argv.push(src);
   else if (src && typeof src === 'object' && src.name) argv.push(String(src.name));
-  // No such CLI flag — `generate.py` predates the world files — but §(b) asks what was
-  // asked for, not what a shell would accept, and "which copy of the map did these
-  // counts come from" is the single most load-bearing thing a reader can check when
-  // two runs of the same feed disagree. Echoed only when set, so the default run's
-  // argv is byte-identical to what it was before this option existed.
+  // Not a real CLI flag, but §(b) asks what was requested; echoed only when set.
   if (get(opts, 'worldBaseUrl')) argv.push('--world-base-url', String(opts.worldBaseUrl));
   if (get(opts, 'asOf')) argv.push('--as-of', String(opts.asOf));
   if (get(opts, 'sizeOverride')) argv.push('--size', String(opts.sizeOverride));
@@ -1854,15 +1742,10 @@ function synthArgv(opts, feeds = []) {
 }
 
 /**
- * Assemble the provenance block: what was fetched, what was assumed.
- *
- * Contains **no timestamp** that is not derived from `feed_info` or `options.asOf`.
+ * Assemble the provenance block: what was fetched, what was assumed. Contains no
+ * timestamp not derived from `feed_info` or `options.asOf`. `border` is read only
+ * for its `derivation`, which picks the `map_border_derivation` wording.
  * (generate.py `build_provenance`)
- *
- * `border` (2026-08-27) is read for exactly one thing: the `map_border_derivation`
- * interpretation says how the border was derived, and a run measured inside the
- * reader's own box must not claim it was padded from reachability. Optional, so
- * a caller without a `Border` gets the inferred sentence it always got.
  *
  * @param {Object} opts @param {Object} feed @param {Object} geo @param {Object} size
  * @param {string} asOf @param {string[]} degradations
@@ -1870,9 +1753,7 @@ function synthArgv(opts, feeds = []) {
  * @returns {Object} a `Provenance`
  */
 export function buildProvenance(opts, feed, geo, size, asOf, degradations, border = null) {
-  // One row per input feed, in merge order — length 1 for an ordinary run. §09 prints
-  // them all: a merged report that showed a single sha256 would be lying about what
-  // it read.
+  // One row per input feed, in merge order; §09 prints them all.
   const feeds = Array.from(get(feed, 'sources') || []);
   let agencies = [];
   for (const row of ((feed.tables && get(feed.tables, 'agency')) || [])) {
@@ -1886,9 +1767,7 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
     agencies = [{ name: feed.agencyName, url: feed.agencyUrl, timezone: feed.timezone }];
   }
 
-  // One row per category. The `nominatim` bucket that used to sit alongside this is
-  // gone: no provenance row starts with 'nominatim' any more, so the branch that
-  // filled it was unreachable and the array was always empty.
+  // One row per category.
   const overpass = [];
   const queries = (geo.queries || []).slice()
     .sort((a, b) => cmpStr(a.key, b.key) || cmpStr(a.cacheKey, b.cacheKey));
@@ -1933,8 +1812,8 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
     osmAvailable: geo.available,                // osm_available
     osmNotes: Array.from(geo.notes || []),      // osm_notes
     adminLevels,                                // admin_levels
-    // The manifest's own `admin_source` ('overture' / 'osm'), NOT `geo.admin.source`,
-    // which has only ever held 'world' or 'unknown' and so told a reader nothing.
+    // The manifest's `admin_source` ('overture' / 'osm'); `geo.admin.source` only
+    // ever holds 'world' or 'unknown'.
     adminSource: geo.admin.adminSource || geo.admin.source,   // admin_source
     countryCode: geo.admin.countryCode,         // country_code
     countryName: geo.admin.countryName,         // country_name
@@ -1951,19 +1830,13 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
     boardSlackS: get(opts, 'boardSlackS'),      // board_slack_s
     excludedStops: Array.from(get(opts, 'excludeStops') || []),   // excluded_stops
     excludedRoutes: Array.from(get(opts, 'excludeRoutes') || []), // excluded_routes
-    // Where a supplied `borderBbox` came from — 'landing' (the frame the reader
-    // set), 'suggestion' (the cached re-run from §05's callout) or null. Echoed
-    // from `Options.borderSource`; nothing in the pipeline reads it, and `argv`
-    // is deliberately unchanged so a hand-typed and a suggested box reproduce
-    // the same command line.
+    // 'landing', 'suggestion' or null. Echoed only; `argv` deliberately ignores it
+    // so a hand-typed and a suggested box reproduce the same command line.
     borderSource: nullish(get(opts, 'borderSource')),
     llmUsed: false,                             // llm_used — the LLM path is dropped in the port
-    // No Python counterpart: the CLI's cache is a directory and is always persistent.
-    // The browser's is IndexedDB when it can be opened and a per-run Map when it
-    // cannot (a locked-down profile, private browsing, Node), and the fallback is
-    // otherwise completely silent — a reader whose value here is `memory` now knows
-    // why the next run refetched the whole feed. Read from the module rather than
-    // taken as an argument because the Cache never reaches the scoring layer.
+    // No Python counterpart. IndexedDB when it opens, else a per-run Map; `memory`
+    // here explains why the next run refetched. Read from the module because the
+    // Cache never reaches the scoring layer.
     cacheBackend: cacheBackend(),
     interpretations,
     degradations: Array.from(degradations || []),
