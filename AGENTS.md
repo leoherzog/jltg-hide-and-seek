@@ -126,11 +126,17 @@ dropped zip or pasted URL, which the picker has no bounding box for) the field i
 On the map the eight handles resize and the rectangle's OUTLINE moves the whole box; the FILL is
 left to the map, or a frame fitted to the picks would swallow every attempt to pan.
 
-**`jltg.rerun` in `sessionStorage` is the only cross-load handoff in the repo**, consumed exactly
+**`jltg.rerun` in `sessionStorage` is the run-starting cross-load handoff**, consumed exactly
 once in `boot()`, which removes the key *before* it validates so a bad value cannot replay. It
 exists because "Re-run with this border" is a new document load (`resetToLanding` explains why the
 shell cannot be put back), and it carries URL and OSM sources only, never a `File`. Nothing else
 may ride it: it is not a request/response channel and not a way to push a selection into the picker.
+
+`jltg.lastRun` in `localStorage` is the **second, restore-only** handoff: `finish()` writes the run's
+own `{sources, options, source, place}` there under the same rule (URL and OSM sources only, never a
+`File`), and `boot()` reads it for one case — a load at `#strategy` with no `jltg.rerun` waiting —
+so a hider handed the guide's link after a reload gets the report rebuilt instead of the picker. It
+is never consumed and starts nothing else; anything with no stored run falls through to the landing.
 
 `servedStopIds` is **cmpStr-sorted at build** (`gtfs/service.js`), and `s1DayMetrics`' T90 origin
 sample is a fixed stride over it. Any stop subset must be produced by **filtering** that array —
@@ -316,8 +322,8 @@ forward as a record of what was checked.
   arithmetic.
 - Parallel-range equivalence: the report payload hashes identically with and without concurrent
   range requests, on the same requests and bytes. One pre-existing wobble: the scoring stage's own
-  progress labels differ run to run (the stream diverges at `question order:
-  measuring.admin_2_border`), so a whole-stream digest is not a stable check.
+  progress labels differ run to run (the stream diverges at the first `Ordering the
+  questions:` line), so a whole-stream digest is not a stable check.
 - Escaping: a feed rebuilt with hostile stop names (`</script><script>alert(1)</script>`,
   `<img src=x onerror=...>`, quotes, ampersands, emoji) produces well-formed pages with every
   payload inert inside JSON blocks and no premature `</script>`.

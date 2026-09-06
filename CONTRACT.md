@@ -35,7 +35,7 @@ block; it is built from `state.report` in memory.
 
 | File | Side | Exports |
 |---|---|---|
-| `index.html` | main | — (page shell, 9 skeleton sections, WebAwesome head) |
+| `index.html` | main | — (page shell, 9 skeleton sections, WebAwesome head). Three label hooks live here because the shell owns the markup a controller only rewrites: `<p data-role="analysereason">` in the panel foot, which `app.js`'s `syncAnalyse` fills and unhides for exactly as long as `#analyse` is disabled; `<span data-role="resetlabel">` inside the header Reset control, which `syncResetControl` swaps to `Cancel` (and the icon to `xmark`) while `body[data-state="running"]`; and `<span data-role="themelabel">` inside `#color-scheme-button`, which the inline colour-scheme script writes along with the icon and an `aria-label`. That script cycles light → dark → system, where **system is the ABSENCE of the localStorage key `wa-color-scheme`** — the state the `prefers-color-scheme` listener needs in order to take over again. |
 | `styles.css` | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
 | `app.js` | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | main | see §(e) |
@@ -44,8 +44,8 @@ block; it is built from `state.report` in memory.
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field: a tentacle question's own `param`, which `QuestionAudit` does not carry. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerNote` takes `{capped, blocked, ringEmpty, osmOffer, osmPicked}` and prints only the hard cap, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. |
-| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. |
+| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` paragraph INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderPickerNote` takes `{capped, blocked, ringEmpty, osmOffer, osmPicked}` and prints only the hard cap, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. The picker writes `#picker-draw-hint` per mode — idle, drawing, and the refusal — and a `click` on Draw a shape whose `detail === 0` (a keyboard activation) refuses draw mode outright, writes that refusal and moves focus to the search box, because every vertex of the hand-rolled tool is a pointer event. `fitRows` pads `fitBounds` by the measured `.landing-panel` — the left column above 48rem, the bottom sheet below — and fires on the 0→1 pick as well as for the example chips, so the first feed taken is framed and no later one moves the view. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
@@ -1385,6 +1385,7 @@ section(sectionId, number, title, bodyHtml,
         { kicker='', lede='', answerHtml='', answerVariant='neutral', answerIcon='circle-info' })
 subhead(text, { anchorId='' })
 kpi(value, label, noteHtml = '', { chipHtml='' })
+setProvNames(pairs)                                     // Iterable<[id, name]>; replaces the whole table
 provChip(...ids)                                        // variadic, like the Python
 dataTable(headers, rows, { className='', ...attrs })   // always wrapped in a scroller
                                                         // headers: plain text; rows: PRE-ESCAPED markup cells
@@ -1416,7 +1417,10 @@ Behavioural notes that are load-bearing, not style:
   plain-English sentence carrying the two or three numbers that matter; every number in it
   must already come from a formatter or a `Report` field.
 * `provChip()` links to `#prov-{id}`; this is how "every point traces to a named metric"
-  reaches the UI.
+  reaches the UI. The visible text is the bare code, so each link is named
+  `Source: <metric or source name>` from the table `setProvNames` holds —
+  `render/verdict.js` fills it from `fitness.subscores` in `renderHero`, the first
+  section `app.js` renders on every stage; an id with no name keeps its code.
 * A section with no data emits **nothing at all** — not an empty card — and its nav entry
   disappears with it.
 
@@ -1424,19 +1428,59 @@ Behavioural notes that are load-bearing, not style:
 
 | # | `id` | Nav group | Nav label | Icon | Renderer |
 |---|---|---|---|---|---|
-| 01 | `network` | The Map | The Map You're Playing On | `map-location-dot` | `map.js` |
-| — | `glance` | The Map | At a Glance | `hashtag` | `map.js` |
-| 02 | `yourgame` | Your Game (split) | House Rules `#recs` / What Works, What Fights You `#findings` | `list-check` / `circle-exclamation` | `verdict.js` |
-| 03 | `transit` | Your Game | Getting Around | `route` | `map.js` |
+| 01 | `network` | The Map | The map you're playing on | `map-location-dot` | `map.js` |
+| — | `glance` | The Map | At a glance | `hashtag` | `map.js` |
+| 02 | `yourgame` | Your Game (split) | House rules `#recs` / What works, what fights you `#findings` | `list-check` / `circle-exclamation` | `verdict.js` |
+| 03 | `transit` | Your Game | Getting around | `route` | `map.js` |
 | 04 | `verdict` | The Answer | Verdict | `circle-check` | `verdict.js` |
-| 05 | `questions` | The Deck | The Questions | `circle-question` | `deck.js` |
-| 06 | `curses` | The Deck | The Curse Deck | `wand-magic-sparkles` | `deck.js` |
-| 07 | `trace` | The Receipts | Where the Points Came From | `chart-simple` | `verdict.js` |
-| 08 | `sources` | The Receipts | Where These Numbers Come From | `book-open` | `deck.js` |
+| 05 | `questions` | The Deck | The questions | `circle-question` | `deck.js` |
+| 06 | `curses` | The Deck | The curse deck | `wand-magic-sparkles` | `deck.js` |
+| 07 | `trace` | The Receipts | Where the points came from | `chart-simple` | `verdict.js` |
+| 08 | `sources` | The Receipts | Where these numbers come from | `book-open` | `deck.js` |
 
 `glance` is the map's stat rail. It is **not** a numbered section: a NESTED
 `data-section="glance"` host inside `#network` with its own `needs`/`redo`, no ordinal,
 absent from `NUMBERED`; `#glance` is an in-section anchor like `#recs` and `#findings`.
+
+Its markup is fixed in three places. The day marker on a day-sensitive tile is a
+`<span class="tile-tag">` — icon plus word, never a `chip()` or a `wa-button`: it is a
+label beside a 2xl number, and the helper-notes list above is about statuses, actions,
+severities and sources, which this is not. A tile's note keeps **one clause** under the
+value, with the remainder in `<wa-details class="tile-more" appearance="plain"
+summary="More">`, so a group of tiles reads as numbers and not as prose. `s4Tiles`
+returns the two as separate fields (`n` and `more`); the boundary is never inferred
+from the prose, because a note interpolates stop names. The hover/pin sentence is its
+own `<p id="glance-hover-note">`, which `app.js` removes when MapLibre does not load —
+`buildMap`'s `sayBlocked` alone, re-run by every `injectRuntime()` pass, so a re-mount
+at `rules` or at `score` brings the fresh sentence back and loses it again. `bindRail`
+never removes it: `buildMap` is async, so "not ready yet" is the state of every
+healthy run's first pass.
+
+The **headway grid** (§06's `#hwmap` / `#hwmap2`) marks the selected day rather than
+fading the rest. `app.js`'s `hwHighlight` puts class `is-day` on that column's `th` and
+on each of its `td`s; styles.css draws a 2px accent rule down it — on the `th`, and on
+each `td`'s `.cell`, which is the box that paints — bolds the header, and leaves
+**no other column below opacity .7** — every number in the grid is true
+whichever day is picked. The `data-dim` / `data-sel` attributes and the `.33` opacity
+are gone.
+
+**§07 and §08's tables.** `render/deck.js` renders a question's category as
+`<span class="cat-tag">`, and every `<td>` an `s4Table` emits carries
+`data-label="<column header>"`, which is what makes the narrow-screen row cards CSS-only
+(`td::before{content:attr(data-label)}` under 720px) instead of a second copy of the
+markup. Both deck tables open on a page size of **25**; `s4Pager` emits nothing at all
+at 25 rows or fewer, and drops "50 at a time" at 50 or fewer. A print takes the window
+off through `setDeckPageSize('all')` and puts the reader's own size back afterwards
+(`app.js` `bindPrintDisclosures`), because paper carries the whole deck and a CSS
+override would also reveal the rows the reader's filter excludes. §08's citation index
+(`<ol id="cites">`) sits inside a `wa-details` summarised "All N citations", which
+`openTargeted()` opens when a superscript points inside it.
+
+**The report's sticky offset is `--sticky-top`**, declared on `:root` and on `wa-page` as
+`calc(var(--header-height, 4rem) + var(--subheader-height, 3rem))` — the two heights
+`wa-page` measures as inline styles on itself, with the fallbacks load-bearing because an
+unresolvable `calc` leaves `top: auto`. A new sticky element uses that variable rather
+than a fresh number.
 
 **This order is page order**, stated in four places kept in lockstep: the `<section>`
 order in `index.html`, `app.js`'s `NUMBERED` (the array `renumberSections` walks to hand
@@ -1451,7 +1495,20 @@ number the strategy view's own five sections.
 Ordinals (`data-n`) are assigned **after** empty sections are dropped, so the printed
 sequence never has a hole. The embedded `<script type="application/json">` blocks keep the
 CLI's ids with `-data` suffixes: `#data`, `#questions-data`, `#curses-data`, `#stops`,
-`#provenance`.
+`#provenance`. `#data` also carries `feed_key`, the feed's `sha256` (its `place` until the
+feed lands): it keys the per-viewer state the page runtime stores, so a day chosen for one
+city cannot override another city's best day.
+
+**View state rides in `location.search`**, written with `history.replaceState` — never a
+history entry, never a fragment. Four keys: `day` (the service day), `qs` (the question
+status filter), `qsort` (`<column>:asc|desc`), `qq` (the question search). Each is read
+**once**, when the part that owns it is first on the page and ahead of anything stored:
+the day in `PAGE_RUNTIME_JS`'s `loadDay`, the other three in `app.js`'s
+`restoreDeckUrlState` once `#qtable` exists. A key at its default value is dropped rather
+than written. The write preserves `location.hash`, and the guide's own fragment writer
+preserves this query string (§(g)): each carries the other half, or one of them silently
+deletes the other's state. The landing ignores all four, and `resetToLanding()` still
+reloads a query-less URL.
 
 ---
 
@@ -1539,11 +1596,14 @@ link back.
 
 | Contract | Detail |
 |---|---|
-| Entry | `location.hash === '#strategy'` **and** a finished report. Nothing else. No nav entry, no subheader entry, no button, no keyboard shortcut, no `<link rel>`, no comment in `index.html`. `index.html` gains **zero lines** for this feature. |
-| Deep link, no report | `applyRoute()` falls through to the ordinary landing form — no error, no message, no hint. If a feed is then run with the fragment still set, `finish()` calls `applyRoute()` again and the reader lands in the guide. |
+| Entry | `location.hash.split('?')[0] === '#strategy'` **and** a finished report. The head of the fragment is what routes: the simulator keeps its own state in a `?…` suffix on the same fragment, so `applyRoute`, `leaveStrategy` and the wordmark (which points at the fragment the page is already on, suffix and all) all read it that way. Nothing else. No nav entry, no subheader entry, no button, no keyboard shortcut, no `<link rel>`, no comment in `index.html`. `index.html` gains **zero lines** for this feature. |
+| Deep link, no report | `boot()` first looks for the restore handoff: `finish()` stores `{sources, options, source, place}` in the localStorage key **`jltg.lastRun`** (URL, catalogue and OSM refs only, never a `File`, the `jltg.rerun` rule), and a load whose hash is `#strategy` with no `jltg.rerun` waiting replays it through `startRun`, so `finish()` lands the reader in the guide. It is a restore, not a handoff: the key is validated by the same normalisers and is never consumed. With nothing stored, or a stored value that fails validation, `applyRoute()` falls through to the ordinary landing form — no error, no message, no hint. If a feed is then run with the fragment still set, `finish()` calls `applyRoute()` again and the reader lands in the guide. |
 | Exit | The guide's hero link `href="#top"`, the browser Back button, or any other fragment. All go through the same `applyRoute`. |
 | Visibility | `body[data-view='strategy']`, an attribute **orthogonal to `data-state`**. `data-state` keeps its meaning (the run lifecycle) and is never touched, so the report is *hidden by three rules in styles.css §7, not destroyed*: no section re-renders, no listener is dropped, `#netmap` keeps its MapLibre instance, and returning is free. A fourth `data-state` value would put the two axes into a fight over the same `!important` rules. |
-| Sticky offsets | The report's 7rem clears the header **and** the `[slot='subheader']` strip; the strip is `data-when="report"` and hidden here, so the guide's stack is the header alone. `--s-sticky` is set once on the root under `html:has(body[data-view='strategy'])`, carries the `scroll-padding-top` and inherits into `#s-controls` and `#s-detail`. Do not restate the report's numbers in this view. |
+| Sticky offsets | The report's `--sticky-top` clears the header **and** the `[slot='subheader']` strip (the header alone below 920px); the strip is `data-when="report"` and hidden here, so the guide's stack is the header alone at every width. `--s-sticky` is set once on the root under `html:has(body[data-view='strategy'])`, carries the `scroll-padding-top` and inherits into `#s-controls` and `#s-detail`. Do not restate the report's numbers in this view. |
+| Reader state in the fragment | The simulator mirrors what the reader chose into a `?…` suffix on the same fragment, written with `history.replaceState` — which fires no `hashchange`, so `applyRoute` is never re-entered — and read **once** at `initStrategy`. Seven keys: `mode`, `sk` (the seekers, `lat,lon` at `coord()`'s 6 dp), `leg` (the thermometer's two ends, four coordinates), `z` (the selected zone), `sort` (`<columnId>:asc|desc`), `f` (the table filter) and `p` (the 1-based table page). Every value is validated against the run before it is applied; anything else is dropped, never repaired. The fragment carries **no run inputs** — see the row below. Each writer carries the other half of the URL: the fragment writer keeps `location.search`, and the report's query-string writer (§(e)) keeps `location.hash`. |
+| Back to the list | `#s-back` sits in the dossier card's head, `hidden` except where the dossier is a section under the rail — decided by measuring the two columns' left edges, not by a breakpoint, because the `wa-grid` stacks on its own column width. Both it and `#s-print-dossiers` carry a `wa-*` layout class, so styles.css needs an explicit `[hidden] { display: none }` for each: an author `display` beats the UA rule. It is a real `<a href="#s-list">` for copy and middle-click, but its default is cancelled: setting the fragment would take `applyRoute` out of the guide, so the handler scrolls and moves focus to the rail itself. |
+| Paper | The guide printed is a briefing, not a simulator. Every element the view is driven by carries `data-print="hide"` at the source (`render/strategy.js`), and `<div id="s-print-dossiers" hidden>` holds the top 15 dossiers, rendered statically at `initStrategy` and revealed by the print block's `[hidden]` override. Nothing else reveals it. §07 and §08's page window is the report's own paper concern (§(e)). |
 | Landmark and focus | The guide root carries `role="main"`: the report's `<main>` is `display: none` while the guide is up and `wa-page` supplies no landmark; a hidden element is not in the accessibility tree, so there is no collision. `applyRoute` moves focus to the root (`tabindex="-1"`, `preventScroll`) and `leaveStrategy` mirrors it onto `#top`, because a view swap with a new `document.title` otherwise drops focus to `<body>`. Both scrolls are queued **two** frames out, after `PAGE_RUNTIME_JS`'s `openTargeted` on the same `hashchange`, which would otherwise re-scroll the root to `block: 'center'`. |
 | Not a section | The root is not an entry in `SECTIONS`, so `hydrate`, `mountSection`, `dropSection`, `renumberSections` and `pruneNav` never see it. Its five sections pass the **literal** ordinals `'01'`…`'05'`, never `'--'` — `renumberSections` strips the attribute from every remaining `[data-n='--']` in the document. It carries no `data-state`, so `fatalError`'s `[data-state='skeleton']` sweep cannot take it either. |
 | Mount point | Inside `<wa-page>`, as a sibling of `<main>`, in the default slot. **The root is a `<section>`**: `wa-page` pads only `main` and `section` in its default slot, and `wa-page > section` is in the one measure rule in `styles.css` (`:where(main, wa-page > section, …)`) that gives the `--content-width` cap, centring and gutter. A `<div>` root renders flush and full-bleed. Not `main`, because `body[data-view='strategy']` hides `wa-page > main`. |

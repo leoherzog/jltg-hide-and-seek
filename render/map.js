@@ -30,7 +30,7 @@ import {
 
 import {
   esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton, waButton,
-  waCallout, chip, kpi, section, subhead, provChip,
+  waCallout, waIcon, kpi, section, subhead, provChip,
 } from './html.js';
 
 import {
@@ -280,10 +280,13 @@ export function s4DayByKey(report, dayKey) {
  * day; the other five are map-wide or rulebook constants.
  *
  * `hl` is the `data-hl` the runtime binds tile↔map highlighting to, and is set only
- * on tiles that name a fact the map can point at.
+ * on tiles that name a fact the map can point at. `n` is the one clause that sits
+ * under the value and `more` the remainder, split here rather than inferred from the
+ * prose: a note interpolates stop names, and "St. " is not a sentence end.
  *
  * @param {Object} report @param {string} dayKey
- * @returns {Array<{g:string,day:string,prov:string,v:string,l:string,n:string,hl?:string}>}
+ * @returns {Array<{g:string,day:string,prov:string,v:string,l:string,n:string,
+ *                  more?:string,hl?:string}>}
  */
 export function s4Tiles(report, dayKey) {
   const v = s4DayView(report, dayKey);
@@ -369,8 +372,8 @@ export function s4Tiles(report, dayKey) {
       hl: 'extent',
       v: s4Area(report, hull),
       l: 'Map area',
-      n: 'The area the buses actually cover — the convex hull of the served stops. '
-        + 'The printed border box is '
+      n: 'The area the buses actually cover — the convex hull of the served stops.',
+      more: 'The printed border box is '
         + `${s4Area(report, Number(border.areaSqM || 0))}, because a rectangle is what `
         + 'players can agree on.',
     },
@@ -381,8 +384,8 @@ export function s4Tiles(report, dayKey) {
       hl: 'extent',
       v: s4Dist(report, diameter, 1),
       l: 'Network diameter',
-      n: 'The longest straight line between two served stops. The smallest circle '
-        + 'that holds the whole network has a radius of '
+      n: 'The longest straight line between two served stops.',
+      more: 'The smallest circle that holds the whole network has a radius of '
         + `${s4Dist(report, Number(mec[2] || 0), 1)}.`,
     },
     {
@@ -391,7 +394,8 @@ export function s4Tiles(report, dayKey) {
       prov: 'D1',
       v: `${hhmm(firstS)}–${hhmm(lastS)}`,
       l: 'Service window',
-      n: `${num(spanH, 1)} hours end to end. The median stop's last departure is `
+      n: `${num(spanH, 1)} hours end to end.`,
+      more: "The median stop's last departure is "
         + `${hhmm(medLast)}, which is the number that ends your game.`,
     },
     {
@@ -400,10 +404,10 @@ export function s4Tiles(report, dayKey) {
       prov: 'C1',
       v: headway !== null && headway !== undefined ? mins(headway) : '—',
       l: 'Median headway per stop',
-      n: (worstGap !== null && worstGap !== undefined)
-        ? "All routes combined, 06:00–22:00. The median stop's worst gap of the day is "
-          + `${mins(worstGap)}.`
-        : 'All routes combined, 06:00–22:00.',
+      n: 'All routes combined, 06:00–22:00.',
+      more: (worstGap !== null && worstGap !== undefined)
+        ? `The median stop's worst gap of the day is ${mins(worstGap)}.`
+        : '',
     },
     {
       g: 'clock',
@@ -440,8 +444,11 @@ export function s4Tiles(report, dayKey) {
           + `${departure}.`
         : `${num(reach.reachableZones)} of ${num(nZones)} zones are within `
           + `${num(size.hidingPeriodMin || 0)} minutes of ${startName} at ${departure} `
-          + `on a ${label} — the ${num(reach.unreachableZoneIds.length)} that are not are `
-          + "red on the map's reach layer, hollow where there is no journey at all. "
+          + `on a ${label}.`),
+      more: (reach === null
+        ? ''
+        : `The ${num(reach.unreachableZoneIds.length)} that are not are red on the `
+          + "map's reach layer, hollow where there is no journey at all. "
           + `(${num(reachN)} of ${num(served)} served stops are, a looser test.)`),
     },
     {
@@ -450,8 +457,8 @@ export function s4Tiles(report, dayKey) {
       prov: 'B1',
       v: `${num(live)} of ${num(catalogue)}`,
       l: 'Questions that work here',
-      n: `Functional plus weak, out of the ${sizeWord} catalogue. `
-        + `${num(dead)} return a fixed or null answer and should be pre-briefed.`,
+      n: `Functional plus weak, out of the ${sizeWord} catalogue.`,
+      more: `${num(dead)} return a fixed or null answer and should be pre-briefed.`,
     },
     {
       g: 'deck',
@@ -470,6 +477,9 @@ export function s4Tiles(report, dayKey) {
  * happens here, not around `#tiles`, because `renderDay()` replaces that container's
  * `innerHTML` wholesale.
  *
+ * One clause sits under the value; the rest of the note goes in the tile's `More`
+ * disclosure, so a group of tiles reads as numbers rather than as prose.
+ *
  * The deck group's tiles count questions and curses, which do not exist until the
  * `rules` stage; they are skeletons until then, so the rail neither prints "0 of 0"
  * nor changes height when the audit arrives.
@@ -478,7 +488,10 @@ export function s4Tiles(report, dayKey) {
  */
 export function s4TilesHtml(report, dayKey) {
   const tiles = s4Tiles(report, dayKey);
-  const dayChip = chip('changes by day', 'calendar-day', {
+  // A plain marker, not a `chip()`: a bordered tag beside a big number reads as a
+  // control the reader can press.
+  const dayChip = el('span', join(waIcon('calendar-day'), esc('changes by day')), {
+    className: 'tile-tag',
     title: 'Measured on the selected service day',
   });
   const pending = !(report.questions || []).length;
@@ -490,10 +503,20 @@ export function s4TilesHtml(report, dayKey) {
         el('wa-skeleton', '', { style: `inline-size:${a}` }),
         el('wa-skeleton', '', { style: `inline-size:${b}` }),
       ), { className: 'sk-tile' }))
-      : tiles.filter((t) => t.g === key).map((t) => waCard(
-        kpi(t.v, t.l, esc(t.n) + provChip(t.prov), { chipHtml: t.day ? dayChip : '' }),
-        { dataDaySensitive: t.day ? true : null, dataHl: t.hl || null },
-      ));
+      : tiles.filter((t) => t.g === key).map((t) => {
+        // The provenance superscript cites the value, so it stays on the clause
+        // under it rather than moving into the disclosure.
+        const note = esc(t.n) + provChip(t.prov);
+        const more = t.more
+          ? waDetails('More', el('p', esc(t.more), { className: 'wa-body-s wa-color-text-quiet' }), {
+            className: 'tile-more', appearance: 'plain',
+          })
+          : '';
+        return waCard(
+          join(kpi(t.v, t.l, note, { chipHtml: t.day ? dayChip : '' }), more),
+          { dataDaySensitive: t.day ? true : null, dataHl: t.hl || null },
+        );
+      });
     if (!cards.length) continue;
     groups.push(el('div', join(
       subhead(title),
@@ -553,15 +576,17 @@ export function renderGlanceRail(payload) {
     id: 'tiles',
   });
   const caption = 'Measured on the service day selected above, on the map you are '
-    + 'looking at. Tiles with a gold rule and a “changes by day” chip move when you '
-    + 'change the day; the rest are map-wide or come straight from the rulebook. '
-    + 'Where a tile names a place, hovering it lights that place on the map above — '
-    + 'or focus it and press Enter to pin it there.';
+    + 'looking at. Tiles with a gold rule and a “changes by day” marker move when you '
+    + 'change the day; the rest are map-wide or come straight from the rulebook.';
+  // Its own paragraph under `#glance-hover-note`: app.js removes the sentence when
+  // MapLibre never loads, and the rest of the caption is true either way.
+  const hover = 'Where a tile names a place, hovering it lights that place on the map '
+    + 'above — or focus it and press Enter to pin it there.';
+  const capStyle = { className: 'wa-body-s wa-color-text-quiet', style: 'max-inline-size:72ch' };
   return el('div', join(
     subhead('At a glance'),
-    el('p', esc(caption), {
-      className: 'wa-body-s wa-color-text-quiet', style: 'max-inline-size:72ch',
-    }),
+    el('p', esc(caption), capStyle),
+    el('p', esc(hover), { id: 'glance-hover-note', ...capStyle }),
     grid,
   ), { id: 'glance', className: 'wa-stack wa-gap-s' });
 }
@@ -1272,7 +1297,11 @@ export function renderNetworkMap(payload) {
   const mapCard = waCard(
     el('div', join(
       toolbar,
-      el('div', '', { id: 'netmap', className: 'wa-border-radius-m' }),
+      // The frame is what the blocked-map callout targets (app.js `giveUp`), and what
+      // the print block keeps when it hides `#netmap`; index.html's skeleton uses the
+      // same id.
+      el('div', el('div', '', { id: 'netmap', className: 'wa-border-radius-m' }),
+        { id: 'netmap-frame' }),
       el('div', s4MapLegends(report, {
         stopsShown, ringsShown, spokesShown, suggestShown: suggested !== null,
       }), {

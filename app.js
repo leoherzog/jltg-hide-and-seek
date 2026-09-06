@@ -40,6 +40,7 @@ import {
 } from './render/map.js';
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
+  setDeckPageSize,
 } from './render/deck.js';
 // S5 (`render_strategy`) — the hider's guide. Not a section and not in `SECTIONS`:
 // the fragment `#strategy` is the only door (see `applyRoute`).
@@ -65,6 +66,19 @@ const ORDINAL_PLACEHOLDER = '--';
 const RERUN_KEY = 'jltg.rerun';
 /** The handoff's schema version. Anything else is ignored, never migrated. */
 const RERUN_VERSION = 1;
+
+/**
+ * The restore-only second handoff (CONTRACT §(g)). `finish()` writes the run's own
+ * inputs here; `boot()` reads it ONLY for a load at `#strategy` with no `jltg.rerun`,
+ * so a hider handed the guide's link after a reload gets the report rebuilt instead of
+ * the picker. Local storage, never consumed, never a `File`.
+ */
+const LAST_RUN_KEY = 'jltg.lastRun';
+
+/** The URL keys the report mirrors its view state into (CONTRACT §(e)). */
+const URL_KEYS = Object.freeze({
+  day: 'day', filter: 'qs', sort: 'qsort', search: 'qq',
+});
 
 /** `class Options`, minus everything meaningless in a browser. */
 const DEFAULT_OPTIONS = Object.freeze({
@@ -159,18 +173,43 @@ const STAGE_DOING = {
   provenance: 'collecting sources',
 };
 
+/**
+ * What to try after a fatal error, keyed by the stage that failed. A map-file failure
+ * must not be told the feed is not a GTFS zip.
+ */
+const STAGE_ADVICE = {
+  feed: 'The commonest causes are a link that is not a GTFS zip, a server that refuses '
+    + 'cross-origin requests, and a feed with no stop_times.txt.',
+  days: 'The feed carries no usable calendar: calendar.txt and calendar_dates.txt are '
+    + 'both empty or absent, or every service has expired.',
+  network: 'The feed parsed but no journeys could be built from it, which usually means '
+    + 'stop_times.txt is empty or its stops are not the ones stops.txt names.',
+  geo: 'This is the map files, not the feed: the request for them was blocked or never '
+    + 'came back. Try again, or point Map file base URL under Advanced at another copy.',
+  rules: 'The audit stopped part way. Running the same feed again is worth a try.',
+  score: 'The scoring stopped part way. Running the same feed again is worth a try.',
+  provenance: 'Everything was measured; only the receipts failed. Running the same feed '
+    + 'again is worth a try.',
+  worker: 'Nothing was heard back from the analysis. If it was reading the map files, '
+    + 'they may be blocked here; try again, or set another Map file base URL under '
+    + 'Advanced.',
+};
+
+/** The one sentence a waiting reader gets about how long this takes. */
+const RUN_EXPECTATION = 'Most feeds finish in about a minute; big metros take a few.';
+
 /** Reader-facing section names, for the “could not be rendered” notice. */
 const SECTION_NAME = {
   hero: 'the headline',
-  network: 'The Map You’re Playing On',
-  glance: 'At a Glance',
-  yourgame: 'House Rules',
-  transit: 'Getting Around',
+  network: 'The map you’re playing on',
+  glance: 'At a glance',
+  yourgame: 'What this means for your game',
+  transit: 'Getting around',
   verdict: 'Verdict',
-  questions: 'The Questions',
-  curses: 'The Curse Deck',
-  trace: 'Where the Points Came From',
-  sources: 'Where These Numbers Come From',
+  questions: 'The questions',
+  curses: 'The curse deck',
+  trace: 'Where the points came from',
+  sources: 'Where these numbers come from',
   footer: 'the footer',
 };
 
@@ -278,6 +317,8 @@ const state = {
   running: false,
   finished: false,
   fatal: false,
+  /** Whether the query string's question-table state has been applied (once a run). */
+  urlDeckRead: false,
   progress: { pct: 0, stage: '', label: '' },
   /** @type {number|null} */ heartbeat: null,
   /** Seconds since the last `progress` message. Chrome only — never a report value. */
@@ -315,6 +356,8 @@ const state = {
     /** The picker's handle (`{ setByo, resize, destroy }`), or null when the
      *  catalogue never loaded. */
     /** @type {Object|null} */ picker: null,
+    /** True once the catalogue failed: no map, no search box, no picks list. */
+    pickerless: false,
   },
 };
 
@@ -395,14 +438,22 @@ export function boot() {
   guardStrayDrops();
   // Chrome, not form: `data-when="report"`, and the only control left after `failed`.
   const reset = document.querySelector('wa-button[data-role="reset"]');
-  if (reset) reset.addEventListener('click', resetToLanding);
+  if (reset) reset.addEventListener('click', onResetClick);
+  syncResetControl();
+  bindUrlState();
+  bindPrintDisclosures();
   // A re-run handed over by the previous document (`RERUN_KEY`) skips the picker. The
   // key is gone by the time `takeRerunHandoff` returns, valid or not.
   const handoff = takeRerunHandoff();
+  const restore = handoff ? null : lastRunForStrategy();
   if (handoff) {
     state.run.note = handoff.note;
     mountRunHistory(handoff);
     startRun(handoff.sources, handoff.options, handoff.source);
+  } else if (restore) {
+    // A load at `#strategy` with a stored run: rebuild the report so `finish()` can
+    // put the guide on screen. Anything else falls through to the picker.
+    startRun(restore.sources, restore.options, restore.source);
   } else {
     initLanding();
   }
@@ -452,14 +503,27 @@ function syncAnalyse() {
 
   const count = state.landing.selected.size + (ref ? 1 : 0);
   const button = $id('analyse');
+  let disabled = false;
   if (button) {
     // A file and a URL at once still counts as "something to run", so pressing
     // Analyse surfaces the error instead of leaving a dead button.
-    button.disabled = count === 0 && !byo.error;
+    disabled = count === 0 && !byo.error;
+    button.disabled = disabled;
     const label = button.querySelector('[data-role="analyselabel"]');
     if (label) label.textContent = count > 1 ? `Analyse ${num(count)} feeds` : 'Analyse';
   }
-
+  // A disabled control says nothing about what would enable it, so the foot carries
+  // the reason for exactly as long as the button is dead.
+  const reason = document.querySelector('[data-role="analysereason"]');
+  if (reason) {
+    if (disabled) {
+      // With no catalogue there is no map and no search box to send anyone to.
+      reason.textContent = state.landing.pickerless
+        ? 'Bring your own feed below.'
+        : 'Pick a city on the map, search for one, or bring your own feed.';
+    }
+    reason.hidden = !disabled;
+  }
 }
 
 /**
@@ -558,9 +622,16 @@ function initLanding() {
     // `NO MAP`, shared with `giveUpOnMap`).
     const map = host.querySelector('#catalog-map');
     if (map) map.hidden = true;
-    body.innerHTML = '';
+    // Say it, rather than leaving a reader in front of a panel that lost its map for
+    // no stated reason.
+    body.innerHTML = el('p', esc('The list of transit feeds did not load. Bring your '
+      + 'own feed below.'), { className: 'wa-body-s', role: 'status' });
     const byo = $id('byo');
     if (byo) byo.open = true;
+    // The Analyse reason names the controls that are on the page, and two of them
+    // just went with the catalogue.
+    state.landing.pickerless = true;
+    syncAnalyse();
     // eslint-disable-next-line no-console
     console.warn('The feed catalogue is unavailable — bring your own feed instead', err);
   });
@@ -654,12 +725,23 @@ function idList(value) {
 }
 
 /**
+ * One validation failure, named by the `[data-opt]` key it belongs to so
+ * `showOptionErrors` can put it on the field as well as in the foot callout.
+ *
+ * @param {Array<{opt: string, message: string}>} errors
+ * @param {string} opt @param {string} message
+ */
+function optError(errors, opt, message) {
+  errors.push({ opt, message });
+}
+
+/**
  * Assemble `Options` from the Advanced panel. Mirrors `parse_args`: `departure`
  * gains `':00'` when it has only one colon, the exclusion lists are sorted and
  * deduped, and `borderBbox` is four numbers or an error.
  *
  * @param {HTMLElement|null} form
- * @returns {{options: Object, errors: string[]}}
+ * @returns {{options: Object, errors: Array<{opt: string, message: string}>}}
  */
 function readOptions(form) {
   const errors = [];
@@ -674,10 +756,11 @@ function readOptions(form) {
     try {
       parsed = new URL(worldBaseUrl);
     } catch {
-      errors.push('The map file base URL is not a URL. It needs to start with https://');
+      optError(errors, 'worldBaseUrl',
+        'The map file base URL is not a URL. It needs to start with https://');
     }
     if (parsed && parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      errors.push('The map file base URL has to be http:// or https://');
+      optError(errors, 'worldBaseUrl', 'The map file base URL has to be http:// or https://');
     } else if (parsed) {
       options.worldBaseUrl = worldBaseUrl.replace(/\/+$/, '');
     }
@@ -687,34 +770,38 @@ function readOptions(form) {
   if (asOf !== null) {
     // Accept both the CLI's 'YYYYMMDD' and an <input type="date">'s 'YYYY-MM-DD'.
     const digits = asOf.replace(/-/g, '');
-    if (!/^\d{8}$/.test(digits)) errors.push('Analysis date must be YYYY-MM-DD.');
+    if (!/^\d{8}$/.test(digits)) optError(errors, 'asOf', 'Analysis date must be YYYY-MM-DD.');
     else options.asOf = digits;
   }
 
   const size = orNull(readControl(form, 'sizeOverride'));
   if (size !== null) {
-    if (!['small', 'medium', 'large'].includes(size)) errors.push('Game size must be small, medium or large.');
-    else options.sizeOverride = size;
+    if (!['small', 'medium', 'large'].includes(size)) {
+      optError(errors, 'sizeOverride', 'Game size must be small, medium or large.');
+    } else options.sizeOverride = size;
   }
 
   const radius = orNumber(readControl(form, 'zoneRadiusM'));
   if (radius !== null) {
-    if (radius <= 0) errors.push('Zone radius must be a positive number of metres.');
-    else options.zoneRadiusM = radius;
+    if (radius <= 0) {
+      optError(errors, 'zoneRadiusM', 'Zone radius must be a positive number of metres.');
+    } else options.zoneRadiusM = radius;
   }
 
   const hiding = orNumber(readControl(form, 'hidingPeriodMin'));
   if (hiding !== null) {
-    if (hiding <= 0) errors.push('Hiding period must be a positive number of minutes.');
-    else options.hidingPeriodMin = hiding;
+    if (hiding <= 0) {
+      optError(errors, 'hidingPeriodMin', 'Hiding period must be a positive number of minutes.');
+    } else options.hidingPeriodMin = hiding;
   }
 
   options.startStopId = orNull(readControl(form, 'startStopId'));
 
   const shape = orNull(readControl(form, 'borderShape'));
   if (shape !== null) {
-    if (!['bbox', 'circle'].includes(shape)) errors.push('Border shape must be bbox or circle.');
-    else options.borderShape = shape;
+    if (!['bbox', 'circle'].includes(shape)) {
+      optError(errors, 'borderShape', 'Border shape must be bbox or circle.');
+    } else options.borderShape = shape;
   }
 
   // With a frame, the border comes from the frame and its mode; the mirror field is
@@ -728,9 +815,11 @@ function readOptions(form) {
     if (typed !== null) {
       const parts = typed.split(/[\s,]+/).filter((x) => x !== '').map(Number);
       if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
-        errors.push('Border box must be exactly four numbers: south, west, north, east.');
+        optError(errors, 'borderBbox',
+          'Border box must be exactly four numbers: south, west, north, east.');
       } else if (parts[0] >= parts[2] || parts[1] >= parts[3]) {
-        errors.push('The game border has no area: south must be below north and west left of east.');
+        optError(errors, 'borderBbox',
+          'The game border has no area: south must be below north and west left of east.');
       } else {
         options.borderBbox = /** @type {[number,number,number,number]} */ (parts.map((x) => coord(x)));
         options.borderSource = 'landing';
@@ -739,9 +828,11 @@ function readOptions(form) {
   } else if (frame.mode === 'custom') {
     const b = frame.bbox;
     if (b.length !== 4 || b.some((n) => !Number.isFinite(n))) {
-      errors.push('Border box must be exactly four numbers: south, west, north, east.');
+      optError(errors, 'borderBbox',
+        'Border box must be exactly four numbers: south, west, north, east.');
     } else if (b[0] >= b[2] || b[1] >= b[3]) {
-      errors.push('The game border has no area: south must be below north and west left of east.');
+      optError(errors, 'borderBbox',
+        'The game border has no area: south must be below north and west left of east.');
     } else {
       // `coord()`-quantised (6 dp), so the rectangle sent is the one the mirror prints.
       options.borderBbox = /** @type {[number,number,number,number]} */ (b.map((x) => coord(x)));
@@ -757,13 +848,14 @@ function readOptions(form) {
   if (departure !== null) {
     // `parse_args`: 'HH:MM' gains ':00'. Anything else has to be HH:MM:SS already.
     const value = departure.split(':').length === 2 ? `${departure}:00` : departure;
-    if (!/^\d{1,2}:\d{2}:\d{2}$/.test(value)) errors.push('Departure time must be HH:MM or HH:MM:SS.');
-    else options.departure = value;
+    if (!/^\d{1,2}:\d{2}:\d{2}$/.test(value)) {
+      optError(errors, 'departure', 'Departure time must be HH:MM or HH:MM:SS.');
+    } else options.departure = value;
   }
 
   const slack = orNumber(readControl(form, 'boardSlackS'));
   if (slack !== null) {
-    if (slack < 0) errors.push('Boarding slack cannot be negative.');
+    if (slack < 0) optError(errors, 'boardSlackS', 'Boarding slack cannot be negative.');
     else options.boardSlackS = slack;
   }
 
@@ -899,11 +991,69 @@ function showFormError(message) {
 
 function clearFormError() {
   const { box, text } = formErrorBox();
+  clearOptionErrors();
   if (!box) return;
   box.hidden = true;
   // Blank it too, or re-submitting an unfixed form mutates nothing and the alert
   // stays silent.
   if (text) text.textContent = '';
+}
+
+/**
+ * The fields currently carrying a validation message, with the hint each one had
+ * before. A `Map`, not a `data-` attribute: a slotted hint's markup (`<code>` in
+ * several) has to come back exactly as it was.
+ * @type {Map<Element, {slot: Element|null, html: string|null, hint: string|null}>}
+ */
+const invalidFields = new Map();
+
+/**
+ * Put each validation failure on its own field: open Advanced, mark the control
+ * invalid, replace its hint with the message, and move focus to the first one. The
+ * foot callout still carries every sentence, since a field can be scrolled away.
+ *
+ * @param {HTMLElement|null} form
+ * @param {Array<{opt: string, message: string}>} errors
+ */
+function showOptionErrors(form, errors) {
+  showFormError(errors.map((e) => e.message).join(' '));
+  const scope = form || document;
+  // A message on a field inside a closed disclosure is a message nobody reads.
+  const advanced = $id('advanced');
+  if (advanced && errors.some((e) => e.opt)) advanced.open = true;
+  let first = null;
+  for (const { opt, message } of errors) {
+    const node = opt ? scope.querySelector(`[data-opt="${opt}"]`) : null;
+    if (!node || invalidFields.has(node)) continue;
+    const slot = node.querySelector('[slot="hint"]');
+    invalidFields.set(node, {
+      slot,
+      html: slot ? slot.innerHTML : null,
+      hint: node.getAttribute('hint'),
+    });
+    node.setAttribute('aria-invalid', 'true');
+    if (slot) slot.textContent = message;
+    else node.setAttribute('hint', message);
+    if (!first) first = node;
+  }
+  // A frame out: `#advanced` was opened a line ago and a field inside a disclosure
+  // that is still animating cannot take focus.
+  if (first) {
+    requestAnimationFrame(() => {
+      try { first.focus(); } catch { /* not focusable here */ }
+    });
+  }
+}
+
+/** Give every marked field its own hint back. */
+function clearOptionErrors() {
+  for (const [node, prev] of invalidFields) {
+    node.removeAttribute('aria-invalid');
+    if (prev.slot && prev.html !== null) prev.slot.innerHTML = prev.html;
+    else if (prev.hint === null) node.removeAttribute('hint');
+    else node.setAttribute('hint', prev.hint);
+  }
+  invalidFields.clear();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -926,7 +1076,7 @@ function startRunFromForm(form) {
   }
   const { options, errors } = readOptions(form);
   if (errors.length) {
-    showFormError(errors.join(' '));
+    showOptionErrors(form, errors);
     return;
   }
   startRun(src.sources, options, src.source);
@@ -1084,6 +1234,66 @@ function takeRerunHandoff() {
     return null;
   }
   return validateRerunHandoff(parsed);
+}
+
+/**
+ * Keep this run's inputs so a later load at `#strategy` can rebuild the report. URL
+ * and OSM sources only, the same rule as `RERUN_KEY`: a run naming a `File` stores
+ * nothing, because a `File` cannot survive a load.
+ */
+function storeLastRun() {
+  const run = state.run;
+  if (!run.sources || !run.sources.length || !run.options) return;
+  if (run.sources.some((ref) => ref.kind === 'file')) return;
+  try {
+    localStorage.setItem(LAST_RUN_KEY, JSON.stringify({
+      sources: run.sources.map(portableSourceRef),
+      options: run.options,
+      source: run.source || '',
+      place: state.report.place || '',
+    }));
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[app] could not store the last run', err);
+  }
+}
+
+/**
+ * The stored run, but only for a load at `#strategy`. Unlike `RERUN_KEY` this is not
+ * consumed: it is a restore, so the next reload of the same link restores again.
+ *
+ * @returns {{sources: Object[], options: Object, source: string}|null}
+ */
+function lastRunForStrategy() {
+  if (!isStrategyRoute()) return null;
+  let raw = null;
+  try {
+    raw = localStorage.getItem(LAST_RUN_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sources)) return null;
+  if (!parsed.sources.length || parsed.sources.length > MAX_FEEDS_PER_RUN) return null;
+  const byId = new Map();
+  for (const rawRef of parsed.sources) {
+    const ref = normaliseRerunSource(rawRef);
+    if (!ref) return null;
+    byId.set(ref.id, ref);
+  }
+  // Sorted by id exactly as `readSources` sorts.
+  const sources = Array.from(byId.keys()).sort(cmpStr).map((id) => byId.get(id));
+  const options = normaliseRerunOptions(parsed.options);
+  if (!options) return null;
+  const source = typeof parsed.source === 'string' && parsed.source
+    ? parsed.source : sources.map((ref) => ref.label).join(' + ');
+  return { sources, options, source };
 }
 
 /**
@@ -1292,6 +1502,30 @@ function resetToLanding() {
 }
 
 /**
+ * The header control does two jobs. Mid-run it cancels, which costs nothing. On a
+ * finished report it throws the report away, so it asks first.
+ */
+function onResetClick() {
+  const shell = document.body ? document.body.getAttribute('data-state') : '';
+  if (shell === 'ready' && !window.confirm('Throw this report away and start over?')) return;
+  resetToLanding();
+}
+
+/**
+ * Label the header control for what pressing it does now: Cancel while a run is on,
+ * Reset otherwise. The text lives in `[data-role="resetlabel"]` (index.html).
+ */
+function syncResetControl() {
+  const button = document.querySelector('wa-button[data-role="reset"]');
+  if (!button) return;
+  const running = document.body && document.body.getAttribute('data-state') === 'running';
+  const label = button.querySelector('[data-role="resetlabel"]');
+  if (label) label.textContent = running ? 'Cancel' : 'Reset';
+  const icon = button.querySelector('wa-icon[slot="start"]');
+  if (icon) icon.setAttribute('name', running ? 'xmark' : 'arrow-rotate-left');
+}
+
+/**
  * Set `body[data-state]`, the switch styles.css §7 reads: its `!important`
  * `[data-when='report']` rule hides the report in the landing state, so leaving the
  * attribute at `landing` hides every section for the whole run. The wordmark's anchor
@@ -1299,6 +1533,7 @@ function resetToLanding() {
  */
 function setShellState(value) {
   if (document.body) document.body.setAttribute('data-state', value);
+  syncResetControl();
   // `data-view` (the secret route) owns the wordmark's anchor while it holds.
   if (document.body && document.body.hasAttribute('data-view')) return;
   const wordmark = document.getElementById('wordmark');
@@ -1542,6 +1777,11 @@ function finish(report) {
   setShellState('ready');
   setProgress({ stage: 'done', label: 'Report complete', done: 1, total: 1 });
   clearWatchdog();
+  // The guide's link is handed to a hider who does not have this document; the stored
+  // inputs are what lets their reload rebuild it (CONTRACT §(g)).
+  storeLastRun();
+  restoreDeckUrlState();
+  writeUrlState();
   if (state.worker) {
     state.worker.terminate();
     state.worker = null;
@@ -1577,12 +1817,25 @@ function setProgress(msg) {
     bar.value = rhu(value, 1);
     bar.setAttribute('value', String(rhu(value, 1)));
   }
+  // The label is an aria-live span and the per-question loop sends hundreds of
+  // identical labels, so only a text that actually differs is written.
   const label = document.querySelector('[data-role="progresslabel"]');
-  if (label) label.textContent = state.progress.label || '';
+  const text = state.progress.label || '';
+  if (label && label.textContent !== text) label.textContent = text;
+  // The percent ticks about a hundred times a run and the bar beside it already
+  // carries the value, so it sits outside the accessibility tree: a live region that
+  // re-announced the stage on every tick would read the count-up aloud.
+  const pct = document.querySelector('[data-role="progresspct"]');
+  const pctText = total > 0 ? ` · ${num(Math.round(value))}%` : '';
+  if (pct && pct.textContent !== pctText) pct.textContent = pctText;
 
   const root = state.progress.stage.split(':')[0];
   const note = document.querySelector('[data-role="progressnote"]');
-  if (note) note.textContent = STAGE_NOTE[root] || '';
+  // The first stage is also the start of the run, so it carries the one sentence
+  // about how long this takes.
+  const noteText = (STAGE_NOTE[root] || '')
+    + (root === 'feed' ? ` ${RUN_EXPECTATION}` : '');
+  if (note && note.textContent !== noteText) note.textContent = noteText;
   const host = document.querySelector('[data-role="progress"]');
   if (host) host.setAttribute('data-stage', root);
 }
@@ -1682,6 +1935,14 @@ function mountSection(id, html) {
   }
   root.setAttribute('data-section', id);
   root.setAttribute('data-state', 'ready');
+  // The shell's own gating rides on the host, not the markup: without `data-when` the
+  // hero and the footer show inside the guide (two h1s, a footer link to a hidden
+  // `#top`), and without `slot` the footer leaves `wa-page`'s footer slot.
+  for (const attr of ['data-when', 'slot']) {
+    if (!root.hasAttribute(attr) && host.hasAttribute && host.hasAttribute(attr)) {
+      root.setAttribute(attr, host.getAttribute(attr));
+    }
+  }
 
   const rect = host.getBoundingClientRect();
   const before = rect.height;
@@ -1739,6 +2000,8 @@ function mountSection(id, html) {
   // arguments matter: the payload is what its re-wire observer replays later.
   if (id === 'questions' || id === 'curses') {
     try { initDeckTables(root, state.report); } catch (err) { console.warn('[app] deck tables', err); }
+    // After the table is wired, so the state the URL asks for is the state it keeps.
+    if (id === 'questions') restoreDeckUrlState();
   }
 }
 
@@ -1959,12 +2222,15 @@ function fatalError(stage, message) {
   setShellState('failed');
   // The stack goes on an inner wrapper, not the card host: the host's own flex items
   // are wa-card's shadow header/body/footer, so a gap there opens a seam under the
-  // header instead of spacing these two paragraphs.
+  // header instead of spacing the card's own blocks.
+  const advice = STAGE_ADVICE[stage]
+    || 'Try another feed, or the same one again.';
   const card = waCard(el('div', join(
     el('p', esc(String(message || 'The run stopped and did not say why.')), { className: 'wa-body-m' }),
-    el('p', esc('Reload and try another feed, or the same one again. The commonest causes '
-      + 'are a link that is not a GTFS zip and a feed that is missing stop_times.txt.'),
-    { className: 'wa-body-s wa-color-text-quiet' }),
+    el('p', esc(`${advice} Reset in the header puts the landing map back.`),
+      { className: 'wa-body-s wa-color-text-quiet' }),
+    el('wa-button', join(waIcon('arrow-rotate-left', { slot: 'start' }), esc('Try another feed')),
+      { dataRole: 'errorreset', variant: 'brand', appearance: 'filled', size: 'm' }),
   ), { className: 'wa-stack wa-gap-m' }), {
     headerHtml: el('h2', join(waIcon('triangle-exclamation'),
       esc(STAGE_DOING[stage] ? `Stopped while ${STAGE_DOING[stage]}` : 'The analysis stopped')),
@@ -1975,8 +2241,12 @@ function fatalError(stage, message) {
     // The shell has a place for this. Use it, and clear away the skeletons that are
     // never going to fill — a stopped run must not leave eight shimmering cards
     // implying work is still happening.
+    if (!slot.hasAttribute('role')) slot.setAttribute('role', 'alert');
+    if (!slot.hasAttribute('tabindex')) slot.setAttribute('tabindex', '-1');
     slot.innerHTML = el('div', card, { className: 'wa-stack wa-gap-l' });
     slot.hidden = false;
+    const again = slot.querySelector('[data-role="errorreset"]');
+    if (again) again.addEventListener('click', resetToLanding);
     for (const husk of [...document.querySelectorAll('[data-state="skeleton"]')]) {
       dropSectionHost(husk, husk.getAttribute('data-section'));
     }
@@ -1984,12 +2254,18 @@ function fatalError(stage, message) {
     // them: the hero carries `#top`, which the wordmark and the footer's "Back to
     // top" both point at, and the footer carries the OpenStreetMap/ODbL and rulebook
     // attribution, which is true of every run including this failed one. They still
-    // must not shimmer — settle them in place instead of removing them.
-    for (const host of [...document.querySelectorAll('[data-state="pending"]')]) {
-      for (const sk of [...host.querySelectorAll('wa-skeleton')]) sk.remove();
-      host.removeAttribute('aria-busy');
+    // must not shimmer — settle them in place instead of removing them. The settle is
+    // keyed on the skeletons themselves, not on `data-state`: `mountSection` stamps
+    // `ready` on a hero that keeps a skeleton scorecard until the `score` stage.
+    for (const sk of [...document.querySelectorAll('wa-skeleton')]) sk.remove();
+    for (const host of [...document.querySelectorAll('[aria-busy]')]) {
+      if (!host.querySelector('wa-skeleton')) host.removeAttribute('aria-busy');
     }
     pruneNav();
+    // Last, after the sweep has taken the skeletons and the page has settled: a fatal
+    // error can land far below the fold, and an error nobody is shown says nothing.
+    slot.scrollIntoView({ block: 'start' });
+    try { slot.focus({ preventScroll: true }); } catch { /* not focusable here */ }
   }
   const landing = document.querySelector('#landing');
   if (landing) landing.hidden = true;
@@ -2270,6 +2546,9 @@ function dataPayload(report) {
   const inference = report.sizeInference;
   return {
     place: report.place,
+    // Which feed this report is of, for the per-viewer state the runtime stores: the
+    // content-addressed sha256, or the place name when the feed has not landed yet.
+    feed_key: report.feed.sha256 || report.place || '',
     agency: {
       name: report.feed.agencyName, url: report.feed.agencyUrl, timezone: report.feed.timezone,
     },
@@ -2623,6 +2902,15 @@ function mountStrategy() {
 }
 
 /**
+ * The guide's fragment, with or without the simulator's `?…` state suffix, which
+ * `render/simulator.js` writes with `replaceState` (CONTRACT §(g)).
+ * @returns {boolean}
+ */
+function isStrategyRoute() {
+  return location.hash.split('?')[0] === STRATEGY_HASH;
+}
+
+/**
  * Read the fragment and put the right view on screen. Bound to `hashchange`, called
  * once in `boot()` for a deep link, and once more at the tail of `finish()`.
  * `#strategy` with no finished report is the landing form, with no hint that
@@ -2631,7 +2919,7 @@ function mountStrategy() {
 function applyRoute() {
   const body = document.body;
   if (!body) return;
-  if (location.hash === STRATEGY_HASH && state.finished) {
+  if (isStrategyRoute() && state.finished) {
     const host = mountStrategy();
     if (!host) { leaveStrategy(); return; }
     // Before `initStrategy`: MapLibre reads its container size once, at construction,
@@ -2641,10 +2929,10 @@ function applyRoute() {
     const report = state.report;
     const place = report.place || report.feed.agencyName || 'This map';
     document.title = `${place} × Hide and Seek — Hider's Guide`;
-    // `#top` is the report hero, hidden here; pointing the wordmark at the fragment
-    // itself keeps it inert.
+    // `#top` is the report hero, hidden here; the wordmark points at the fragment
+    // the page is already on, suffix and all.
     const wordmark = $id('wordmark');
-    if (wordmark) wordmark.setAttribute('href', STRATEGY_HASH);
+    if (wordmark) bindGuideWordmark(wordmark);
     try {
       initStrategy(host, report);
     } catch (err) {
@@ -2663,6 +2951,30 @@ function applyRoute() {
     return;
   }
   leaveStrategy();
+}
+
+/**
+ * The wordmark inside the guide. Its `href` is the fragment the page is already on,
+ * re-read on hover and focus so a copied link carries the simulator's `?…` suffix,
+ * and the click is cancelled the way `#s-back`'s is: navigating would fire a
+ * `hashchange`, re-enter `applyRoute` and drop the suffix from the URL.
+ *
+ * @param {HTMLElement} wordmark
+ */
+function bindGuideWordmark(wordmark) {
+  const live = () => wordmark.setAttribute('href', location.hash || STRATEGY_HASH);
+  live();
+  if (wordmark.dataset.guideBound) return;
+  wordmark.dataset.guideBound = '1';
+  wordmark.addEventListener('pointerenter', live);
+  wordmark.addEventListener('focus', live);
+  wordmark.addEventListener('click', (e) => {
+    if (document.body.getAttribute('data-view') !== 'strategy') return;
+    e.preventDefault();
+    live();
+    const host = $id('strategy');
+    if (host) host.scrollIntoView({ block: 'start' });
+  });
 }
 
 /** Put the report back. Idempotent and cheap: nothing was destroyed. */
@@ -2686,6 +2998,183 @@ function leaveStrategy() {
     requestAnimationFrame(() => requestAnimationFrame(() => {
       back.focus({ preventScroll: true });
     }));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// URL state
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// What the reader is looking at rides in `location.search` — the service day, the
+// question table's status filter, its sort and its search — so the link they copy
+// opens on the same view. Always `replaceState`: none of this is a history entry.
+// Written from the live controls after they change, read exactly once per part, and
+// ignored by the landing, which has no view state and whose URL must stay clean for
+// `resetToLanding`.
+
+/** Debounce handle for the mirror; a search box types faster than a URL should change. */
+let urlSyncTimer = null;
+
+/** The report's view state, read off the live controls. */
+function currentUrlState() {
+  const runtime = window.__jltg || {};
+  const daysel = $id('daysel');
+  const chips = $id('qchips');
+  const search = $id('qsearch');
+  const table = $id('qtable');
+  let sort = '';
+  for (const th of table ? table.querySelectorAll('th[data-sort-key]') : []) {
+    const dir = th.getAttribute('aria-sort');
+    if (dir === 'ascending' || dir === 'descending') {
+      sort = `${th.getAttribute('data-sort-key')}:${dir === 'ascending' ? 'asc' : 'desc'}`;
+    }
+  }
+  return {
+    day: String(runtime.day || (daysel && daysel.value) || ''),
+    filter: chips ? String(chips.value || '') : '',
+    sort,
+    search: search ? String(search.value || '') : '',
+  };
+}
+
+/** Mirror the current view into the query string. */
+function writeUrlState() {
+  if (!document.body || document.body.getAttribute('data-state') === 'landing') return;
+  const view = currentUrlState();
+  const url = new URL(location.href);
+  const params = url.searchParams;
+  const put = (key, value, dropped) => {
+    if (value && value !== dropped) params.set(key, value);
+    else params.delete(key);
+  };
+  put(URL_KEYS.day, view.day, '');
+  put(URL_KEYS.filter, view.filter, 'all');
+  put(URL_KEYS.sort, view.sort, '');
+  put(URL_KEYS.search, view.search, '');
+  const query = params.toString();
+  const next = `${url.pathname}${query ? `?${query}` : ''}${url.hash}`;
+  if (next !== `${location.pathname}${location.search}${location.hash}`) {
+    history.replaceState(null, '', next);
+  }
+}
+
+function scheduleUrlState() {
+  if (urlSyncTimer !== null) clearTimeout(urlSyncTimer);
+  urlSyncTimer = setTimeout(() => {
+    urlSyncTimer = null;
+    writeUrlState();
+  }, 250);
+}
+
+/**
+ * Watch the four controls from the document, not from the elements: every one of them
+ * is replaced whenever its section re-renders, and a delegated listener survives that.
+ */
+function bindUrlState() {
+  const watch = (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    if (target.closest('#daysel, #dayscores, #qchips, #qsearch, #qtable')) scheduleUrlState();
+  };
+  for (const type of ['change', 'input', 'click']) {
+    document.addEventListener(type, watch, { passive: true });
+  }
+}
+
+/**
+ * Apply the query string to the question table, once, the first time that table
+ * exists. Ahead of the deck's own stored state: a link the reader followed says what
+ * they asked to see. The day is read the same way, in `loadDay` (`PAGE_RUNTIME_JS`).
+ */
+function restoreDeckUrlState() {
+  if (state.urlDeckRead) return;
+  const table = $id('qtable');
+  if (!table) return;
+  state.urlDeckRead = true;
+  try {
+    applyDeckUrlState(table);
+  } catch (err) {
+    // A bad key in a pasted link must not cost the reader the table.
+    // eslint-disable-next-line no-console
+    console.warn('[app] url view state', err);
+  }
+}
+
+/** `restoreDeckUrlState`'s body, so one bad key cannot take the table down. */
+function applyDeckUrlState(table) {
+  const params = new URLSearchParams(location.search);
+
+  const filter = params.get(URL_KEYS.filter);
+  const chips = $id('qchips');
+  if (filter && chips && chips.querySelector(`wa-radio[value="${CSS.escape(filter)}"]`)) {
+    chips.setAttribute('value', filter);
+    chips.value = filter;
+    chips.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  const query = params.get(URL_KEYS.search);
+  const search = $id('qsearch');
+  if (query && search) {
+    search.value = query;
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  const sort = params.get(URL_KEYS.sort);
+  if (sort) {
+    const [key, dir] = sort.split(':');
+    const th = key ? table.querySelector(`th[data-sort-key="${CSS.escape(key)}"]`) : null;
+    // The table owns its sort state (`render/deck.js`); a click is the only way in,
+    // and the second one is what reverses the column.
+    if (th) th.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    if (th && dir === 'desc') th.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+}
+
+/**
+ * The disclosures this opened for a print, so exactly those are closed again. Null
+ * whenever a print is not in progress, which is also the re-entry guard: Chrome fires
+ * `beforeprint` and the `print` media query change for the same print.
+ * @type {Element[]|null}
+ */
+let printOpened = null;
+
+/**
+ * Paper gets the whole document, not a list of summaries. A closed `<details>` hides
+ * its own subtree and the one handle on it from outside the shadow root
+ * (`::details-content` after `::part(base)`) is not accepted by every engine, so the
+ * open state is set here instead of left to styles.css §PAPER. §07 and §08's page
+ * window comes off for the same reason, through the tables' own state.
+ */
+function bindPrintDisclosures() {
+  const openForPrint = () => {
+    if (printOpened) return;
+    printOpened = [];
+    setDeckPageSize('all');
+    for (const details of document.querySelectorAll('wa-details')) {
+      if (details.open) continue;
+      printOpened.push(details);
+      details.open = true;
+      // `print()` blocks every frame the component's open animation needs, so the
+      // shadow panel is put in its finished state rather than waited for.
+      const root = details.shadowRoot;
+      const native = root ? root.querySelector('details') : null;
+      const body = root ? root.querySelector('.body') : null;
+      if (native) native.open = true;
+      if (body) body.style.height = 'auto';
+    }
+  };
+  const closeAfterPrint = () => {
+    if (!printOpened) return;
+    for (const details of printOpened) details.open = false;
+    printOpened = null;
+    setDeckPageSize(null);
+  };
+  window.addEventListener('beforeprint', openForPrint);
+  window.addEventListener('afterprint', closeAfterPrint);
+  // Safari fires neither event; the media query is the same signal there.
+  const media = window.matchMedia ? window.matchMedia('print') : null;
+  if (media && media.addEventListener) {
+    media.addEventListener('change', (e) => (e.matches ? openForPrint() : closeAfterPrint()));
   }
 }
 
@@ -2716,6 +3205,7 @@ function bindTT(el, html) {
   if (el.dataset.ttBound) return;
   el.dataset.ttBound = '1';
   el.addEventListener('mousemove', e => {
+    W.ttPin = 0;   /* hovering anything else takes the panel off a pinned map feature */
     tt.innerHTML = html; tt.style.display = 'block';
     const w = tt.offsetWidth, x = Math.min(e.clientX + 14, innerWidth - w - 12);
     tt.style.left = x + 'px'; tt.style.top = (e.clientY + 16) + 'px';
@@ -2768,12 +3258,20 @@ function bindBudgets() {
   }
 }
 
-/* the two pages share the selected game day through localStorage */
+/* The two views share the selected game day through localStorage, keyed by the feed
+   this report was built from: a day picked for another city says nothing about this
+   one and must not override its best day. The URL is read first, so a link carries
+   the day it was copied on. */
 const DAY_KEY = 'jltg-day';
+const dayStoreKey = () => DAY_KEY + ':' + ((DATA && (DATA.feed_key || DATA.place)) || '');
 function loadDay(fallback) {
-  try { return localStorage.getItem(DAY_KEY) || fallback; } catch (e) { return fallback; }
+  try {
+    const asked = new URLSearchParams(location.search).get('day');
+    if (asked) return asked;
+  } catch (e) { /* no URL API, or nonsense in the query */ }
+  try { return localStorage.getItem(dayStoreKey()) || fallback; } catch (e) { return fallback; }
 }
-function saveDay(k) { try { localStorage.setItem(DAY_KEY, k); } catch (e) {} }
+function saveDay(k) { try { localStorage.setItem(dayStoreKey(), k); } catch (e) {} }
 
 /* The map's layer state, per viewer. It has to outlive the geo-stage re-mount, which
    rebuilds the MapLibre instance. MODES is the whitelist: a stale value in storage
@@ -2865,11 +3363,15 @@ if (DATA && !W.day) {
 }
 W.day = CURRENT;
 
+/* The selected day is marked, not the other days faded: a grid whose other columns
+   are dimmed reads as broken, and the numbers in them are still true. */
 function hwHighlight() {
-  document.querySelectorAll('#hwmap .cell, #hwmap2 .cell').forEach(c =>
-    c.toggleAttribute('data-dim', c.dataset.d !== CURRENT));
+  document.querySelectorAll('#hwmap .cell, #hwmap2 .cell').forEach(c => {
+    const td = c.closest('td');
+    if (td) td.classList.toggle('is-day', c.dataset.d === CURRENT);
+  });
   document.querySelectorAll('#hwmap th[data-d], #hwmap2 th[data-d]').forEach(h =>
-    h.toggleAttribute('data-sel', h.dataset.d === CURRENT));
+    h.classList.toggle('is-day', h.dataset.d === CURRENT));
 }
 
 function flagFindings() {
@@ -3091,7 +3593,25 @@ async function buildMap() {
       if (n) n.hidden = !on;
     }
   };
-  const giveUp = (msg, e) => { W.mapBuilt = 0; setChrome(false); console.warn(msg, e || ''); };
+  /* Say so where the map would have been, and drop the rail's hover sentence: with no
+     map there is nothing for a tile to light up. The callout goes in #netmap-frame
+     when the section provides one, and beside the host when it does not. */
+  const blocked = '<wa-callout variant="neutral" appearance="filled-outlined">'
+    + '<wa-icon slot="icon" name="map-location-dot"></wa-icon>'
+    + 'The map library could not load. The border and every number still stand.'
+    + '</wa-callout>';
+  const sayBlocked = () => {
+    const frame = $('netmap-frame');
+    if (frame) frame.innerHTML = blocked;
+    else if (host && !$('netmap-blocked')) {
+      host.insertAdjacentHTML('afterend', '<div id="netmap-blocked">' + blocked + '</div>');
+    }
+    const hover = $('glance-hover-note');
+    if (hover) hover.remove();
+  };
+  const giveUp = (msg, e) => {
+    W.mapBuilt = 0; setChrome(false); sayBlocked(); console.warn(msg, e || '');
+  };
   let maplibregl;
   /* ns.default ?? ns: maplibre-gl 6 dropped the default export. (No backticks in
      here: this whole runtime is one String.raw template.) */
@@ -3534,42 +4054,59 @@ async function buildMap() {
   star.className = 'mk-central';
   star.innerHTML = '<span class="star">★</span><span class="clbl">' + esc(DATA.hub.name) + '</span>';
   new maplibregl.Marker({ element: star }).setLngLat([DATA.hub.lon, DATA.hub.lat]).addTo(map);
+  /* The hover panel is pointer-only, so the marker carries the same fact as text. */
+  star.setAttribute('title', DATA.hub.name + ', the inferred round-start station');
+  star.setAttribute('aria-label', DATA.hub.name + ', the inferred round-start station');
   bindTT(star, '<b>' + esc(DATA.hub.name) + '</b>The inferred round-start station.');
 
-  const showTip = (e, html) => {
+  const placeTip = (e, html) => {
     tt.innerHTML = html;
     tt.style.display = 'block';
     const w = tt.offsetWidth, x = Math.min(e.originalEvent.clientX + 14, innerWidth - w - 12);
     tt.style.left = x + 'px'; tt.style.top = (e.originalEvent.clientY + 16) + 'px';
   };
-  /* delegated layer events survive setStyle, so bind them once */
-  map.on('mousemove', 'stop-dots', e => {
-    const f = e.features[0].properties;
-    const wait = Number(f.hwv);
-    showTip(e, '<b>' + esc(f.name || 'Stop') + '</b>' + f.routes + ' route(s) on this day'
-              + (!isFinite(wait) || wait < 0
-                ? ' · no service on the day you picked'
-                : ' · a departure about every ' + wait + ' min, 06:00-22:00')
-              + (Number(f.freq) ? ' · on a 15-minute route-direction' : ''));
-  });
-  map.on('mouseleave', 'stop-dots', () => { tt.style.display = 'none'; });
-  map.on('mousemove', 'zone-dots', e => {
-    const f = e.features[0].properties;
-    const t = Number(f.t);
-    showTip(e, '<b>' + esc(f.name || 'Zone') + '</b>Hiding zone'
-              + (f.score == null ? '' : ' · rated ' + f.score + ' / 100')
-              + (!isFinite(t) || t < 0
-                ? ' · no journey from the start on this day'
-                : ' · ' + t + ' min from the start'));
-  });
-  map.on('mouseleave', 'zone-dots', () => { tt.style.display = 'none'; });
+  /* A pointer that cannot hover gets nothing from mousemove, so a tap or click on a
+     feature pins the same panel until the next map click or Escape. */
+  const showTip = (e, html) => { if (!W.ttPin) placeTip(e, html); };
+  const pinTip = (e, html) => { W.ttPin = 1; placeTip(e, html); };
+  const hideTip = () => { W.ttPin = 0; tt.style.display = 'none'; };
+  const leaveTip = () => { if (!W.ttPin) tt.style.display = 'none'; };
+  if (!W.ttEscBound) {
+    W.ttEscBound = 1;
+    addEventListener('keydown', e => { if (e.key === 'Escape' && W.ttPin) hideTip(); });
+  }
+  /* Registered BEFORE the layer clicks below: MapLibre calls listeners in
+     registration order, so a click on a feature clears the pin and then re-pins. */
+  map.on('click', hideTip);
 
-  map.on('mousemove', 'n-spoke-line', e => {
-    const f = e.features[0].properties;
-    showTip(e, '<b>' + esc(String(f.r || 'Route')) + '</b>'
-              + (Number(f.hub) ? 'Calls at ' + esc(DATA.hub.name) : 'Does not call at the hub'));
-  });
-  map.on('mouseleave', 'n-spoke-line', () => { tt.style.display = 'none'; });
+  const stopTip = f => {
+    const wait = Number(f.hwv);
+    return '<b>' + esc(f.name || 'Stop') + '</b>' + f.routes + ' route(s) on this day'
+      + (!isFinite(wait) || wait < 0
+        ? ' · no service on the day you picked'
+        : ' · a departure about every ' + wait + ' min, 06:00-22:00')
+      + (Number(f.freq) ? ' · on a 15-minute route-direction' : '');
+  };
+  const zoneTip = f => {
+    const t = Number(f.t);
+    return '<b>' + esc(f.name || 'Zone') + '</b>Hiding zone'
+      + (f.score == null ? '' : ' · rated ' + f.score + ' / 100')
+      + (!isFinite(t) || t < 0
+        ? ' · no journey from the start on this day'
+        : ' · ' + t + ' min from the start');
+  };
+  const spokeTip = f => '<b>' + esc(String(f.r || 'Route')) + '</b>'
+    + (Number(f.hub) ? 'Calls at ' + esc(DATA.hub.name) : 'Does not call at the hub');
+
+  /* delegated layer events survive setStyle, so bind them once */
+  const bindLayerTip = (layer, tip) => {
+    map.on('mousemove', layer, e => showTip(e, tip(e.features[0].properties)));
+    map.on('click', layer, e => pinTip(e, tip(e.features[0].properties)));
+    map.on('mouseleave', layer, leaveTip);
+  };
+  bindLayerTip('stop-dots', stopTip);
+  bindLayerTip('zone-dots', zoneTip);
+  bindLayerTip('n-spoke-line', spokeTip);
 
   const spsw = $('spokesw');
   if (spsw) {
@@ -3642,10 +4179,10 @@ function railCard(host, e, strict) {
   const t = e.target;
   const card = t && t.closest ? t.closest('[data-hl]') : null;
   if (!card || !host.contains(card)) return null;
-  // A click or Enter that started on the tile's provenance link belongs to the
-  // link. Hover and focus previews are not strict.
+  // A click or Enter that started on the tile's provenance link or on its More
+  // disclosure belongs to that control. Hover and focus previews are not strict.
   if (strict && t.closest) {
-    const inner = t.closest('a[href], button, input, select, textarea, wa-button, wa-copy-button');
+    const inner = t.closest('a[href], button, input, select, textarea, wa-button, wa-copy-button, wa-details, summary');
     if (inner && inner !== card && card.contains(inner)) return null;
   }
   return card;
@@ -3653,7 +4190,11 @@ function railCard(host, e, strict) {
 
 function bindRail() {
   const host = $('glance');
-  if (!host || !W.mapReady || !W.highlight) return;
+  if (!host) return;
+  /* Not ready yet and never going to load are different states: buildMap() is async,
+     so this runs first on every healthy run. sayBlocked() is the one site that knows
+     the map failed, and it takes the hover/pin sentence out. */
+  if (!W.mapReady || !W.highlight) return;
   const sync = () => {
     const pinned = W.highlightPinned ? W.highlightPinned() : null;
     host.querySelectorAll('[data-hl]').forEach(card => {

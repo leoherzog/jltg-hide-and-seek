@@ -649,7 +649,7 @@ const GEO_CATEGORY_CONCURRENCY = 8;
 
 // The one caption every category read in the batch reports under, shaped like the
 // other phase labels: the name of a phase, not of a file.
-const GEO_FEATURE_PHASE_LABEL = 'geo:world features';
+const GEO_FEATURE_PHASE_LABEL = 'Reading map features';
 
 /**
  * Run `worker` over `items` with at most `limit` in flight, returning results in
@@ -865,7 +865,7 @@ export async function adminInfo(world, zones, bbox, hooks = {}) {
   // centre is tested against them locally.
   /** @type {Array<Object>} */
   let areas = [];
-  const adminTask = progress.start('geo:world admin areas');
+  const adminTask = progress.start('Reading administrative areas');
   try {
     areas = (await worldAdminAreas(world, bbox)) || [];
   } catch (exc) {
@@ -1287,7 +1287,7 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
   /** @type {Object<string, number>} */
   const raw = {};
 
-  const curseTask = progress.start('geo:world curse predicates');
+  const curseTask = progress.start('Checking curse conditions');
   try {
     for (const [predicate, layer, terms] of CURSE_WORLD_LAYERS) {
       // An upper bound: these are removal tests and only zero has to be exact. A
@@ -1903,7 +1903,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   }
 
   // ── 2. the density grid: the categories that are tallies, not icons ───────
-  const densityTask = progress.start('geo:world density grid');
+  const densityTask = progress.start('Reading the density grid');
   /** @type {null|{counts: Object<string, number>, cells: Array<Object>, cellDeg: number}} */
   let density = null;
   try {
@@ -2134,6 +2134,6 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   geo.notes = notes;
   geo.queries = Array.from(queries)
     .sort((a, b) => cmpStr(a.key, b.key) || cmpStr(a.cacheKey, b.cacheKey));
-  progress.settle('geo:done');
+  progress.settle('Finished reading the map files');
   return geo;
 }

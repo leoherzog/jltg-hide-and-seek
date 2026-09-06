@@ -32,12 +32,12 @@
 // @module render/simulator
 
 import {
-  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, M_PER_MILE, num, pct, mins,
+  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, M_PER_MILE, num, pct, mins, coord,
 } from '../lib/core.js';
 import { haversineM } from '../lib/geo.js';
 import {
   esc, el, join, waIcon, waCard, waCallout, waTag, waButton, waDetails,
-  waProgressBar, chip, meter, subhead, dataTable,
+  waProgressBar, chip, meter, dataTable,
 } from './html.js';
 import {
   s4Imperial, s4Dist, s4Val, s4Plural, s4MetricValue, s4Points, s4SourceTag,
@@ -72,6 +72,13 @@ const NUDGE_DEG = Object.freeze({
   ArrowLeft: Object.freeze([0, -0.0005]),
   ArrowRight: Object.freeze([0, 0.0005]),
 });
+
+/** Zones written up in the print block. The screen shows one dossier at a time. */
+const PRINT_DOSSIERS = 15;
+
+/** The fallback width test, for a layout that has not been measured yet. The grid
+ *  stacks on its own column width, not on the viewport's. */
+const NARROW_QUERY = '(max-width: 920px)';
 
 /**
  * The answer partition as an icon and a word: `--q-edge` cannot carry a signal by
@@ -190,6 +197,39 @@ function rankKey(view) {
   return view.rank === null || view.rank === undefined ? Infinity : view.rank;
 }
 
+/** A dossier block head. `subhead()` is an `h3`; these sit under `#s-title`, itself an `h3`. */
+function blockHead(text) {
+  return el('h4', esc(text), {
+    className: 'wa-heading-s wa-color-text-quiet wa-text-uppercase',
+  });
+}
+
+/** True while the guide is the view on screen; the fragment may carry state after a `?`. */
+function inStrategy() {
+  return location.hash.split('?')[0] === '#strategy';
+}
+
+/** The reader state carried in the fragment, `#strategy?mode=…`. */
+function hashState() {
+  return new URLSearchParams(location.hash.split('?')[1] || '');
+}
+
+/** `'42.96,-85.66'` → `{lat, lon}`; anything else → `null`. */
+function parsePoint(text) {
+  const parts = String(text || '').split(',');
+  if (parts.length !== 2) return null;
+  const lat = Number(parts[0]);
+  const lon = Number(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
+}
+
+/** A point as the fragment spells it, at `coord`'s 6 dp. */
+function pointParam(p) {
+  return `${coord(p.lat)},${coord(p.lon)}`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // The live instance
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -267,10 +307,12 @@ function buildInstance(root, report) {
     radar: (usableRadar.find((r) => r.miles === 1) || usableRadar[0] || { miles: 1 }).miles,
     cat: null,
   };
-  /* The grid owns the sort. Page and filter live here because the grid is not built
-     until it upgrades, and `syncPager` writes the grid's 0-based page back. */
+  /* The grid owns the sort once it upgrades. Page, filter and the opening sort live
+     here because the grid is not built yet, and `syncPager` writes its 0-based page back. */
   let page = 0;
   let filter = '';
+  /* best zones first: one `desc` drives row order, `aria-sort` and the arrow */
+  let sortState = { id: 'score', desc: true };
   /* `optionGroup` builds markup but cannot bind it, so it leaves the group id and handler here */
   let optionBind = null;
 
@@ -298,6 +340,84 @@ function buildInstance(root, report) {
   let themeObserver = null;
   let dark = document.documentElement.classList.contains('wa-dark');
   let destroyed = false;
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // Reader state in the fragment — `#strategy?mode=…`
+  // ═════════════════════════════════════════════════════════════════════════
+  //
+  // The guide is one long-lived view with no navigation of its own, so a reload
+  // otherwise drops the reader back on an unfiltered explore map. Seven keys carry
+  // what a reader chose: `mode`, `sk` (the seekers, `lat,lon`), `leg` (the
+  // thermometer's two ends), `z` (the selected zone), `sort`, `f` (the table filter)
+  // and `p` (the 1-based table page).
+  //
+  // `replaceState` fires no `hashchange`, so nothing here re-enters `applyRoute`.
+
+  /** Pending `commitState`, so an arrow-key nudge cannot spend the browser's `replaceState` budget. */
+  let stateTimer = 0;
+
+  /** Write the fragment. Silent while the reader is not in the guide. */
+  function commitState() {
+    stateTimer = 0;
+    if (destroyed || !inStrategy()) return;
+    const p = new URLSearchParams();
+    p.set('mode', mode);
+    if (seeker) p.set('sk', pointParam(seeker));
+    if (thermoA && thermoB) p.set('leg', `${pointParam(thermoA)},${pointParam(thermoB)}`);
+    if (selected) p.set('z', selected);
+    p.set('sort', `${sortState.id}:${sortState.desc ? 'desc' : 'asc'}`);
+    if (filter) p.set('f', filter);
+    if (page) p.set('p', String(page + 1));
+    try {
+      // `location.search` is carried through: the report mirrors its own view state
+      // there (CONTRACT §(e)) and a bare fragment would drop it.
+      history.replaceState(null, '', `${location.pathname}${location.search}#strategy?${p}`);
+    } catch (err) {
+      /* a sandboxed document can refuse the write; the view works without the URL */
+      console.warn('[strategy] fragment state', err);
+    }
+  }
+
+  /** Queue a fragment write; the trailing edge is what a reader ends up on. */
+  function writeState() {
+    if (stateTimer) clearTimeout(stateTimer);
+    stateTimer = setTimeout(commitState, 200);
+  }
+
+  /** True when the mode row offers this mode and has not disabled it. */
+  function modeUsable(value) {
+    const radio = Array.from(root.querySelectorAll('#s-modes wa-radio'))
+      .find((r) => r.getAttribute('value') === value);
+    return Boolean(radio) && !radio.hasAttribute('disabled');
+  }
+
+  /**
+   * Read the fragment back into the reader state, once, before anything renders.
+   * Every value is validated against this run: a stale link cannot select a zone that
+   * is not here or a mode this map cannot answer.
+   */
+  function restoreState() {
+    const p = hashState();
+    const m = p.get('mode');
+    if (m && modeUsable(m)) mode = m;
+    const sk = parsePoint(p.get('sk'));
+    if (sk) seeker = sk;
+    const leg = String(p.get('leg') || '').split(',');
+    if (leg.length === 4) {
+      const a = parsePoint(`${leg[0]},${leg[1]}`);
+      const b = parsePoint(`${leg[2]},${leg[3]}`);
+      if (a && b) { thermoA = a; thermoB = b; }
+    }
+    const z = p.get('z');
+    if (z && byId.has(z)) selected = z;
+    const sort = String(p.get('sort') || '').split(':');
+    if (sort[0] && COLUMNS.some((c) => c.id === sort[0])) {
+      sortState = { id: sort[0], desc: sort[1] !== 'asc' };
+    }
+    filter = p.get('f') || '';
+    const pg = Number(p.get('p'));
+    if (Number.isFinite(pg) && pg >= 1) page = Math.trunc(pg) - 1;
+  }
 
   // ═════════════════════════════════════════════════════════════════════════
   // The simulator — the client-side twin of `survivalFractions`
@@ -812,7 +932,8 @@ function buildInstance(root, report) {
       drawLeg();
       repaintMarkers();
     });
-    map.on('load', () => { buildMarkers(); paint(); });
+    /* `placeSeeker` needs the map, so a seeker restored from the fragment lands here */
+    map.on('load', () => { buildMarkers(); placeSeeker(); paint(); });
     map.on('click', onMapClick);
 
     themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1111,27 +1232,41 @@ function buildInstance(root, report) {
     );
   }
 
-  /** The eight blocks in scouting-report order: what the zone is, what betrays it, what it scored, then the evidence (generate.py). */
-  function renderDossier() {
-    const body = $('s-body');
-    const title = $('s-title');
-    const score = $('s-score');
-    if (!body) return;
-    const view = byId.get(selected);
-    if (title) {
-      title.textContent = (view.rank === null ? '' : `#${num(view.rank)} `) + view.name;
-    }
-    if (score) {
-      score.textContent = `${num(view.overall, 1)} / ${num(view.max, 0)}`
-        + (view.cappedBy ? ` · held back by ${view.cappedBy}` : '');
-    }
+  /** `#<rank> <name>`, the dossier's own title. */
+  function dossierTitle(view) {
+    return (view.rank === null ? '' : `#${num(view.rank)} `) + view.name;
+  }
 
+  /**
+   * The score line. A cap is a flag key or a metric id, so it is printed through the
+   * flag table or the metric's own name: a reader is owed words, not `no_legal_spot`.
+   */
+  function scoreLine(view) {
+    const line = `${num(view.overall, 1)} / ${num(view.max, 0)}`;
+    if (!view.cappedBy) return line;
+    const flag = FLAG_TEXT[view.cappedBy];
+    const metric = view.metrics.find((m) => m.id === view.cappedBy);
+    const words = (flag && flag[0]) || (metric && metric.name) || view.cappedBy;
+    return `${line} · held back: ${words}`;
+  }
+
+  /**
+   * The eight blocks in scouting-report order: what the zone is, what betrays it, what
+   * it scored, then the evidence (generate.py). Pure in `view`, so the print block
+   * renders the same write-up. `evidence` is dropped from the printed copies: a closed
+   * disclosure prints as its summary line, and its id would collide with the live one.
+   *
+   * @param {Object} view @param {Object} [opts] @param {boolean} [opts.evidence=true]
+   * @returns {string}
+   */
+  function dossierBody(view, opts = {}) {
+    const { evidence = true } = opts;
     const flags = view.flags.map((f) => {
       const [label, variant, icon] = FLAG_TEXT[f] || [f, 'neutral', 'circle-info'];
       return chip(label, icon, { variant, size: 's', pill: true });
     }).join('');
 
-    body.innerHTML = join(
+    return join(
       el('p', join(
         el('b', esc('The stop this zone is measured from:')),
         `${esc(view.name)} · ${num(view.stopIds.length)}`
@@ -1139,13 +1274,46 @@ function buildInstance(root, report) {
           + ` · ${esc(travelText(view))}`,
       ), { className: 'wa-body-s' }),
       flags ? el('div', flags, { className: 'wa-cluster wa-gap-2xs' }) : '',
-      subhead('What finds you'), threatsBlock(view),
-      subhead('Score'), scoreBlock(view),
-      subhead('Endgame spots'), spotsBlock(view),
-      subhead('Service'), serviceBlock(view),
-      subhead('Amenities'), amenitiesBlock(view),
-      evidenceBlock(view),
+      blockHead('What finds you'), threatsBlock(view),
+      blockHead('Score'), scoreBlock(view),
+      blockHead('Endgame spots'), spotsBlock(view),
+      blockHead('Service'), serviceBlock(view),
+      blockHead('Amenities'), amenitiesBlock(view),
+      evidence ? evidenceBlock(view) : '',
     );
+  }
+
+  /** Fill the dossier card for the selected zone. */
+  function renderDossier() {
+    const body = $('s-body');
+    const title = $('s-title');
+    const score = $('s-score');
+    if (!body) return;
+    const view = byId.get(selected);
+    if (title) title.textContent = dossierTitle(view);
+    if (score) score.textContent = scoreLine(view);
+    body.innerHTML = dossierBody(view);
+  }
+
+  /**
+   * The printed write-ups, built once: the screen shows one dossier at a time, so a
+   * printout would otherwise carry none of the ones the hero promises.
+   */
+  function renderPrintDossiers() {
+    const host = $('s-print-dossiers');
+    if (!host) return;
+    host.innerHTML = views.filter((v) => !v.excluded).slice(0, PRINT_DOSSIERS)
+      .map((v) => waCard(
+        el('div', dossierBody(v, { evidence: false }), {
+          className: 'wa-stack wa-gap-m',
+        }),
+        {
+          headerHtml: el('div', join(
+            el('h3', esc(dossierTitle(v)), { className: 'wa-heading-s' }),
+            el('span', esc(scoreLine(v)), { className: 'wa-caption-s wa-color-text-quiet' }),
+          ), { className: 'wa-split' }),
+        },
+      )).join('');
   }
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -1280,7 +1448,7 @@ function buildInstance(root, report) {
       pg = pager.querySelector('wa-pagination');
       pg.addEventListener('wa-page-change', (e) => {
         grid.page = e.detail.page - 1;
-        void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+        void grid.updateComplete.then(() => { tableInfo(); syncPager(); writeState(); });
       });
     } else {
       pg.total = total;
@@ -1328,26 +1496,40 @@ function buildInstance(root, report) {
 
     gridReady = true;
 
-    /* best zones first, `aria-sort="descending"` on Score, arrow down: one `desc` for all three */
-    grid.sort = [{ id: 'score', desc: true }];
+    /* best zones first unless the fragment says otherwise; one `desc` drives row
+       order, `aria-sort` and the arrow */
+    grid.sort = [{ id: sortState.id, desc: sortState.desc }];
     syncTableSelection();
 
     /* `wa-cell-click` fires on a pointer click and on Enter on the focused cell. Rows
-       are keyed by `row-key`, so the focused cell survives the repaint. */
-    grid.addEventListener('wa-cell-click', (e) => select(e.detail.row.id));
+       are keyed by `row-key`, so the focused cell survives the repaint. The event
+       carries no originating event, so the modality is captured here: both listeners
+       run on the host before the component's own handlers inside its shadow root.
+       A pointer click reveals the dossier at every width, because it is a section
+       above and the click otherwise looks like a no-op; Enter does not, because the
+       reader's focus is still on the row. */
+    let byKeyboard = false;
+    grid.addEventListener('keydown', (e) => { byKeyboard = e.key === 'Enter'; }, true);
+    grid.addEventListener('pointerdown', () => { byKeyboard = false; }, true);
+    grid.addEventListener('wa-cell-click', (e) => {
+      select(e.detail.row.id, { reveal: byKeyboard ? 'never' : 'always' });
+    });
 
     /* sorting does not reset the page by itself; the old header handler did */
     grid.addEventListener('wa-sort-change', () => {
       grid.page = 0;
-      void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+      const first = (grid.sort || [])[0];
+      if (first) sortState = { id: first.id, desc: Boolean(first.desc) };
+      void grid.updateComplete.then(() => { tableInfo(); syncPager(); writeState(); });
     });
 
     /* the only `wa-page-change` the grid itself emits is the reset a search causes */
     grid.addEventListener('wa-page-change', () => {
-      void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+      void grid.updateComplete.then(() => { tableInfo(); syncPager(); writeState(); });
     });
 
-    void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+    /* the grid clamps a restored page, so the fragment is normalised to what it kept */
+    void grid.updateComplete.then(() => { tableInfo(); syncPager(); writeState(); });
   }
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -1486,30 +1668,72 @@ function buildInstance(root, report) {
     repaintMarkers();
     updateCircle();
     renderReadout();
+    writeState();
   }
 
-  /** The one way the selection ever changes — the rail, the table and the map agree. */
-  function select(id) {
+  /**
+   * True while the dossier sits under the rail rather than beside it. Asked of the
+   * layout, not of a breakpoint: the rail and the dossier are a `wa-grid` with a
+   * `--min-column-size`, so the width it stacks at is a function of the column's
+   * containing block and does not match `NARROW_QUERY`.
+   */
+  function narrow() {
+    const detail = $('s-detail');
+    const list = $('s-list');
+    if (!detail || !list) return window.matchMedia(NARROW_QUERY).matches;
+    /* Left edges, not tops: `#s-detail` is sticky, so its top moves with the scroll
+       while its column does not. Stacked, the two share a column and a left edge. */
+    return detail.getBoundingClientRect().left < list.getBoundingClientRect().left + 1;
+  }
+
+  /**
+   * The one way the selection ever changes — the rail, the table and the map agree.
+   *
+   * @param {string} id
+   * @param {Object} [opts]
+   * @param {'auto'|'always'|'never'} [opts.reveal='auto']  scroll the dossier into
+   *   view: `auto` only where it sits under the rail, `never` when the caller is
+   *   keyboard-driven and moving the page would strand the reader's focus.
+   */
+  function select(id, opts = {}) {
     if (!id || !byId.has(id)) return;
+    const reveal = opts.reveal || 'auto';
     selected = id;
     updateCircle();
     renderList();
     renderDossier();
     syncTableSelection();
     repaintMarkers();
-    /* on a phone the dossier is below the rail, so a tap otherwise looks like a no-op */
-    if (window.matchMedia('(max-width: 920px)').matches) {
+    if (reveal === 'always' || (reveal === 'auto' && narrow())) {
       const detail = $('s-detail');
       if (detail) detail.scrollIntoView({ block: 'start' });
     }
+    writeState();
+  }
+
+  /**
+   * The dossier's way back. Only where the dossier is a section under the rail; a
+   * plain jump would change the fragment, which takes `applyRoute` (app.js) out of
+   * the guide, so the link scrolls and moves focus itself.
+   */
+  function syncBackLink() {
+    const back = $('s-back');
+    if (back) back.hidden = !narrow();
   }
 
   // ── one-time bindings ──────────────────────────────────────────────────────
+
+  /* before anything reads the state it restores: the filter box, the mode row and the
+     grid are all seeded from these variables below */
+  restoreState();
 
   /* `#s-modes` is a `wa-radio-group`: the checked state is the group's own, and a dead
      mode is unreachable by arrow key as well as by pointer */
   const modeGroup = $('s-modes');
   if (modeGroup) {
+    /* the ATTRIBUTE, not the property: `value` is a plain accessor, and assigning one
+       before the component upgrades shadows it for good */
+    modeGroup.setAttribute('value', mode);
     modeGroup.addEventListener('change', () => {
       if (!modeGroup.value || modeGroup.value === mode) return;
       mode = modeGroup.value;
@@ -1525,15 +1749,35 @@ function buildInstance(root, report) {
     filterInput.value = filter;
     filterInput.addEventListener('input', () => {
       filter = filterInput.value;
+      writeState();
       const grid = $('s-table');
       if (!grid || !gridReady) return;
       /* setting `searchTerm` behaves like typing in the component's own box (page reset,
          active cell clamped) but does NOT emit `wa-filter-change`, so the count and the
          pager are refreshed from here */
       grid.searchTerm = filter;
-      void grid.updateComplete.then(() => { tableInfo(); syncPager(); });
+      void grid.updateComplete.then(() => { tableInfo(); syncPager(); writeState(); });
     });
   }
+
+  /* The back link is a real link for copy and middle-click, but its default would set
+     the fragment and leave the guide, so it scrolls and hands focus to the rail. */
+  const backLink = $('s-back');
+  if (backLink) {
+    backLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      const list = $('s-list');
+      if (list) list.scrollIntoView({ block: 'start' });
+      const row = list && list.querySelector('[data-id][tabindex="0"]');
+      if (row) row.focus({ preventScroll: true });
+    });
+  }
+
+  const narrowMedia = window.matchMedia(NARROW_QUERY);
+  narrowMedia.addEventListener('change', syncBackLink);
+  /* The stacking width is the grid's, not the viewport's, so the media query alone
+     would leave the link showing beside a rail that is still there. */
+  window.addEventListener('resize', syncBackLink);
 
   /* "Show on the map" on the hero's pick card — the only server-rendered control that
      drives client selection state, so it goes through select() like everything else. */
@@ -1547,6 +1791,8 @@ function buildInstance(root, report) {
   optionChips();
   renderList();
   renderDossier();
+  renderPrintDossiers();
+  syncBackLink();
   void customElements.whenDefined('wa-data-grid').then(wireGrid);
   paint();
   drawMap();
@@ -1556,6 +1802,9 @@ function buildInstance(root, report) {
     resize() { if (map) map.resize(); },
     destroy() {
       destroyed = true;
+      if (stateTimer) { clearTimeout(stateTimer); stateTimer = 0; }
+      narrowMedia.removeEventListener('change', syncBackLink);
+      window.removeEventListener('resize', syncBackLink);
       if (themeMedia) themeMedia.removeEventListener('change', retheme);
       if (themeObserver) themeObserver.disconnect();
       for (const m of markers) m.marker.remove();

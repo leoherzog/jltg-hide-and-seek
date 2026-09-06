@@ -118,7 +118,7 @@ export const FLAG_TEXT = Object.freeze({
 
 /** Simulator mode → its button label, in button order. (generate.py.) */
 export const MODE_LABEL = Object.freeze([
-  Object.freeze(['explore', 'Explore']),
+  Object.freeze(['explore', 'No question']),
   Object.freeze(['radar', 'Radar']),
   Object.freeze(['thermo', 'Thermometer']),
   Object.freeze(['match', 'Matching']),
@@ -795,6 +795,8 @@ function mapCard(report) {
     });
   }).join('');
 
+  // The group's label stays visible: a row of icon buttons does not otherwise say what
+  // it selects, and “No question” only reads as a mode under a heading that names one.
   const modes = el('wa-radio-group', radios, {
     id: 's-modes',
     name: 's-mode',
@@ -802,7 +804,7 @@ function mapCard(report) {
     orientation: 'horizontal',
     label: 'Question mode',
     value: 'explore',
-    className: 'wa-visually-hidden-label',
+    dataPrint: 'hide',
   });
 
   // Printed, not a `title`: a disabled control is not focusable, so a tooltip on it
@@ -877,8 +879,8 @@ function mapCard(report) {
   return waCard(el('div', join(
     modes,
     modesWhy,
-    el('div', '', { id: 's-opts', className: 'wa-stack wa-gap-2xs' }),
-    el('div', '', { id: 's-map' }),
+    el('div', '', { id: 's-opts', className: 'wa-stack wa-gap-2xs', dataPrint: 'hide' }),
+    el('div', '', { id: 's-map', dataPrint: 'hide' }),
     el('p', '', { id: 's-readout', className: 'wa-body-s', ariaLive: 'polite' }),
     legend,
     how,
@@ -913,14 +915,27 @@ function railAndDossier(report) {
     className: 'wa-caption-s',
   });
 
+  // `#s-back` is shown only where the dossier sits under the rail; `simulator.js`
+  // owns that width test and cancels the click, because changing the fragment here
+  // would take `applyRoute` (app.js) out of the guide.
+  const back = el('a', join(waIcon('arrow-up'), esc('Back to the list')), {
+    id: 's-back',
+    href: '#s-list',
+    className: 'wa-link wa-caption-s wa-cluster wa-gap-2xs',
+    hidden: true,
+  });
+
   const dossier = el('div', waCard(
     el('div', el('p', esc('Select a zone on the map or in the list.'), {
       className: 'wa-body-s',
     }), { id: 's-body', className: 'wa-stack wa-gap-m' }),
     {
       headerHtml: el('div', join(
-        el('span', esc('Zone dossier'), { className: 'wa-heading-s', id: 's-title' }),
-        el('span', '', { id: 's-score', className: 'wa-caption-s wa-color-text-quiet' }),
+        el('h3', esc('Zone dossier'), { className: 'wa-heading-s', id: 's-title' }),
+        el('div', join(
+          el('span', '', { id: 's-score', className: 'wa-caption-s wa-color-text-quiet' }),
+          back,
+        ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
       ), { className: 'wa-split' }),
     },
   ), { id: 's-detail' });
@@ -929,6 +944,19 @@ function railAndDossier(report) {
     el('div', join(head, rail, more), { className: 'wa-stack wa-gap-s' }),
     dossier,
   ), { className: 'wa-grid wa-gap-l', style: '--min-column-size:22rem' });
+}
+
+/**
+ * The host for the printed write-ups. One dossier is on screen at a time, so a
+ * printout would otherwise carry none; `simulator.js` fills this at init and the
+ * print stylesheet reveals it.
+ */
+function printDossiers() {
+  return el('div', '', {
+    id: 's-print-dossiers',
+    className: 'wa-stack wa-gap-l',
+    hidden: true,
+  });
 }
 
 /** §01 — the map, the simulator, the ranked rail and the dossier, in one section. */
@@ -942,11 +970,12 @@ function sectionShortlist(report) {
   ), { className: 'wa-body-s' });
 
   return section('s-zones', '01', 'The shortlist',
-    join(mapCard(report), railAndDossier(report)), {
+    join(mapCard(report), railAndDossier(report), printDossiers()), {
       kicker: 'The map, and what each question would do to it',
       answerHtml: answer,
       lede: 'Pick a question mode, drop a seeker, and watch the map partition. What you are '
-        + 'looking for is a zone that stays the same colour as a large crowd of others.',
+        + 'looking for is a zone that stays the same colour as a large crowd of others. '
+        + 'Survival is the share of zones that would give the same answer as yours.',
     });
 }
 
@@ -1037,6 +1066,7 @@ function sectionWholeField(report, views) {
   ), {
     id: 's-controls',
     className: 'wa-split wa-flex-wrap wa-gap-s',
+    dataPrint: 'hide',
   });
 
   // The component owns the sort cycle, arrows, `aria-sort`, stripes and scrolling;
@@ -1064,6 +1094,7 @@ function sectionWholeField(report, views) {
 
   const pager = el('div', '', {
     id: 's-pager', className: 'wa-cluster wa-gap-s wa-align-items-center',
+    dataPrint: 'hide',
   });
 
   let excludedBlock = '';

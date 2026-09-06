@@ -1153,7 +1153,10 @@ export function globalQuestionOrder(questions, signatures, zones, k, opts = {}) 
     joint = bestJoint;
     funnel.push(Math.trunc(rhu(best[0])));
     remaining.delete(best[2]);
-    if (onProgress) onProgress(step + 1, steps, `question order: ${best[2]}`);
+    if (onProgress) {
+      const def = defs.get(best[2]);
+      onProgress(step + 1, steps, `Ordering the questions: ${(def && def.label) || best[2]}`);
+    }
   }
 
   S3_MEMO.set(memoKey, [picked, funnel]);
@@ -1718,7 +1721,7 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       draw: q.draw,
       keep: q.keep,
     });
-    if (onProgress) onProgress(qi + 1, catalogue.length, `question audit: ${q.label}`);
+    if (onProgress) onProgress(qi + 1, catalogue.length, `Checking question: ${q.label}`);
   }
   return out;
 }

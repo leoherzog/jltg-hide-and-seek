@@ -46,9 +46,7 @@ export function renderPickerCard() {
     className: 'picker-search wa-visually-hidden-label',
   });
 
-  // The draw tool's controls, in their own row so the mobile sheet can keep just
-  // this row on screen while a shape is drawn (styles.css §7).
-  const draw = el('div', join(
+  const drawButtons = el('div', join(
     waButton('Draw a shape', {
       id: 'draw-shape', type: 'button', icon: 'draw-polygon', ariaPressed: 'false',
     }),
@@ -60,7 +58,22 @@ export function renderPickerCard() {
     waButton('Clear shape', {
       id: 'draw-clear', type: 'button', icon: 'eraser', appearance: 'plain', hidden: true,
     }),
-  ), { id: 'picker-draw', className: 'wa-cluster wa-gap-2xs' });
+  ), { className: 'wa-cluster wa-gap-2xs' });
+
+  // What the draw tool does right now; `render/picker.js` writes the text per mode.
+  // It sits INSIDE `#picker-draw` because styles.css §7 keeps only that row on
+  // screen while a shape is drawn on a phone.
+  const drawHint = el('p', '', {
+    id: 'picker-draw-hint',
+    className: 'wa-caption-s wa-color-text-quiet',
+    ariaLive: 'polite',
+  });
+
+  // The draw tool's controls, in their own row so the mobile sheet can keep just
+  // this row on screen while a shape is drawn (styles.css §7).
+  const draw = el('div', join(drawButtons, drawHint), {
+    id: 'picker-draw', className: 'wa-stack wa-gap-2xs',
+  });
 
   const toolbar = el('div', join(search, draw), {
     id: 'picker-toolbar', className: 'wa-stack wa-gap-xs',

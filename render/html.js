@@ -546,10 +546,31 @@ export function kpi(value, label, noteHtml = '', opts = {}) {
   ), { className: 'wa-stack wa-gap-3xs' });
 }
 
+// `#prov-<id>` anchor → the name of the metric or source behind it. A lookup table,
+// not renderer state: it changes only when a new report replaces it wholesale, and it
+// reaches the output as an accessible name, never as a number or a layout decision.
+const PROV_NAMES = new Map();
+
+/**
+ * Replace the id → name table provenance superscripts read. Called once per report,
+ * before the sections that cite those ids render; an id with no name keeps its code.
+ *
+ * @param {Iterable<[string,string]>} pairs
+ */
+export function setProvNames(pairs) {
+  PROV_NAMES.clear();
+  for (const [id, name] of pairs || []) {
+    if (id && name) PROV_NAMES.set(String(id), String(name));
+  }
+}
+
 /**
  * A provenance chip: every printed number carries the id of the metric or map-data
  * category that produced it, linking to that row in the score trace or the provenance
  * section. Variadic, like the Python.
+ *
+ * The visible text is the bare code, which means nothing on its own, so the link is
+ * named for the source it points at rather than for that code.
  *
  * @param {...string} ids
  * @returns {string}
@@ -557,11 +578,15 @@ export function kpi(value, label, noteHtml = '', opts = {}) {
 export function provChip(...ids) {
   const good = ids.filter((i) => i);
   if (good.length === 0) return '';
-  const links = good.map((i) => el('a', esc(i), {
-    className: 'wa-link',
-    href: `#prov-${i}`,
-    title: `Where this number comes from: ${i}`,
-  })).join(',');
+  const links = good.map((i) => {
+    const name = PROV_NAMES.get(String(i)) || String(i);
+    return el('a', esc(i), {
+      ariaLabel: `Source: ${name}`,
+      className: 'wa-link',
+      href: `#prov-${i}`,
+      title: `Where this number comes from: ${name}`,
+    });
+  }).join(',');
   return el('sup', links, { dataCite: true });
 }
 

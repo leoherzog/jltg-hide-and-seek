@@ -174,7 +174,15 @@ sup[data-cite] { font-family: var(--sans); font-size: 10px; font-weight: 700; }
 }
 
 /* ══ 4. PAGE FURNITURE ════════════════════════════════════════════════════ */
-html { scroll-behavior: smooth; scroll-padding-top: 7rem; }
+/* `--sticky-top` is the one number anything that must clear the sticky chrome uses.
+   <wa-page> measures its own header and subheader into `--header-height` /
+   `--subheader-height` as inline styles ON ITSELF, so the same declaration resolves
+   live there and inherits down to `#qcontrols`, while the document root — which owns
+   the scrollport and can see neither variable — falls back to the 4rem + 3rem the two
+   offsets used to be written out as. Both fallbacks are load-bearing: an unresolvable
+   calc leaves `top` at `auto`, which is a sticky bar that does not stick. */
+:root, wa-page { --sticky-top: calc(var(--header-height, 4rem) + var(--subheader-height, 3rem)); }
+html { scroll-behavior: smooth; scroll-padding-top: var(--sticky-top); }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 html, body { min-height: 100%; padding: 0; margin: 0; }
 /* The dot grid belongs on <wa-page>, not on <body>: the component's `:host` paints an
@@ -237,6 +245,8 @@ main pre { font-size: var(--wa-font-size-2xs); line-height: 1.5; white-space: pr
 /* wa-progress-bar's track has no intrinsic width, so as a bare flex item it collapses;
    the reading bar takes its own full-width line under the strip. */
 [slot='subheader'] > wa-progress-bar { flex: 1 1 100%; }
+/* The reading bar measures the report, so it exists only once there is one to read. */
+body:not([data-state='ready']) #readbar { display: none; }
 nav[slot='navigation'] a { padding: var(--wa-space-3xs) var(--wa-space-2xs);
                            border-radius: var(--wa-border-radius-m); }
 /* The link is a flank (icon column + label column), so the only thing left to fix is
@@ -252,10 +262,30 @@ nav[slot='navigation'] a[aria-current] {
 }
 /* in-section control bars: a filter is never scrolled away from the rows it filters */
 #qcontrols, #ccontrols {
-  position: sticky; top: 7rem; z-index: 1;
+  position: sticky; top: var(--sticky-top); z-index: 1;
   background: var(--wa-color-surface-default); padding-block: var(--wa-space-2xs);
 }
 @media (max-width: 560px) { #qcontrols, #ccontrols { position: static; } }
+
+/* ---- phone chrome: the header sticks, the strip does not ----
+   Header plus subheader is about 320px of an 844px phone, and two sticky bands leave
+   the report a slot to read through. Below <wa-page>'s own mobile breakpoint the strip
+   is one row — Menu, the day control, the grade — and scrolls away with the page, so
+   `--sticky-top` is the header alone. The day control's "Playing on" is the only word
+   dropped: the three day buttons say the same thing, and the label stays in the
+   accessibility tree. */
+@media (max-width: 920px) {
+  :root, wa-page { --sticky-top: var(--header-height, 4rem); }
+  wa-page { --subheader-top: 0px; }
+  wa-page::part(subheader) { position: static; }
+  [slot='subheader'] { position: relative; }
+  #daysel::part(form-control-label) {
+    position: absolute; inline-size: 1px; block-size: 1px;
+    clip-path: inset(50%); overflow: hidden; white-space: nowrap; padding: 0; border: 0;
+  }
+  /* The 3px bar is the strip's own bottom edge rather than a second row of chrome. */
+  #readbar { position: absolute; inset-inline: 0; inset-block-end: 0; }
+}
 
 /* ══ 5. EDITORIAL DECORATION (identity; WA has no equivalent) ═════════════ */
   .kicker { color: var(--gold-deep); }
@@ -277,6 +307,25 @@ nav[slot='navigation'] a[aria-current] {
     border-inline-start-color: var(--wa-color-fill-loud);
   }
   wa-card[data-day-sensitive] { border-block-start: var(--wa-border-width-l) solid var(--gold); }
+  /* The tile's day marker is a label, not a control: no border, no background, no
+     padding, or a bordered tag beside a 2xl number reads as a button to press. */
+  .tile-tag { display: inline-flex; align-items: center; gap: .35em;
+              font-family: var(--sans); font-size: var(--wa-font-size-xs);
+              color: var(--gold-deep); }
+  /* The rest of a tile's note, in a disclosure that must not grow a second card
+     inside the one it sits in. `--spacing` is wa-details' own padding lever, so
+     zeroing it takes the summary's box and the content's gutters at once. */
+  #tiles .tile-more { --spacing: 0; margin-block-start: var(--wa-space-xs); }
+  /* `--spacing` is also the summary's own gap and its justification is
+     space-between, so a zeroed box would otherwise put the chevron against the far
+     edge of the card with nothing between it and the word. */
+  #tiles .tile-more::part(header) { gap: var(--wa-space-2xs); justify-content: start; }
+  #tiles .tile-more::part(summary) { flex: none; font-size: var(--wa-font-size-s);
+                                     color: var(--wa-color-text-quiet); }
+  #tiles .tile-more::part(content) { padding-block-start: var(--wa-space-2xs); }
+  /* Each tile keeps its own height: stretched cards make a row of numbers read as a
+     row of boxes, and one open disclosure would stretch every card beside it. */
+  #tiles .wa-grid { align-items: start; }
   wa-card[data-today] { outline: var(--wa-border-width-m) solid var(--crit); }
   /* the day-sensitive cue is a word, not a colour: both chips ship, one is shown */
   [data-today-cue='on'], wa-card[data-today] [data-today-cue='off'] { display: none; }
@@ -317,6 +366,49 @@ nav[slot='navigation'] a[aria-current] {
 #prov-trace tr[data-basis='interp'] td:first-child { border-inline-start: 3px solid var(--gold); padding-inline-start: 8px; }
 #prov-trace tr[data-available='0'] td { opacity: .55; }
 :is(#qtable, #ctable) td:last-child { max-inline-size: 62ch; }   /* replaces .qwhy */
+/* The colgroup only binds under fixed layout; under auto layout the nowrap sort
+   buttons and the status chips win and Question collapses to a sliver. */
+#qtable { table-layout: fixed; inline-size: 100%; }
+#qtable th, #qtable td { white-space: normal; }
+#qtable td { overflow-wrap: break-word; }
+#qtable th wa-button::part(base) { white-space: normal; text-align: start; block-size: auto; flex-wrap: wrap; }
+#qtable td wa-tag::part(base) { white-space: normal; block-size: auto; }
+/* The question's category, the whole content of an 8% column: a quiet label that never
+   wraps, so the column stays as narrow as the colgroup asks. */
+.cat-tag { display: inline-block; font-family: var(--sans); font-size: 11.5px;
+           letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+           color: var(--ink-2); }
+
+/* ---- the deck tables on a narrow screen: one card per row ----
+   Six columns do not fit a phone, and a sideways scroller puts the status and the
+   assessment — the two cells the reader came for — off the right edge. Every `<td>`
+   carries `data-label="<column header>"` (render/deck.js), so the header travels with
+   the cell and the whole switch is CSS. */
+@media (max-width: 720px) {
+  :is(#qtable, #ctable) thead {
+    position: absolute; inline-size: 1px; block-size: 1px;
+    clip-path: inset(50%); overflow: hidden; white-space: nowrap;
+  }
+  :is(#qtable, #ctable) colgroup { display: none; }
+  :is(#qtable, #ctable), :is(#qtable, #ctable) tbody,
+  :is(#qtable, #ctable) tr, :is(#qtable, #ctable) td { display: block; }
+  /* The status filter, the search box and the pager all hide a row with the `hidden`
+     attribute, and an author `display` beats the UA sheet's `[hidden]` rule. */
+  :is(#qtable, #ctable) tr[hidden], :is(#qtable, #ctable) td[hidden] { display: none; }
+  :is(#qtable, #ctable) tr {
+    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-m);
+    padding: var(--wa-space-s);
+    margin-block-end: var(--wa-space-s);
+  }
+  :is(#qtable, #ctable) td { border: 0; padding-block: var(--wa-space-3xs); }
+  :is(#qtable, #ctable) td:last-child { max-inline-size: none; }
+  :is(#qtable, #ctable) td::before {
+    content: attr(data-label); display: block;
+    font-family: var(--sans); font-size: var(--wa-font-size-2xs);
+    letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+  }
+}
 
 /* ---- editorial: the one drop cap ---- */
 .dropcap p:first-child::first-letter { font-size: 3.1em; float: left; line-height: .82; padding: 4px 8px 0 0; font-weight: 700; color: var(--gold-deep); }
@@ -361,8 +453,21 @@ table.hw td:first-child b { color: var(--ink); font-family: var(--mono); font-si
 [data-hb='1'] { background: var(--seq-100); color: #202f40; } [data-hb='2'] { background: var(--seq-200); color: #202f40; }
 [data-hb='3'] { background: var(--seq-300); color: #202f40; } [data-hb='4'] { background: var(--seq-400); color: #202f40; }
 [data-hb='5'] { background: var(--seq-550); color: #fff; } [data-hb='6'] { background: var(--seq-650); color: #fff; }
-#hwmap .cell[data-dim], #hwmap2 .cell[data-dim] { opacity: .33; }
-#hwmap th[data-sel], #hwmap2 th[data-sel] { color: var(--accent-ink); }
+/* The selected day is MARKED; the other columns are not faded. Every number in the
+   grid is true whichever day is picked, and a grid dimmed to a third reads as broken.
+   `.is-day` is set on the column's `th` and on each of its `td`s (app.js
+   `hwHighlight`); nothing else in the grid may drop below opacity .7.
+   On a data cell the rule is painted on `.cell`, not on the `td`: the td has no
+   padding and `[data-hb]`'s fill is opaque, so a shadow on the td paints under it.
+   The hairline is repeated here because one box-shadow declaration replaces another. */
+#hwmap th.is-day, #hwmap2 th.is-day {
+  box-shadow: inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent);
+  color: var(--accent-ink); font-weight: var(--wa-font-weight-bold);
+}
+#hwmap td.is-day .cell, #hwmap2 td.is-day .cell {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent),
+              inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent);
+}
 
 /* ---- network map (all bus stops, no scoring) ---- */
 #netmap { height: 0; overflow: hidden; background: var(--surface-2); }  /* the map script sets a height once it builds */
@@ -416,6 +521,16 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 /* The second view's own rules used to live here, between the state machine and the
    header progress. They now sit in the guarded region at the end of this file — see
    the sentinel comment there for why. */
+
+/* ---- the two place names ----
+   The headline is a question about a city and reads as one line of type, so it wraps
+   evenly rather than leaving one word alone. The wordmark's copy of the same name is
+   chrome sharing a header row with the progress bar and two buttons, so it is capped
+   and clipped. No `display` here: the span is a flex item, which blockifies it
+   already, and declaring one would beat the `hidden` it ships with. */
+#top h1 { text-wrap: balance; }
+#wordmark-place { max-inline-size: 16ch; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- header progress: the run's one persistent readout ----
    It sits in the `header` slot between the wordmark and the theme button,
@@ -560,6 +675,9 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
     border-end-end-radius: 0;
   }
   .panel-scroll { padding-block-start: var(--wa-space-2xs); }
+  /* The sheet is flush with the bottom edge, so on a phone with a home indicator the
+     gesture area sits on top of Analyse unless the foot pays for it. */
+  .panel-foot { padding-block-end: max(var(--wa-space-s), env(safe-area-inset-bottom)); }
   .panel-grip {
     display: block;
     flex: none;
@@ -589,6 +707,21 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
   #catalog-map .maplibregl-ctrl-bottom-left {
     bottom: auto; right: auto; top: 0; left: 0;
   }
+  /* Expanded, the credit is a paragraph, and the corner it now sits in shares a line
+     with the zoom control on the right. It clips to an ellipsis rather than running
+     under the buttons; 4.5rem is the control plus its margin. The cap is on the corner
+     as well as on the control, because a MapLibre corner is shrink-to-fit and a
+     percentage inside one has nothing stable to resolve against. */
+  #catalog-map .maplibregl-ctrl-top-left,
+  #catalog-map .maplibregl-ctrl-bottom-right,
+  #catalog-map .maplibregl-ctrl-bottom-left,
+  #catalog-map .maplibregl-ctrl-attrib { max-inline-size: calc(100% - 4.5rem); }
+  #catalog-map .maplibregl-ctrl-attrib,
+  #catalog-map .maplibregl-ctrl-attrib-inner {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* …and the zoom control keeps the corner it is in. */
+  #catalog-map .maplibregl-ctrl-top-right { z-index: 3; }
 
   /* WHILE A SHAPE IS BEING DRAWN the sheet keeps exactly the row you need — the draw
      buttons — and gets out of the way of the map you are drawing on. `.drawing` is
@@ -691,6 +824,7 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
 #picker .pick-row,
 #picker .pick-row-text,
 #picker-draw > *,
+#picker-draw wa-button,
 #picker-switches > * { min-inline-size: 0; }
 #picker-switches wa-switch::part(hint) { max-inline-size: 60ch; }
 #picker-switches wa-switch::part(switch) { align-self: start; }
@@ -821,9 +955,12 @@ wa-skeleton { --color: var(--wa-color-surface-lowered); }
    Two spellings of the same visual state, distinguished only for `fatalError`:
    `skeleton` is a report section, which a stopped run removes; `pending` is the
    hero and the footer, which it must keep because they carry `#top` and the
-   attribution. They look identical while the run is alive. */
-[data-state='skeleton'] .sk-body,
-[data-state='pending']  .sk-body { pointer-events: none; user-select: none; }
+   attribution. They look identical while the run is alive.
+
+   The guard below is unscoped: `.sk-body` wraps skeletons and nothing else, and the
+   hero's scorecard skeleton mounts under a host already stamped `data-state="ready"`,
+   which neither spelling matches. */
+.sk-body { pointer-events: none; user-select: none; }
 
 /* The map frame is a separate element from `#netmap`, which INDEX_CSS pins
    at `height: 0` until the map script gives it one. Removing this is how
@@ -912,6 +1049,41 @@ wa-skeleton { --color: var(--wa-color-surface-lowered); }
    above the message. #run-error is still a plain div, so its half stays. */
 #run-error:not([hidden]) { display: block; }
 
+/* The citations index moved inside a disclosure, whose content part already pays for
+   the leading space an `<ol>`'s own margin would repeat. */
+wa-details #cites { margin-block: 0; }
+
+/* ---- PAPER ----
+   The report is a document before it is an app, so a printout keeps the evidence and
+   drops the controls. Everything named here is chrome that cannot be pressed on
+   paper: the two header buttons, the scrollspy rail, the reading strip, the toast and
+   the hover panel. The map hosts go with them — MapLibre draws to a WebGL canvas that
+   prints as an empty box.
+
+   `wa-page`'s body is a three-column grid whose menu column is sized by a variable,
+   so paper gets the same treatment the landing state gets: no rail, no column, one
+   measure down the page.
+
+   The disclosures are the one thing CSS can only half do. A closed native `<details>`
+   hides its own subtree, and the only handle on that subtree from outside the shadow
+   root is `::details-content` through `::part()`; where the browser does not support
+   that chain the rule is dropped and the summary prints alone. */
+@media print {
+  header[slot='header'] wa-button,
+  nav[slot='navigation'],
+  #readbar,
+  wa-toast,
+  #tt { display: none !important; }
+  /* The frame stays: with MapLibre blocked it is where the callout saying so lives. */
+  #netmap, #catalog-map { display: none !important; }
+  wa-page { --menu-width: 0px; }
+  wa-page::part(body) { display: block; }
+  wa-page::part(header), wa-page::part(subheader) { position: static; }
+  #qcontrols, #ccontrols { position: static; }
+  wa-details::part(content) { display: block; }
+  wa-details::part(base)::details-content { content-visibility: visible; }
+}
+
 /* == STRATEGY CSS ===========================================================
    EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S. It mirrors `generate.py`'s own
    partition (`INDEX_CSS` 10527 vs `STRATEGY_CSS` 1674, and the note at 1449): the
@@ -940,9 +1112,18 @@ body[data-view='strategy'] :is([data-when='report'], wa-page > main) { display: 
 body:not([data-view='strategy']) [data-when='strategy'] { display: none !important; }
 /* no rail ⇒ no rail column, for the same reason as the landing state above */
 body[data-view='strategy'] wa-page { --menu-width: 0px; }
-/* The report's 7rem clears the header slot AND the `[slot='subheader']` strip; the
-   strip is `data-when="report"`, so the rule above puts it to `display: none` and the
-   guide's sticky stack is the header alone. The number is written once, on the root —
+/* app.js focuses the root after the hash route so a screen reader lands in the new
+   view. That focus is programmatic and carries no ring: the reader did not tab here. */
+#strategy:focus { outline: none; }
+/* Both carry a `wa-*` layout class, whose author-level `display` beats the UA sheet's
+   `[hidden]` rule — the same trap as `#example-maps[hidden]` and `#netlayers[hidden]`.
+   Without these the print block's dossiers stand in the live guide and "Back to the
+   list" shows at every width. */
+#s-print-dossiers[hidden], #s-back[hidden] { display: none; }
+/* The report's `--sticky-top` clears the header slot AND the `[slot='subheader']`
+   strip (the header alone below 920px, §4); the strip is `data-when="report"`, so the
+   rule above puts it to `display: none` and the guide's sticky stack is the header
+   alone at every width. The number is written once, on the root —
    `scroll-padding-top` only counts on the element that owns the scrollport, and the
    custom property inherits down to the two sticky elements — so the fragment jumps and
    the sticky offsets cannot drift apart. */
@@ -958,13 +1139,26 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 #s-map.maplibregl-map { min-width: 0; }        /* the same MapLibre reset as #netmap */
 
 /* a filter is never scrolled away from the rows it filters; the offset is the guide's
-   own sticky stack, set above — NOT the report's 7rem, which counts a subheader this
-   view hides. This is `#zcontrols` from generate.py:1625, which the port had lost. */
+   own sticky stack, set above — NOT the report's `--sticky-top`, which counts a
+   subheader this view hides. This is `#zcontrols` from generate.py:1625, which the
+   port had lost. */
 #s-controls { position: sticky; top: var(--s-sticky); z-index: 1;
               background: var(--wa-color-surface-default);
               padding-block: var(--wa-space-2xs); }
-#s-detail   { position: sticky; top: calc(var(--s-sticky) + 1rem); }
-@media (max-width: 560px) { #s-controls, #s-detail { position: static; } }
+/* A dossier taller than the viewport cannot be scrolled past while it is stuck to it,
+   so the card takes the height it has and scrolls inside itself. `align-self: start`
+   is what makes the sticky work at all: a grid item stretches to its row by default,
+   and a full-height box has nothing left to stick within. */
+#s-detail   { position: sticky; top: calc(var(--s-sticky) + 1rem);
+              align-self: start;
+              max-block-size: calc(100dvh - var(--s-sticky) - 1rem);
+              overflow-y: auto; }
+/* Unstuck, the dossier is a card in the flow again: an inner scroller inside a page
+   scroller is a trap on a phone. */
+@media (max-width: 560px) {
+  #s-controls, #s-detail { position: static; }
+  #s-detail { max-block-size: none; overflow: visible; }
+}
 
 /* §02's table is a `wa-data-grid` (render/strategy.js:1187), so the four rules that
    lived here are gone: the `th[aria-sort]` arrows are the component's own
@@ -1068,5 +1262,17 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
   font: var(--wa-font-weight-bold) var(--wa-font-size-2xl)/1 var(--sans);
   color: var(--wa-color-text-normal);
   text-shadow: 0 0 4px var(--wa-color-surface-raised), 0 0 8px var(--wa-color-surface-raised); }
+
+/* ---- PAPER ----
+   The guide printed is a briefing, not a simulator: the five controls it is driven by
+   are marked `data-print="hide"` at the source (render/strategy.js), and the screen
+   shows one dossier at a time, so `#s-print-dossiers` — rendered at init and carrying
+   `hidden` — is what puts the top fifteen write-ups on the page. Nothing else reveals
+   it, so the `[hidden]` override is the whole mechanism. */
+@media print {
+  [data-print='hide'] { display: none !important; }
+  #s-print-dossiers[hidden] { display: block !important; }
+  #s-controls, #s-detail { position: static; max-block-size: none; overflow: visible; }
+}
 
 /* == END STRATEGY CSS ===================================================== */

@@ -23,6 +23,16 @@
 <meta name="color-scheme" content="light dark">
 <meta name="description" content="Is your city's transit system a good map for Jet Lag: The Game's Hide+Seek? Pick it off a map of more than a thousand transit feeds, or bring your own — hiding zones, question audit, curse deck and a 100-point map-fitness score, computed in your browser.">
 <title>Hide and Seek — Map Fitness Report</title>
+
+<!-- The three origins in CONTRACT §0's asset allowlist, warmed before the first
+     stylesheet asks for one. Each CORS fetch (the kit's modules and fonts, the tile
+     JSON) needs its own connection, hence the paired `crossorigin` hints. -->
+<link rel="preconnect" href="https://ka-p.webawesome.com">
+<link rel="preconnect" href="https://ka-p.webawesome.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
+
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl/dist/maplibre-gl.min.css">
 <!-- Theme + color palette -->
 <link rel="stylesheet" href="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0/styles/themes/default.css">
@@ -63,21 +73,26 @@
          `progresswait` the "still working" heartbeat. -->
     <div id="hydration" data-role="progress" data-when="running" class="wa-stack wa-gap-3xs">
       <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress"></wa-progress-bar>
-      <span id="hydration-status" data-role="progresslabel" class="wa-caption-xs wa-color-text-quiet wa-text-truncate" role="status" aria-live="polite">Starting…</span>
+      <!-- The stage words are the live region; the percent is `aria-hidden` inside it
+           because it changes about a hundred times a run and the bar already says it. -->
+      <span id="hydration-status" class="wa-caption-xs wa-color-text-quiet wa-text-truncate" role="status" aria-live="polite"><span data-role="progresslabel">Starting…</span><span data-role="progresspct" aria-hidden="true"></span></span>
       <span id="hydration-note" data-role="progressnote" class="wa-caption-xs wa-color-text-quiet wa-text-pretty"></span>
       <span id="hydration-wait" data-role="progresswait" class="wa-caption-xs wa-color-text-quiet wa-text-pretty" role="status" aria-live="polite"></span>
     </div>
 
     <div class="wa-cluster wa-gap-2xs">
       <!-- Report chrome only: on the landing state there is nothing to reset. In the
-           `running` state this is the cancel button. app.js binds it in `boot()`. -->
+           `running` state this is the cancel button. app.js binds it in `boot()`.
+           `syncResetControl` swaps the text inside `[data-role="resetlabel"]` and the
+           icon's name, so the label must stay in its own element. -->
       <wa-button data-role="reset" data-when="report" appearance="plain" size="s" variant="neutral">
-        <wa-icon slot="start" name="arrow-rotate-left"></wa-icon>Reset
+        <wa-icon slot="start" name="arrow-rotate-left"></wa-icon><span data-role="resetlabel">Reset</span>
       </wa-button>
       <!-- id="color-scheme-button" must not change: the inline colour-scheme script at
-           the foot of this file binds it unguarded. -->
+           the foot of this file binds it unguarded, and writes the current mode into
+           `[data-role="themelabel"]`, the icon and the aria-label. -->
       <wa-button id="color-scheme-button" appearance="plain" size="s" variant="neutral">
-        <wa-icon slot="start" name="circle-half-stroke"></wa-icon>Theme
+        <wa-icon slot="start" name="circle-half-stroke"></wa-icon><span data-role="themelabel">Theme</span>
       </wa-button>
     </div>
   </header>
@@ -110,16 +125,16 @@
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Map</span>
       <div class="wa-stack wa-gap-3xs">
-        <a href="#network" data-drawer="close" data-nav-for="network" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="map-location-dot" class="wa-color-text-quiet"></wa-icon><span>The Map You’re Playing On</span></a>
-        <a href="#glance" data-drawer="close" data-nav-for="glance" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="hashtag" class="wa-color-text-quiet"></wa-icon><span>At a Glance</span></a>
+        <a href="#network" data-drawer="close" data-nav-for="network" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="map-location-dot" class="wa-color-text-quiet"></wa-icon><span>The map you’re playing on</span></a>
+        <a href="#glance" data-drawer="close" data-nav-for="glance" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="hashtag" class="wa-color-text-quiet"></wa-icon><span>At a glance</span></a>
       </div>
     </div>
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">Your Game</span>
       <div class="wa-stack wa-gap-3xs">
-        <a href="#recs" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="list-check" class="wa-color-text-quiet"></wa-icon><span>House Rules</span></a>
-        <a href="#findings" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-exclamation" class="wa-color-text-quiet"></wa-icon><span>What Works, What Fights You</span></a>
-        <a href="#transit" data-drawer="close" data-nav-for="transit" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="route" class="wa-color-text-quiet"></wa-icon><span>Getting Around</span></a>
+        <a href="#recs" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="list-check" class="wa-color-text-quiet"></wa-icon><span>House rules</span></a>
+        <a href="#findings" data-drawer="close" data-nav-for="yourgame" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-exclamation" class="wa-color-text-quiet"></wa-icon><span>What works, what fights you</span></a>
+        <a href="#transit" data-drawer="close" data-nav-for="transit" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="route" class="wa-color-text-quiet"></wa-icon><span>Getting around</span></a>
       </div>
     </div>
     <div class="wa-stack wa-gap-3xs">
@@ -131,15 +146,15 @@
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Deck</span>
       <div class="wa-stack wa-gap-3xs">
-        <a href="#questions" data-drawer="close" data-nav-for="questions" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-question" class="wa-color-text-quiet"></wa-icon><span>The Questions</span></a>
-        <a href="#curses" data-drawer="close" data-nav-for="curses" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="wand-magic-sparkles" class="wa-color-text-quiet"></wa-icon><span>The Curse Deck</span></a>
+        <a href="#questions" data-drawer="close" data-nav-for="questions" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="circle-question" class="wa-color-text-quiet"></wa-icon><span>The questions</span></a>
+        <a href="#curses" data-drawer="close" data-nav-for="curses" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="wand-magic-sparkles" class="wa-color-text-quiet"></wa-icon><span>The curse deck</span></a>
       </div>
     </div>
     <div class="wa-stack wa-gap-3xs">
       <span class="wa-caption-2xs wa-text-uppercase wa-color-text-quiet">The Receipts</span>
       <div class="wa-stack wa-gap-3xs">
-        <a href="#trace" data-drawer="close" data-nav-for="trace" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="chart-simple" class="wa-color-text-quiet"></wa-icon><span>Where the Points Came From</span></a>
-        <a href="#sources" data-drawer="close" data-nav-for="sources" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="book-open" class="wa-color-text-quiet"></wa-icon><span>Where These Numbers Come From</span></a>
+        <a href="#trace" data-drawer="close" data-nav-for="trace" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="chart-simple" class="wa-color-text-quiet"></wa-icon><span>Where the points came from</span></a>
+        <a href="#sources" data-drawer="close" data-nav-for="sources" class="wa-flank:start wa-gap-xs wa-align-items-start wa-link-plain"><wa-icon name="book-open" class="wa-color-text-quiet"></wa-icon><span>Where these numbers come from</span></a>
       </div>
     </div>
   </nav>
@@ -167,17 +182,27 @@
       <div style="flex:1 1 26rem;min-inline-size:0">
         <wa-card>
           <div class="wa-stack wa-gap-m sk-body">
-            <!-- tier 1 · the dial and the band word: exactly one grade on the page -->
-            <div class="wa-cluster wa-gap-l">
-              <wa-skeleton style="inline-size:9rem;block-size:9rem;flex:none"></wa-skeleton>
-              <div class="sk-text wa-stack wa-gap-xs" style="flex:1 1 11rem">
-                <wa-skeleton style="inline-size:70%"></wa-skeleton>
-                <wa-skeleton></wa-skeleton>
-                <wa-skeleton style="inline-size:85%"></wa-skeleton>
-                <wa-skeleton style="inline-size:55%"></wa-skeleton>
+            <!-- tier 1 · the dial, the band word and the band ladder -->
+            <div class="wa-stack wa-gap-s">
+              <div class="wa-cluster wa-gap-l">
+                <wa-skeleton style="inline-size:9rem;block-size:9rem;flex:none"></wa-skeleton>
+                <div class="sk-text wa-stack wa-gap-xs" style="flex:1 1 11rem">
+                  <wa-skeleton style="inline-size:70%"></wa-skeleton>
+                  <wa-skeleton></wa-skeleton>
+                  <wa-skeleton style="inline-size:85%"></wa-skeleton>
+                  <wa-skeleton style="inline-size:55%"></wa-skeleton>
+                </div>
+              </div>
+              <!-- one chip per verdict band, low to high -->
+              <div class="wa-cluster wa-gap-3xs">
+                <wa-skeleton class="sk-chip" style="inline-size:14rem"></wa-skeleton>
+                <wa-skeleton class="sk-chip" style="inline-size:6rem"></wa-skeleton>
+                <wa-skeleton class="sk-chip" style="inline-size:11rem"></wa-skeleton>
+                <wa-skeleton class="sk-chip" style="inline-size:7rem"></wa-skeleton>
+                <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
               </div>
             </div>
-            <!-- tier 2 · the ladder, the points budget, six meters, the day tiles -->
+            <!-- tier 2 · the points budget, six meters, the day tiles -->
             <div class="wa-stack wa-gap-3xs">
               <p class="wa-heading-s wa-color-text-quiet wa-text-uppercase">Where the 100 points went</p>
               <wa-skeleton class="sk-bar"></wa-skeleton>
@@ -404,7 +429,7 @@
                   <!-- `offline` is live end to end (app.js, worker.js, cache.js) and
                        CONTRACT §(c) does not drop it, so it needs a control. -->
                   <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
-                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network unless OpenStreetMap is skipped as well.</span>
+                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network.</span>
                   </wa-switch>
 
                 </div>
@@ -432,7 +457,9 @@
               <wa-button id="analyse" type="submit" variant="brand" appearance="filled" size="m" disabled>
                 <wa-icon slot="start" name="play"></wa-icon><span data-role="analyselabel">Analyse</span>
               </wa-button>
-              <p class="wa-caption-xs wa-color-text-quiet">Most of a run is spent reading the map files; skipping them under Advanced is much faster.</p>
+              <!-- `syncAnalyse` (app.js) writes the reason the button is dead and
+                   unhides this for exactly as long as `#analyse` is disabled. -->
+              <p data-role="analysereason" class="wa-caption-xs wa-color-text-quiet" hidden></p>
             </div>
 
           </div><!-- /.landing-panel -->
@@ -466,8 +493,10 @@
     <wa-callout id="daybanner" data-when="report" appearance="filled-outlined" variant="neutral" hidden></wa-callout>
 
     <!-- A fatal worker error lands here (app.js `fatalError`); app.js also removes
-         the still-skeleton sections so a stopped run leaves no shimmering cards. -->
-    <div id="run-error" data-role="runerror" data-when="report" hidden></div>
+         the still-skeleton sections so a stopped run leaves no shimmering cards.
+         `role="alert"` ships with the shell so the region is in the a11y tree before
+         the message arrives; `tabindex="-1"` lets app.js move focus to it. -->
+    <div id="run-error" data-role="runerror" data-when="report" role="alert" tabindex="-1" hidden></div>
 
     <!-- `network` · never wrap the map frame in a wa-scroller or a disclosure:
          MapLibre reads its container size once, at construction ─────────── -->
@@ -662,7 +691,7 @@
     <section id="curses" data-when="report" data-section="curses" data-stage="rules" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-l">
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The curse deck</p>
-        <h2 class="wa-heading-2xl" data-n="06">The curse deck</h2>
+        <h2 class="wa-heading-2xl" data-n="06">Every curse, checked</h2>
         <p class="wa-body-l">Every curse in the hider's deck, checked against this map's geography and this feed's network. A count is the number of qualifying features inside the border; outside does not exist for this game.</p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
@@ -776,28 +805,54 @@
 <div id="tt"></div>
 
 <script>
-/* ---- colour scheme: WA classes, host data-theme, OS preference, localStorage ---- */
+/* ---- colour scheme: WA classes, host data-theme, OS preference, localStorage ----
+   Three states, cycled light → dark → system. "system" is the ABSENCE of the stored
+   key, which is what lets the OS listener below take over again. */
+const SCHEMES = ['light', 'dark', 'system'];
+const SCHEME_WORD = { light: 'Light', dark: 'Dark', system: 'Auto' };
+const SCHEME_ICON = { light: 'sun', dark: 'moon', system: 'circle-half-stroke' };
+function storedScheme() {
+  let saved = null; try { saved = localStorage.getItem('wa-color-scheme'); } catch (e) {}
+  return saved === 'light' || saved === 'dark' ? saved : 'system';
+}
 function applyScheme(dark) { document.documentElement.classList.toggle('wa-dark', dark);
                              document.documentElement.classList.toggle('wa-light', !dark); }
 function getPreferredScheme() {
   const host = document.documentElement.dataset.theme;          /* artifact-viewer handoff */
   if (host === 'dark') return true;
   if (host === 'light') return false;
-  let saved = null; try { saved = localStorage.getItem('wa-color-scheme'); } catch (e) {}
-  if (saved !== null) return saved === 'dark';
+  const saved = storedScheme();
+  if (saved !== 'system') return saved === 'dark';
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
+/* The button names the state it is in and the one a press moves to; without both, a
+   reader cannot tell "dark because I chose it" from "dark because the OS is". */
+function syncSchemeButton() {
+  const button = document.getElementById('color-scheme-button');
+  if (!button) return;
+  const now = storedScheme();
+  const next = SCHEMES[(SCHEMES.indexOf(now) + 1) % SCHEMES.length];
+  const label = button.querySelector('[data-role="themelabel"]');
+  if (label) label.textContent = 'Theme: ' + SCHEME_WORD[now];
+  const icon = button.querySelector('wa-icon[slot="start"]');
+  if (icon) icon.setAttribute('name', SCHEME_ICON[now]);
+  button.setAttribute('aria-label', 'Theme: ' + SCHEME_WORD[now] + '. Switch to ' + SCHEME_WORD[next] + '.');
+}
 applyScheme(getPreferredScheme());
+syncSchemeButton();
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-  let saved = null; try { saved = localStorage.getItem('wa-color-scheme'); } catch (err) {}
-  if (!saved && !document.documentElement.dataset.theme) applyScheme(e.matches);
+  if (storedScheme() === 'system' && !document.documentElement.dataset.theme) applyScheme(e.matches);
 });
 new MutationObserver(() => applyScheme(getPreferredScheme()))
   .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 document.getElementById('color-scheme-button').addEventListener('click', () => {
-  const toDark = !document.documentElement.classList.contains('wa-dark');
-  applyScheme(toDark);
-  try { localStorage.setItem('wa-color-scheme', toDark ? 'dark' : 'light'); } catch (e) {}
+  const next = SCHEMES[(SCHEMES.indexOf(storedScheme()) + 1) % SCHEMES.length];
+  try {
+    if (next === 'system') localStorage.removeItem('wa-color-scheme');
+    else localStorage.setItem('wa-color-scheme', next);
+  } catch (e) {}
+  applyScheme(getPreferredScheme());
+  syncSchemeButton();
 });
 </script>
 <script type="module">

@@ -6,8 +6,9 @@
 // `_s4_chip_group`. Unit and value formatting comes from `./verdict.js`.
 //
 // Invariants:
-// 1. §07 prints every question. The paging control defaults to "All" and never hides
-//    the tail unasked; the dead list is the useful half of the section.
+// 1. §07 prints every question. The table pages 25 at a time with "All" one click
+//    away, and the pager is dropped entirely when every row already fits; the dead
+//    list is the useful half of the section.
 // 2. §07 prints "fully functional" and "work at all" as two labelled counts. They are
 //    different numbers and must never be conflated.
 // 3. §08 keeps `remove` (a query returned zero: an instruction) visibly distinct from
@@ -26,8 +27,9 @@ import {
 } from '../lib/core.js';
 
 import {
-  esc, el, join, waIcon, waCard, waCallout, waTag, waButton, waDetails, waScroller,
-  waProgressBar, waSwitch, chip, budgetBar, searchInput, section, subhead, provChip,
+  esc, el, voidEl, join, waIcon, waCard, waCallout, waTag, waButton, waDetails,
+  waScroller, waProgressBar, waSwitch, chip, budgetBar, searchInput, section, subhead,
+  provChip,
 } from './html.js';
 
 import {
@@ -139,8 +141,20 @@ const S4_SPENDING_CURSES = Object.freeze([
   'egg_partner', 'impressionable_consumer', 'lemon_phylactery',
 ]);
 
-/** The page sizes the deck tables offer. `'all'` is the default and prints the tail. */
+/** The page sizes the deck tables can offer. Which of them a table shows is a
+ * function of its row total: `s4Pager` drops "50 at a time" at 50 rows or fewer and
+ * the whole strip at 25 or fewer. */
 const PAGE_SIZES = Object.freeze(['all', '25', '50']);
+
+/** The page size both tables open on, and the fallback when a stored one is gone. */
+const DEFAULT_PAGE_SIZE = '25';
+
+/** `DEFAULT_PAGE_SIZE` as a number, for the pager's first-paint count. */
+const DEFAULT_PAGE_ROWS = 25;
+
+/** Row totals at or below these need no pager, and no "50 at a time", respectively. */
+const PAGER_MIN_ROWS = 25;
+const PAGE_SIZE_50_MIN_ROWS = 50;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tiny deterministic primitives
@@ -205,38 +219,52 @@ function s4ChipGroup(groupId, name, options, opts) {
  * are pre-escaped markup, headers plain text, as in `dataTable`.
  *
  * A header given as `[text, sortKey, sortType]` becomes a real `<button>` with
- * `aria-sort` on its `<th>`, so Enter and Space fire `click` for free.
+ * `aria-sort` on its `<th>`, so Enter and Space fire `click` for free. A fourth
+ * element is the column's long form: it rides in the `<th>`'s `title` so a short
+ * header never has to be truncated to fit.
+ *
+ * Every `<td>` carries `data-label="<header text>"`, which is what lets the stylesheet
+ * turn a row into a card on a narrow screen without a second copy of the markup.
+ * `opts.cols` is a `<colgroup>` of CSS widths, one per header.
  *
  * (generate.py `_s4_table`.)
  *
- * @param {ReadonlyArray<string|[string,string,string]>} headers
+ * @param {ReadonlyArray<string|[string,string,string]|[string,string,string,string]>} headers
  * @param {ReadonlyArray<[Object, ReadonlyArray<string>]>} rows
- * @param {{tableId?: string, className?: string}} [opts]
+ * @param {{tableId?: string, className?: string, cols?: ReadonlyArray<string>}} [opts]
  * @returns {string}
  */
 function s4Table(headers, rows, opts = {}) {
-  const { tableId = '', className = 'wa-zebra-rows wa-hover-rows' } = opts;
+  const { tableId = '', className = 'wa-zebra-rows wa-hover-rows', cols = null } = opts;
+  const labels = headers.map((h) => (typeof h === 'string' ? h : h[0]));
   const ths = headers.map((h) => {
     if (typeof h === 'string') return el('th', esc(h), { scope: 'col' });
-    const [text, sortKey, sortType] = h;
+    const [text, sortKey, sortType, longForm] = h;
     const button = waButton(text, {
       icon: 'sort',
       appearance: 'plain',
       size: 's',
       dataSortBtn: true,
-      title: `Sort by ${text}`,
+      title: `Sort by ${longForm || text}`,
     });
     return el('th', button, {
-      scope: 'col', dataSortKey: sortKey, dataSortType: sortType, ariaSort: 'none',
+      scope: 'col',
+      dataSortKey: sortKey,
+      dataSortType: sortType,
+      ariaSort: 'none',
+      title: longForm || null,
     });
   }).join('');
+  const colgroup = cols
+    ? el('colgroup', cols.map((w) => voidEl('col', { style: w ? `width:${w}` : null })).join(''))
+    : '';
   const thead = el('thead', el('tr', ths));
   const body = rows.map(([rowAttrs, cells]) => el(
     'tr',
-    cells.map((c) => el('td', c)).join(''),
+    cells.map((c, i) => el('td', c, { dataLabel: labels[i] || null })).join(''),
     rowAttrs,
   )).join('');
-  const table = el('table', thead + el('tbody', body), {
+  const table = el('table', colgroup + thead + el('tbody', body), {
     id: tableId || null, className,
   });
   return waScroller(table);
@@ -267,21 +295,25 @@ function s4DefinitionList(rows) {
 }
 
 /**
- * The paging strip under a deck table. Rendered inert: the size group opens on "All"
- * and the Previous/Next pair stays `hidden` until a finite page size is chosen.
- * `initDeckTables` owns every string in here after the first paint.
+ * The paging strip under a deck table, or `''` when the table already fits in one
+ * page. Rendered inert: `initDeckTables` owns every string in here after the first
+ * paint, and the Previous/Next pair stays `hidden` until it runs.
  *
  * @param {string} pagerId @param {string} tableId @param {number} total
  * @param {string} noun @param {string} groupLabel
  * @returns {string}
  */
 function s4Pager(pagerId, tableId, total, noun, groupLabel) {
+  // A control that can only ever say "showing all of them" is noise, not a control.
+  if (total <= PAGER_MIN_ROWS) return '';
   const options = [
     ['all', `All ${num(total)}`, 'list'],
     ['25', '25 at a time', 'table-list'],
-    ['50', '50 at a time', 'table-list'],
   ];
-  const status = el('p', esc(`Showing all ${num(total)} ${s4Plural(total, noun)}.`), {
+  if (total > PAGE_SIZE_50_MIN_ROWS) options.push(['50', '50 at a time', 'table-list']);
+  const status = el('p', esc(
+    `Showing ${num(DEFAULT_PAGE_ROWS)} of ${num(total)} ${s4Plural(total, noun)}.`,
+  ), {
     className: 'wa-caption-xs wa-color-text-quiet',
     dataRole: 'count',
     role: 'status',
@@ -301,7 +333,9 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
   return el('div', join(
     status,
     el('div', join(
-      s4ChipGroup(`${pagerId}-size`, `${pagerId}-size`, options, { label: groupLabel }),
+      s4ChipGroup(`${pagerId}-size`, `${pagerId}-size`, options, {
+        label: groupLabel, value: DEFAULT_PAGE_SIZE,
+      }),
       nav,
     ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
   ), {
@@ -566,7 +600,7 @@ export function renderQuestions(payload) {
 
   const words = waDetails('What these words mean', s4DefinitionList([
     ...S4_STATUS_DEF.map(([key, meaning]) => [S4_STATUS_TAG[key][0], key, meaning]),
-    ['How much it narrows the search', 'quality',
+    ['Narrows by', 'quality',
       'The information a question carries, normalised inside its own category, '
       + 'so a clean 50/50 split scores 100%.'],
     ['Blends in', 'anonymity',
@@ -621,7 +655,7 @@ export function renderQuestions(payload) {
       dataSortQuality: String(qualityN === null ? -1 : qualityN),
     }, [
       el('span', esc(S4_CATEGORY_LABEL[q.category] || q.category), {
-        className: 'wa-text-nowrap',
+        className: 'cat-tag',
       }),
       el('b', esc(q.label)) + el('span', esc(q.text), {
         className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block;max-width:44ch',
@@ -638,14 +672,19 @@ export function renderQuestions(payload) {
     )) + el('td', el('pre', esc(q.selector))), { id: `sel-${q.id}` }));
   }
 
+  // Widths are hints, not a layout: the category is a tag and needs almost nothing,
+  // and the question is the column a reader scans, so it is the widest.
   const table = s4Table([
     ['Category', 'cat', 'text'],
     ['Question', 'label', 'text'],
     ['Status', 'status', 'num'],
     ['Found on the map', 'found', 'num'],
-    ['How much it narrows the search', 'quality', 'num'],
+    ['Narrows by', 'quality', 'num', 'How much it narrows the search'],
     'Assessment',
-  ], rows, { tableId: 'qtable' });
+  ], rows, {
+    tableId: 'qtable',
+    cols: ['10%', '24%', '20%', '11%', '10%', '25%'],
+  });
 
   const pager = s4Pager('qpager', 'qtable', questions.length, 'question',
     'How many questions to show at once');
@@ -667,8 +706,8 @@ export function renderQuestions(payload) {
   const live = s4LiveQuestions(report);
   const title = `${num(live)} of the ${num(questions.length)} questions work here`;
   let lede = 'Every question in the deck, checked against this map. “Found on the map” counts '
-    + 'the qualifying things inside the border; “how much it narrows the search” is the '
-    + "information the answer carries. The one-word status names are this report's, not "
+    + 'the qualifying things inside the border; “narrows by” is how much information the '
+    + "answer carries. The one-word status names are this report's, not "
     + "the rulebook's, and are defined under “what these words mean”.";
   if (!geoAvailable) {
     lede += ' OpenStreetMap was not available for this run, so only the questions '
@@ -770,9 +809,11 @@ function s4CurseRows(report, curses) {
 }
 
 /**
- * The whole deck's shape in one bar. Labelled "as printed": it is static and does not
- * follow `#nospend`, because the callout above already says what that switch moves.
- * Each segment carries its action's variant so the chips below read as its legend.
+ * The shape of the curses handed in, in one bar. It is drawn over the same rows the
+ * table and the filter hold, and its subhead prints that population, so the section's
+ * four counts never disagree. Labelled "as printed": it is static and does not follow
+ * `#nospend`, because the callout above already says what that switch moves. Each
+ * segment carries its action's variant so the chips below read as its legend.
  *
  * (generate.py `_s4_deck_strip`.)
  *
@@ -796,7 +837,7 @@ function s4DeckStrip(report, curses) {
     { variant: S4_ACTION_TAG[a][2], appearance: 'outlined' },
   )).join(''), { className: 'wa-cluster wa-gap-2xs' });
   return el('div', join(
-    subhead('The deck, as printed'),
+    subhead(`The ${num(total)} curses this map decides, as printed`),
     budgetBar(segments, total, {
       ariaLabel: `${num(total)} curses: ${spoken}`,
       variants: order.map((a) => S4_ACTION_TAG[a][2]),
@@ -806,7 +847,8 @@ function s4DeckStrip(report, curses) {
 }
 
 /**
- * §08 — the curse audit, filterable by action, with the one "no-spending" `wa-switch`
+ * §08 — the curse audit over the tier-1-to-3 curses this map can settle, filterable by
+ * action, with the one "no-spending" `wa-switch`
  * that toggles Egg Partner, Impressionable Consumer and Lemon Phylactery together (the
  * rulebook flags the first two and is silent on the third). The deciding predicates
  * are collected into one appendix at the foot; every row links to its own.
@@ -820,12 +862,13 @@ export function renderCurses(payload) {
   const curses = report.curses || [];
   if (curses.length === 0) return '';
 
-  const counts = counter(curses, (c) => c.action);
   const main = curses.filter((c) => c.tier <= 3);
   const tier4 = curses.filter((c) => c.tier >= 4);
 
-  // Chip counts are over the rows the table holds, not all 24. Chip VALUES stay the
-  // one-word actions: `bindFilter` reads them.
+  // The heading, the strip, the filter and the answer line all count `main` — the
+  // curses this map can settle. The tier-4 rows are counted nowhere but their own
+  // disclosure, and the lede says so. Chip VALUES stay the one-word actions:
+  // `bindFilter` reads them.
   const shown = counter(main, (c) => c.action);
   const present = S4_ACTION_ORDER.filter((a) => count(shown, a));
   const options = [['all', `All ${num(main.length)}`, 'list']];
@@ -898,16 +941,24 @@ export function renderCurses(payload) {
     waScroller(el('table', predHead + el('tbody', predRows), { className: 'wa-zebra-rows' })),
   ), { appearance: 'plain' });
 
-  const title = `${num(count(counts, 'keep'))} of ${num(curses.length)} curses work as printed `
-    + 'on this map';
-  const lede = "Every curse in the hider's deck, checked against this map's geography and this "
-    + "feed's network. A count is the number of qualifying features inside the border; outside "
-    + 'does not exist for this game. Tiers and instructions are defined under “what these '
-    + 'words mean”, beside the filter.';
+  const title = `${num(count(shown, 'keep'))} of ${num(main.length)} map-dependent curses work `
+    + 'as printed here';
+  let lede = `The ${num(main.length)} curses in the hider's deck whose fate this map decides, `
+    + "checked against its geography and this feed's network. The heading, the strip, the "
+    + 'filter and the line above all count those same '
+    + `${num(main.length)} ${s4Plural(main.length, 'curse')}.`;
+  if (tier4.length) {
+    lede += ` The remaining ${num(tier4.length)} are about the deck, the clock or the players, `
+      + 'so no map can move them; they sit in their own list at the foot and are counted '
+      + `nowhere else. The deck is ${num(curses.length)} cards in all.`;
+  }
+  lede += ' A count is the number of qualifying features inside the border; outside does not '
+    + 'exist for this game. Tiers and instructions are defined under “what these words mean”, '
+    + 'beside the filter.';
   const answer = el('p', esc(
-    `Take ${num(count(counts, 'remove'))} ${s4Plural(count(counts, 'remove'), 'curse')} out of `
-    + `the deck before you start, flag ${num(count(counts, 'warn'))} more, and talk about `
-    + `${num(count(counts, 'player-choice'))}.`,
+    `Take ${num(count(shown, 'remove'))} ${s4Plural(count(shown, 'remove'), 'curse')} out of `
+    + `the deck before you start, flag ${num(count(shown, 'warn'))} more, and talk about `
+    + `${num(count(shown, 'player-choice'))}.`,
   ), { className: 'wa-body-s' });
 
   const body = el('div', join(
@@ -951,9 +1002,10 @@ function s4FactRows(rows) {
 }
 
 /**
- * `<ol id="cites">` — a named home for every `provChip` target on the page, so a reader
- * arriving from a superscript can see what the anchor is called. Order is the score
- * trace's, then the provenance card's rows, then the Overpass keys as already sorted.
+ * `<ol id="cites">` inside a collapsed disclosure — a named home for every `provChip`
+ * target on the page, so a reader arriving from a superscript can see what the anchor
+ * is called. Order is the score trace's, then the provenance card's rows, then the
+ * Overpass keys as already sorted.
  *
  * (generate.py `_s4_sources_index`.)
  *
@@ -983,14 +1035,20 @@ function s4SourcesIndex(report, factRows) {
     el('code', esc(anchor.startsWith('prov-') ? anchor.slice('prov-'.length) : anchor)),
     el('a', esc(label), { href: `#${anchor}`, className: 'wa-link' }),
   ))).join('');
-  return el('ol', lis, { id: 'cites' });
+  // Collapsed: it is a lookup table for a reader who arrived from a superscript, and
+  // app.js's `openTargeted()` opens an ancestor `wa-details` before it scrolls.
+  return waDetails(
+    `All ${num(entries.length)} citations`,
+    el('ol', lis, { id: 'cites' }),
+    { appearance: 'plain' },
+  );
 }
 
 /**
  * §09 — feed hash and dates, every category selector with its count, the admin ladder,
  * the generator version and arguments, and the full interpretation list. Printed in
- * full: nothing here is summarised, elided or paginated. The machine identifiers sit
- * in a "Build fingerprint" disclosure; app.js's `openTargeted()` opens it when a
+ * full: nothing here is summarised, elided or paginated. The machine identifiers and
+ * the citation index sit in disclosures; app.js's `openTargeted()` opens either when a
  * citation points inside.
  *
  * (generate.py `index_provenance`.)
@@ -1346,8 +1404,12 @@ export function renderFooter(payload) {
  *                        search?: string, pageSize: string, page: number}>}
  */
 const DECK_STATE = {
-  qtable: { sortKey: null, sortDir: 1, filter: 'all', search: '', pageSize: 'all', page: 0 },
-  ctable: { sortKey: null, sortDir: 1, filter: 'all', pageSize: 'all', page: 0 },
+  qtable: {
+    sortKey: null, sortDir: 1, filter: 'all', search: '', pageSize: DEFAULT_PAGE_SIZE, page: 0,
+  },
+  ctable: {
+    sortKey: null, sortDir: 1, filter: 'all', pageSize: DEFAULT_PAGE_SIZE, page: 0,
+  },
 };
 
 /** The no-spending switch is one switch for the whole page, not per table. */
@@ -1614,13 +1676,17 @@ function wireTable(container, spec) {
   if (pager) {
     const sizeGroup = document.getElementById(`${spec.pagerId}-size`);
     if (sizeGroup) {
-      if (!PAGE_SIZES.includes(st.pageSize)) st.pageSize = 'all';
+      // A stored size whose option this table does not offer (a smaller total dropped
+      // "50") falls back to the default rather than paging by a size with no control.
+      const offered = PAGE_SIZES.includes(st.pageSize)
+        && Boolean(sizeGroup.querySelector(`wa-radio[value="${CSS.escape(st.pageSize)}"]`));
+      if (!offered) st.pageSize = DEFAULT_PAGE_SIZE;
       if (sizeGroup.getAttribute('value') !== st.pageSize) {
         sizeGroup.setAttribute('value', st.pageSize);
       }
       if (sizeGroup.value !== st.pageSize) sizeGroup.value = st.pageSize;
       bindOnce(sizeGroup, 'deckSizeBound', 'change', () => {
-        st.pageSize = String(sizeGroup.value || 'all');
+        st.pageSize = String(sizeGroup.value || DEFAULT_PAGE_SIZE);
         st.page = 0;
         applyRows(spec);
       });
@@ -1670,6 +1736,41 @@ function armRewireObserver() {
     });
   });
   rewireObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+/**
+ * The reader's own page sizes while a print override stands, or null.
+ * @type {Object<string, string>|null}
+ */
+let sizeBeforePrint = null;
+
+/**
+ * Force both deck tables to one page size, or hand each its own back. Paper takes the
+ * whole deck: the page window is a screen affordance, and `applyRows` enforces it with
+ * `tr.hidden`, which a print stylesheet must not undo (it would also reveal the rows
+ * the reader's own filter excludes).
+ *
+ * @param {string|null} size — a `PAGE_SIZES` value, or null to restore
+ * @returns {void}
+ */
+export function setDeckPageSize(size) {
+  if (size === null) {
+    if (!sizeBeforePrint) return;
+    for (const spec of DECK_TABLES) {
+      DECK_STATE[spec.tableId].pageSize = sizeBeforePrint[spec.tableId];
+    }
+    sizeBeforePrint = null;
+  } else {
+    if (!PAGE_SIZES.includes(size)) return;
+    if (!sizeBeforePrint) {
+      sizeBeforePrint = {};
+      for (const spec of DECK_TABLES) {
+        sizeBeforePrint[spec.tableId] = DECK_STATE[spec.tableId].pageSize;
+      }
+    }
+    for (const spec of DECK_TABLES) DECK_STATE[spec.tableId].pageSize = size;
+  }
+  for (const spec of DECK_TABLES) applyRows(spec);
 }
 
 /**

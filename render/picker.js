@@ -59,6 +59,23 @@ const EDGE_PX = 8;
 /** A move drag does nothing until the pointer has travelled this far, so a 1 px
  *  jitter during a pan cannot turn an `'auto'` frame `'custom'`. */
 const MOVE_PX = 4;
+/** What `#picker-draw-hint` says, by mode. `keyboard` answers an activation with no
+ *  pointer behind it, which the hand-rolled tool has no way to serve. */
+const DRAW_HINTS = {
+  idle: 'Click the map to add corners, or Shift-drag a rectangle.',
+  drawing: 'Click to add corners. Enter or Finish shape closes it; Backspace removes '
+    + 'the last corner; Esc cancels.',
+  keyboard: 'Drawing needs a mouse or touch. Use the search box to pick feeds instead.',
+};
+
+/** Breathing room around a fitted box, on every side the panel does not cover. */
+const FIT_PAD = 40;
+/** `.landing-panel`'s own margin (`--wa-space-m`), which the panel's width omits. */
+const PANEL_MARGIN = 16;
+/** A fit must leave at least this much map, or the padding is the viewport. */
+const MIN_VIEW_PX = 80;
+/** Below this the panel is a bottom sheet rather than a left column (styles.css §7). */
+const SHEET_MQ = '(max-width: 48rem)';
 /** How long the frame's caption stays a silent live region after the last change,
  *  so a drag announces the settled sentence once rather than every frame. */
 const CAPTION_QUIET_MS = 500;
@@ -130,6 +147,7 @@ export function initPicker(root, handlers = {}) {
   const drawBtn = $('draw-shape');
   const clearBtn = $('draw-clear');
   const finishBtn = $('draw-finish');
+  const drawHint = $('picker-draw-hint');
   const swRegional = $('include-regional');
   const swInactive = $('include-inactive');
   const examplesBox = $('example-maps');
@@ -281,6 +299,24 @@ export function initPicker(root, handlers = {}) {
     if (picksCount && typeof picksCount.focus === 'function') safeFocus(picksCount);
   }
 
+  /**
+   * `fitBounds` padding that keeps the fitted box out from under the floating
+   * panel: a left column on a desktop, a bottom sheet under 48rem. Measured, since
+   * the panel's height is the reader's (a collapsed sheet is a foot and nothing else).
+   */
+  function fitPadding() {
+    const pad = { top: FIT_PAD, bottom: FIT_PAD, left: FIT_PAD, right: FIT_PAD };
+    const panel = root.querySelector('.landing-panel');
+    if (!panel || !st.map) return pad;
+    const box = panel.getBoundingClientRect();
+    const stage = st.map.getContainer().getBoundingClientRect();
+    // Padding wider than the map leaves `fitBounds` no room to solve for; cap it.
+    const cap = (want, extent) => Math.max(FIT_PAD, Math.min(want, extent - FIT_PAD - MIN_VIEW_PX));
+    if (window.matchMedia(SHEET_MQ).matches) pad.bottom = cap(box.height + FIT_PAD, stage.height);
+    else pad.left = cap(box.width + PANEL_MARGIN * 2 + FIT_PAD, stage.width);
+    return pad;
+  }
+
   /** Frame the map on a set of rows. A no-op until MapLibre has arrived. */
   function fitRows(rows) {
     if (!st.map || !rows.length) return;
@@ -289,7 +325,9 @@ export function initPicker(root, handlers = {}) {
       s = Math.min(s, row.b[0]); w = Math.min(w, row.b[1]);
       n = Math.max(n, row.b[2]); e = Math.max(e, row.b[3]);
     }
-    st.map.fitBounds([[w, s], [e, n]], { padding: 40, duration: reducedMotion() ? 0 : 600, maxZoom: 10 });
+    st.map.fitBounds([[w, s], [e, n]], {
+      padding: fitPadding(), duration: reducedMotion() ? 0 : 600, maxZoom: 10,
+    });
   }
 
   if (examplesBox) {
@@ -302,7 +340,14 @@ export function initPicker(root, handlers = {}) {
     });
   }
 
-  function addRow(row) {
+  /**
+   * Take one catalogue row. The FIRST pick frames the map on it; a later one never
+   * moves the view out from under the reader. `fit: false` lets a sweep fit once
+   * over everything it took instead of once per feed.
+   *
+   * @param {Object} row @param {{fit?: boolean}} [opts]
+   */
+  function addRow(row, opts = {}) {
     if (!row) return false;
     if (row.a) {                                   // needs an API key: not fetchable here
       const label = labelOf(row);
@@ -314,8 +359,10 @@ export function initPicker(root, handlers = {}) {
     const ref = sourceRefFor(st.doc, row);
     if (st.selected.has(ref.id)) return true;
     if (slotsUsed() >= PICK_CAP) { renderPicksAndNote(); return false; }
+    const first = st.selected.size === 0;
     st.selected.set(ref.id, ref);
     commit();
+    if (first && opts.fit !== false) fitRows([row]);
     return true;
   }
 
@@ -569,8 +616,14 @@ export function initPicker(root, handlers = {}) {
 
   // ── the draw tool ─────────────────────────────────────────────────────────
 
+  /** One of `DRAW_HINTS`' keys, into the live region under the draw buttons. */
+  function setDrawHint(key) {
+    if (drawHint) drawHint.textContent = DRAW_HINTS[key] || '';
+  }
+
   function setDrawing(value) {
     st.drawing = value;
+    setDrawHint(value ? 'drawing' : 'idle');
     // Drawing suspends the frame's hit-testing, so a drag cannot continue under it.
     if (value) endBorderDrag();
     st.rubber = null;
@@ -655,17 +708,29 @@ export function initPicker(root, handlers = {}) {
     st.searching = false;
     st.results = hits.slice(0, 20);
     st.resultsTotal = hits.length;
+    const first = st.selected.size === 0;
+    const added = [];
     for (const row of hits) {
       if (slotsUsed() >= PICK_CAP) break;
-      addRow(row);
+      if (addRow(row, { fit: false })) added.push(row);
     }
+    if (first && added.length) fitRows(added);
     renderResultsBox();
     renderPicksAndNote();
   }
 
+  setDrawHint('idle');
+
   if (drawBtn) {
     on(drawBtn, 'click', (event) => {
       event.preventDefault();
+      // `detail === 0` is a keyboard activation, and every vertex of this tool is a
+      // pointer event: entering the mode would strand the reader in it.
+      if (event.detail === 0 && !st.drawing) {
+        setDrawHint('keyboard');
+        if (search) safeFocus(search);
+        return;
+      }
       if (st.drawing) { cancelDraw(); return; }
       if (st.ring) clearRing();
       setDrawing(true);
@@ -1513,6 +1578,7 @@ export function initPicker(root, handlers = {}) {
     if (drawBtn) drawBtn.hidden = true;
     if (finishBtn) finishBtn.hidden = true;
     if (clearBtn) clearBtn.hidden = true;
+    if (drawHint) drawHint.hidden = true;
     if (mapNote) {
       mapNote.hidden = false;
       mapNote.textContent = 'The map library did not load, so the map and the drawing '

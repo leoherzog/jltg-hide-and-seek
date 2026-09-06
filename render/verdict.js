@@ -18,7 +18,7 @@ import {
 import {
   esc, el, join, waIcon, waCard, waCallout, waTag, waButton, waProgressBar,
   waProgressRing, waAccordion, waScroller, waCopyButton, chip, meter, budgetBar,
-  section, subhead, provChip, dataTable,
+  section, subhead, provChip, setProvNames, dataTable,
 } from './html.js';
 
 // ── rulebook presentation constants (read, never recomputed) ─────────────────
@@ -367,6 +367,42 @@ export function s4MetricLookup(report) {
   return out;
 }
 
+// The citation ids §09's provenance card owns, named as its own index names them so a
+// superscript and the row it lands on announce the same thing. Cited from the tiles and
+// the map card, which render long before §09 exists.
+const S4_SOURCE_NAMES = Object.freeze([
+  ['rulebook', 'Game size'],
+  ['border', 'Border'],
+  ['questions', 'Question audit'],
+  ['curses', 'Curse audit'],
+  ['start', 'Round-start location and departure'],
+  ['days', 'Representative days'],
+  ['scoring', 'Scoring parameters'],
+  ['generator', 'Generator'],
+  ['argv', 'Options'],
+]);
+
+/**
+ * Name every `#prov-<id>` anchor this report owns, so a provenance superscript
+ * announces its source instead of its code. Called from `renderHero`, which app.js
+ * renders first on every stage, so the names are in place before any other section's
+ * superscripts; an unnamed id still renders, carrying its code.
+ */
+function s4RegisterProvNames(report) {
+  const pairs = [];
+  const subscores = (report && report.fitness && report.fitness.subscores) || [];
+  for (const sub of subscores) {
+    for (const m of sub.metrics || []) pairs.push([String(m.id), String(m.name || '')]);
+  }
+  if (subscores.length) pairs.push(['trace', 'The full score trace']);
+  const sources = (report && report.feed && report.feed.sources) || [];
+  pairs.push(['feed', sources.length > 1
+    ? 'The published timetable files'
+    : "The agency's published timetable file"]);
+  for (const pair of S4_SOURCE_NAMES) pairs.push(pair);
+  setProvNames(pairs);
+}
+
 // ── shared small markup helpers ──────────────────────────────────────────────
 
 /**
@@ -549,6 +585,48 @@ function s4DayTiles(report) {
   });
 }
 
+/** One `wa-skeleton`, sized by the caller. */
+function sk(opts = {}) {
+  return el('wa-skeleton', '', opts);
+}
+
+/**
+ * The scorecard before the score lands, shape-for-shape the hero skeleton in
+ * index.html. Returning nothing here would drop the card and re-add it at the `score`
+ * stage, moving every heading below the hero twice.
+ */
+function s4ScorecardSkeleton() {
+  const dial = el('div', join(
+    sk({ style: 'inline-size:9rem;block-size:9rem;flex:none' }),
+    el('div', join(
+      sk({ style: 'inline-size:70%' }),
+      sk(),
+      sk({ style: 'inline-size:85%' }),
+      sk({ style: 'inline-size:55%' }),
+    ), { className: 'sk-text wa-stack wa-gap-xs', style: 'flex:1 1 11rem' }),
+  ), { className: 'wa-cluster wa-gap-l' });
+  // Mirrors `s4BandLadder`: one chip per band, low to high, widths tracking the labels.
+  const ladder = el('div', ['14rem', '6rem', '11rem', '7rem', '8rem'].map(
+    (w) => sk({ className: 'sk-chip', style: `inline-size:${w}` }),
+  ).join(''), { className: 'wa-cluster wa-gap-3xs' });
+  const budget = el('div', join(
+    el('p', esc('Where the 100 points went'), {
+      className: 'wa-heading-s wa-color-text-quiet wa-text-uppercase',
+    }),
+    sk({ className: 'sk-bar' }),
+  ), { className: 'wa-stack wa-gap-3xs' });
+  const meters = el('div', Array.from(
+    { length: 6 }, () => el('div', sk() + sk(), { className: 'sk-meter' }),
+  ).join(''), { className: 'wa-stack wa-gap-2xs' });
+  const days = el('div', Array.from(
+    { length: 3 }, () => sk({ className: 'sk-day' }),
+  ).join(''), { className: 'wa-grid wa-gap-s', style: '--min-column-size:8rem' });
+  const top = el('div', dial + ladder, { className: 'wa-stack wa-gap-s' });
+  return waCard(el('div', join(top, budget, meters, days), {
+    className: 'wa-stack wa-gap-m sk-body',
+  }));
+}
+
 /**
  * The hero's answer panel. Tier 1 is the dial and the band word, the page's one
  * grade. Tier 2 (ladder, budget bar, meters, day tiles) is never collapsed: it is
@@ -556,7 +634,7 @@ function s4DayTiles(report) {
  */
 function s4Scorecard(report) {
   const f = report.fitness;
-  if (!f) return '';
+  if (!f) return s4ScorecardSkeleton();
   let top;
   if (f.score === null || f.score === undefined) {
     top = waCallout(el('div', join(
@@ -647,6 +725,7 @@ function s4Scorecard(report) {
  */
 export function renderHero(payload) {
   const report = payload || {};
+  s4RegisterProvNames(report);
   const agency = agencyNameOf(report);
   const place = placeOf(report);
   if (!agency && !place) return '';
@@ -730,9 +809,9 @@ export function renderHero(payload) {
   // `min-width:auto` would then never let the card shrink again.
   return el('header', el('div', join(
     left,
-    card ? el('div', card, { style: 'flex:1 1 26rem;min-inline-size:0' }) : '',
+    el('div', card, { style: 'flex:1 1 26rem;min-inline-size:0' }),
   ), { className: 'wa-split wa-flex-wrap wa-gap-2xl wa-align-items-start' }), {
-    id: 'top', className: 'wa-stack wa-gap-l',
+    id: 'top', dataWhen: 'report', className: 'wa-stack wa-gap-l',
   });
 }
 
@@ -1071,7 +1150,9 @@ export function renderScoreTrace(payload) {
         : '',
       s4TraceTable(s.metrics),
     ), { className: 'wa-stack wa-gap-s' });
-    items.push([`trace-${s.id}`, label, bodyHtml, s.id === f.subscores[0].id]);
+    // Every block starts collapsed: an open first item claims the sub-score the
+    // reader arrived for is this one, and buries the other five below a long table.
+    items.push([`trace-${s.id}`, label, bodyHtml, false]);
   }
 
   const rampLegend = waCallout(el('p', join(
