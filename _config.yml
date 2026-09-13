@@ -1,0 +1,10 @@
+# GitHub Pages (legacy branch build) publishes the repo root. Keep the build tooling
+# and developer docs out of the site: the app loads none of them.
+exclude:
+  - tools
+  - package.json
+  - package-lock.json
+  - skills-lock.json
+  - AGENTS.md
+  - CONTRACT.md
+  - COUNTRY-SCALE.md

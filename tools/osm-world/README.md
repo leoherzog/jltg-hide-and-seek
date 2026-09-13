@@ -186,6 +186,11 @@ Edit`, not the S3 key pair — and is what applies CORS and would apply a lifecy
 that flips a build live, so every layer it names must be readable before it lands. (A
 plain sorted upload put `manifest.json` 22nd of 38, ahead of sixteen layers.)
 
+**Superseded layers are pruned, not overwritten.** Content-addressed names mean a rebuild
+never replaces the previous world's files, so `world-merge.yml`'s finalize waits out the
+manifest's `max-age` and then deletes every `world/*.fgb` the live manifest no longer
+names. The 2026-08-22 merge left 35 such files (49.5 GB) behind before that step existed.
+
 ## What ships, and what does not
 
 **Feature layers** (31) — real geometry, exact counts, usable for distance and

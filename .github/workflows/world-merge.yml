@@ -33,6 +33,11 @@
 # before the manifest that names it; finalize HeadObject-verifies every referenced
 # object (name and byte size) before the manifest upload.
 #
+# Content addressing means a rebuild never overwrites the previous world's layers,
+# so finalize's last step prunes every `<world_prefix>/*.fgb` the live manifest no
+# longer names, after waiting out the manifest's max-age. Without it each merge
+# leaves a whole world (~50 GB) behind; it also sweeps a canary's orphaned layers.
+#
 # Cover exactness: the plan job refuses to merge unless the manifest set in R2
 # equals shards.json's id set, both directions. A missing manifest is a shard job
 # that never ran; an extra one is a stale shard whose cells were reassigned, and
@@ -715,3 +720,39 @@ jobs:
                    --endpoint-url "$EP" || true) | wc -l)
           [ "$left" -eq 0 ] \
             || echo "::warning::$left object(s) still under $STAGING/ in R2 after cleanup; delete them by hand"
+
+      - name: prune layer files the live manifest no longer names
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # manifest.json is max-age=300 in the browser and again at the edge; a run
+          # that fetched the old one must be able to finish reading its layers.
+          sleep 900
+          # Re-read the manifest from R2 rather than trusting $OUT: the bucket is the truth.
+          aws s3 cp "s3://$R2_BUCKET/$WORLD_PREFIX/manifest.json" live-manifest.json \
+            --endpoint-url "$EP" --no-progress
+          jq -r --arg p "$WORLD_PREFIX/" '.layers[] | select(.path) | $p + .path' \
+            live-manifest.json | LC_ALL=C sort -u > keep.txt
+          # A manifest naming nothing would prune the whole world.
+          if [ ! -s keep.txt ]; then
+            echo "::warning::live manifest names no layer files; not pruning"
+            exit 0
+          fi
+          (aws s3api list-objects-v2 --bucket "$R2_BUCKET" --prefix "$WORLD_PREFIX/" \
+             --endpoint-url "$EP" --query 'Contents[].Key' --output text || true) \
+            | tr '\t' '\n' | { grep -E "^${WORLD_PREFIX}/[^/]+\.fgb$" || true; } \
+            | LC_ALL=C sort -u > have.txt
+          LC_ALL=C comm -23 have.txt keep.txt > prune.txt
+          failed=0
+          while IFS= read -r key; do
+            aws s3 rm "s3://$R2_BUCKET/$key" --endpoint-url "$EP" || failed=$((failed + 1))
+          done < prune.txt
+          # The world is live either way; leftovers are swept by the next merge.
+          [ "$failed" -eq 0 ] \
+            || echo "::warning::$failed superseded layer file(s) under $WORLD_PREFIX/ could not be deleted"
+          echo "- pruned $(( $(wc -l < prune.txt) - failed )) superseded layer file(s) from \`$WORLD_PREFIX/\`" >> "$GITHUB_STEP_SUMMARY"
