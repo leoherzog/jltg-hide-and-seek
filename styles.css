@@ -1,6 +1,6 @@
 /* styles.css — the browser port's one stylesheet.
-   Sections 1-6 are generate.py's SHARED_CSS (line 1454), ported verbatim,
-   followed by INDEX_CSS (line 10527), also verbatim. The CLI inlines both in
+   Sections 1-6 are generate.py's SHARED_CSS (line 1454), ported with the row-helper
+   additions in §4–§6, followed by INDEX_CSS (line 10527), ported verbatim. The CLI inlines both in
    a <style> block; a static app links them instead. Section 7 at the end is
    new and exists only because this page ships before its data does. */
 
@@ -143,6 +143,8 @@ wa-callout, wa-details, wa-progress-bar, [class*="wa-caption-"],
   font-family: var(--sans);
 }
 sup[data-cite] { font-family: var(--sans); font-size: 10px; font-weight: 700; }
+/* A chip in a column flex stack keeps its own width. */
+.wa-stack > wa-tag { align-self: flex-start; }
 /* wa-input is deliberately NOT in the list above. That rule sets `font-family` on the
    host, and wa-input's inner control is `font-family: inherit` — the sans face would
    land on the value the reader types, which is serif today. So the UI voice is applied
@@ -229,10 +231,12 @@ wa-page { --gutter: var(--wa-space-3xl); }
 wa-page > [slot='footer'] { padding-inline: 0; }   /* the gutter belongs to the child */
 /* the hero is an unslotted <header>, so wa-page's ::slotted(main) padding never reaches it */
 wa-page > header:not([slot]) { padding-block-start: var(--wa-space-3xl); }
-section > header > p:last-child { max-inline-size: 72ch; }    /* the one reading-width rule */
+section > header > p:last-of-type { max-inline-size: 72ch; }  /* the one reading-width rule */
 :where(td, .wa-heading-2xl, .wa-heading-xl, .wa-heading-l) { font-variant-numeric: tabular-nums; }
 main pre { font-size: var(--wa-font-size-2xs); line-height: 1.5; white-space: pre-wrap;
            overflow-wrap: anywhere; margin: 0; color: var(--ink-2); }
+/* `anywhere` zeroes the pre's min-content, so a narrow table would squeeze this column to a sliver */
+main pre.prov-sel { min-inline-size: 14rem; }
 #daysel::part(form-control) { display: flex; align-items: center; gap: var(--wa-space-s); flex-wrap: wrap; }
 #daysel wa-radio[value='sat'] { margin-inline-start: var(--wa-space-xs); }  /* replaces .sep */
 
@@ -298,7 +302,7 @@ nav[slot='navigation'] a[aria-current] {
   .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex: none; }
   /* a flex/grid parent blockifies the <li> and can drop its marker, so the recs
      list stays in normal flow and spaces itself. */
-  ol.recs { list-style: decimal-leading-zero; padding-inline-start: 3ch; }
+  ol.recs { list-style: decimal-leading-zero; padding-inline-start: 4.5ch; }
   ol.recs li:has(+ li) { margin-block-end: var(--wa-space-s); }
   ol.recs li::marker { font-family: var(--mono); font-weight: 700; color: var(--gold-deep); }
   /* the accent rail keys off the WA colour utility the card already carries */
@@ -312,6 +316,8 @@ nav[slot='navigation'] a[aria-current] {
   .tile-tag { display: inline-flex; align-items: center; gap: .35em;
               font-family: var(--sans); font-size: var(--wa-font-size-xs);
               color: var(--gold-deep); }
+  .tile-tag[data-basis='rulebook'] { color: var(--wa-color-brand-on-quiet); }
+  #tiles wa-progress-bar { --track-height: var(--wa-space-2xs); }
   /* The rest of a tile's note, in a disclosure that must not grow a second card
      inside the one it sits in. `--spacing` is wa-details' own padding lever, so
      zeroing it takes the summary's box and the content's gutters at once. */
@@ -330,6 +336,26 @@ nav[slot='navigation'] a[aria-current] {
   /* the day-sensitive cue is a word, not a colour: both chips ship, one is shown */
   [data-today-cue='on'], wa-card[data-today] [data-today-cue='off'] { display: none; }
   wa-card[data-today] [data-today-cue='on'] { display: inline-flex; }
+
+  /* ---- row helpers (html.js leadDetail, miniMeter, iconLabel): native.css panels reset to quiet folds ---- */
+  details:is(.ld-more, .ld-inline), details:is(.ld-more, .ld-inline)[open] {
+    padding: 0; background: none; border: 0; border-radius: 0;
+  }
+  .ld-more > summary, .ld-inline > summary {
+    cursor: pointer; inline-size: fit-content; padding: 0; margin-inline: 0;
+    justify-content: start; flex-wrap: wrap; gap: var(--wa-space-2xs);
+  }
+  .ld-more > summary { color: var(--wa-color-text-quiet); }
+  div.ld-inline > .wa-cluster { display: inline-flex; vertical-align: middle; }
+  .ld-body { margin-block-start: var(--wa-space-2xs); max-inline-size: 72ch; }
+  :is(.ld, .ld-after)[data-basis='interp'] { border-inline-start: var(--wa-border-width-l) solid var(--gold);
+                                             padding-inline-start: var(--wa-space-xs); }
+  @media (min-width: 721px) {
+    details.ld-more.ld-narrow > summary { display: none; }
+    details.ld-more.ld-narrow::details-content { content-visibility: visible; }
+  }
+  .mini-meter wa-progress-bar { inline-size: 4rem; --track-height: var(--wa-space-2xs); }
+  .icon-label wa-icon { flex: none; }
 
 /* ══ 6. CHART / MAP INTERNALS — hand-rolled SVG + MapLibre. Permanent keeps. ══ */
   /* MapLibre feature-hover cannot anchor a <wa-tooltip>; bindTT reads offsetWidth. */
@@ -363,7 +389,7 @@ nav[slot='navigation'] a[aria-current] {
 #prov-trace th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
                  color: var(--ink-3); padding: 4px 10px 4px 0; white-space: nowrap; }
 #prov-trace td { padding: 7px 10px 7px 0; border-top: 1px solid var(--grid); }
-#prov-trace tr[data-basis='interp'] td:first-child { border-inline-start: 3px solid var(--gold); padding-inline-start: 8px; }
+:is(#prov-trace, #qtable, #ctable) tr[data-basis='interp'] td:first-child { border-inline-start: 3px solid var(--gold); padding-inline-start: 8px; }
 #prov-trace tr[data-available='0'] td { opacity: .55; }
 :is(#qtable, #ctable) td:last-child { max-inline-size: 62ch; }   /* replaces .qwhy */
 /* The colgroup only binds under fixed layout; under auto layout the nowrap sort
@@ -372,7 +398,9 @@ nav[slot='navigation'] a[aria-current] {
 #qtable th, #qtable td { white-space: normal; }
 #qtable td { overflow-wrap: break-word; }
 #qtable th wa-button::part(base) { white-space: normal; text-align: start; block-size: auto; flex-wrap: wrap; }
-#qtable td wa-tag::part(base) { white-space: normal; block-size: auto; }
+/* wa-tag has no `base` part; its host carries the nowrap and the fixed height. */
+:is(#qtable, #ctable) td wa-tag { white-space: normal; block-size: auto; min-block-size: calc(var(--wa-form-control-height) * 0.8);
+  max-inline-size: 100%; line-height: 1.3; padding-block: 0.2em; }
 /* The question's category, the whole content of an 8% column: a quiet label that never
    wraps, so the column stays as narrow as the colgroup asks. */
 .cat-tag { display: inline-block; font-family: var(--sans); font-size: 11.5px;
@@ -550,12 +578,19 @@ body[data-state='landing'] wa-page { --menu-width: 0px; }
 @media (max-width: 46rem) {
   #hydration { flex: 1 1 100%; max-inline-size: none; order: 1; }
 }
+/* The stage stepper under the bar; on a phone each step keeps its icon and drops its word. */
+[data-role='stepper'] { margin: 0; padding: 0; }
+@media (max-width: 30rem) {
+  [data-role='stepper'] .step-word, #run-history [data-before] {
+    position: absolute; inline-size: 1px; block-size: 1px; clip-path: inset(50%);
+    overflow: hidden; white-space: nowrap;
+  }
+}
 
-/* ---- the re-run chip (`#run-history`) ----
-   One `wa-tag` in the header on a re-run, empty and hidden otherwise. It carries
-   four six-decimal numbers, so the tag itself is allowed to clip: the whole
-   sentence is in its `title`, and the numbers are also §05's, under the map. On a
-   narrow header it takes a line of its own like the progress block does. */
+/* ---- the re-run chips (`#run-history`) ----
+   A run badge and two `wa-tag`s in the header on a re-run, empty and hidden otherwise.
+   A tag may clip; the border's coordinates are §05's, under the map. On a narrow
+   header it takes a line of its own like the progress block does. */
 #run-history { min-inline-size: 0; max-inline-size: 30rem; overflow: hidden; }
 /* wa-tag emits no `base` part — only `content` and `remove-button` — so the clipping
    all lives on the host. `min-inline-size: 0` is the load-bearing half: without it the
@@ -889,6 +924,18 @@ body[data-state='landing'] main { max-inline-size: none; padding: 0; }
 .pick-row-chosen { background: var(--wa-color-surface-lowered); }
 .pick-row-chosen + .pick-row-chosen { border-block-start: none; }
 #picks-count { font-variant-numeric: tabular-nums; }
+/* The pick-cap pips: one swatch per slot, filled per pick, red at the cap. */
+.pick-pips .sw { background: var(--off); }
+.pick-pips .sw[data-on] { background: var(--seq-550); }
+#picks[data-full] .pick-pips .sw[data-on] { background: var(--crit); }
+.pick-pips { display: inline-flex; gap: 2px; margin-inline-start: var(--wa-space-xs); vertical-align: middle; }
+[data-role='pickerbody'] > wa-skeleton.sk-row { display: block; block-size: 2.25rem; }
+[data-role='pickerbody'] > wa-skeleton.sk-row + wa-skeleton.sk-row { margin-block-start: var(--wa-space-s); }
+/* Hints worded for the pointer in hand. */
+@media (pointer: coarse) { .hint-fine, .kbd-only { display: none; } }
+@media not (pointer: coarse) { .hint-coarse { display: none; } }
+#opt-border-bbox[data-border-mode='none'] [data-when-mode='set'],
+#opt-border-bbox:not([data-border-mode='none']) [data-when-mode='none'] { display: none; }
 /* The example-map chips: a wrapping row of pill buttons under the lede. The stack is
    `wa-stack wa-gap-2xs` on the container, which also zeroes the lede's margin. That
    utility's `display: flex` is an author rule, so it beats the UA's `[hidden]` the
@@ -1082,6 +1129,7 @@ wa-details #cites { margin-block: 0; }
   #qcontrols, #ccontrols { position: static; }
   wa-details::part(content) { display: block; }
   wa-details::part(base)::details-content { content-visibility: visible; }
+  details::details-content { content-visibility: visible; }
 }
 
 /* == STRATEGY CSS ===========================================================
@@ -1204,6 +1252,10 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
    meaningless for an unserved zone, so none of them should read as live. */
 #s-list [data-off] { opacity: .55; }
 
+/* render/simulator.js writes data-mode: score key in explore, answer key otherwise */
+#s-legend[data-mode]:not([data-mode='explore']) [data-legend='score'],
+#s-legend[data-mode='explore'] [data-legend='answer'] { display: none; }
+
 /* ---- MapLibre markers. They are DOM nodes MapLibre owns, outside WebAwesome and
    outside any shadow root; WA has no marker, no map-label pill and no crosshair, so
    this is the same "permanent keep" §6 makes for the map internals. They carry data
@@ -1272,6 +1324,7 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 @media print {
   [data-print='hide'] { display: none !important; }
   #s-print-dossiers[hidden] { display: block !important; }
+  #s-legend [data-legend] { display: revert !important; }
   #s-controls, #s-detail { position: static; max-block-size: none; overflow: visible; }
 }
 

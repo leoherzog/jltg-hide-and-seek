@@ -9,13 +9,15 @@
 //   * `esc()` is the only way text becomes markup; feed data contains apostrophes,
 //     ampersands and angle brackets. Attribute values always go through `attrs()`.
 //
-// Only WebAwesome 3.11 components the drafts use (or pages.md sanctions) get a helper;
+// Only WebAwesome 3.12 components the drafts use (or pages.md sanctions) get a helper;
 // do not invent one.
 //
 // Python keyword arguments become a trailing options object; `class_` is `className`,
 // `void()` is `voidEl()`.
 
-import { cmpStr, jdump, num } from '../lib/core.js';
+import {
+  DEGRADE_KIND, cmpStr, jdump, num,
+} from '../lib/core.js';
 
 // ── the primitives ───────────────────────────────────────────────────────────
 
@@ -217,7 +219,7 @@ export function waScroller(bodyHtml, opts = {}) {
 }
 
 /**
- * `<wa-progress-bar>`; `value` is 0..100 and is rounded to one place.
+ * `<wa-progress-bar>`; `value` is 0..100 from `lib/core.js` `fillPct()`, printed to one place.
  * @param {number} value @param {Object} [opts]
  * @returns {string}
  */
@@ -351,7 +353,8 @@ export function chip(text, iconName = '', opts = {}) {
 
 /**
  * A label / track / value row — the rubric tier's workhorse. `valuePct` is 0–100 and
- * computed by the caller. Rubric is never collapsed.
+ * comes from `lib/core.js` `fillPct()`; no caller multiplies or divides. Rubric is never
+ * collapsed.
  *
  * `opts.label` is the bar's accessible name and must be plain text: `wa-progress-bar`
  * puts it straight into `aria-label`, and without it every bar announces as "Progress".
@@ -484,26 +487,260 @@ export function pullQuote(text) {
   return el('blockquote', el('p', esc(text), { className: 'wa-longform-xl' }));
 }
 
+// ── row primitives: basis, degradation, facts, legends, lead and detail ─────────
+
+const BASIS_TAG = Object.freeze({
+  rulebook: Object.freeze(['brand', 'From the rules', 'book', 'rulebook']),
+  feed: Object.freeze(['neutral', 'Measured', 'wave-square', 'feed']),
+  interp: Object.freeze(['warning', 'Our call', 'scale-balanced', 'interpretation']),
+});
+
+/** `class` from a base list plus an optional extra. */
+function cls(base, extra) {
+  return extra ? `${base} ${extra}` : base;
+}
+
+/**
+ * A legend or key swatch; style it inline with tokens.
+ * @param {string} style
+ * @returns {string}
+ */
+export function swatch(style) {
+  return el('span', '', { ariaHidden: 'true', className: 'sw', style });
+}
+
+/**
+ * A metric's basis: `rulebook` | `feed` | `interp` → From the rules | Measured | Our call.
+ * @param {string} source
+ * @returns {string}
+ */
+export function basisChip(source) {
+  const [variant, word, icon, term] = BASIS_TAG[source]
+    || ['neutral', source || '—', 'circle-question', source || ''];
+  return chip(word, icon, { variant, title: term ? `basis: ${term}` : word });
+}
+
+/**
+ * The one drawing of a degraded or limited state, carrying `data-degrade`. '' for no code,
+ * so callers pass a nullable field unguarded.
+ * @param {string|null|undefined} code a `DEGRADE_KIND` key
+ * @param {Object} [opts] @param {string} [opts.suffix] plain text after ' · '
+ * @returns {string}
+ */
+export function degradeChip(code, opts = {}) {
+  if (!code) return '';
+  const { suffix = '' } = opts;
+  if (!Object.hasOwn(DEGRADE_KIND, code)) {
+    return chip(code, 'circle-question', { dataDegrade: code });
+  }
+  const k = DEGRADE_KIND[code];
+  return chip(k.label + (suffix ? ` · ${suffix}` : ''), k.icon, {
+    variant: k.variant, appearance: k.appearance, dataDegrade: code,
+  });
+}
+
+/**
+ * A bar with its caption, for a `Fact` or any share inside a chip row.
+ * @param {number} fill 0..100 from `fillPct()`
+ * @param {string} textHtml
+ * @param {Object} opts @param {string} opts.label the bar's accessible name, required
+ * @returns {string}
+ */
+export function miniMeter(fill, textHtml, opts = {}) {
+  const { label = '' } = opts;
+  return el('span', waProgressBar(fill, { label })
+    + el('span', textHtml, { className: 'wa-caption-xs' }), {
+    className: 'mini-meter wa-cluster wa-gap-2xs wa-align-items-center',
+  });
+}
+
+/**
+ * `Fact[]` as one always-visible chip row; a fact with a `fill` is a `miniMeter`.
+ * @param {ReadonlyArray<{text:string, icon:string, variant:string, fill:number|null}>} facts
+ * @param {Object} [opts] @param {string} [opts.className]
+ * @returns {string} '' when there are no facts
+ */
+export function factChips(facts, opts = {}) {
+  if (!facts || !facts.length) return '';
+  const { className = '' } = opts;
+  const body = facts.map((f) => ((f.fill ?? null) !== null
+    ? miniMeter(f.fill, esc(f.text), { label: f.text })
+    : chip(f.text, f.icon, { variant: f.variant }))).join('');
+  return el('div', body, { className: cls('wa-cluster wa-gap-2xs', className) });
+}
+
+/**
+ * A chip that is a link. `opts` are `chip()`'s.
+ * @param {string} href @param {string} text @param {string} [iconName] @param {Object} [opts]
+ * @returns {string}
+ */
+export function linkChip(href, text, iconName = '', opts = {}) {
+  return el('a', chip(text, iconName, opts), { className: 'wa-link-plain', href });
+}
+
+/**
+ * An icon beside markup, quiet by default.
+ * @param {string} iconName @param {string} contentHtml
+ * @param {Object} [opts] @param {boolean} [opts.quiet=true]
+ * @returns {string}
+ */
+export function iconLabelHtml(iconName, contentHtml, opts = {}) {
+  const { quiet = true } = opts;
+  return el('span', waIcon(iconName) + el('span', contentHtml), {
+    className: cls('icon-label wa-cluster wa-gap-2xs wa-align-items-center',
+      quiet ? 'wa-color-text-quiet' : ''),
+  });
+}
+
+/**
+ * An icon beside plain text, quiet by default.
+ * @param {string} iconName @param {string} text
+ * @param {Object} [opts] @param {boolean} [opts.quiet=true]
+ * @returns {string}
+ */
+export function iconLabel(iconName, text, opts = {}) {
+  return iconLabelHtml(iconName, esc(text), opts);
+}
+
+/**
+ * A drawn legend: one list item per `[markHtml, text, liId?]`, text escaped.
+ * @param {ReadonlyArray<[string, string, string?]>} items
+ * @param {Object} [opts] @param {string} [opts.label] list accessible name
+ * @param {string} [opts.leadHtml] a quiet first item
+ * @returns {string}
+ */
+export function legendRow(items, opts = {}) {
+  const { label = '', leadHtml = '' } = opts;
+  const lis = [];
+  if (leadHtml) lis.push(el('li', leadHtml, { className: 'wa-color-text-quiet' }));
+  for (const [markHtml, text, liId] of items || []) {
+    lis.push(el('li', (markHtml || '') + (text ? el('span', esc(text)) : ''), {
+      className: 'wa-cluster wa-gap-2xs wa-align-items-center',
+      id: liId || null,
+    }));
+  }
+  return el('ul', lis.join(''), {
+    ariaLabel: label || null,
+    className: 'wa-cluster wa-gap-m wa-caption-xs wa-list-plain',
+    role: 'list',
+  });
+}
+
+/**
+ * A row's visible lead with its explanation folded in a native `<details>`, which
+ * prints open and works with find-in-page. `inline` makes the lead itself the handle.
+ * `chipsHtml` stays visible (inline: inside `<summary>`, so no links or controls);
+ * links go in `afterHtml`. Never put a basis or degradation chip only in `detailHtml`.
+ *
+ * @param {string} leadHtml @param {string} detailHtml
+ * @param {Object} [opts]
+ * @param {string} [opts.summary='Why'] @param {boolean} [opts.inline=false]
+ * @param {string} [opts.chipsHtml] @param {string} [opts.afterHtml]
+ * @param {string} [opts.id] @param {string} [opts.dataBasis]
+ * @param {boolean} [opts.foldBelow=false] default mode only: open at 721px and wider
+ * @param {string} [opts.className]
+ * @returns {string} '' when every part is empty
+ */
+export function leadDetail(leadHtml, detailHtml, opts = {}) {
+  const {
+    summary = 'Why', inline = false, chipsHtml = '', afterHtml = '', id = '',
+    dataBasis = '', foldBelow = false, className = '',
+  } = opts;
+  if (!leadHtml && !detailHtml && !chipsHtml && !afterHtml) return '';
+  const body = detailHtml
+    ? el('div', detailHtml, { className: 'ld-body wa-body-s wa-color-text-quiet' })
+    : '';
+  if (!inline) {
+    return el('div', [
+      leadHtml ? el('p', leadHtml, { className: 'ld-lead wa-body-s' }) : '',
+      chipsHtml ? el('div', chipsHtml, { className: 'wa-cluster wa-gap-2xs' }) : '',
+      detailHtml
+        ? el('details', el('summary', esc(summary), { className: 'wa-caption-xs' }) + body, {
+          className: cls('ld-more', foldBelow ? 'ld-narrow' : ''),
+        })
+        : '',
+      afterHtml ? el('div', afterHtml, { className: 'ld-after wa-cluster wa-gap-2xs' }) : '',
+    ].join(''), {
+      className: cls('ld wa-stack wa-gap-2xs', className),
+      dataBasis: dataBasis || null,
+      id: id || null,
+    });
+  }
+  const handle = [
+    leadHtml ? el('span', leadHtml, { className: 'ld-lead wa-body-s' }) : '',
+    chipsHtml ? el('span', chipsHtml, { className: 'wa-cluster wa-gap-2xs' }) : '',
+  ].filter((c) => c).join(' ');
+  const head = detailHtml
+    ? el('details', el('summary', handle || esc(summary)) + body, {
+      className: cls('ld ld-inline', className),
+      dataBasis: dataBasis || null,
+      id: id || null,
+    })
+    : el('div', handle, {
+      className: cls('ld ld-inline', className),
+      dataBasis: dataBasis || null,
+      id: id || null,
+    });
+  const after = afterHtml
+    ? el('div', afterHtml, {
+      className: 'ld-after wa-cluster wa-gap-2xs',
+      dataBasis: dataBasis || null,
+    })
+    : '';
+  return head + after;
+}
+
+/**
+ * A card header: heading, caption, and optional chips beside the heading. Without
+ * `chipsHtml` the caption paragraph is always emitted, even empty.
+ * @param {string} title
+ * @param {Object} [opts]
+ * @param {string} [opts.caption] @param {string} [opts.captionHtml] wins over `caption`
+ * @param {string} [opts.chipsHtml] @param {string} [opts.titleHtml] wins over `title`
+ * @returns {string}
+ */
+export function cardHeader(title, opts = {}) {
+  const {
+    caption = '', captionHtml = '', chipsHtml = '', titleHtml = '',
+  } = opts;
+  const titleP = el('p', titleHtml || esc(title), { className: 'wa-heading-xs' });
+  const cap = captionHtml || esc(caption);
+  if (!chipsHtml) {
+    return el('div', join(titleP, el('p', cap, { className: 'wa-caption-xs' })),
+      { className: 'wa-stack wa-gap-3xs' });
+  }
+  return el('div', join(
+    el('div', titleP + el('div', chipsHtml, { className: 'wa-cluster wa-gap-2xs' }), {
+      className: 'wa-split wa-flex-wrap wa-gap-xs wa-align-items-center',
+    }),
+    cap ? el('p', cap, { className: 'wa-caption-xs' }) : '',
+  ), { className: 'wa-stack wa-gap-3xs' });
+}
+
 // ── page-level composition helpers ───────────────────────────────────────────
 
 /**
  * A numbered editorial `<section>`. `number` renders through `h2[data-n]::before`,
- * so a screen reader never reads it twice.
+ * so a screen reader never reads it twice. `ledeHtml` is a chip strip under the lede.
  *
- * `answerHtml` is ONE plain-English sentence carrying the two or three numbers that
- * matter, set as a tinted strip above the evidence. Every number in it must come from
- * an existing helper or `Report` field — a renderer never computes one.
+ * `answerHtml` is ONE line: either one plain sentence of at most 20 words, or one
+ * `wa-cluster` of chips and inline `<b>` figures; never two sentences. Every number in
+ * it already comes from a formatter or a `Report` field. A section with nothing to add
+ * omits it.
  *
  * @param {string} sectionId @param {string} number @param {string} title
  * @param {string} bodyHtml @param {Object} [opts]
  * @returns {string}
  */
 export function section(sectionId, number, title, bodyHtml, opts = {}) {
-  const { kicker = '', lede = '', answerHtml = '' } = opts;
+  const {
+    kicker = '', lede = '', ledeHtml = '', answerHtml = '',
+  } = opts;
   const head = join(
     kicker ? el('p', esc(kicker), { className: 'kicker wa-caption-s wa-text-uppercase' }) : '',
     el('h2', esc(title), { className: 'wa-heading-2xl', dataN: number }),
     lede ? el('p', esc(lede), { className: 'wa-body-l' }) : '',
+    ledeHtml ? el('div', ledeHtml, { className: 'wa-cluster wa-gap-xs' }) : '',
   );
   const answer = answerHtml
     ? waCallout(answerHtml, { variant: 'neutral', appearance: 'plain', icon: 'circle-info' })
@@ -516,13 +753,15 @@ export function section(sectionId, number, title, bodyHtml, opts = {}) {
 }
 
 /**
- * A small quiet subheading inside a section. `anchorId` makes it a nav target.
+ * A small quiet subheading inside a section. `anchorId` makes it a nav target;
+ * `badgeHtml` follows the text inside the heading.
  * @param {string} text @param {Object} [opts] @param {string} [opts.anchorId]
+ * @param {string} [opts.badgeHtml]
  * @returns {string}
  */
 export function subhead(text, opts = {}) {
-  const { anchorId = '' } = opts;
-  return el('h3', esc(text), {
+  const { anchorId = '', badgeHtml = '' } = opts;
+  return el('h3', esc(text) + (badgeHtml ? ` ${badgeHtml}` : ''), {
     id: anchorId || null,
     className: 'wa-heading-s wa-color-text-quiet wa-text-uppercase',
   });
@@ -530,19 +769,22 @@ export function subhead(text, opts = {}) {
 
 /**
  * The stat-tile inner block: big number, caption, optional note. `chipHtml` sits
- * under the value, so a day-sensitive tile's gold rule carries a word as well.
+ * under the value, so a day-sensitive tile's gold rule carries a word as well;
+ * `subHtml` is a sub-figure after the note.
  *
  * @param {string} value @param {string} label @param {string} [noteHtml]
- * @param {Object} [opts] @param {string} [opts.chipHtml]
+ * @param {Object} [opts] @param {string} [opts.chipHtml] @param {string} [opts.subHtml]
+ * @param {string} [opts.size] heading step of the value, e.g. '2xl' or 'l'
  * @returns {string}
  */
 export function kpi(value, label, noteHtml = '', opts = {}) {
-  const { chipHtml = '' } = opts;
+  const { chipHtml = '', subHtml = '', size = '2xl' } = opts;
   return el('div', join(
-    el('span', esc(value), { className: 'wa-heading-2xl', style: 'font-family:var(--sans)' }),
+    el('span', esc(value), { className: `wa-heading-${size}`, style: 'font-family:var(--sans)' }),
     el('span', esc(label), { className: 'wa-caption-xs wa-text-uppercase' }),
     chipHtml,
     noteHtml ? el('span', noteHtml, { className: 'wa-body-s wa-color-text-quiet' }) : '',
+    subHtml ? el('span', subHtml, { className: 'wa-caption-xs' }) : '',
   ), { className: 'wa-stack wa-gap-3xs' });
 }
 
