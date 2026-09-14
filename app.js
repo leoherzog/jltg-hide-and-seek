@@ -20,11 +20,12 @@
 import {
   MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
   DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
-  cmpStr, num, pct, mins, hhmm, prettyDate, rhu, quantile, coord,
+  cmpStr, num, mins, hhmm, prettyDate, rhu, quantile, coord,
 } from './lib/core.js';
 
 import {
-  esc, el, join, waIcon, waCard, waDetails, jsonBlock, chip,
+  esc, el, join, waIcon, waCard, waBadge, waButton, jsonBlock, chip, waTag, degradeChip,
+  iconLabel,
 } from './render/html.js';
 
 // The S4 formatting and day-view helpers are aliased back to their bare CLI names.
@@ -151,15 +152,25 @@ const SECTIONS = [
 const NUMBERED = ['network', 'yourgame', 'transit', 'verdict',
   'questions', 'curses', 'trace', 'sources'];
 
-/** What each stage is doing, in words a waiting human can act on. */
+/** What each stage is doing; printed only when the shell has no stage stepper. */
 const STAGE_NOTE = {
   feed: 'Downloading and unzipping the GTFS feed.',
   days: 'Working out which service days this feed distinguishes.',
   network: 'Computing travel times from every stop and covering the map in hiding zones.',
   geo: 'Reading the OpenStreetMap data for this area.',
-  rules: 'Auditing all 80 questions and 24 curses against this map.',
+  rules: 'Auditing the question and curse decks.',
   score: 'Scoring the city out of 100 and ranking the hiding zones.',
   provenance: 'Collecting the receipts.',
+};
+
+/** Stage roots in run order, as `finish()` marks them arrived and the stepper lists them. */
+const STAGE_ORDER = ['feed', 'days', 'network', 'geo', 'rules', 'score', 'provenance'];
+
+/** A stepper step's `wa-tag` attributes per state; the word and icon never change. */
+const STEP_LOOK = {
+  done: { variant: 'success', appearance: 'outlined' },
+  current: { variant: 'brand', appearance: 'filled' },
+  pending: { variant: 'neutral', appearance: 'outlined' },
 };
 
 /** What each stage was doing, for the fatal-error heading. */
@@ -173,30 +184,57 @@ const STAGE_DOING = {
   provenance: 'collecting sources',
 };
 
-/**
- * What to try after a fatal error, keyed by the stage that failed. A map-file failure
- * must not be told the feed is not a GTFS zip.
- */
+/** Fatal-error causes as [icon, words] rows plus one action, by stage; map-file failures never blame the feed. */
 const STAGE_ADVICE = {
-  feed: 'The commonest causes are a link that is not a GTFS zip, a server that refuses '
-    + 'cross-origin requests, and a feed with no stop_times.txt.',
-  days: 'The feed carries no usable calendar: calendar.txt and calendar_dates.txt are '
-    + 'both empty or absent, or every service has expired.',
-  network: 'The feed parsed but no journeys could be built from it, which usually means '
-    + 'stop_times.txt is empty or its stops are not the ones stops.txt names.',
-  geo: 'This is the map files, not the feed: the request for them was blocked or never '
-    + 'came back. Try again, or point Map file base URL under Advanced at another copy.',
-  rules: 'The audit stopped part way. Running the same feed again is worth a try.',
-  score: 'The scoring stopped part way. Running the same feed again is worth a try.',
-  provenance: 'Everything was measured; only the receipts failed. Running the same feed '
-    + 'again is worth a try.',
-  worker: 'Nothing was heard back from the analysis. If it was reading the map files, '
-    + 'they may be blocked here; try again, or set another Map file base URL under '
-    + 'Advanced.',
+  feed: {
+    causes: [['file-zipper', 'Not a GTFS zip'], ['shield-halved', 'Server blocks cross-origin requests'],
+      ['file-circle-xmark', 'No stop_times.txt']],
+    action: '',
+  },
+  days: {
+    causes: [['calendar-xmark', 'No calendar.txt or calendar_dates.txt'],
+      ['calendar-minus', 'Every service has expired']],
+    action: '',
+  },
+  network: {
+    causes: [['file-circle-xmark', 'stop_times.txt empty'], ['link-slash', 'Stops don’t match stops.txt']],
+    action: '',
+  },
+  geo: {
+    causes: [['map', 'Map files blocked or timed out, not the feed']],
+    action: 'Try again, or point Map file base URL under Advanced at another copy.',
+  },
+  rules: { causes: [['list-check', 'The audit stopped part way']], action: 'Run the same feed again.' },
+  score: { causes: [['gauge', 'The scoring stopped part way']], action: 'Run the same feed again.' },
+  provenance: {
+    causes: [['book-open', 'Everything was measured; only the receipts failed']],
+    action: 'Run the same feed again.',
+  },
+  worker: {
+    causes: [['map', 'Map files blocked or never returned']],
+    action: 'Try again, or set another Map file base URL under Advanced.',
+  },
 };
 
-/** The one sentence a waiting reader gets about how long this takes. */
+/** How long a run takes, as a stepper chip word and its fuller `title`. */
+const RUN_EXPECTATION_CHIP = 'Usually about a minute';
 const RUN_EXPECTATION = 'Most feeds finish in about a minute; big metros take a few.';
+
+/** Tags naming what each degradation code removes, shown beside its toast chip. */
+const DEGRADE_AFFECTS = {
+  osm_unavailable: ['OSM questions', 'Curses', 'Scores'],
+  assumed_schedule: ['Timetable scores'],
+  feed_skipped: ['One feed'],
+  single_day_type: ['Day comparison'],
+  border_not_applied: ['Counts', 'Zones'],
+  exclusions_not_applied: ['Counts', 'Zones'],
+  merge_no_overlap: ['Service days'],
+  merge_short_overlap: ['Service days'],
+  merge_mixed_tz: ['Departure times'],
+  audit_failed: ['Questions', 'Curses'],
+  score_failed: ['Verdict', 'Score trace'],
+  provenance_failed: ['Sources'],
+};
 
 /** Reader-facing section names, for the “could not be rendered” notice. */
 const SECTION_NAME = {
@@ -260,6 +298,7 @@ function emptyReport() {
     questions: [],
     questionOrder: [],
     questionFunnel: [],
+    questionCategories: [],
     curses: [],
     fitness: null,
     caps: [],
@@ -271,6 +310,7 @@ function emptyReport() {
     place: '',
     provenance: {},
     degradations: [],
+    degradationCodes: {},
     // Main-side only: the `kind` of every `SourceRef` the run was started with. §05's
     // suggestion callout reads it to know whether a re-run is possible (a `File`
     // cannot survive the reload). Stamped in `startRun`, fixed for the run.
@@ -292,6 +332,9 @@ function emptyGeoLocal() {
       ordinals: {}, perZone: {}, borderLevels: {}, source: 'unknown', adminSource: 'unknown',
     },
     curseCounts: {}, cuisines: {}, legalSpots: {}, queries: [], notes: [],
+    noteCodes: {}, pathJoinEvaluated: false, snapshot: null, densityCellM: null,
+    osmCoverage: { strong: [], weak: [] }, cuisineStats: null, cuisineRejected: [],
+    iconOffsetP90M: null, derivedShore: null, redundantPairs: [],
   };
 }
 
@@ -517,13 +560,26 @@ function syncAnalyse() {
   const reason = document.querySelector('[data-role="analysereason"]');
   if (reason) {
     if (disabled) {
-      // With no catalogue there is no map and no search box to send anyone to.
-      reason.textContent = state.landing.pickerless
-        ? 'Bring your own feed below.'
-        : 'Pick a city on the map, search for one, or bring your own feed.';
+      const html = analyseReasonHtml(state.landing.pickerless);
+      if (reason.dataset.html !== html) {
+        reason.dataset.html = html;
+        reason.innerHTML = html;
+      }
     }
     reason.hidden = !disabled;
   }
+}
+
+/** The dead Analyse button's reason; pickerless omits the map and search. @param {boolean} pickerless @returns {string} */
+function analyseReasonHtml(pickerless) {
+  const sep = el('span', 'or', { className: 'wa-color-text-quiet' });
+  const items = pickerless
+    ? [iconLabel('file-zipper', 'your own feed')]
+    : [iconLabel('map-location-dot', 'the map'), sep, iconLabel('magnifying-glass', 'search'), sep,
+      iconLabel('file-zipper', 'your own feed')];
+  return el('span', el('span', 'Start from') + items.join(''), {
+    className: 'wa-cluster wa-gap-xs wa-align-items-center',
+  });
 }
 
 /**
@@ -595,10 +651,10 @@ function initLanding() {
   const body = host && host.querySelector('[data-role="pickerbody"]');
   if (!host || !body) return;
 
-  // The catalogue is ~370 KB; one line holds the space while it loads. `index.html`
-  // ships the same sentence, so this is a no-op on a cold load.
-  body.innerHTML = '<p class="wa-caption-s wa-color-text-quiet" role="status">'
-    + 'Loading the list of transit feeds…</p>';
+  // The catalogue is ~370 KB; three skeleton rows hold the space while it loads.
+  // `index.html` ships the same markup, so this is a no-op on a cold load.
+  body.innerHTML = '<wa-skeleton class="sk-row"></wa-skeleton>'.repeat(3)
+    + '<span class="wa-visually-hidden" role="status">Loading the list of transit feeds…</span>';
 
   (async () => {
     const [catalog, landing, picker] = await Promise.all([
@@ -623,9 +679,8 @@ function initLanding() {
     const map = host.querySelector('#catalog-map');
     if (map) map.hidden = true;
     // Say it, rather than leaving a reader in front of a panel that lost its map for
-    // no stated reason.
-    body.innerHTML = el('p', esc('The list of transit feeds did not load. Bring your '
-      + 'own feed below.'), { className: 'wa-body-s', role: 'status' });
+    // no stated reason. The Analyse reason carries what to do instead.
+    body.innerHTML = el('p', degradeChip('catalogue_unavailable'), { role: 'status' });
     const byo = $id('byo');
     if (byo) byo.open = true;
     // The Analyse reason names the controls that are on the page, and two of them
@@ -891,8 +946,8 @@ function readByoSource(form) {
     if (!/\.zip$/i.test(file.name)) {
       return {
         ref: null,
-        error: `“${file.name}” is not a .zip. A GTFS feed is a zip archive of .txt tables — `
-          + 'pick the archive itself, not a file from inside it.',
+        error: `“${file.name}” isn’t a .zip — choose the GTFS archive itself, not a file `
+          + 'from inside it.',
       };
     }
     return {
@@ -952,8 +1007,7 @@ function readSources(form) {
     return {
       sources: [],
       source: '',
-      error: 'Pick a city on the map, or choose a GTFS .zip from your computer '
-        + 'or paste a link to one.',
+      error: 'Nothing picked yet.',
     };
   }
   // Enforced here as well as in the picker: a reader with the maximum map picks can
@@ -962,9 +1016,8 @@ function readSources(form) {
     return {
       sources: [],
       source: '',
-      error: `That is ${num(sources.length)} feeds, and one run merges at most `
-        + `${num(MAX_FEEDS_PER_RUN)}. Remove ${num(sources.length - MAX_FEEDS_PER_RUN)} `
-        + 'of them and run the rest.',
+      error: `${num(sources.length)} feeds picked; the limit is ${num(MAX_FEEDS_PER_RUN)}. `
+        + `Remove ${num(sources.length - MAX_FEEDS_PER_RUN)}.`,
     };
   }
   return {
@@ -981,12 +1034,14 @@ function formErrorBox() {
   return { box, text: box && box.querySelector('[data-role="formerrortext"]') };
 }
 
-function showFormError(message) {
+/** @param {string} message plain text @param {string} [html] markup that replaces it */
+function showFormError(message, html = '') {
   const { box, text } = formErrorBox();
   if (!box || !text) return;
   // Unhide first, or `role="alert"` has nothing to announce.
   box.hidden = false;
-  text.textContent = message;
+  if (html) text.innerHTML = html;
+  else text.textContent = message;
 }
 
 function clearFormError() {
@@ -1010,14 +1065,42 @@ const invalidFields = new Map();
 /**
  * Put each validation failure on its own field: open Advanced, mark the control
  * invalid, replace its hint with the message, and move focus to the first one. The
- * foot callout still carries every sentence, since a field can be scrolled away.
+ * foot callout names each marked field as a button that focuses it, since a field can
+ * be scrolled away, and prints in full any message with no field to sit on.
  *
  * @param {HTMLElement|null} form
  * @param {Array<{opt: string, message: string}>} errors
  */
 function showOptionErrors(form, errors) {
-  showFormError(errors.map((e) => e.message).join(' '));
   const scope = form || document;
+  const fields = [];
+  const loose = [];
+  for (const e of errors) {
+    const node = e.opt ? scope.querySelector(`[data-opt="${e.opt}"]`) : null;
+    if (node && !fields.some((f) => f.node === node)) fields.push({ opt: e.opt, node });
+    else if (!node) loose.push(e.message);
+  }
+  const k = fields.length;
+  const lead = k ? `${num(k)} ${k === 1 ? 'field' : 'fields'} under Advanced `
+    + `${k === 1 ? 'needs' : 'need'} fixing:` : '';
+  const html = join(
+    lead ? el('span', esc(lead)) : '',
+    fields.map(({ opt, node }) => waButton(node.getAttribute('label') || opt, {
+      size: 's', appearance: 'plain', variant: 'danger', icon: 'triangle-exclamation', dataFocusOpt: opt,
+    })).join(''),
+    loose.length ? el('span', esc(loose.join(' '))) : '',
+  );
+  showFormError(errors.map((e) => e.message).join(' '),
+    k ? el('span', html, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }) : '');
+  const { text } = formErrorBox();
+  for (const button of text ? text.querySelectorAll('[data-focus-opt]') : []) {
+    button.addEventListener('click', () => {
+      const node = scope.querySelector(`[data-opt="${button.getAttribute('data-focus-opt')}"]`);
+      if (node) {
+        try { node.focus(); } catch { /* not focusable here */ }
+      }
+    });
+  }
   // A message on a field inside a closed disclosure is a message nobody reads.
   const advanced = $id('advanced');
   if (advanced && errors.some((e) => e.opt)) advanced.open = true;
@@ -1115,7 +1198,7 @@ function startRun(sources, options, source) {
       onWorkerMessage(event.data);
     } catch (err) {
       // A renderer throwing must not silently stop the run.
-      recordDegradation(`The page could not render part of the report (${err && err.message}).`);
+      recordDegradation('The page could not render part of the report.', { code: 'section_failed' });
       // eslint-disable-next-line no-console
       console.error(err);
     }
@@ -1179,15 +1262,14 @@ function rerunWithSuggestion() {
     const line = bbox.map((x) => num(x, 6, { comma: false })).join(', ');
     const note = $id('suggest-note');
     if (note) {
-      note.textContent = `This browser would not keep the run for a reload. The border `
-        + `${line} has been copied — press Reset and paste into the border fields on the `
-        + 'landing map.';
+      note.textContent = 'Couldn’t keep this run. Border copied — press Reset and paste it '
+        + 'into Border box under Advanced.';
       // `#suggest-note` is `role="status"` and `tabindex="-1"`, so a keyboard reader
       // lands on the explanation instead of the inert button.
       try { note.focus({ preventScroll: true }); } catch { /* not focusable here */ }
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(line).catch(() => { /* the sentence still says the numbers */ });
+      navigator.clipboard.writeText(line).catch(() => { /* §05's suggested box still prints the numbers */ });
     }
     return;
   }
@@ -1434,29 +1516,29 @@ function normaliseRerunOptions(raw) {
   return o;
 }
 
-/**
- * The `#run-history` chip: what this run is and what the previous one was. Templated
- * from the handoff and mounted once, from `boot()`, for a re-run.
- *
- * @param {{options: Object, note: Object}} handoff
- */
+/** Mount a re-run's `#run-history` chips once; coordinates stay in a `title` because §05 prints them. */
 function mountRunHistory(handoff) {
   const host = $id('run-history');
   if (!host) return;
+  host.innerHTML = runHistoryHtml(handoff);
+  host.hidden = false;
+}
+
+/** @param {{options: Object, note: Object}} handoff @returns {string} */
+function runHistoryHtml(handoff) {
   const b = handoff.options.borderBbox;
   const line = Array.isArray(b) ? b.map((x) => num(x, 6, { comma: false })).join(', ') : '';
   const note = handoff.note || {};
-  const from = handoff.options.borderSource === 'suggestion' ? 'from the suggestion'
-    : handoff.options.borderSource === 'landing' ? 'from the landing map' : 'inferred';
+  const from = handoff.options.borderSource === 'suggestion' ? 'Suggested border'
+    : handoff.options.borderSource === 'landing' ? 'Your border' : 'Inferred border';
   const prevBorder = note.prevBorderSource === 'suggestion' ? 'suggested border'
     : note.prevBorderSource === 'landing' ? 'your own border' : 'inferred border';
-  // A stored handoff without a `borderBbox` must read "border inferred", not
-  // "border  inferred".
-  const where = line ? `border ${line} ${from}` : `border ${from}`;
-  const text = `Run ${num(note.run || 2)} · ${where} · previous run: `
-    + `${prevBorder}${note.prevSize ? `, ${note.prevSize}` : ''}`;
-  host.innerHTML = chip(text, 'arrow-rotate-left', { variant: 'brand', title: text });
-  host.hidden = false;
+  return join(
+    waBadge(`Run ${num(note.run || 2)}`),
+    chip(from, 'draw-polygon', { variant: 'brand', title: line || null }),
+    chip(`Before: ${prevBorder}${note.prevSize ? ` · ${note.prevSize}` : ''}`, 'clock-rotate-left',
+      { dataBefore: true }),
+  );
 }
 
 /** (Re)start the silence timer. Every message from the worker is a sign of life. */
@@ -1464,9 +1546,9 @@ function armWatchdog() {
   clearWatchdog();
   state.watchdog = setTimeout(() => {
     state.watchdog = null;
-    fatalError('worker', `The analysis stopped responding — nothing was heard from it `
-      + `for ${WORKER_SILENCE_S} seconds. The most likely cause is a map file request `
-      + 'that never came back.');
+    fatalError('worker', `No reply for ${num(WORKER_SILENCE_S)} s`, {
+      messageHtml: chip(`No reply for ${num(WORKER_SILENCE_S)} s`, 'hourglass-end', { variant: 'danger' }),
+    });
   }, WORKER_SILENCE_S * 1000);
 }
 
@@ -1594,8 +1676,8 @@ function startHeartbeat() {
     }
     const m = Math.floor(state.waitedS / 60);
     const s = state.waitedS % 60;
-    const elapsed = m ? `${m} min ${s}s` : `${s}s`;
-    out.textContent = `Still working — ${elapsed} on this step.`;
+    out.innerHTML = el('span', esc('Still working on this step:'), { className: 'wa-visually-hidden' })
+      + chip(m ? `${num(m)} min ${num(s)} s` : `${num(s)} s`, 'hourglass-half', { variant: 'neutral' });
   }, 5000);
 }
 
@@ -1619,11 +1701,13 @@ function onWorkerMessage(msg) {
       (msg.level === 'warn' ? console.warn : console.info)('[worker]', msg.message);
       return;
     case 'degraded':
-      recordDegradation(msg.message);
+      recordDegradation(msg.message, { code: msg.code });
       return;
     case 'error':
+      // A non-fatal error is always paired with a templated `degraded` message, the record.
       if (msg.fatal) fatalError(msg.stage, msg.message);
-      else recordDegradation(`${msg.stage}: ${msg.message}`);
+      // eslint-disable-next-line no-console
+      else console.warn(`[worker] ${msg.stage}:`, msg.message);
       return;
     case 'done':
       finish(msg.report);
@@ -1694,6 +1778,7 @@ function applyStage(stage, payload) {
       r.curses = payload.curses || [];
       r.questionOrder = payload.questionOrder || [];
       r.questionFunnel = payload.questionFunnel || [];
+      r.questionCategories = payload.questionCategories || [];
       break;
     case 'score':
       r.fitness = payload.fitness || null;
@@ -1708,7 +1793,9 @@ function applyStage(stage, payload) {
       break;
     case 'provenance':
       r.provenance = { ...r.provenance, ...(payload.provenance || {}) };
-      for (const d of payload.degradations || []) recordDegradation(d, { quiet: true });
+      for (const d of payload.degradations || []) {
+        recordDegradation(d, { quiet: true, code: (payload.degradationCodes || {})[d] });
+      }
       break;
     default:
       break;
@@ -1746,20 +1833,21 @@ function finish(report) {
       if (value === null || value === undefined) continue;
       merged[key] = value;
     }
+    const codes = { ...state.report.degradationCodes, ...(report.degradationCodes || {}) };
     state.report = {
       ...merged,
       feedCounts: counts,
       // The worker's `Report` has no home for these two; they arrive on their stages.
       caps: report.caps || state.report.caps,
       stops: report.stops || state.report.stops,
+      // Codes app.js recorded itself (`section_failed`) survive the worker's map.
+      degradationCodes: codes,
     };
-    for (const d of report.degradations || []) recordDegradation(d, { quiet: true });
+    for (const d of report.degradations || []) recordDegradation(d, { quiet: true, code: codes[d] });
   }
   state.finished = true;
   state.running = false;
-  for (const stage of ['feed', 'days', 'network', 'geo', 'rules', 'score', 'provenance']) {
-    state.arrived.add(stage);
-  }
+  for (const stage of STAGE_ORDER) state.arrived.add(stage);
   hydrate('done');
   // Nothing will fill these now; a hidden husk is still a nav link that goes nowhere.
   for (const husk of [...document.querySelectorAll('[data-state="empty"]')]) {
@@ -1830,14 +1918,35 @@ function setProgress(msg) {
   if (pct && pct.textContent !== pctText) pct.textContent = pctText;
 
   const root = state.progress.stage.split(':')[0];
+  const stepper = document.querySelector('[data-role="stepper"]');
+  if (stepper) syncStepper(stepper, root);
   const note = document.querySelector('[data-role="progressnote"]');
-  // The first stage is also the start of the run, so it carries the one sentence
-  // about how long this takes.
-  const noteText = (STAGE_NOTE[root] || '')
-    + (root === 'feed' ? ` ${RUN_EXPECTATION}` : '');
-  if (note && note.textContent !== noteText) note.textContent = noteText;
+  // Without a stepper the stage sentence prints; the feed stage adds the duration chip.
+  const noteHtml = join(stepper ? '' : esc(STAGE_NOTE[root] || ''),
+    root === 'feed' ? chip(RUN_EXPECTATION_CHIP, 'stopwatch', { title: RUN_EXPECTATION }) : '');
+  if (note && note.dataset.html !== noteHtml) {
+    note.dataset.html = noteHtml;
+    note.innerHTML = noteHtml;
+  }
   const host = document.querySelector('[data-role="progress"]');
   if (host) host.setAttribute('data-stage', root);
+}
+
+/** Mark each li[data-step] done/current/pending against the stage root. @param {Element} stepper @param {string} root */
+function syncStepper(stepper, root) {
+  const at = root === 'done' ? STAGE_ORDER.length : STAGE_ORDER.indexOf(root);
+  if (at < 0 || stepper.getAttribute('data-root') === root) return;
+  stepper.setAttribute('data-root', root);
+  for (const li of stepper.querySelectorAll('li[data-step]')) {
+    const i = STAGE_ORDER.indexOf(li.getAttribute('data-step'));
+    const step = i < at ? 'done' : i === at ? 'current' : 'pending';
+    li.setAttribute('data-state', step);
+    const tag = li.querySelector('wa-tag');
+    if (tag) {
+      tag.setAttribute('variant', STEP_LOOK[step].variant);
+      tag.setAttribute('appearance', STEP_LOOK[step].appearance);
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1865,7 +1974,9 @@ function hydrate(stage) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`[app] ${def.id} renderer failed`, err);
-      recordDegradation(`The ${SECTION_NAME[def.id] || def.id} section could not be rendered (${err && err.message}).`);
+      const text = `The ${SECTION_NAME[def.id] || def.id} section could not be rendered.`;
+      failedSections.set(text, SECTION_NAME[def.id] || def.id);
+      recordDegradation(text, { code: 'section_failed' });
       continue;
     }
     if (state.rendered.get(def.id) === html) continue;
@@ -2110,13 +2221,19 @@ function pruneNav() {
 // Degradations and errors
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** A failed section's degradation sentence → the section's reader-facing name. */
+const failedSections = new Map();
+
 /**
- * Every `degraded` message and every non-fatal `error` lands here, and every one of
- * them reaches the page. Nothing is swallowed.
+ * Every `degraded` message and every section that failed to render lands here, and
+ * every one of them reaches the page. `opts.code` is its `DEGRADE_KIND` code.
  */
 function recordDegradation(message, opts = {}) {
   const text = String(message || '').trim();
-  if (!text || state.degradations.includes(text)) return;
+  if (!text) return;
+  const codes = state.report.degradationCodes;
+  if (opts.code && !Object.hasOwn(codes, text)) codes[text] = opts.code;
+  if (state.degradations.includes(text)) return;
   state.degradations.push(text);
   if (!state.report.degradations.includes(text)) state.report.degradations.push(text);
   if (!opts.quiet) renderDegradations();
@@ -2142,27 +2259,26 @@ function recordDegradation(message, opts = {}) {
 function renderDegradations() {
   const host = degradationHost();
   if (!host) return;
-  const lines = [...state.degradations];
-  const geoLanded = state.arrived.has('geo');
-  if (geoLanded && !state.report.geo.available
-      && !lines.some((x) => x.includes('OpenStreetMap') || x.toLowerCase().includes('osm'))) {
-    lines.unshift('OpenStreetMap is unavailable, so every question, curse and score that '
-      + 'needs map features is excluded rather than guessed at.');
+  const codes = state.report.degradationCodes || {};
+  const lines = state.degradations.map((text) => ({ text, code: codes[text] || '' }));
+  // A guard: with the map layer down, the toast names it even if no sentence did.
+  if (state.arrived.has('geo') && !state.report.geo.available
+      && !lines.some((x) => x.code === 'osm_unavailable')) {
+    lines.unshift({
+      text: 'OpenStreetMap is unavailable, so every question, curse and score that '
+        + 'needs map features is excluded rather than guessed at.',
+      code: 'osm_unavailable',
+    });
   }
   const open = host.querySelector('wa-toast-item');
   if (!lines.length) {
     if (open) open.hide();
     return;
   }
-  const signature = lines.join('\u0000');
+  const signature = lines.map((x) => x.text).join('\u0000');
   if (!open && signature === state.degradationsDismissed) return;
 
-  const body = join(
-    el('p', esc(lines.length === 1
-      ? 'Part of this report is missing:'
-      : 'Parts of this report are missing:'), { className: 'wa-body-s' }),
-    el('ul', lines.map((x) => el('li', esc(x))).join(''), { className: 'wa-stack wa-gap-2xs' }),
-  );
+  const body = degradationToastHtml(lines);
 
   if (open) {
     // Already on screen and still unread: swap the contents, do not re-animate.
@@ -2186,6 +2302,27 @@ function renderDegradations() {
   host.appendChild(item);
 }
 
+/** Toast rows: chip and affected tags visible, sentence folded in `<details>`. @param {Array<{text: string, code: string}>} lines @returns {string} */
+function degradationToastHtml(lines) {
+  const rows = lines.map(({ text, code }) => {
+    const mark = code
+      ? degradeChip(code)
+      : chip('Part of this report is missing', 'triangle-exclamation', { variant: 'warning' });
+    const affects = code === 'section_failed'
+      ? (failedSections.has(text) ? [failedSections.get(text)] : [])
+      : (DEGRADE_AFFECTS[code] || []);
+    return el('li', join(
+      el('div', mark + affects.map((a) => waTag(a)).join(''), { className: 'wa-cluster wa-gap-2xs' }),
+      el('details', el('summary', esc('Details'), { className: 'wa-caption-xs' })
+        + el('p', esc(text), { className: 'wa-body-s' }), { className: 'ld-more' }),
+    ), { className: 'wa-stack wa-gap-3xs' });
+  });
+  return join(
+    el('p', esc('Missing from this report'), { className: 'wa-heading-xs' }),
+    el('ul', rows.join(''), { className: 'wa-stack wa-gap-s wa-list-plain', role: 'list' }),
+  );
+}
+
 /**
  * The `<wa-toast>` stack (index.html, just after `</wa-page>`), created if absent.
  *
@@ -2207,7 +2344,7 @@ function degradationHost() {
  * the zip could not be opened, or the feed has no `stops.txt`. The page says which
  * stage failed and stops pretending.
  */
-function fatalError(stage, message) {
+function fatalError(stage, message, opts = {}) {
   if (state.fatal) return;
   state.fatal = true;
   state.running = false;
@@ -2220,22 +2357,7 @@ function fatalError(stage, message) {
   // the error's own container. `failed` shows the report region and hides the run
   // chrome, which is exactly what is wanted.
   setShellState('failed');
-  // The stack goes on an inner wrapper, not the card host: the host's own flex items
-  // are wa-card's shadow header/body/footer, so a gap there opens a seam under the
-  // header instead of spacing the card's own blocks.
-  const advice = STAGE_ADVICE[stage]
-    || 'Try another feed, or the same one again.';
-  const card = waCard(el('div', join(
-    el('p', esc(String(message || 'The run stopped and did not say why.')), { className: 'wa-body-m' }),
-    el('p', esc(`${advice} Reset in the header puts the landing map back.`),
-      { className: 'wa-body-s wa-color-text-quiet' }),
-    el('wa-button', join(waIcon('arrow-rotate-left', { slot: 'start' }), esc('Try another feed')),
-      { dataRole: 'errorreset', variant: 'brand', appearance: 'filled', size: 'm' }),
-  ), { className: 'wa-stack wa-gap-m' }), {
-    headerHtml: el('h2', join(waIcon('triangle-exclamation'),
-      esc(STAGE_DOING[stage] ? `Stopped while ${STAGE_DOING[stage]}` : 'The analysis stopped')),
-      { className: 'wa-heading-l wa-cluster wa-gap-xs wa-align-items-center' }),
-  });
+  const card = fatalCardHtml(stage, message, opts.messageHtml || '');
   const slot = document.querySelector('#run-error');
   if (slot) {
     // The shell has a place for this. Use it, and clear away the skeletons that are
@@ -2272,21 +2394,42 @@ function fatalError(stage, message) {
   setProgress({ stage, label: `Stopped during ${stage}`, done: 0, total: 0 });
 }
 
+/** The fatal card: stage, message, cause rows, action, reset. @param {string} stage @param {string} message @param {string} [messageHtml] replaces the message @returns {string} */
+function fatalCardHtml(stage, message, messageHtml = '') {
+  const advice = STAGE_ADVICE[stage] || { causes: [], action: 'Try another feed, or the same one again.' };
+  // Stack on an inner wrapper: a gap on the card host opens a seam under its shadow header.
+  return waCard(el('div', join(
+    messageHtml
+      ? el('div', messageHtml)
+      : el('p', esc(String(message || 'The run stopped and did not say why.')), { className: 'wa-body-m' }),
+    advice.causes.length ? el('div', join(
+      el('p', esc('Likely causes'), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
+      ...advice.causes.map(([icon, text]) => iconLabel(icon, text, { quiet: false })),
+    ), { className: 'wa-stack wa-gap-2xs wa-body-s' }) : '',
+    advice.action ? el('p', esc(advice.action), { className: 'wa-body-s wa-color-text-quiet' }) : '',
+    el('wa-button', join(waIcon('arrow-rotate-left', { slot: 'start' }), esc('Try another feed')),
+      { dataRole: 'errorreset', variant: 'brand', appearance: 'filled', size: 'm' }),
+  ), { className: 'wa-stack wa-gap-m' }), {
+    headerHtml: el('h2', join(waIcon('triangle-exclamation'),
+      esc(STAGE_DOING[stage] ? `Stopped while ${STAGE_DOING[stage]}` : 'The analysis stopped')),
+      { className: 'wa-heading-l wa-cluster wa-gap-xs wa-align-items-center' }),
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // S4 · per-day views
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** The day strip: four figures, one sentence, one fitness delta. (`_s4_banner`.) */
+/** The day strip's figures, each already formatted. (`_s4_banner`.) */
 function dayBanner(report, dayKey) {
   const v = dayView(report, dayKey);
   const label = dayLabel(report, dayKey);
   const day = dayByKey(report, dayKey);
-  const size = report.size || { hidingPeriodMin: 0 };
   const perDay = (report.fitness && report.fitness.perDay) || {};
+  const perDayDelta = (report.fitness && report.fitness.perDayDelta) || {};
   const best = bestDay(report);
   const score = dayKey in perDay ? perDay[dayKey] : null;
-  const bestScore = best in perDay ? perDay[best] : null;
-  const delta = (score === null || bestScore === null) ? null : score - bestScore;
+  const delta = Object.hasOwn(perDayDelta, dayKey) ? perDayDelta[dayKey] : null;
 
   const headway = v.medianHeadwayMin;
   const midday = v.middayHeadwayP25P50P75;
@@ -2305,72 +2448,55 @@ function dayBanner(report, dayKey) {
 
   const nDates = day ? day.dayType.dates.length : 0;
   const asOf = String(v.date || (report.provenance && report.provenance.asOf) || '20000101');
-  let note = `${num(v.trips || 0)} trips across ${num(v.servedStops || 0)} stops, `
-    + `${num(v.nZones || 0)} hiding zones, and `
-    + `${pct(Number(v.reachableZoneShare || 0))} of them reachable inside the `
-    + `${num(size.hidingPeriodMin)}-minute hiding period. `
-    + `The median stop's last departure is ${hhmm(Math.trunc(v.medianLastDepartureS || 0))}. `
-    + `${num(nDates)} ${nDates === 1 ? 'date' : 'dates'} in this feed run this pattern; `
-    + `${prettyDate(asOf)} is the one every number on this page is measured on.`;
-  if (delta !== null && delta < -0.05) {
-    note += ` Map fitness on this day is ${num(score, 1)}, ${signed(delta)} against `
-      + `${dayLabel(report, best)}.`;
-  }
 
   let variant;
   if (delta === null || delta >= -2.0) variant = 'success';
   else if (delta >= -10.0) variant = 'warning';
   else variant = 'danger';
 
-  const nRoutes = report.feedCounts.routes
-    || Object.keys((report.feed && report.feed.routes) || {}).length;
-
   return {
     key: dayKey,
     label,
     variant,
-    routes: `${num(v.routes || 0)} of ${num(nRoutes)}`,
     cadence,
     cadenceNote,
-    span: `${hhmm(Math.trunc(v.firstDepartureS || 0))}–${hhmm(Math.trunc(v.lastDepartureS || 0))}`,
-    note,
+    trips: num(v.trips || 0),
+    lastBus: hhmm(Math.trunc(v.medianLastDepartureS || 0)),
+    measuredOn: prettyDate(asOf),
+    dates: `${num(nDates)} ${nDates === 1 ? 'date' : 'dates'} like this`,
     score: score === null ? null : num(score, 1),
-    delta: delta === null ? null : signed(delta),
+    delta: delta === null || delta === 0 ? null : signed(delta),
+    deltaUp: delta !== null && delta > 0,
+    bestLabel: dayLabel(report, best),
   };
 }
 
-/**
- * The day strip's inner markup. `wa-callout`'s variant is set by the page script,
- * because the element itself is rendered once and reused.
- *
- * The day's heading leads, the four figures read across, and the 55-word paragraph —
- * which was in the way of everything under it — is one tap down. Nothing is dropped:
- * the cadence's "midday quartiles" qualifier moves into that paragraph as words, and
- * the paragraph itself is verbatim.
- *
- * Takes the banner both callers already hold, rather than the `(report, dayKey)` pair
- * that would build a second one.
- */
+/** The day strip's inner markup from a built banner; the page script sets the callout variant. */
 function dayBannerHtml(b) {
-  const figures = [['Routes running', b.routes], ['How often', b.cadence], ['Service window', b.span]];
+  const figure = (valueHtml, caption) => el('div', join(
+    el('span', valueHtml, { className: 'wa-heading-s wa-cluster wa-gap-2xs wa-align-items-center' }),
+    el('span', esc(caption), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
+  ), { className: 'wa-stack wa-gap-3xs' });
+  const figures = [
+    figure(esc(b.cadence), `How often · ${b.cadenceNote}`),
+    figure(esc(b.trips), 'Trips'),
+    figure(esc(b.lastBus), 'Last bus · median stop'),
+  ];
   if (b.score !== null) {
-    figures.push(['Map fitness today',
-      b.score + (b.delta && b.delta !== '0.0' ? ` · ${b.delta}` : '')]);
+    const deltaChip = b.delta === null ? '' : chip(`${b.delta} vs ${b.bestLabel}`,
+      b.deltaUp ? 'arrow-trend-up' : b.variant === 'danger' ? 'triangle-exclamation' : 'arrow-trend-down',
+      { variant: b.variant });
+    figures.push(figure(esc(b.score) + deltaChip, 'Map fitness today'));
   }
-  const note = `How often: ${b.cadence}, ${b.cadenceNote}. ${b.note}`;
-  return join(
+  return el('div', join(
     el('div', join(
       el('p', join(waIcon('calendar-day'), esc(`${b.label} service`)),
         { className: 'wa-heading-xs wa-cluster wa-gap-2xs wa-align-items-center' }),
-      el('div', figures.map(([caption, value]) => el('div', join(
-        el('span', esc(value), { className: 'wa-heading-s' }),
-        el('span', esc(caption), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
-      ), { className: 'wa-stack wa-gap-3xs' })).join(''), { className: 'wa-cluster wa-gap-l' }),
-    ), { className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-m' }),
-    waDetails('What that means on the ground',
-      el('p', esc(note), { className: 'wa-body-s wa-color-text-quiet' }),
-      { appearance: 'plain' }),
-  );
+      chip(`Measured on ${b.measuredOn}`, 'calendar-check'),
+      chip(b.dates, 'calendar-days'),
+    ), { className: 'wa-cluster wa-gap-xs wa-align-items-center' }),
+    el('div', figures.join(''), { className: 'wa-cluster wa-gap-l' }),
+  ), { className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-m' });
 }
 
 /**
@@ -2403,19 +2529,19 @@ function travelRows(report, dayKey) {
     let verdict;
     if (minutes > hp) {
       tone = 'bust';
-      verdict = `busts the ${num(hp)}-minute hiding period`;
+      verdict = chip(`over ${num(hp)} min`, 'circle-xmark', { variant: 'danger' });
     } else if (minutes > 0.75 * hp || (transfers || 0) >= 2) {
       tone = 'tight';
-      verdict = 'fits, but with no slack or two changes';
+      verdict = chip('tight', 'circle-half-stroke', { variant: 'warning' });
     } else {
       tone = 'fits';
-      verdict = 'fits the hiding period comfortably';
+      verdict = chip('fits', 'circle-check', { variant: 'success' });
     }
     const leg = joinWords(routes.map((r) => `route ${r}`)) || 'walking';
     const tip = el('b', esc(name)) + esc(
-      `${mins(minutes, 1)} from the start location on ${leg}, `
-      + `${num(transfers || 0)} ${(transfers || 0) === 1 ? 'change' : 'changes'} — ${verdict}.`,
-    );
+      `${mins(minutes, 1)} · ${leg} · `
+      + `${num(transfers || 0)} ${(transfers || 0) === 1 ? 'change' : 'changes'}`,
+    ) + ' ' + verdict;
     rows.push({
       name, label: short, minutes: rhu(minutes, 1), avail: true, tone, note: '', tip,
     });
@@ -2700,19 +2826,31 @@ function suggestedBorderPayload(sb) {
  * `reach[dayKey][i]` is minutes from the round-start station to `zones[i]` (`null` =
  * no journey); `hw[dayKey][i]` is `stops[i]`'s median headway over 06:00–22:00
  * (`null` = no service). Over `MAX_MAP_STOPS` the stop tuples and `hw` are dropped.
+ * `fmt`: core-formatted hover text keyed by raw value (min, routes, score).
  */
 function stopsPayload(report) {
   const rows = report.stops || [];
   const withinCap = rows.length <= MAX_MAP_STOPS;
+  const fmt = { min: {}, routes: {}, score: {} };
   const stops = withinCap
-    ? rows.map((s) => [coord(s.lon), coord(s.lat), s.name, (s.routeIds || []).length,
-      s.frequent ? 1 : 0])
+    ? rows.map((s) => {
+      const n = (s.routeIds || []).length;
+      fmt.routes[n] = `${num(n)} ${n === 1 ? 'route' : 'routes'}`;
+      return [coord(s.lon), coord(s.lat), s.name, n, s.frequent ? 1 : 0];
+    })
     : [];
   const scores = report.zoneScores || {};
   const zoneRows = [...(report.zones || [])]
     .sort((a, b) => (a.zoneId < b.zoneId ? -1 : a.zoneId > b.zoneId ? 1 : 0));
-  const zones = zoneRows.map((z) => [coord(z.lon), coord(z.lat), z.name,
-    z.zoneId in scores ? rhu(scores[z.zoneId].overallTenths / 10.0, 1) : null]);
+  const zones = zoneRows.map((z) => {
+    const score = z.zoneId in scores ? rhu(scores[z.zoneId].overallTenths / 10.0, 1) : null;
+    if (score !== null) fmt.score[score] = num(score, 1);
+    return [coord(z.lon), coord(z.lat), z.name, score];
+  });
+  const minute = (value) => {
+    if (value !== null) fmt.min[value] = mins(value, Number.isInteger(value) ? 0 : 1);
+    return value;
+  };
 
   const keys = dayOrder(report);
   const reach = {};
@@ -2723,7 +2861,7 @@ function stopsPayload(report) {
     const minutes = cell.minutes || {};
     reach[key] = zoneRows.map((z) => {
       const value = minutes[z.zoneId];
-      return (value === null || value === undefined) ? null : value;
+      return minute((value === null || value === undefined) ? null : value);
     });
   }
   const hw = {};
@@ -2731,7 +2869,7 @@ function stopsPayload(report) {
     for (const key of keys) {
       hw[key] = rows.map((s) => {
         const value = (s.headwayByDay || {})[key];
-        return (value === null || value === undefined) ? null : value;
+        return minute((value === null || value === undefined) ? null : value);
       });
     }
   }
@@ -2747,6 +2885,7 @@ function stopsPayload(report) {
     rings: zones.length <= MAX_MAP_ZONE_RINGS,
     reach,
     hw,
+    fmt,
     spokes,
     spoke_cap: report.spokeCap || { shown: 0, total: 0, source: 'shapes' },
   };
@@ -2809,7 +2948,11 @@ function mountChrome() {
     ? chip(`${num(f.score, 1)} · ${f.band}`, 'circle-check', {
       variant: bandVariant(f.band), appearance: 'filled',
     })
-    : chip('Partly measurable', 'circle-question', { variant: 'neutral' });
+    : chip('Partly measurable', 'circle-question', {
+      variant: 'neutral',
+      ariaDescription: `${num(f.availablePoints, 1)} of 100 points could be measured`,
+      title: `${num(f.availablePoints, 1)} of 100 points could be measured`,
+    });
 }
 
 function mountDayChrome() {
@@ -3162,6 +3305,11 @@ function bindPrintDisclosures() {
       if (native) native.open = true;
       if (body) body.style.height = 'auto';
     }
+    for (const details of document.querySelectorAll('details')) {
+      if (details.open) continue;
+      printOpened.push(details);
+      details.open = true;
+    }
   };
   const closeAfterPrint = () => {
     if (!printOpened) return;
@@ -3304,7 +3452,7 @@ function openTargeted() {
   const t = document.getElementById(id);
   if (!t) return;
   for (let n = t; n && n !== document.body; n = n.parentElement) {
-    if (n.localName === 'wa-details') n.open = true;
+    if (n.localName === 'wa-details' || n.localName === 'details') n.open = true;
     else if (n.localName === 'wa-accordion-item') n.setAttribute('expanded', '');
     else if (n.localName === 'wa-tab-panel') {
       const g = n.closest('wa-tab-group');
@@ -3719,6 +3867,8 @@ async function buildMap() {
     HAS_REACH = Boolean(S.reach && Object.keys(S.reach).length);
     HAS_HW = Boolean(S.hw && Object.keys(S.hw).length);
     const reach = (S.reach || {})[day] || null;
+    const F = S.fmt || {};
+    const FMIN = F.min || {}, FROUTES = F.routes || {}, FSCORE = F.score || {};
     const zs = W.map.getSource('zonedots');
     if (zs) {
       zs.setData({
@@ -3730,6 +3880,8 @@ async function buildMap() {
             type: 'Feature',
             properties: {
               name: z[2], score: z[3],
+              stxt: z[3] == null ? '' : (FSCORE[z[3]] || ''),
+              ttxt: t === null ? '' : (FMIN[t] || ''),
               t: t === null ? -1 : t,
               frac: (t === null || hp <= 0) ? -1 : t / hp,
             },
@@ -3750,6 +3902,7 @@ async function buildMap() {
             type: 'Feature',
             properties: {
               name: s[2], routes: s[3], freq: s[4] || 0,
+              rtxt: FROUTES[s[3]] || '', hwtxt: v === null ? '' : (FMIN[v] || ''),
               hb: v === null ? 0 : binOf(v),
               hwv: v === null ? -1 : v,
             },
@@ -3851,11 +4004,11 @@ async function buildMap() {
      the viewport, so clearing a highlight is one applyMode() and two hidden layers. */
   const HL_NONE = ['==', ['literal', 0], ['literal', 1]];   /* matches no feature */
   const HL_LABEL = {
-    zones: 'the hiding zones',
-    stops: 'the served stops',
-    frequency: 'the stops on a 15-minute route-direction',
-    reach: 'the zones the hiding period cannot reach',
-    extent: 'the border and the smallest circle that holds the network',
+    zones: 'hiding zones',
+    stops: 'served stops',
+    frequency: '15-min route-direction stops',
+    reach: 'unreachable zones',
+    extent: 'network extent',
   };
   let hlPinned = null;
   let hlPreview = null;
@@ -4079,22 +4232,13 @@ async function buildMap() {
      registration order, so a click on a feature clears the pin and then re-pins. */
   map.on('click', hideTip);
 
-  const stopTip = f => {
-    const wait = Number(f.hwv);
-    return '<b>' + esc(f.name || 'Stop') + '</b>' + f.routes + ' route(s) on this day'
-      + (!isFinite(wait) || wait < 0
-        ? ' · no service on the day you picked'
-        : ' · a departure about every ' + wait + ' min, 06:00-22:00')
-      + (Number(f.freq) ? ' · on a 15-minute route-direction' : '');
-  };
-  const zoneTip = f => {
-    const t = Number(f.t);
-    return '<b>' + esc(f.name || 'Zone') + '</b>Hiding zone'
-      + (f.score == null ? '' : ' · rated ' + f.score + ' / 100')
-      + (!isFinite(t) || t < 0
-        ? ' · no journey from the start on this day'
-        : ' · ' + t + ' min from the start');
-  };
+  /* Every figure in these tips arrives formatted in #stops; the runtime only joins. */
+  const stopTip = f => '<b>' + esc(f.name || 'Stop') + '</b>' + esc(f.rtxt || '')
+    + (f.hwtxt ? ' · every ' + esc(f.hwtxt) + ' <small>06:00–22:00</small>' : ' · no service this day')
+    + (Number(f.freq) ? ' · 15-min route-direction' : '');
+  const zoneTip = f => '<b>' + esc(f.name || 'Zone') + '</b>Zone'
+    + (f.stxt ? ' · ' + esc(f.stxt) + '/100' : '')
+    + (f.ttxt ? ' · ' + esc(f.ttxt) + ' from start' : ' · no journey from start');
   const spokeTip = f => '<b>' + esc(String(f.r || 'Route')) + '</b>'
     + (Number(f.hub) ? 'Calls at ' + esc(DATA.hub.name) : 'Does not call at the hub');
 

@@ -23,24 +23,20 @@
 // @module render/deck
 
 import {
-  GENERATOR, VERSION, SEEKER_SAMPLE_CAP, cmpStr, num, pct, prettyDate,
+  GENERATOR, VERSION, SEEKER_SAMPLE_CAP, DEGRADE_KIND, cmpStr, num, pct, mins, hhmm,
+  prettyDate, fillPct,
 } from '../lib/core.js';
 
 import {
-  esc, el, voidEl, join, waIcon, waCard, waCallout, waTag, waButton, waDetails,
-  waScroller, waProgressBar, waSwitch, chip, budgetBar, searchInput, section, subhead,
-  provChip,
+  esc, el, voidEl, join, waIcon, waCard, waCallout, waTag, waBadge, waButton, waDetails,
+  waScroller, waProgressBar, waSwitch, waCopyButton, chip, budgetBar, searchInput, section,
+  subhead, provChip, basisChip, degradeChip, factChips, miniMeter, linkChip, iconLabel,
+  leadDetail, cardHeader, dataTable,
 } from './html.js';
 
 import {
-  S4_ORDINAL, s4Dist, s4JoinWords, s4Plural, s4NaturalCmp, s4LiveQuestions,
-  s4CardHeader, sortedBy, fnum,
+  S4_ORDINAL, s4Dist, s4JoinWords, s4Plural, s4LiveQuestions, sortedBy, fnum,
 } from './verdict.js';
-
-// The catalogue is frozen data that imports only `lib/core.js`, so reading `draw` /
-// `keep` off it on the main thread is safe. The funnel needs each question's card cost
-// and `QuestionAudit` does not carry it.
-import { QUESTIONS } from '../rules/catalogue.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Rulebook presentation constants (read, never recomputed)
@@ -52,7 +48,7 @@ import { QUESTIONS } from '../rules/catalogue.js';
 //
 // These words are this generator's, not the rulebook's (rules/audit.js "THE SIX
 // VERDICTS"); nothing on the page may present them as rules.
-const S4_STATUS_TAG = Object.freeze({
+export const S4_STATUS_TAG = Object.freeze({
   functional: Object.freeze(['works', 'circle-check', 'success', 'accent']),
   weak: Object.freeze(['barely helps', 'circle-half-stroke', 'warning', 'accent']),
   degenerate: Object.freeze(['always the same answer', 'equals', 'neutral', 'filled']),
@@ -72,12 +68,12 @@ const S4_STATUS_DEF = Object.freeze([
     + 'score rather than guessed at.']),
 ]);
 
-// The same statuses as a counting phrase ("7 work · 3 barely help"): a count needs a verb.
-const S4_STATUS_COUNT = Object.freeze({
+// The same statuses as a short counting phrase ("7 work · 2 same answer").
+export const S4_STATUS_COUNT = Object.freeze({
   functional: 'work',
   weak: 'barely help',
-  degenerate: 'always answer the same',
-  dead: "can't be answered",
+  degenerate: 'same answer',
+  dead: 'unanswerable',
   unknown: 'not checked',
 });
 
@@ -87,7 +83,7 @@ const S4_STATUS_ORDER = Object.freeze([
   'functional', 'weak', 'degenerate', 'dead', 'unknown',
 ]);
 
-const S4_ACTION_TAG = Object.freeze({
+export const S4_ACTION_TAG = Object.freeze({
   keep: Object.freeze(['leave it in', 'circle-check', 'success', 'accent']),
   warn: Object.freeze(['flag it', 'circle-half-stroke', 'warning', 'accent']),
   remove: Object.freeze(['take it out', 'circle-xmark', 'danger', 'accent']),
@@ -107,17 +103,17 @@ const S4_ACTION_DEF = Object.freeze([
 
 const S4_ACTION_ORDER = Object.freeze(['keep', 'warn', 'remove', 'player-choice']);
 
-// Curse tier → (rulebook label, plain phrase, meaning). "tier N" stays on every row
-// and in `data-tier`.
+// Curse tier → (rulebook label, plain phrase, meaning, icon). Rows carry the tier in data-tier; tier-4 prints its chip once above its table.
 const S4_TIER_DEF = Object.freeze([
   Object.freeze(['tier 1', 'the rulebook says so',
-    'The rulebook itself tells you to take this one out.']),
+    'The rulebook itself tells you to take this one out.', 'book']),
   Object.freeze(['tier 2', 'the map decides',
-    'It depends on the geography, and this map settles it clearly enough to act on.']),
+    'It depends on the geography, and this map settles it clearly enough to act on.', 'map']),
   Object.freeze(['tier 3', 'warning only',
-    "Weaker or stranger on this map, but never removed on this page's advice."]),
+    "Weaker or stranger on this map, but never removed on this page's advice.",
+    'triangle-exclamation']),
   Object.freeze(['tier 4', 'nothing to do with the map',
-    'It is about the deck, the clock or the players, not the geography.']),
+    'It is about the deck, the clock or the players, not the geography.', 'clock']),
 ]);
 
 const S4_CATEGORY_LABEL = Object.freeze({
@@ -129,9 +125,30 @@ const S4_CATEGORY_LABEL = Object.freeze({
   tentacle: 'Tentacle',
 });
 
-// The order `_s4_question_categories` walks before it appends anything unexpected.
-const S4_CATEGORY_ORDER = Object.freeze([
-  'matching', 'measuring', 'radar', 'thermometer', 'photo', 'tentacle',
+// Each admin border question and the matching question it shadows.
+const S4_ADMIN_TWIN = Object.freeze({
+  'measuring.admin_1_border': 'matching.admin_1',
+  'measuring.admin_2_border': 'matching.admin_2',
+});
+
+// Caveats that hold for one status across a whole category, printed once in §07's words
+// list instead of on every row: (category, status, sentence).
+const S4_CATEGORY_CAVEATS = Object.freeze([
+  Object.freeze(['matching', 'weak', 'The cells are so fine that a random seeker almost never '
+    + "shares yours, so the answer is nearly always no — and a no eliminates only that seeker's "
+    + 'own cell.']),
+  Object.freeze(['radar', 'weak',
+    'One branch is rare enough that the expected narrowing is small.']),
+  Object.freeze(['photo', 'weak', 'Note which branch: the rare answer is the informative one, '
+    + 'and “I cannot answer” is a real answer that pays the hider.']),
+  Object.freeze(['photo', 'degenerate', 'The photograph itself may still show the seekers '
+    + 'something — a landmark, a shadow, a skyline — that no model can score.']),
+]);
+
+// `Provenance.adminLevels` keys with the rulebook's ordinal words.
+const S4_ADMIN_ORDINALS = Object.freeze([
+  Object.freeze(['1', '1st']), Object.freeze(['2', '2nd']),
+  Object.freeze(['3', '3rd']), Object.freeze(['4', '4th']),
 ]);
 
 // The three purchase curses the "no spending" switch toggles together. The rulebook
@@ -271,27 +288,21 @@ function s4Table(headers, rows, opts = {}) {
 }
 
 /**
- * A `<dl>` of `(plain phrase, the precise term, what it means)` — a list on the page,
- * not a tooltip, because this reader is on a phone.
- *
+ * A `<dl>` of `(mark markup, the precise term, what it means)`: a list on the page, not a
+ * tooltip, because this reader is on a phone. An empty term prints no `<code>`.
  * (generate.py `_s4_definition_list`.)
  *
  * @param {ReadonlyArray<[string,string,string]>} rows
  * @returns {string}
  */
 function s4DefinitionList(rows) {
-  const out = [];
-  for (const [plain, term, meaning] of rows) {
-    out.push(el('dt', join(
-      el('b', esc(plain)),
-      el('code', esc(term), { className: 'wa-caption-xs' }),
-    ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }));
-    out.push(el('dd', esc(meaning), {
-      className: 'wa-body-s wa-color-text-quiet',
-      style: 'margin:0 0 var(--wa-space-xs) 0',
-    }));
-  }
-  return el('dl', out.join(''), { className: 'wa-stack wa-gap-3xs' });
+  const out = rows.map(([markHtml, term, meaning]) => el('div', join(
+    el('dt', join(markHtml, term ? el('code', esc(term), { className: 'wa-caption-xs' }) : ''), {
+      className: 'wa-cluster wa-gap-2xs wa-align-items-center',
+    }),
+    el('dd', esc(meaning), { className: 'wa-body-s wa-color-text-quiet', style: 'margin:0' }),
+  ), { className: 'wa-stack wa-gap-3xs' }));
+  return el('dl', out.join(''), { className: 'wa-grid wa-gap-s', style: '--min-column-size:260px' });
 }
 
 /**
@@ -312,7 +323,7 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
   ];
   if (total > PAGE_SIZE_50_MIN_ROWS) options.push(['50', '50 at a time', 'table-list']);
   const status = el('p', esc(
-    `Showing ${num(DEFAULT_PAGE_ROWS)} of ${num(total)} ${s4Plural(total, noun)}.`,
+    `${num(1)}–${num(DEFAULT_PAGE_ROWS)} of ${num(total)} ${s4Plural(total, noun)}`,
   ), {
     className: 'wa-caption-xs wa-color-text-quiet',
     dataRole: 'count',
@@ -320,11 +331,12 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
     ariaLive: 'polite',
   });
   const nav = el('div', join(
-    waButton('Previous', { icon: 'chevron-left', dataRole: 'prev', disabled: true }),
-    el('span', esc('Page 1 of 1'), {
-      className: 'wa-caption-xs wa-color-text-quiet wa-text-nowrap', dataRole: 'page',
+    waButton('Previous', {
+      icon: 'chevron-left', dataRole: 'prev', disabled: true, ariaLabel: 'Previous page',
     }),
-    waButton('Next', { icon: 'chevron-right', dataRole: 'next', disabled: true }),
+    waButton('Next', {
+      icon: 'chevron-right', dataRole: 'next', disabled: true, ariaLabel: 'Next page',
+    }),
   ), {
     className: 'wa-cluster wa-gap-2xs wa-align-items-center',
     dataRole: 'pagenav',
@@ -367,49 +379,63 @@ function s4StatusTag(status) {
 }
 
 /**
- * Per-category health (pages.md §3.6): `health = (functional + 0.5 · weak) / count`,
- * and `risk` is the share that is dead or degenerate — the chance a Randomize redraw,
- * which stays inside the category, hands the hider a free card.
+ * One card per `report.questionCategories` row: health, status counts, Randomize risk
+ * and the wasted draws. '' until the rules stage has sent the categories.
  *
- * (generate.py `_s4_question_categories`.)
- *
- * @param {Object} report @returns {Array<Object>}
+ * @param {Object} report @returns {string}
  */
-function s4QuestionCategories(report) {
-  const questions = report.questions || [];
-  const order = Array.from(S4_CATEGORY_ORDER);
-  const seen = [];
-  for (const q of questions) {
-    const c = String(q.category || '');
-    if (!order.includes(c) && !seen.includes(c)) seen.push(c);
-  }
-  order.push(...seen.sort(cmpStr));
-
-  const out = [];
-  for (const cat of order) {
-    const rows = questions.filter((q) => q.category === cat);
-    if (rows.length === 0) continue;
-    const counts = counter(rows, (q) => q.status);
-    const n = rows.length;
-    const health = (count(counts, 'functional') + 0.5 * count(counts, 'weak')) / n;
-    const risk = (count(counts, 'dead') + count(counts, 'degenerate')) / n;
-    const goneSet = [];
-    for (const q of rows) {
-      if (q.status !== 'dead' && q.status !== 'degenerate') continue;
-      const label = String(q.label || '');
-      if (!goneSet.includes(label)) goneSet.push(label);
-    }
-    out.push({
-      category: cat,
-      label: S4_CATEGORY_LABEL[cat] || (cat ? cat.charAt(0).toUpperCase() + cat.slice(1) : cat),
-      n,
-      counts,
-      health,
-      risk,
-      gone: goneSet.sort(s4NaturalCmp),
-    });
-  }
-  return out;
+function s4CategoryCards(report) {
+  const cats = report.questionCategories || [];
+  if (!cats.length) return '';
+  const cards = cats.map((c) => {
+    const label = S4_CATEGORY_LABEL[c.category] || String(c.category || '');
+    const counts = c.counts || {};
+    const health = fnum(c.health);
+    const risk = fnum(c.risk);
+    const statusChips = S4_STATUS_ORDER.filter((k) => count(counts, k)).map((k) => chip(
+      `${num(count(counts, k))} ${S4_STATUS_COUNT[k]}`,
+      S4_STATUS_TAG[k][1],
+      { variant: S4_STATUS_TAG[k][2], appearance: S4_STATUS_TAG[k][3], title: `status ${k}` },
+    )).join('');
+    const gone = (c.gone || []).map((g) => {
+      const [, icon, variant, appearance] = S4_STATUS_TAG[g.status]
+        || ['', 'circle-xmark', 'danger', 'accent'];
+      return chip(String(g.label || ''), icon, { variant, appearance, title: `status ${g.status}` });
+    }).join('');
+    const head = el('div', join(
+      el('div', join(
+        el('b', esc(label), { className: 'wa-heading-s' }),
+        el('span', esc(`${num(c.n)} questions`), { className: 'wa-caption-xs wa-color-text-quiet' }),
+      ), { className: 'wa-cluster wa-gap-xs wa-align-items-baseline' }),
+      el('div', join(
+        risk !== null && risk > 0 ? chip(`${pct(risk)} Randomize risk`, 'dice', {
+          variant: 'danger',
+          appearance: 'outlined',
+          title: 'chance a Randomize redraw inside this category lands on a wasted draw',
+        }) + provChip('B4') : '',
+        health !== null ? el('span', esc(`${pct(health, 0)} health`), { className: 'wa-caption-s' }) : '',
+      ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
+    ), { className: 'wa-split wa-flex-wrap wa-gap-xs' });
+    return waCard(el('div', join(
+      head,
+      health !== null ? waProgressBar(fillPct(health), {
+        label: `${label} health: ${pct(health)}`,
+        style: '--indicator-color:var(--accent);--track-color:var(--surface-2);--track-height:9px',
+      }) : '',
+      el('div', statusChips + provChip('B1'), {
+        className: 'wa-cluster wa-gap-2xs wa-align-items-center',
+      }),
+      gone ? el('div', join(
+        el('b', esc('Wasted draws'), {
+          className: 'wa-caption-xs wa-text-uppercase', style: 'color:var(--crit-text)',
+        }),
+        gone,
+      ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }) : '',
+    ), { className: 'wa-stack wa-gap-2xs' }));
+  });
+  return el('div', cards.join(''), {
+    className: 'wa-grid wa-gap-s', style: '--min-column-size:300px',
+  });
 }
 
 /**
@@ -427,71 +453,88 @@ function s4Funnel(report) {
   /** @type {Object<string, Object>} */
   const audits = {};
   for (const q of report.questions || []) audits[q.id] = q;
-  /** @type {Object<string, Object>} */
-  const defs = {};
-  for (const d of QUESTIONS) defs[d.id] = d;
 
   const start = funnel[0];
+  const end = funnel[funnel.length - 1];
   const items = [];
   for (let i = 0; i < order.length; i += 1) {
     const qid = order[i];
-    const remaining = i + 1 < funnel.length ? funnel[i + 1] : funnel[funnel.length - 1];
-    const before = i < funnel.length ? funnel[i] : funnel[funnel.length - 1];
+    const remaining = i + 1 < funnel.length ? funnel[i + 1] : end;
+    const before = i < funnel.length ? funnel[i] : end;
     const a = audits[qid];
-    const d = defs[qid];
     const label = a ? a.label : qid;
     const cat = S4_CATEGORY_LABEL[a ? a.category : ''] || '';
-    const cost = d ? `draw ${num(d.draw)} · keep ${num(d.keep)}` : '';
+    const tags = join(
+      cat ? el('span', esc(cat), { className: 'cat-tag' }) : '',
+      a && fnum(a.draw) !== null ? waTag(`draw ${num(a.draw)}`) : '',
+      a && fnum(a.keep) !== null ? waTag(`keep ${num(a.keep)}`) : '',
+      miniMeter(fillPct(remaining, start), esc(`${num(remaining)} zones left`), {
+        label: `${num(remaining)} of ${num(start)} zones still in the running`,
+      }),
+    );
+    const mid = el('div', join(
+      el('b', esc(label)),
+      el('div', tags, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
+    ), { className: 'wa-stack wa-gap-3xs' });
     const left = el('span', esc(`${num(before)} → ${num(remaining)}`), {
       className: 'wa-text-nowrap wa-heading-xs',
     });
-    const share = `${pct(start ? remaining / start : 0.0)} of the map is still in the running `
-      + 'with you';
-    const mid = el('span', join(
-      el('b', esc(label)),
-      el('span', esc([cat, cost, share].filter((x) => x).join(' · ')), {
-        className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block',
-      }),
-    ));
-    items.push(el('li', mid + left, {
-      className: 'wa-split wa-gap-m',
-    }));
+    items.push(el('li', mid + left, { className: 'wa-split wa-gap-m' }));
   }
 
-  // The CLI's caption ends by pointing at the strategy simulator; that clause is
-  // dropped here. The rest is the CLI's, word for word.
-  const caption = 'Greedy order: at each step, the question that leaves the smallest average '
+  const method = 'Greedy order: at each step, the question that leaves the smallest average '
     + `group of identical answers across all ${num(start)} zones. It is the seekers' best line `
-    + 'of play if they knew nothing about you. '
-    + `After ${num(order.length)} questions the map narrows from ${num(start)} zones to `
-    + `${num(funnel[funnel.length - 1])} — that is what a hider has to survive.`;
+    + 'of play if they knew nothing about you.';
 
   return waCard(el('div', join(
     el('ol', items.join(''), { className: 'recs' }),
-    el('p', esc(caption), { className: 'wa-body-s wa-color-text-quiet' }),
+    el('div', join(
+      linkChip('#interp-funnel_reference_seeker', 'Our call', 'scale-balanced', {
+        variant: 'warning',
+      }),
+      waDetails('How this order is picked',
+        el('p', esc(method), { className: 'wa-body-s wa-color-text-quiet' }),
+        { appearance: 'plain' }),
+    ), { className: 'wa-stack wa-gap-2xs' }),
   ), { className: 'wa-stack wa-gap-s' }), {
-    headerHtml: s4CardHeader(
-      'How fast this map narrows',
-      `${num(start)} zones down to ${num(funnel[funnel.length - 1])}, one question at a time.`,
-    ),
+    headerHtml: cardHeader('How fast this map narrows', {
+      caption: `${num(start)} → ${num(end)} zones: what a hider has to survive`,
+    }),
   });
 }
 
 /**
- * The two counts, side by side, labelled apart. "Fully functional" and "works at all"
- * differ by the weak pile — askable, answerable, and nearly useless to the seekers —
- * and a single "N of M work" headline would hide it. No CLI counterpart.
+ * The deck by status in one bar, with "fully functional" and "work at all" as two
+ * labelled chips: they differ by the weak pile, and a single "N of M work" headline
+ * would hide it. Unchecked questions are the bar's remainder. No CLI counterpart.
  *
  * @param {Object} report @returns {string}
  */
 function s4LiveCounts(report) {
   const questions = report.questions || [];
   if (questions.length === 0) return '';
+  const total = questions.length;
   const counts = counter(questions, (q) => q.status);
   const functional = count(counts, 'functional');
   const weak = count(counts, 'weak');
-  const live = functional + weak;
+  const unknown = count(counts, 'unknown');
+  const live = s4LiveQuestions(report);
   const wasted = count(counts, 'dead') + count(counts, 'degenerate');
+
+  const parts = [
+    [functional, 'works', 'success'],
+    [weak, 'barely helps', 'warning'],
+    [wasted, 'wasted draw', 'danger'],
+  ].filter(([n]) => n > 0);
+  const bar = budgetBar(
+    parts.map(([n, word]) => [num(n), n, `${word} — ${num(n)} of ${num(total)}`]),
+    total,
+    {
+      ariaLabel: `${num(total)} questions: ${parts.map(([n, word]) => `${word} ${num(n)}`).join('; ')}`,
+      remainderTip: 'not checked',
+      variants: parts.map(([, , variant]) => variant),
+    },
+  );
 
   const chips = el('div', join(
     chip(`${num(functional)} fully functional`, 'circle-check', {
@@ -509,18 +552,13 @@ function s4LiveCounts(report) {
       appearance: 'outlined',
       title: 'status dead or degenerate',
     }),
+    unknown ? chip(`${num(unknown)} not checked`, 'circle-question', {
+      appearance: 'outlined', title: 'status unknown',
+    }) : '',
   ), { className: 'wa-cluster wa-gap-2xs' });
 
-  const body = el('p', esc(
-    `${num(functional)} ${s4Plural(functional, 'question')} on this map ${s4Plural(functional, 'is', 'are')} `
-    + `fully functional: ${s4Plural(functional, 'it', 'they')} split the map, so the answer `
-    + `narrows the search. ${num(live)} work at all — that is the same ${num(functional)} plus `
-    + `the ${num(weak)} that can be asked and answered but barely narrow anything. The two `
-    + 'numbers are not interchangeable, and the larger one is the optimistic reading.',
-  ), { className: 'wa-body-s' });
-
-  return waCallout(join(body, chips), {
-    variant: 'neutral', appearance: 'plain', icon: 'circle-info',
+  return el('div', join(subhead(`The ${num(total)} questions, by status`), bar, chips), {
+    className: 'wa-stack wa-gap-2xs',
   });
 }
 
@@ -539,46 +577,27 @@ export function renderQuestions(payload) {
   const questions = report.questions || [];
   if (questions.length === 0) return '';
 
-  const cats = s4QuestionCategories(report);
-  const cards = [];
-  for (const c of cats) {
-    const detail = S4_STATUS_ORDER
-      .filter((k) => count(c.counts, k))
-      .map((k) => `${num(count(c.counts, k))} ${S4_STATUS_COUNT[k]}`)
-      .join(' · ');
-    const body = join(
-      el('div', join(
-        el('b', esc(c.label), { className: 'wa-heading-s' }),
-        el('span', esc(`${num(c.health * 100, 0)}%`), { className: 'wa-caption-s' }),
-      ), { className: 'wa-split' }),
-      waProgressBar(c.health * 100, {
-        label: `${c.label} health: ${pct(c.health)}`,
-        style: '--indicator-color:var(--accent);--track-color:var(--surface-2);--track-height:9px',
-      }),
-      el('p', esc(`${num(c.n)} questions · ${detail}`) + provChip('B1'), {
-        className: 'wa-body-s wa-color-text-quiet',
-      }),
-      c.gone.length ? el('p', join(
-        el('b', esc('Dead or fixed:'), {
-          className: 'wa-caption-xs wa-text-uppercase', style: 'color:var(--crit-text)',
-        }),
-        esc(` ${s4JoinWords(c.gone)}`),
-      ), { className: 'wa-body-s' }) : '',
-      c.risk > 0 ? el('p', esc(
-        `A Randomize redraw inside this category lands on one of those ${pct(c.risk)} of the time.`,
-      ) + provChip('B4'), { className: 'wa-body-s wa-color-text-quiet' }) : '',
-    );
-    cards.push(waCard(el('div', body, { className: 'wa-stack wa-gap-2xs' })));
-  }
-  const grid = el('div', join(
-    subhead('How each kind of question holds up'),
-    el('div', cards.join(''), {
-      className: 'wa-grid wa-gap-s', style: '--min-column-size:300px',
-    }),
-  ), { className: 'wa-stack wa-gap-xs' });
+  const cards = s4CategoryCards(report);
+  const grid = cards ? el('div', join(subhead('How each kind of question holds up'), cards), {
+    className: 'wa-stack wa-gap-xs',
+  }) : '';
 
   const geoAvailable = Boolean(report.geo && report.geo.available);
   const funnel = geoAvailable ? s4Funnel(report) : '';
+
+  const osmDown = questions.filter((q) => q.degrade === 'osm_unavailable').length;
+  const countryDown = questions.filter((q) => q.degrade === 'country_unresolved').length;
+  const degraded = join(
+    !geoAvailable && osmDown ? waCallout(join(
+      degradeChip('osm_unavailable'),
+      esc(` ${num(osmDown)} map ${s4Plural(osmDown, 'question')} not checked.`),
+    ), { variant: 'warning' }) : '',
+    countryDown ? waCallout(join(
+      degradeChip('country_unresolved'),
+      esc(` ${num(countryDown)} administrative ${s4Plural(countryDown, 'question')} not checked; `
+        + 'levels are never guessed.'),
+    ), { variant: 'warning' }) : '',
+  );
 
   // Chip VALUES are the one-word statuses and never change — `bindFilter` keys on
   // them and so does every row's `data-status`. Only the labels are plain.
@@ -598,16 +617,31 @@ export function renderQuestions(payload) {
     className: 'wa-split wa-flex-wrap wa-gap-s', id: 'qcontrols',
   });
 
-  const words = waDetails('What these words mean', s4DefinitionList([
-    ...S4_STATUS_DEF.map(([key, meaning]) => [S4_STATUS_TAG[key][0], key, meaning]),
-    ['Narrows by', 'quality',
-      'The information a question carries, normalised inside its own category, '
-      + 'so a clean 50/50 split scores 100%.'],
-    ['Blends in', 'anonymity',
-      'The share of zones that answer this question exactly the way yours does — the '
-      + 'higher it is, the more company you have.'],
-  ]), { appearance: 'plain' });
+  const words = waDetails("What these words mean — this report's words, not the rulebook's",
+    s4DefinitionList([
+      ...S4_STATUS_DEF.map(([key, meaning]) => [s4StatusTag(key), key, meaning]),
+      ...S4_CATEGORY_CAVEATS.map(([cat, key, meaning]) => [
+        join(el('span', esc(S4_CATEGORY_LABEL[cat] || cat), { className: 'cat-tag' }),
+          s4StatusTag(key)),
+        '', meaning]),
+      [el('b', esc('Found on the map')), 'instances',
+        'Qualifying things inside the border; for photo questions, the share of zones that '
+        + 'contain the subject.'],
+      [el('b', esc('Narrows by')), 'quality',
+        'The information a question carries, normalised inside its own category, '
+        + 'so a clean 50/50 split scores 100%.'],
+      [el('b', esc('Blends in')), 'anonymity',
+        'The share of zones that answer this question exactly the way yours does — the '
+        + 'higher it is, the more company you have.'],
+      [chip('Randomize risk', 'dice', { variant: 'danger', appearance: 'outlined' }), 'risk',
+        'A Randomize redraw stays inside the category; this is the chance it lands on a '
+        + "question that can't be answered or always answers the same."],
+    ]), { appearance: 'plain' });
 
+  /** @type {Object<string, Object>} */
+  const byId = {};
+  for (const q of questions) byId[q.id] = q;
+  const urbanExplorer = (report.curses || []).some((c) => c.id === 'urban_explorer');
   const ordered = sortedBy(questions, (q) => [String(q.category || ''), String(q.id || '')]);
   const rows = [];
   const selectorRows = [];
@@ -618,12 +652,16 @@ export function renderQuestions(payload) {
     if (coverageN !== null) instances = `${pct(coverageN)} of zones`;
     const qualityN = fnum(q.quality);
     const quality = qualityN !== null ? pct(qualityN, 0) : '—';
-    let why = el('p', esc(q.why), { className: 'wa-body-s' });
-    const extras = [];
+    const explain = q.explain || null;
+    const lead = explain ? String(explain.lead || '') : '';
+    const detail = explain ? String(explain.detail || '') : String(q.why || '');
+    const extras = [factChips(q.facts), degradeChip(q.degrade)];
     if (q.borderline) {
-      extras.push(chip('borderline', 'circle-half-stroke', {
-        variant: 'warning', title: 'would change verdict under a modestly larger map',
-      }));
+      const margin = fnum(q.marginCount);
+      extras.push(chip(margin !== null ? `borderline · ${num(margin)} just outside` : 'borderline',
+        'circle-half-stroke', {
+          variant: 'warning', title: 'would change verdict under a modestly larger map',
+        }));
     }
     const survN = fnum(q.survMean);
     if (survN !== null) {
@@ -631,12 +669,30 @@ export function renderQuestions(payload) {
         title: `anonymity ${num(survN, 2, { comma: false })}`,
       }));
     }
+    if ((q.status === 'dead' || q.status === 'degenerate')
+      && fnum(q.draw) !== null && fnum(q.keep) !== null) {
+      extras.push(chip(`hider draws ${num(q.draw)}, keeps ${num(q.keep)}`, 'hand-holding-dollar', {
+        variant: 'danger',
+      }));
+    }
+    if (q.interpId) {
+      extras.push(linkChip(`#interp-${q.interpId}`, 'Our call', 'scale-balanced', {
+        variant: 'warning',
+      }));
+    }
+    if (q.id === 'matching.transit_line' && urbanExplorer) {
+      extras.push(linkChip('#curses', 'lost to Urban Explorer', 'ban', { variant: 'warning' }));
+    }
+    const twin = S4_ADMIN_TWIN[q.id] ? byId[S4_ADMIN_TWIN[q.id]] : null;
+    if (twin && S4_STATUS_TAG[twin.status]) {
+      extras.push(chip(`matching twin: ${S4_STATUS_TAG[twin.status][0]}`, 'clone'));
+    }
     extras.push(el('a', el('code', esc('test')), {
       href: `#sel-${q.id}`,
       className: 'wa-caption-xs wa-link',
       title: 'The exact thing this question was tested against',
     }));
-    why += el('div', extras.join(''), { className: 'wa-cluster wa-gap-2xs' });
+    const why = leadDetail(esc(lead), esc(detail), { chipsHtml: extras.join(''), summary: 'Why' });
 
     // Sort keys ride on the row so the click handler never re-parses a cell. `found`
     // prefers the instance count and falls back to the coverage share, so that column
@@ -653,16 +709,18 @@ export function renderQuestions(payload) {
       dataSortStatus: String(statusRank < 0 ? S4_STATUS_ORDER.length : statusRank),
       dataSortFound: String(found),
       dataSortQuality: String(qualityN === null ? -1 : qualityN),
+      dataBasis: q.interpId ? 'interp' : null,
     }, [
       el('span', esc(S4_CATEGORY_LABEL[q.category] || q.category), {
         className: 'cat-tag',
       }),
-      el('b', esc(q.label)) + el('span', esc(q.text), {
-        className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block;max-width:44ch',
-      }),
+      el('b', esc(q.label))
+        + leadDetail('', esc(q.text), { summary: 'Card text', foldBelow: true }),
       s4StatusTag(q.status),
       el('span', esc(instances), { className: 'wa-text-nowrap' }),
-      el('span', esc(quality), { className: 'wa-text-nowrap' }),
+      qualityN !== null
+        ? miniMeter(fillPct(qualityN), esc(quality), { label: `Narrows by ${quality}` })
+        : el('span', esc(quality), { className: 'wa-text-nowrap' }),
       why,
     ]]);
     selectorRows.push(el('tr', el('td', el('b', esc(q.label)) + el(
@@ -678,7 +736,8 @@ export function renderQuestions(payload) {
     ['Category', 'cat', 'text'],
     ['Question', 'label', 'text'],
     ['Status', 'status', 'num'],
-    ['Found on the map', 'found', 'num'],
+    ['Found on the map', 'found', 'num',
+      'Qualifying things inside the border (or share of zones, for photos)'],
     ['Narrows by', 'quality', 'num', 'How much it narrows the search'],
     'Assessment',
   ], rows, {
@@ -693,34 +752,23 @@ export function renderQuestions(payload) {
   if (selectorRows.length) {
     const head = el('thead', el('tr', el('th', esc('Question'), { scope: 'col' })
       + el('th', esc('What was searched for'), { scope: 'col' })));
-    tests = waDetails("Every question's exact test", join(
-      el('p', esc('One row per question, printed verbatim, so you can re-run any of them '
-        + 'yourself.'), { className: 'wa-body-s wa-color-text-quiet' }),
+    tests = waDetails("Every question's exact test (verbatim)",
       waScroller(el('table', head + el('tbody', selectorRows.join('')), {
         className: 'wa-zebra-rows',
-      })),
-    ), { appearance: 'plain' });
+      })), { appearance: 'plain' });
   }
 
   const counts = counter(questions, (q) => q.status);
   const live = s4LiveQuestions(report);
   const title = `${num(live)} of the ${num(questions.length)} questions work here`;
-  let lede = 'Every question in the deck, checked against this map. “Found on the map” counts '
-    + 'the qualifying things inside the border; “narrows by” is how much information the '
-    + "answer carries. The one-word status names are this report's, not "
-    + "the rulebook's, and are defined under “what these words mean”.";
-  if (!geoAvailable) {
-    lede += ' OpenStreetMap was not available for this run, so only the questions '
-      + 'answerable from the feed alone are evaluated.';
-  }
-  const answer = el('p', esc(
-    `${num(count(counts, 'functional'))} split the map cleanly, ${num(count(counts, 'weak'))} `
-    + `barely help, and ${num(count(counts, 'dead') + count(counts, 'degenerate'))} are a `
-    + 'wasted draw you should brief everyone about before you start.',
-  ), { className: 'wa-body-s' });
+  const lede = 'Every question in the deck, checked against this map.';
+  const wasted = count(counts, 'dead') + count(counts, 'degenerate');
+  const answer = el('p', esc(wasted
+    ? `Brief everyone on the ${num(wasted)} wasted ${s4Plural(wasted, 'draw')} before you start.`
+    : 'No wasted draws on this map.'), { className: 'wa-body-s' });
 
   const body = el('div', join(
-    funnel, s4LiveCounts(report), grid, controls, words, table, pager, tests,
+    degraded, funnel, s4LiveCounts(report), grid, controls, words, table, pager, tests,
   ), { className: 'wa-stack wa-gap-l' });
   return section('questions', S4_ORDINAL, title, body, {
     kicker: 'The deck', lede, answerHtml: answer,
@@ -757,14 +805,12 @@ function s4ActionTag(action) {
  * (generate.py `_s4_curse_rows`.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses
+ * @param {{compact?: boolean}} [opts] `compact` prints only the name and Why cells
  * @returns {Array<[Object, string[]]>}
  */
-function s4CurseRows(report, curses) {
+function s4CurseRows(report, curses, opts = {}) {
+  const { compact = false } = opts;
   const rows = [];
-  /** @type {Object<string,string>} */
-  const tiers = {};
-  for (const [term, plain] of S4_TIER_DEF) tiers[term] = plain;
-
   const ordered = sortedBy(curses, (c) => [
     typeof c.tier === 'number' ? c.tier : 0, String(c.name || ''), String(c.id || ''),
   ]);
@@ -783,22 +829,36 @@ function s4CurseRows(report, curses) {
         ? S4_ACTION_ORDER.length : S4_ACTION_ORDER.indexOf(String(c.action))),
       dataSortTier: String(c.tier),
       dataSortCount: String(countN === null ? -1 : countN),
+      dataBasis: c.interpId ? 'interp' : null,
     };
     if (S4_SPENDING_CURSES.includes(c.id)) {
       rowAttrs.dataSpending = '1';
       actionCell = el('span', s4ActionTag(c.action), { dataWhen: 'off' })
         + el('span', s4ActionTag('remove'), { dataWhen: 'on', hidden: true });
     }
-    const tierWord = tiers[`tier ${c.tier}`] || '';
-    let why = el('p', esc(c.why), { className: 'wa-body-s' });
-    why += el('div', el('a', el('code', esc('test')), {
-      href: `#pred-${c.id}`,
-      className: 'wa-caption-xs wa-link',
-      title: 'The exact test that decided this',
-    }), { className: 'wa-cluster wa-gap-2xs' });
+    const explain = c.explain || null;
+    const lead = explain ? String(explain.lead || '') : '';
+    const detail = explain ? String(explain.detail || '') : String(c.why || '');
+    const chips = join(
+      factChips(c.facts),
+      degradeChip(c.degrade),
+      c.interpId ? linkChip(`#interp-${c.interpId}`, 'Our call', 'scale-balanced', {
+        variant: 'warning',
+      }) : '',
+      el('a', el('code', esc('test')), {
+        href: `#pred-${c.id}`,
+        className: 'wa-caption-xs wa-link',
+        title: 'The exact test that decided this',
+      }),
+    );
+    const why = leadDetail(esc(lead), esc(detail), { chipsHtml: chips, summary: 'Why' });
+    if (compact) {
+      rows.push([rowAttrs, [el('b', esc(c.name)), why]]);
+      continue;
+    }
     rows.push([rowAttrs, [
-      el('b', esc(c.name)) + el('span', esc(`tier ${num(c.tier)} · ${tierWord}`), {
-        className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block',
+      el('b', esc(c.name)) + el('div', s4TierChips(c.tier), {
+        className: 'wa-cluster wa-gap-2xs',
       }),
       actionCell,
       el('span', esc(countText), { className: 'wa-text-nowrap' }),
@@ -809,10 +869,23 @@ function s4CurseRows(report, curses) {
 }
 
 /**
+ * A curse tier as its chip, plus the standing rule of tiers 3 and 4.
+ * @param {number} tier @returns {string}
+ */
+function s4TierChips(tier) {
+  const def = S4_TIER_DEF.find(([term]) => term === `tier ${tier}`);
+  return join(
+    chip(`tier ${num(tier)}`, def ? def[3] : 'circle-question', { title: def ? def[1] : null }),
+    tier === 3 ? chip('never removed', 'ban') : '',
+    tier === 4 ? chip('not map-contingent', 'shuffle') : '',
+  );
+}
+
+/**
  * The shape of the curses handed in, in one bar. It is drawn over the same rows the
  * table and the filter hold, and its subhead prints that population, so the section's
  * four counts never disagree. Labelled "as printed": it is static and does not follow
- * `#nospend`, because the callout above already says what that switch moves. Each
+ * `#nospend`, because the rows beside that switch already name what it moves. Each
  * segment carries its action's variant so the chips below read as its legend.
  *
  * (generate.py `_s4_deck_strip`.)
@@ -865,10 +938,7 @@ export function renderCurses(payload) {
   const main = curses.filter((c) => c.tier <= 3);
   const tier4 = curses.filter((c) => c.tier >= 4);
 
-  // The heading, the strip, the filter and the answer line all count `main` — the
-  // curses this map can settle. The tier-4 rows are counted nowhere but their own
-  // disclosure, and the lede says so. Chip VALUES stay the one-word actions:
-  // `bindFilter` reads them.
+  // The heading, strip, filter and answer line count main; chip values stay the one-word actions bindFilter reads.
   const shown = counter(main, (c) => c.action);
   const present = S4_ACTION_ORDER.filter((a) => count(shown, a));
   const options = [['all', `All ${num(main.length)}`, 'list']];
@@ -876,10 +946,12 @@ export function renderCurses(payload) {
     options.push([a, `${S4_ACTION_TAG[a][0]} · ${num(count(shown, a))}`, S4_ACTION_TAG[a][1]]);
   }
 
-  const words = waDetails('What these words mean', s4DefinitionList([
-    ...S4_ACTION_DEF.map(([key, meaning]) => [S4_ACTION_TAG[key][0], key, meaning]),
-    ...S4_TIER_DEF.map(([term, plain, meaning]) => [plain, term, meaning]),
-  ]), { appearance: 'plain' });
+  const words = waDetails('What these words mean', el('div', join(
+    s4DefinitionList(S4_ACTION_DEF.map(([key, meaning]) => [s4ActionTag(key), key, meaning])),
+    s4DefinitionList(S4_TIER_DEF.map(([term, plain, meaning, icon]) => [
+      join(chip(term, icon), term === 'tier 1' ? basisChip('rulebook') : '', el('b', esc(plain))),
+      '', meaning])),
+  ), { className: 'wa-grid wa-gap-m', style: '--min-column-size:300px' }), { appearance: 'plain' });
 
   // `words` sits outside #ccontrols, which is `position: sticky`: an open definition
   // list inside it would pin ~500px of glossary over the table.
@@ -888,28 +960,32 @@ export function renderCurses(payload) {
       className: 'wa-split wa-flex-wrap wa-gap-s', id: 'ccontrols',
     });
 
-  const spendingPresent = curses
-    .filter((c) => S4_SPENDING_CURSES.includes(c.id))
-    .map((c) => String(c.name || ''))
-    .sort(cmpStr);
+  const spending = sortedBy(curses.filter((c) => S4_SPENDING_CURSES.includes(c.id)),
+    (c) => [String(c.name || '')]);
   let toggle = '';
-  if (spendingPresent.length) {
-    toggle = waCallout(join(
-      el('p', esc(
-        `The rulebook removes ${s4JoinWords(spendingPresent.slice(0, 2))} when your group does `
-        + 'not want to spend money during the game, and says nothing about '
-        + `${spendingPresent[spendingPresent.length - 1]}, which needs a purchase just the same. `
-        + `The switch treats all ${num(spendingPresent.length)} together; the table shows what `
-        + 'it changes.',
-      ), { className: 'wa-body-s' }),
+  if (spending.length) {
+    const names = (list) => list.map((c) => waTag(String(c.name || ''))).join('');
+    const caption = (text) => el('span', esc(text), { className: 'wa-caption-xs wa-color-text-quiet' });
+    const byRule = spending.filter((c) => c.tier === 1);
+    const byCall = spending.filter((c) => c.tier !== 1);
+    const row = (html) => el('div', html, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
+    toggle = waCallout(el('div', join(
+      byRule.length ? row(join(basisChip('rulebook'), names(byRule),
+        caption('removed when nobody spends'))) : '',
+      byCall.length ? row(join(
+        linkChip('#interp-spending_curses_grouped', 'Our call', 'scale-balanced', {
+          variant: 'warning',
+        }),
+        names(byCall), caption('needs a purchase too; rulebook silent'))) : '',
       waSwitch('Nobody spends money during this game', { checked: false, id: 'nospend' }),
-    ), { variant: 'neutral', appearance: 'outlined', icon: null });
+    ), { className: 'wa-stack wa-gap-xs' }), { variant: 'neutral', appearance: 'outlined', icon: null });
   }
 
   const table = s4Table([
     ['Curse', 'name', 'text'],
     ['Action', 'action', 'num'],
-    ['Count', 'count', 'num'],
+    ['Count', 'count', 'num',
+      'Qualifying features inside the border; outside does not exist for this game'],
     'Why',
   ], s4CurseRows(report, main), { tableId: 'ctable' });
 
@@ -918,11 +994,20 @@ export function renderCurses(payload) {
 
   let details = '';
   if (tier4.length) {
+    // Action, count and tier are the same on every tier-4 row, so they print once above.
+    const constant = tier4.every((c) => c.action === 'keep' && fnum(c.count) === null);
+    const strip = el('div', join(
+      chip('tier 4', 'clock'),
+      chip('about the deck, clock or players', 'shuffle'),
+      constant ? chip('leave it in', 'circle-check', { variant: 'success', appearance: 'accent' }) : '',
+      chip('never removed here', 'ban'),
+    ), { className: 'wa-cluster wa-gap-2xs' });
     details = waDetails(`${num(tier4.length)} curses that no map can affect`, join(
-      el('p', esc('These are about the deck, the clock or the players, not the geography. '
-        + "Listed for completeness; never removed on this page's advice."), { className: 'wa-body-s' }),
-      s4Table(['Curse', 'Action', 'Count', 'Why'], s4CurseRows(report, tier4)),
-    ), { appearance: 'plain' });
+      strip,
+      constant
+        ? s4Table(['Curse', 'Why'], s4CurseRows(report, tier4, { compact: true }))
+        : s4Table(['Curse', 'Action', 'Count', 'Why'], s4CurseRows(report, tier4)),
+    ), { appearance: 'plain', id: 'curses-tier4' });
   }
 
   const predHead = el('thead', el('tr', el('th', esc('Curse'), { scope: 'col' })
@@ -936,25 +1021,20 @@ export function renderCurses(payload) {
     })) + el('td', el('pre', esc(c.predicate))),
     { id: `pred-${c.id}` },
   )).join('');
-  const tests = waDetails("Every curse's deciding test", join(
-    el('p', esc('One row per curse, printed verbatim.'), { className: 'wa-body-s wa-color-text-quiet' }),
+  const tests = waDetails("Every curse's deciding test (verbatim)",
     waScroller(el('table', predHead + el('tbody', predRows), { className: 'wa-zebra-rows' })),
-  ), { appearance: 'plain' });
+    { appearance: 'plain' });
 
   const title = `${num(count(shown, 'keep'))} of ${num(main.length)} map-dependent curses work `
     + 'as printed here';
-  let lede = `The ${num(main.length)} curses in the hider's deck whose fate this map decides, `
-    + "checked against its geography and this feed's network. The heading, the strip, the "
-    + 'filter and the line above all count those same '
-    + `${num(main.length)} ${s4Plural(main.length, 'curse')}.`;
-  if (tier4.length) {
-    lede += ` The remaining ${num(tier4.length)} are about the deck, the clock or the players, `
-      + 'so no map can move them; they sit in their own list at the foot and are counted '
-      + `nowhere else. The deck is ${num(curses.length)} cards in all.`;
-  }
-  lede += ' A count is the number of qualifying features inside the border; outside does not '
-    + 'exist for this game. Tiers and instructions are defined under “what these words mean”, '
-    + 'beside the filter.';
+  const lede = 'The curses this map decides, checked against its geography and network.';
+  const ledeHtml = join(
+    chip(`${num(main.length)} map-dependent`, 'map'),
+    tier4.length ? linkChip('#curses-tier4', `${num(tier4.length)} not about the map`, 'clock') : '',
+    chip(`${num(curses.length)} in the deck`, 'layer-group'),
+    linkChip('#interp-in_border_rule', 'Our call · counts inside the border only',
+      'scale-balanced', { variant: 'warning' }),
+  );
   const answer = el('p', esc(
     `Take ${num(count(shown, 'remove'))} ${s4Plural(count(shown, 'remove'), 'curse')} out of `
     + `the deck before you start, flag ${num(count(shown, 'warn'))} more, and talk about `
@@ -965,7 +1045,7 @@ export function renderCurses(payload) {
     s4DeckStrip(report, main), toggle, controls, words, table, pager, details, tests,
   ), { className: 'wa-stack wa-gap-l' });
   return section('curses', S4_ORDINAL, title, body, {
-    kicker: 'The curse deck', lede, answerHtml: answer,
+    kicker: 'The curse deck', lede, ledeHtml, answerHtml: answer,
   });
 }
 
@@ -979,25 +1059,98 @@ function s4RemovedCurses(report) {
 }
 
 /**
- * A definition list of `(anchorId, label, value)` — the provenance spine. A blank value
- * suppresses the row, and `_s4_sources_index` is handed the same list so an index entry
- * can never point at a row that never rendered.
+ * A grid of `(anchorId, label, value, valueHtml?)` rows, the provenance spine. A blank
+ * `value` suppresses the row, and `s4SourcesIndex` is handed the same list so an index
+ * entry can never point at a row that never rendered. `valueHtml` is printed instead of
+ * `value` when given.
  *
  * (generate.py `_s4_fact_rows`.)
  *
- * @param {ReadonlyArray<[string,string,string]>} rows @returns {string}
+ * @param {ReadonlyArray<[string,string,string,string?]>} rows @returns {string}
  */
 function s4FactRows(rows) {
   const out = [];
-  for (const [anchor, label, value] of rows) {
+  for (const [anchor, label, value, valueHtml] of rows) {
     if (!value) continue;
     out.push(el('div', join(
       el('span', esc(label), { className: 'wa-caption-xs wa-text-uppercase' }),
-      el('span', esc(value), { className: 'wa-body-s', style: 'overflow-wrap:anywhere' }),
+      valueHtml
+        ? el('div', valueHtml, {
+          className: 'wa-cluster wa-gap-2xs wa-align-items-center wa-body-s',
+          style: 'overflow-wrap:anywhere',
+        })
+        : el('span', esc(value), { className: 'wa-body-s', style: 'overflow-wrap:anywhere' }),
     ), { className: 'wa-stack wa-gap-3xs', id: anchor ? `prov-${anchor}` : null }));
   }
   return el('div', out.join(''), {
     className: 'wa-grid wa-gap-m', style: '--min-column-size:260px',
+  });
+}
+
+// The static metric-id pattern `Provenance.interpretations[].affectLinks` classifies by.
+const S4_METRIC_ID = /^(CAP_[A-Z_]+|[A-F]\d|IR\d|[RSEAX]\d)$/;
+
+/**
+ * One interpretation: its lead is the handle for the folded text, and what it affects
+ * stays visible after it. `labels` maps question and curse ids to their names.
+ *
+ * @param {Object} i a `Provenance.interpretations` row @param {Object<string,string>} labels
+ * @returns {string}
+ */
+function s4InterpRow(i, labels) {
+  const explain = i.explain || null;
+  const lead = explain ? String(explain.lead || '') : String(i.text || '');
+  const text = explain ? String(explain.detail || '') : '';
+  const links = Array.isArray(i.affectLinks)
+    ? i.affectLinks
+    : (i.affects || []).map((a) => ({ kind: 'text', id: String(a), label: String(a) }));
+  const linkHtml = (l) => {
+    const name = String(l.label || l.id || '');
+    if (l.kind === 'metric') return provChip(String(l.id));
+    if (l.kind === 'question') return linkChip('#questions', name, 'circle-question');
+    if (l.kind === 'curse') return linkChip('#curses', name, 'wand-magic-sparkles');
+    return waTag(name);
+  };
+  const affects = links.map(linkHtml).join('');
+  const linkById = new Map(links.map((l) => [String(l.id), l]));
+  const groupId = (raw) => {
+    const id = String(raw);
+    if (linkById.has(id)) return linkHtml(linkById.get(id));
+    if (S4_METRIC_ID.test(id)) return provChip(id);
+    return waTag(labels[id] || id);
+  };
+  const groups = (i.groups || []).map((g) => el('div', join(
+    basisChip(g.basis),
+    el('span', esc(String(g.label || '')), { className: 'wa-caption-xs' }),
+    (g.ids || []).map(groupId).join(''),
+  ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })).join('');
+  const d = i.data || {};
+  const has = (k) => Object.hasOwn(d, k);
+  const dataChips = join(
+    has('degenerateShare')
+      ? chip(`degenerate above ${pct(d.degenerateShare, 0)} of the diameter`, 'ruler-horizontal') : '',
+    has('clusterNameM') ? chip(`same name within ${num(d.clusterNameM)} m`, 'object-group') : '',
+    has('clusterAnyM') ? chip(`any name within ${num(d.clusterAnyM)} m`, 'object-group') : '',
+    has('serviceStartS') ? chip(`service ${hhmm(d.serviceStartS)}–${hhmm(d.serviceEndS)}`, 'clock') : '',
+    has('calendarDays') ? chip(`${num(d.calendarDays)}-day calendar`, 'calendar') : '',
+    has('headwayMinMin')
+      ? chip(`tagged headway ${num(d.headwayMinMin)}–${num(d.headwayMaxMin)} min`, 'hourglass-half') : '',
+    has('dwellS') ? chip(`dwell ${num(d.dwellS)} s per stop`, 'stopwatch') : '',
+  );
+  const modes = Array.isArray(d.modes) && d.modes.length
+    ? dataTable(['Mode', 'Default headway', 'Speed'], d.modes.map((m) => [
+      esc(String(m.mode || '')), esc(mins(m.headwayMin)), esc(`${num(m.speedKmh)} km/h`),
+    ]))
+    : '';
+  const quiet = 'wa-caption-xs wa-color-text-quiet';
+  let reach = el('span', esc('changes no printed number directly'), { className: quiet });
+  if (groups) reach = el('div', groups, { className: 'wa-stack wa-gap-2xs' });
+  else if (affects) reach = el('span', esc('affects'), { className: `${quiet} wa-text-uppercase` }) + affects;
+  return leadDetail(esc(lead), join(esc(text), modes), {
+    inline: true,
+    id: `interp-${String(i.id || '')}`,
+    dataBasis: 'interp',
+    afterHtml: join(reach, dataChips),
   });
 }
 
@@ -1046,10 +1199,9 @@ function s4SourcesIndex(report, factRows) {
 
 /**
  * §09 — feed hash and dates, every category selector with its count, the admin ladder,
- * the generator version and arguments, and the full interpretation list. Printed in
- * full: nothing here is summarised, elided or paginated. The machine identifiers and
- * the citation index sit in disclosures; app.js's `openTargeted()` opens either when a
- * citation points inside.
+ * the generator version and arguments, and every interpretation. Nothing is elided or
+ * paginated; explanations, machine identifiers and the citation index fold, and app.js's
+ * `openTargeted()` opens any disclosure a citation points inside.
  *
  * (generate.py `index_provenance`.)
  *
@@ -1094,31 +1246,60 @@ export function renderProvenance(payload) {
   const curses = report.curses || [];
   let borderline = 0;
   for (const q of questions) if (q.borderline) borderline += 1;
-  let warned = 0;
-  let playerChoice = 0;
-  for (const c of curses) {
-    if (c.action === 'warn') warned += 1;
-    if (c.action === 'player-choice') playerChoice += 1;
+  const codes = Object.values(report.degradationCodes || {});
+  const mergeHtml = join(
+    ...['merge_no_overlap', 'merge_short_overlap', 'merge_mixed_tz']
+      .filter((k) => codes.includes(k)).map((k) => degradeChip(k)),
+    ...(codes.includes('merge_mixed_tz')
+      ? Array.from(new Set(feeds.map((f) => String(f.timezone || '')).filter((z) => z)))
+        .sort(cmpStr).map((z) => waTag(z, { icon: 'clock' }))
+      : []),
+  );
+  const feedValue = merged
+    ? `${num(feeds.length)} feeds merged, ids namespaced ${feeds.map((f) => `${f.tag}:`).join(' ')}`
+    : String(p.feedUrl || feed.source || '');
+  const actionCounts = counter(curses, (c) => c.action);
+  const bboxText = border
+    ? `${border.kind} · S ${num(border.bbox[0], 6, { comma: false })}, `
+      + `W ${num(border.bbox[1], 6, { comma: false })}, `
+      + `N ${num(border.bbox[2], 6, { comma: false })}, `
+      + `E ${num(border.bbox[3], 6, { comma: false })}`
+    : '';
+  // Follows `Border.derivation` (CONTRACT §(b)): a reader-set box is unpadded, and one the
+  // in-play filter fell back on was not applied at all.
+  let borderChip = '';
+  if (border) {
+    if (border.derivation === 'option_fallback') {
+      borderChip = degradeChip('border_not_applied')
+        + linkChip('#interp-map_border_derivation', 'Our call', 'scale-balanced', { variant: 'warning' });
+    } else if (border.derivation === 'option') {
+      borderChip = waTag('set by you, unpadded', { icon: 'draw-polygon' });
+    } else {
+      borderChip = waTag(`padded ${s4Dist(report, border.padM, 2)}`, { icon: 'draw-polygon' });
+    }
   }
 
-  /** @type {Array<[string,string,string]>} */
+  /** @type {Array<[string,string,string,string?]>} */
   const factRows = [
     ['feed', merged ? 'The published timetable files' : "The agency's published timetable file",
-      merged
-        ? `${num(feeds.length)} feeds merged, ids namespaced ${feeds.map((f) => `${f.tag}:`).join(' ')}`
-        : String(p.feedUrl || feed.source || '')],
-    ...(merged ? feeds.map((f) => ['', `${String(f.tag || '')} · ${String(f.label || '')}`,
-      [String(f.agencyName || ''), String(f.timezone || ''),
+      feedValue, mergeHtml ? join(mergeHtml, el('span', esc(feedValue))) : ''],
+    ...(merged ? feeds.map((f) => {
+      const value = [String(f.agencyName || ''), String(f.timezone || ''),
         (f.feedStart && f.feedEnd)
           ? `${prettyDate(String(f.feedStart))} – ${prettyDate(String(f.feedEnd))}` : '',
-        String(f.source || '')].filter((x) => x).join(' · ')]) : []),
+        String(f.source || '')].filter((x) => x).join(' · ');
+      return ['', `${String(f.tag || '')} · ${String(f.label || '')}`, value,
+        f.synthesized ? join(degradeChip('assumed_schedule'), el('span', esc(value))) : ''];
+    }) : []),
     // Blank on an ordinary run (a blank value drops the row); otherwise it sits directly
     // under the file it qualifies.
-    ['', 'Timetable', assumedSchedule
-      ? 'Assumed, not published. The lines come from OpenStreetMap: where they run is '
-        + 'measured, how often they run is modelled from the assumptions listed below, '
-        + 'and every score that rests on the timetable is dropped rather than estimated.'
-      : ''],
+    ['', 'Timetable', assumedSchedule ? 'Assumed, not published' : '', assumedSchedule ? join(
+      degradeChip('assumed_schedule'),
+      chip('where: measured', 'route'),
+      chip('how often: modelled', 'clock'),
+      chip('timetable scores dropped', 'ban'),
+      linkChip('#interp-osm_synth_timetable', 'Our call', 'scale-balanced', { variant: 'warning' }),
+    ) : ''],
     ['', 'Feed version / publisher',
       [String(p.feedVersion || ''), String(p.publisher || '')].filter((x) => x).join(' · ')],
     ['', 'Feed validity', (p.feedStart && p.feedEnd)
@@ -1131,28 +1312,33 @@ export function renderProvenance(payload) {
         + `${num(size.hidingPeriodMin)}-minute hiding period · `
         + `${s4Dist(report, size.zoneRadiusM, 2)} zones · `
         + `${num(size.catalogueSize)} questions · ${num(curses.length)} curses`
-      : ''],
-    // Follows `Border.derivation` (CONTRACT §(b)): a reader-set box is unpadded, and one
-    // the in-play filter fell back on was not applied at all.
-    ['border', 'Border', border
-      ? `${border.kind} · S ${num(border.bbox[0], 6, { comma: false })}, `
-        + `W ${num(border.bbox[1], 6, { comma: false })}, `
-        + `N ${num(border.bbox[2], 6, { comma: false })}, `
-        + `E ${num(border.bbox[3], 6, { comma: false })} · `
-        + (border.derivation === 'option_fallback' ? 'set by you, not applied'
-          : border.derivation === 'option' ? 'set by you, unpadded'
-            : `padded ${s4Dist(report, border.padM, 2)}`)
-      : ''],
+      : '', size.name ? join(
+      waBadge(String(size.name).toUpperCase(), { variant: 'neutral' }),
+      waTag(size.inferred ? 'inferred' : 'set by hand', {
+        icon: size.inferred ? 'wand-magic-sparkles' : 'hand',
+      }),
+      waTag(`${num(size.hidingPeriodMin)} min hiding`, { icon: 'hourglass-half' }),
+      waTag(`${s4Dist(report, size.zoneRadiusM, 2)} zones`),
+      waTag(`${num(size.catalogueSize)} questions`),
+      waTag(`${num(curses.length)} curses`),
+    ) : ''],
+    ['border', 'Border', border ? bboxText : '',
+      border ? join(borderChip, el('span', esc(bboxText))) : ''],
     ['questions', 'Question audit', questions.length
-      ? `${num(questions.length)} questions evaluated inside the border; `
-        + `${num(s4LiveQuestions(report))} function, `
-        + `${num(borderline)} would change under a larger map`
-      : ''],
-    ['curses', 'Curse audit', curses.length
-      ? `${num(curses.length)} curses checked; `
-        + `${num(s4RemovedCurses(report).length)} removed, `
-        + `${num(warned)} weakened, ${num(playerChoice)} left to the players`
-      : ''],
+      ? `${num(questions.length)} questions evaluated inside the border` : '',
+    questions.length ? join(
+      chip(`${num(questions.length)} evaluated`, 'list'),
+      chip(`${num(s4LiveQuestions(report))} work at all`, 'list-check', { variant: 'brand' }),
+      borderline ? chip(`${num(borderline)} borderline`, 'circle-half-stroke', { variant: 'warning' }) : '',
+    ) : ''],
+    ['curses', 'Curse audit', curses.length ? `${num(curses.length)} curses checked` : '',
+      curses.length ? join(
+        chip(`${num(curses.length)} checked`, 'list'),
+        ...S4_ACTION_ORDER.filter((a) => count(actionCounts, a)).map((a) => chip(
+          `${num(count(actionCounts, a))} ${S4_ACTION_TAG[a][0]}`, S4_ACTION_TAG[a][1],
+          { variant: S4_ACTION_TAG[a][2], appearance: 'outlined', title: `action ${a}` },
+        )),
+      ) : ''],
     ['start', 'Round-start location and departure', hub
       ? `${hub.name} (${opts.startStopId || hub.stopId}) at ${opts.departure}` : ''],
     ['days', 'Representative days', (report.days || [])
@@ -1168,140 +1354,207 @@ export function renderProvenance(payload) {
     s4FactRows(factRows),
     waDetails('Build fingerprint', s4FactRows(fingerprintRows), { appearance: 'plain' }),
   ), {
-    headerHtml: s4CardHeader(
-      'What this report was built from',
-      'Everything here is derived from the feed, the OpenStreetMap snapshot and the rulebook.',
-    ),
+    headerHtml: cardHeader('What this report was built from'),
   })];
 
+  const geo = report.geo || {};
   const overpass = sortedBy(p.overpass || [], (x) => [String(x.key), String(x.cacheKey)]);
   if (overpass.length) {
+    const cellM = fnum(geo.densityCellM);
+    const partialTip = 'upper bound, or layer unread';
+    let partialN = 0;
     const rows = [];
     for (const q of overpass) {
       const c = fnum(q.count);
-      let shownCount = c === null ? '—' : num(c);
-      if (q.partial) shownCount += ' +';
+      if (q.partial) partialN += 1;
+      const layer = q.layer || null;
+      const url = layer ? String(layer.url || '') : '';
+      const readFrom = join(
+        layer ? waTag(url.slice(url.lastIndexOf('/') + 1), { icon: 'file' }) : '',
+        layer ? el('span', esc(`${num(layer.features)} features`), {
+          className: 'wa-caption-xs wa-color-text-quiet',
+        }) : '',
+        q.source === 'density'
+          ? chip(cellM !== null ? `grid · ${num(cellM)} m` : 'grid', 'table-cells') : '',
+        url ? waCopyButton(url, {
+          label: 'Copy file URL', trigger: waButton('URL', { icon: 'copy', appearance: 'plain' }),
+        }) : '',
+        layer && layer.sha256 ? waCopyButton(String(layer.sha256), {
+          label: 'Copy sha256', trigger: waButton('sha256', { icon: 'copy', appearance: 'plain' }),
+        }) : '',
+        !layer && q.endpoint ? el('span', esc(String(q.endpoint)), {
+          className: 'wa-caption-xs wa-color-text-quiet', style: 'overflow-wrap:anywhere',
+        }) : '',
+      );
       rows.push([{ id: `prov-osm-${q.key}` }, [
         el('b', esc(String(q.key || ''))),
-        el('span', esc(shownCount), { className: 'wa-text-nowrap' }),
-        el('pre', esc(String(q.selector || ''))),
-        el('span', esc(String(q.endpoint || '')), {
-          className: 'wa-caption-xs wa-color-text-quiet', style: 'overflow-wrap:anywhere',
+        el('span', esc(c === null ? '—' : num(c))
+          + (q.partial ? ` ${el('abbr', '+', { title: partialTip })}` : ''), {
+          className: 'wa-text-nowrap',
         }),
+        el('pre', esc(String(q.selector || '')), { className: 'prov-sel' }),
+        el('div', readFrom, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
       ]]);
     }
-    // No "Cache key" column: every record carries `cacheKey: ''`. The last column is
-    // the file each count was read from.
-    const note = 'Every count is the number of matching OpenStreetMap elements inside the '
-      + 'border. A + marks a count not confirmed by reading the features: the category was '
-      + 'too large to fetch (so the number is an upper bound) or the layer could not be read. '
-      + 'Selectors are printed verbatim so you can re-run them at overpass-turbo.eu.';
+    const legend = el('div', join(
+      el('span', join(waTag('+'), el('span', esc(partialTip))), {
+        className: 'wa-cluster wa-gap-2xs wa-align-items-center wa-caption-xs',
+      }),
+      waButton('Re-run at overpass-turbo.eu', {
+        href: 'https://overpass-turbo.eu', target: '_blank', rel: 'noopener',
+        icon: 'arrow-up-right-from-square', appearance: 'plain',
+      }),
+    ), { className: 'wa-cluster wa-gap-s wa-align-items-center' });
     blocks.push(waCard(join(
-      el('p', esc(note), { className: 'wa-body-s wa-color-text-quiet' }),
+      legend,
       s4Table(['Category', 'Count', 'What was searched for', 'Read from'], rows),
     ), {
-      headerHtml: s4CardHeader(
-        `${num(overpass.length)} OpenStreetMap categories`,
-        'One selector per category; this run read the matching features inside the border.',
-      ),
+      headerHtml: cardHeader(`${num(overpass.length)} OpenStreetMap categories`, {
+        caption: 'Counted inside the border · selectors verbatim',
+        chipsHtml: join(
+          geo.snapshot ? chip(`OSM snapshot · ${prettyDate(String(geo.snapshot))}`, 'camera') : '',
+          partialN ? waBadge(`${num(partialN)} partial`, { variant: 'warning' }) : '',
+        ),
+      }),
     }));
   }
 
-  const admin = (report.geo && report.geo.admin) || {
-    countryCode: null, countryName: null, source: 'unknown',
-  };
+  const admin = geo.admin || { countryCode: null, countryName: null, source: 'unknown' };
   const ladder = p.adminLevels || {};
   if (Object.keys(ladder).length || admin.countryCode) {
-    const items = [];
-    for (const ordinal of ['1', '2', '3', '4']) {
-      const level = ladder[ordinal];
-      if (level === null || level === undefined) {
-        items.push(`${ordinal}: no ${ordinal}th-level division on this map`);
-      } else {
-        // Overture synthesises a level per subtype and those numbers deliberately do
-        // NOT mean what OSM's `admin_level` means, so the source has to reach the label.
-        items.push(p.adminSource === 'overture'
-          ? `${ordinal}: Overture level ${num(level)}`
-          : `${ordinal}: OSM admin_level ${num(level)}`);
-      }
-    }
-    let text = `Country ${String(admin.countryName || admin.countryCode || 'unknown')} · `
-      + items.join(' · ');
-    if (admin.source === 'unknown') {
-      text = 'The country could not be determined, so the administrative-division questions '
-        + "were marked unknown rather than guessed at, and were excluded from the score's "
-        + 'denominator.';
-    }
-    blocks.push(waCard(
-      el('p', esc(text), { className: 'wa-body-s', style: 'max-width:80ch' }),
-      {
-        headerHtml: s4CardHeader(
-          'Administrative divisions',
-          "The rulebook's 1st–4th divisions land on different levels in every country, so "
-          + 'the ladder is derived from the division data, never assumed.',
+    const unknown = admin.source === 'unknown';
+    const overture = p.adminSource === 'overture';
+    // Overture synthesises a level per subtype and those numbers deliberately do NOT mean
+    // what OSM's `admin_level` means, so the source has to reach the label.
+    const cells = S4_ADMIN_ORDINALS.map(([key, word]) => {
+      const level = ladder[key];
+      const tag = level === null || level === undefined
+        ? chip('none', 'circle-minus')
+        : waTag(overture ? `Overture level ${num(level)}` : `admin_level ${num(level)}`);
+      return el('div', join(
+        el('span', esc(word), { className: 'wa-caption-xs wa-text-uppercase' }),
+        el('div', tag),
+      ), { className: 'wa-stack wa-gap-3xs' });
+    }).join('');
+    const why = "The rulebook's 1st–4th divisions land on different levels in every country, so "
+      + 'the ladder is derived from the division data, never assumed.';
+    const body = join(
+      unknown ? leadDetail('', esc('The country could not be determined, so the '
+        + 'administrative-division questions were marked unknown rather than guessed at, and '
+        + "were excluded from the score's denominator."), {
+        chipsHtml: degradeChip(geo.available ? 'country_unresolved' : 'osm_unavailable'),
+      }) : el('div', cells, { className: 'wa-grid wa-gap-s', style: '--min-column-size:8rem' }),
+      waDetails('Why the ladder is derived',
+        el('p', esc(why), { className: 'wa-body-s wa-color-text-quiet' }), { appearance: 'plain' }),
+    );
+    blocks.push(waCard(el('div', body, { className: 'wa-stack wa-gap-s' }), {
+      headerHtml: cardHeader('Administrative divisions', {
+        chipsHtml: join(
+          unknown ? '' : chip(String(admin.countryName || admin.countryCode || ''), 'globe'),
+          overture ? chip('Overture Maps', 'layer-group')
+            : p.adminSource === 'osm' ? chip('OpenStreetMap', 'map') : '',
         ),
-      },
-    ));
+      }),
+    }));
   }
 
   const interps = sortedBy(p.interpretations || [], (x) => [String(x.id)]);
+  /** @type {Object<string, string>} */
+  const idLabels = {};
+  for (const q of questions) idLabels[q.id] = String(q.label || q.id);
+  for (const c of curses) idLabels[c.id] = String(c.name || c.id);
   if (interps.length) {
-    // A flat `<dl>`, not an accordion: the sentence is the content and the payload is
-    // two tags. `id="interp-…"` anchors each entry.
-    const entries = [];
-    for (const i of interps) {
-      const iid = String(i.id || '');
-      const affects = (i.affects || []).map((a) => String(a));
-      const tail = affects.length
-        ? el('span', esc('affects'), {
-          className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet',
-        }) + affects.map((a) => waTag(a)).join('')
-        : el('span', esc('changes no printed number directly'), {
-          className: 'wa-caption-xs wa-color-text-quiet',
-        });
-      entries.push(el('dt', esc(String(i.text || '')), {
-        className: 'wa-body-s', id: `interp-${iid}`,
-      }));
-      entries.push(el('dd', el('div', join(
-        el('code', esc(iid), { className: 'wa-caption-2xs wa-color-text-quiet' }),
-        tail,
-      ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }), {
-        style: 'margin:0 0 var(--wa-space-m) 0',
-      }));
-    }
-    blocks.push(waCard(el('dl', entries.join(''), { className: 'wa-stack wa-gap-3xs' }), {
-      headerHtml: s4CardHeader(
-        `${num(interps.length)} places where the rulebook is silent and this report decided`,
-        'Each changed a number on this page. They are interpretations, not rules; a group '
-        + 'that disagrees with one may overrule it.',
-      ),
+    const applying = interps.filter((i) => i.applies !== false);
+    const unused = interps.filter((i) => i.applies === false);
+    const list = (rows) => el('div', rows.map((i) => s4InterpRow(i, idLabels)).join(''), {
+      className: 'wa-stack wa-gap-s',
+    });
+    blocks.push(waCard(el('div', join(
+      list(applying),
+      unused.length ? el('details', join(
+        el('summary', esc(`Not used on this run · ${num(unused.length)}`), { className: 'wa-caption-s' }),
+        list(unused),
+      ), { className: 'ld-more' }) : '',
+    ), { className: 'wa-stack wa-gap-s' }), {
+      headerHtml: cardHeader(`${num(applying.length)} interpretations`, {
+        chipsHtml: basisChip('interp'),
+        caption: 'Not rules — your group may overrule any.',
+      }),
     }));
   }
 
-  const geoNotes = Array.from(new Set((report.geo && report.geo.notes) || [])).sort(cmpStr);
-  const degradations = Array.from(new Set(report.degradations || [])).sort(cmpStr);
-  const notes = geoNotes.concat(degradations);
-  if (notes.length) {
-    blocks.push(waCard(
-      el('ul', notes.map((n) => el('li', esc(n))).join(''), {
-        className: 'wa-stack wa-gap-2xs',
+  // Degradations print in full; only a `limit`-family map note folds behind its chip.
+  const noteCodes = geo.noteCodes || {};
+  const degradationCodes = report.degradationCodes || {};
+  const limitRows = [];
+  for (const d of Array.from(new Set(report.degradations || [])).sort(cmpStr)) {
+    const code = Object.hasOwn(degradationCodes, d) ? degradationCodes[d] : '';
+    limitRows.push(el('li', join(
+      code ? degradeChip(code)
+        : chip('Part of this report is missing', 'triangle-exclamation', { variant: 'warning' }),
+      el('p', esc(d), { className: 'wa-body-s' }),
+    ), { className: 'wa-stack wa-gap-3xs' }));
+  }
+  // Limit notes sharing a code fold behind one chip.
+  const limitGroups = new Map();
+  for (const n of Array.from(new Set(geo.notes || [])).sort(cmpStr)) {
+    const code = Object.hasOwn(noteCodes, n) ? noteCodes[n] : 'osm_note';
+    const kind = DEGRADE_KIND[code];
+    if (!kind || kind.family === 'limit') {
+      if (!limitGroups.has(code)) {
+        limitGroups.set(code, []);
+        limitRows.push(code);
+      }
+      limitGroups.get(code).push(n);
+    } else {
+      limitRows.push(el('li', join(degradeChip(code), el('p', esc(n), { className: 'wa-body-s' })), {
+        className: 'wa-stack wa-gap-3xs',
+      }));
+    }
+  }
+  for (let i = 0; i < limitRows.length; i++) {
+    const notes = limitGroups.get(limitRows[i]);
+    if (!notes) continue;
+    const code = limitRows[i];
+    limitRows[i] = el('li', leadDetail('', notes.map((n) => el('p', esc(n), { className: 'wa-body-s' })).join(''), {
+      inline: true,
+      chipsHtml: degradeChip(code, { suffix: notes.length > 1 ? `${num(notes.length)} notes` : '' }),
+    }), { className: 'wa-stack wa-gap-3xs' });
+  }
+  const coverage = geo.osmCoverage || {};
+  const strong = coverage.strong || [];
+  const weakCov = coverage.weak || [];
+  const leadOf = (id) => {
+    const row = interps.find((i) => i.id === id);
+    return row && row.explain && row.explain.lead ? String(row.explain.lead) : id;
+  };
+  const cluster = 'wa-cluster wa-gap-2xs wa-align-items-center';
+  const legend = join(
+    strong.length ? el('div', chip('OSM strong', 'circle-check', { variant: 'success' })
+      + strong.map((s) => waTag(String(s))).join(''), { className: cluster }) : '',
+    weakCov.length ? el('div', chip('OSM incomplete', 'circle-half-stroke', { variant: 'warning' })
+      + weakCov.map((s) => waTag(String(s))).join(''), { className: cluster }) : '',
+    geo.available ? el('div', join(
+      basisChip('interp'),
+      linkChip('#interp-legal_spots_are_a_shortlist', leadOf('legal_spots_are_a_shortlist'), 'list-check'),
+      linkChip('#interp-osm_is_not_google_maps', leadOf('osm_is_not_google_maps'), 'map'),
+    ), { className: cluster }) : '',
+  );
+  if (limitRows.length || legend) {
+    blocks.push(waCard(el('div', join(
+      limitRows.length ? el('ul', limitRows.join(''), { className: 'wa-stack wa-gap-xs wa-list-plain' }) : '',
+      legend ? el('div', legend, { className: 'wa-stack wa-gap-2xs' }) : '',
+    ), { className: 'wa-stack wa-gap-s' }), {
+      headerHtml: cardHeader('What this data does not know', {
+        caption: 'Carried through from the layers that produced them.',
       }),
-      {
-        headerHtml: s4CardHeader(
-          'What this data does not know',
-          'Limits of the sources, carried through from the layers that produced them.',
-        ),
-      },
-    ));
+    }));
   }
 
   const indexBlock = s4SourcesIndex(report, factRows.concat(fingerprintRows));
   if (indexBlock) {
     blocks.push(waCard(indexBlock, {
-      headerHtml: s4CardHeader(
-        'Every citation on this page, and where it lands',
-        'The little superscript links next to the numbers point here.',
-      ),
+      headerHtml: cardHeader('Citations', { caption: 'Where each superscript link lands' }),
     }));
   }
 
@@ -1317,9 +1570,9 @@ export function renderProvenance(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The page footer: five figures, the credit sentence, and a link back to the top. The
- * ids match the shell's skeleton (`#footer-figures`, `#footer-credit`) so app.js can
- * replace the whole `<footer>` or swap the two children in place.
+ * The page footer: five figures, the credit list, and a link back to the top. The ids
+ * match the shell's skeleton (`#footer-figures`, `#footer-credit`); app.js replaces the
+ * whole `<footer>`.
  *
  * (generate.py `_s4_footer`.)
  *
@@ -1339,7 +1592,7 @@ export function renderFooter(payload) {
     [`${num(s4LiveQuestions(report))} / ${num(questions.length)}`, 'questions live'],
     [num(s4RemovedCurses(report).length), 'curses removed'],
     [num((p.overpass || []).length), 'OpenStreetMap queries'],
-    [num((p.interpretations || []).length), 'documented interpretations'],
+    [num((p.interpretations || []).filter((i) => i.applies !== false).length), 'documented interpretations'],
   ];
   const figures = el('div', stats.map(([value, label]) => el('span', join(
     el('b', esc(value), { className: 'wa-heading-s' }),
@@ -1348,25 +1601,31 @@ export function renderFooter(payload) {
     className: 'wa-grid wa-gap-m', style: '--min-column-size:230px', id: 'footer-figures',
   });
 
-  const credit = `Built from ${feed.agencyName || ''}'s GTFS feed`
-    + ((p.feedStart && p.feedEnd)
-      ? ` (valid ${prettyDate(String(p.feedStart))} – ${prettyDate(String(p.feedEnd))})` : '')
-    + '. Map features from OpenStreetMap contributors, ODbL. '
-    + (p.adminSource === 'overture'
-      ? 'Administrative divisions from the Overture Maps Foundation. '
-      : 'Administrative divisions from OpenStreetMap contributors, ODbL. ')
-    + "Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The Game's "
-    + 'Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking on the '
-    + 'day.'
-    + (dateText ? ` Analysis date ${dateText}, taken from the feed's own calendar.` : '');
+  const agency = String(feed.agencyName || '');
+  const credits = [
+    agency ? ['bus', `${agency} GTFS`
+      + ((p.feedStart && p.feedEnd)
+        ? ` · valid ${prettyDate(String(p.feedStart))} – ${prettyDate(String(p.feedEnd))}` : '')] : null,
+    ['map', 'Map features © OpenStreetMap contributors, ODbL'],
+    ['layer-group', p.adminSource === 'overture'
+      ? 'Admin divisions: Overture Maps Foundation'
+      : 'Admin divisions © OpenStreetMap contributors, ODbL'],
+    ['map-location-dot', 'Basemap: OpenFreeMap, OpenMapTiles data'],
+    ['book', "Rules: Jet Lag: The Game's Hide+Seek rulebook"],
+    dateText ? ['calendar-check', `Analysis date ${dateText}, from the feed's calendar`] : null,
+    ['circle-info', 'Scheduled times are planning estimates — check live tracking on the day'],
+  ].filter((x) => x);
 
   const top = el('a', join(waIcon('arrow-up'), esc('Back to top')), {
     href: '#top', className: 'wa-link wa-caption-s wa-cluster wa-gap-2xs',
   });
   return el('footer', el('div', join(
     figures,
-    el('p', esc(credit), {
-      className: 'wa-body-s', style: 'max-width:88ch', id: 'footer-credit',
+    el('ul', credits.map(([icon, text]) => el('li', iconLabel(icon, text, { quiet: false }))).join(''), {
+      id: 'footer-credit',
+      className: 'wa-cluster wa-gap-s wa-caption-s wa-list-plain',
+      role: 'list',
+      ariaLabel: 'Credits',
     }),
     top,
   ), { className: 'wa-stack wa-gap-m' }), { slot: 'footer', dataWhen: 'report' });
@@ -1582,14 +1841,13 @@ function applyRows(spec) {
   const shownN = Math.min(to, total) - Math.min(from, total);
   const countEl = pager.querySelector('[data-role="count"]');
   if (countEl) {
-    countEl.textContent = Number.isFinite(size)
-      ? `Showing ${num(shownN)} of ${num(total)} ${s4Plural(total, spec.noun)}.`
-      : `Showing all ${num(total)} ${s4Plural(total, spec.noun)}.`;
+    const noun = s4Plural(total, spec.noun);
+    if (!Number.isFinite(size)) countEl.textContent = `All ${num(total)} ${noun}`;
+    else if (shownN === 0) countEl.textContent = `0 of ${num(total)} ${noun}`;
+    else countEl.textContent = `${num(from + 1)}–${num(from + shownN)} of ${num(total)} ${noun}`;
   }
   const nav = pager.querySelector('[data-role="pagenav"]');
   if (nav) nav.hidden = !Number.isFinite(size) || pages < 2;
-  const pageEl = pager.querySelector('[data-role="page"]');
-  if (pageEl) pageEl.textContent = `Page ${num(st.page + 1)} of ${num(pages)}`;
   const prev = pager.querySelector('[data-role="prev"]');
   if (prev) prev.disabled = st.page <= 0;
   const next = pager.querySelector('[data-role="next"]');

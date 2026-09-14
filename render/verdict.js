@@ -13,12 +13,14 @@
 // `toFixed`, no arithmetic inside a template literal.
 
 import {
-  IMPERIAL_COUNTRIES, cmpStr, num, pct, mins, miles, km, sqmi, rhu, prettyDate,
+  IMPERIAL_COUNTRIES, cmpStr, num, pct, mins, miles, km, sqmi, rhu, prettyDate, fillPct,
+  FINDING_MINUS_BELOW, FINDING_PLUS_ABOVE, FITNESS_MIN_AVAILABLE_POINTS,
 } from '../lib/core.js';
 import {
-  esc, el, join, waIcon, waCard, waCallout, waTag, waButton, waProgressBar,
+  esc, el, join, waIcon, waCard, waCallout, waTag, waBadge, waButton, waProgressBar,
   waProgressRing, waAccordion, waScroller, waCopyButton, chip, meter, budgetBar,
-  section, subhead, provChip, setProvNames, dataTable,
+  section, subhead, provChip, setProvNames, dataTable, swatch, basisChip, degradeChip,
+  factChips, miniMeter, linkChip, iconLabel, legendRow, leadDetail, cardHeader, kpi,
 } from './html.js';
 
 // ── rulebook presentation constants (read, never recomputed) ─────────────────
@@ -51,15 +53,6 @@ const S4_SEVERITY = Object.freeze({
   low: Object.freeze(['minor', 'circle-down']),
 });
 
-// `Metric.source` → (wa-tag variant, printed word, icon, precise term). An
-// interpretation is never presented as a rule (contract.md §5.4); the precise term
-// survives in the tag's `title` and the row's `data-basis`.
-const S4_SOURCE_TAG = Object.freeze({
-  rulebook: Object.freeze(['brand', 'From the rules', 'book', 'rulebook']),
-  feed: Object.freeze(['neutral', 'Measured', 'wave-square', 'feed']),
-  interp: Object.freeze(['warning', 'Our call', 'scale-balanced', 'interpretation']),
-});
-
 // The findings quadrants: swatch colour, the WebAwesome colour utility that tints the
 // card's edge, and the icon that carries the tone without the colour.
 const S4_QUADRANTS = Object.freeze([
@@ -68,13 +61,16 @@ const S4_QUADRANTS = Object.freeze([
   Object.freeze(['concern', 'Risks needing a house rule', 'var(--warn)', 'wa-warning', 'triangle-exclamation']),
 ]);
 
-// The four size axes in plain words; the technical name stays as the caption beneath.
-const S4_AXIS_PLAIN = Object.freeze({
-  A: 'The area the buses actually cover',
-  B: 'How many distinct places there are to hide',
-  C: 'How long it takes to cross the map',
-  D: 'How far it is corner to corner',
+// The four size axes: short label, icon, and whether the technical name adds a term
+// the reader meets elsewhere on the page.
+const S4_AXIS_SHORT = Object.freeze({
+  A: Object.freeze(['Area covered', 'draw-polygon', true]),
+  B: Object.freeze(['Hiding zones', 'location-dot', false]),
+  C: Object.freeze(['Time to cross', 'stopwatch', true]),
+  D: Object.freeze(['Corner to corner', 'arrows-left-right', false]),
 });
+
+const S4_AXIS_WORDS = Object.freeze(['small', 'medium', 'large']);
 
 // Where each axis's band came from, as a `Metric.source` value for `s4SourceTag`.
 // Only A (convex-hull area, 100–1,000 sq mi) is the rulebook's own column. B (hiding
@@ -262,6 +258,20 @@ export function s4RampText(spec) {
 }
 
 /**
+ * The terse threshold form of `s4RampText`: ○ marks no points, ● full points.
+ * @param {{kind?: string, args?: number[]}|null} spec @returns {string}
+ */
+export function s4RampShort(spec) {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return '—';
+  const kind = String(spec.kind || '');
+  const v = Array.from(spec.args || [], (a) => s4Val(Number(a)));
+  if (kind === 'ramp' && v.length >= 2) return `○ ${v[0]} → ● ${v[1]}`;
+  if (kind === 'rramp' && v.length >= 2) return `● ${v[0]} → ○ ${v[1]}`;
+  if (kind === 'plateau' && v.length >= 4) return `○ ${v[0]} · ● ${v[1]}–${v[2]} · ○ ${v[3]}`;
+  return s4RampText(spec);
+}
+
+/**
  * `70 / 80` tenths → '7.0 / 8.0'.
  * @param {number} pointsTenths @param {number} maxTenths @returns {string}
  */
@@ -358,7 +368,7 @@ export function s4LiveQuestions(report) {
   return n;
 }
 
-/** Every fitness metric by id, for the prose slots and the headline sentence. */
+/** Every fitness metric by id. */
 export function s4MetricLookup(report) {
   const out = {};
   for (const sub of (report && report.fitness && report.fitness.subscores) || []) {
@@ -406,23 +416,13 @@ function s4RegisterProvNames(report) {
 // ── shared small markup helpers ──────────────────────────────────────────────
 
 /**
- * A `.sw` colour swatch. (generate.py `_s4_swatch`.) Shape overrides go in `style`,
- * not a utility class: `.sw` is unlayered and beats anything in `@layer wa-utilities`.
+ * A `.sw` colour swatch; alias of `render/html.js` `swatch`. Shape overrides go in
+ * `style`, not a utility class: `.sw` is unlayered and beats `@layer wa-utilities`.
  */
-export function s4Swatch(style) {
-  return el('span', '', { className: 'sw', style });
-}
+export const s4Swatch = swatch;
 
-/**
- * A card header: heading plus the caption that explains the encoding, including what
- * the empty state means. (generate.py `_s4_card_header`.)
- */
-export function s4CardHeader(title, caption) {
-  return el('div', join(
-    el('p', esc(title), { className: 'wa-heading-xs' }),
-    el('p', esc(caption), { className: 'wa-caption-xs' }),
-  ), { className: 'wa-stack wa-gap-3xs' });
-}
+/** A card header with a string caption; positional wrapper over `cardHeader`. */
+export const s4CardHeader = (title, caption) => cardHeader(title, { caption });
 
 /**
  * The WebAwesome colour variant for a verdict band, read off `S3_BANDS`, so both
@@ -536,7 +536,7 @@ export function s4PointsBudget(report, opts = {}) {
 function s4SubscoreMeters(report) {
   const rows = [];
   for (const s of (report.fitness && report.fitness.subscores) || []) {
-    const pctage = s.maxTenths ? (100.0 * s.earnedTenths) / s.maxTenths : 0.0;
+    const pctage = fillPct(s.earnedTenths, s.maxTenths);
     const label = el('a', esc(`${s.id} · ${s.name}`), {
       href: `#trace-${s.id}`, className: 'wa-link-plain wa-caption-s',
     });
@@ -544,7 +544,7 @@ function s4SubscoreMeters(report) {
       esc(num(s.earnedTenths / 10.0, 1)),
       el('span', esc(` / ${num(s.maxTenths / 10.0, 0)}`), { className: 'wa-color-text-quiet' }),
     ), { className: 'wa-caption-s' });
-    rows.push(meter(label, pctage, right, { flank: '3.5rem', label: `${s.id} · ${s.name}` }));
+    rows.push(meter(label, pctage, right, { flank: '5rem', label: `${s.id} · ${s.name}` }));
   }
   if (rows.length === 0) return '';
   return el('div', rows.join(''), {
@@ -557,21 +557,28 @@ function s4SubscoreMeters(report) {
  * through `setDay()`, so the tiles, the selector and `localStorage` never disagree.
  */
 function s4DayTiles(report) {
-  const per = (report.fitness && report.fitness.perDay) || {};
+  const f = report.fitness || {};
+  const per = f.perDay || {};
   const keys = s4DayOrder(report).filter((k) => k in per);
-  if (keys.length < 2) return '';
-  const best = maxBy(keys, (k) => [per[k], k]);
+  if (Object.keys(per).length < 2 || keys.length < 2) {
+    if (!(report.days || []).length) return '';
+    return el('div', chip(`one service day: ${s4DayLabel(report, s4BestDay(report))}`, 'calendar-day'), {
+      className: 'wa-cluster wa-gap-2xs',
+    });
+  }
+  const deltas = f.perDayDelta || {};
+  const selected = s4BestDay(report);
   const cards = [];
   for (const key of keys) {
-    const delta = per[key] - per[best];
+    let note = '';
+    if (key === selected) note = 'best day';
+    else if (typeof deltas[key] === 'number') note = `${s4Signed(deltas[key])} points`;
     cards.push(waCard(el('div', join(
       el('span', esc(num(per[key], 1)), {
         className: 'wa-heading-xl', style: 'font-family:var(--sans)',
       }),
       el('span', esc(s4DayLabel(report, key)), { className: 'wa-caption-xs wa-text-uppercase' }),
-      el('span', esc(key === best ? 'best day' : `${s4Signed(delta)} points`), {
-        className: 'wa-caption-2xs wa-color-text-quiet',
-      }),
+      note ? el('span', esc(note), { className: 'wa-caption-2xs wa-color-text-quiet' }) : '',
     ), { className: 'wa-stack wa-gap-3xs' }), {
       appearance: 'outlined',
       dataDay: key,
@@ -580,9 +587,18 @@ function s4DayTiles(report) {
       title: `Re-read the whole page for ${s4DayLabel(report, key)} service`,
     }));
   }
-  return el('div', cards.join(''), {
-    className: 'wa-grid wa-gap-s', style: '--min-column-size:11rem', id: 'dayscores',
-  });
+  return el('div', join(
+    el('div', cards.join(''), {
+      className: 'wa-grid wa-gap-s', style: '--min-column-size:11rem', id: 'dayscores',
+    }),
+    el('p', iconLabel('hand-pointer', 'Tap a day to re-read the page'), { className: 'wa-caption-xs' }),
+  ), { className: 'wa-stack wa-gap-2xs' });
+}
+
+/** A cap's short label from `report.caps`, falling back to its id. */
+function s4CapLabel(report, capId) {
+  const row = (report.caps || []).find((c) => c.id === capId);
+  return (row && row.label) || String(capId || '');
 }
 
 /** One `wa-skeleton`, sized by the caller. */
@@ -641,17 +657,22 @@ function s4Scorecard(report) {
       el('p', esc('Not enough of this map could be measured to give it one number'), {
         className: 'wa-heading-s',
       }),
-      el('p', esc(`Only ${num(f.availablePoints, 1)} of 100 points could be measured on `
-        + 'this map.'), { className: 'wa-body-s' }),
+      meter(el('span', esc('Measurable'), { className: 'wa-caption-s' }), fillPct(f.availablePoints, 100),
+        el('span', esc(`${num(f.availablePoints, 1)} / 100`), { className: 'wa-caption-s' }),
+        { label: 'Measurable points', flank: '4.5rem' }),
+      el('p', esc(`a rating needs ${num(FITNESS_MIN_AVAILABLE_POINTS)}`), {
+        className: 'wa-caption-xs wa-color-text-quiet',
+      }),
     ), { className: 'wa-stack wa-gap-2xs' }), {
       variant: 'neutral', appearance: 'outlined', icon: 'circle-question',
     });
   } else {
-    const [cut, upper, advice] = s4BandBounds(f.band);
-    let note = f.band;
-    if (f.cappedBy) note = `${f.band} · held back by ${f.cappedBy}`;
-    else if (f.availablePoints < 100) {
-      note = `${f.band} · ${num(f.availablePoints, 1)} of 100 points measurable`;
+    const [, , advice] = s4BandBounds(f.band);
+    let noteHtml = '';
+    if (f.cappedBy) {
+      noteHtml = chip(`capped: ${s4CapLabel(report, f.cappedBy)}`, 'lock', { variant: 'danger' });
+    } else if (f.availablePoints < 100) {
+      noteHtml = chip(`${num(f.availablePoints, 1)} / 100 measurable`, 'gauge', { variant: 'warning' });
     }
     const inner = el('span', join(
       el('span', esc(num(f.score, 1)), {
@@ -668,11 +689,12 @@ function s4Scorecard(report) {
     });
     const beside = el('div', join(
       el('p', esc('How good a map this is'), { className: 'wa-heading-xs' }),
-      el('p', esc(`${num(cut, 1)}–${num(upper, 1)} out of 100 is “${String(f.band).toLowerCase()}”.`), {
-        className: 'wa-body-s',
+      el('p', esc(advice) + (noteHtml ? '' : provChip('trace')), {
+        className: 'wa-caption-s wa-color-text-quiet',
       }),
-      el('p', esc(advice), { className: 'wa-caption-s wa-color-text-quiet' }),
-      el('p', esc(note) + provChip('trace'), { className: 'wa-caption-s wa-color-text-quiet' }),
+      noteHtml
+        ? el('div', noteHtml + provChip('trace'), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })
+        : '',
     ), { className: 'wa-stack wa-gap-3xs', style: 'flex:1 1 11rem' });
     top = el('div', join(
       el('div', dial + beside, { className: 'wa-cluster wa-gap-l wa-align-items-center' }),
@@ -690,10 +712,10 @@ function s4Scorecard(report) {
       // `id` rides through budgetBar's `...rest`. This is the page's ONE 100-point
       // bar; the score trace links up to it.
       s4PointsBudget(report, { id: 'points-budget' }),
-      el('p', esc('Each block is one sub-score; the grey tail is what the map did not '
-        + 'earn. Hover a block for its name and its points.'), {
-        className: 'wa-caption-xs wa-color-text-quiet',
-      }),
+      legendRow([
+        [swatch('background:var(--seq-550)'), 'earned (A–F)'],
+        [swatch('background:var(--off)'), 'not earned'],
+      ], { label: 'Points bar key' }),
     ), { className: 'wa-stack wa-gap-3xs' });
   }
 
@@ -716,7 +738,7 @@ function s4Scorecard(report) {
 
 /**
  * §00 — the page's answer: kicker, the question as an `h1`, the band phrase, the
- * headline sentence, three orienting chips, and the scorecard. The page's one display
+ * headline figures as kpi tiles, the orienting chips, and the scorecard. The page's one display
  * figure and one band word are both here. When too little could be measured the dial
  * and budget become a callout; the meters and day tiles stay, so the layout is the same.
  *
@@ -748,35 +770,40 @@ export function renderHero(payload) {
     (place && place !== agency) ? `${agency}, ${place}` : agency,
   ].filter((x) => x).join(' · ');
 
-  // The headline needs the zone cover. The questions clause is gated on length, not
+  // The strip needs the zone cover. The questions tile is gated on length, not
   // presence: `report.questions` is pre-seeded as `[]` before the `rules` stage.
   let headlineHtml = '';
   if (size && report.zones && report.zones.length) {
-    const c2 = metrics.C2;
-    const t90 = fnum(v.t90Min);
-    let crossing = '';
-    if (t90 !== null) {
-      crossing = `, and crossing the network end to end costs about ${mins(t90)}`;
-      const c2raw = c2 ? fnum(c2.raw) : null;
-      if (c2raw) crossing += ` — ${num(c2raw, 2, { comma: false })} hiding periods`;
-    }
+    const tiles = [
+      kpi(num(report.zones.length), 'hiding zones', '', { size: 'l', subHtml: provChip('A1') }),
+      kpi(s4Area(report, fnum(v.hullSqM) || 0.0), 'network area', '', { size: 'l' }),
+    ];
     const nQuestions = (report.questions || []).length;
-    const questionsClause = nQuestions
-      ? `${num(s4LiveQuestions(report))} of the ${num(nQuestions)} questions in the `
-        + `${String(size.name).toUpperCase()} deck function here`
-      : '';
-    const headline = `${num(report.zones.length)} distinct hiding zones across `
-      + `${s4Area(report, fnum(v.hullSqM) || 0.0)} of ${agency} network`
-      + (questionsClause ? `, ${questionsClause}${crossing}.` : `${crossing}.`);
-    headlineHtml = el('p', esc(headline) + provChip('A1', 'B1'), {
-      className: 'wa-body-l', style: 'max-inline-size:46ch',
+    if (nQuestions) {
+      tiles.push(kpi(`${num(s4LiveQuestions(report))} of ${num(nQuestions)}`, 'questions work', '', {
+        size: 'l', subHtml: provChip('B1'),
+      }));
+    }
+    const t90 = fnum(v.t90Min);
+    if (t90 !== null) {
+      const c2raw = metrics.C2 ? fnum(metrics.C2.raw) : null;
+      tiles.push(kpi(mins(t90), 'to cross', '', {
+        size: 'l',
+        subHtml: (c2raw ? esc(`${num(c2raw, 2, { comma: false })} hiding periods`) : '') + provChip('C2'),
+      }));
+    }
+    headlineHtml = el('div', tiles.join(''), {
+      className: 'wa-grid wa-gap-s', style: '--min-column-size:7rem;max-inline-size:46rem',
     });
   }
 
   const chips = [];
   if (size) {
-    chips.push(chip(`${cap(size.name)} map · ${num(size.hidingPeriodMin)}-min hiding period · `
-      + `${s4Dist(report, size.zoneRadiusM, 2)} zones`, 'ruler-combined', { variant: 'warning' }));
+    chips.push(size.inferred === false
+      ? chip(`${cap(size.name)} · fixed`, 'lock', { variant: 'warning' })
+      : chip(`${cap(size.name)} map`, 'ruler-combined'));
+    chips.push(chip(`${num(size.hidingPeriodMin)} min hide`, 'hourglass-half'));
+    chips.push(chip(`${s4Dist(report, size.zoneRadiusM, 2)} zone radius`, 'circle-dot'));
   }
   if (report.hub && report.hub.name) chips.push(chip(`Start: ${report.hub.name}`, 'star'));
   if (report.days && report.days.length) {
@@ -826,13 +853,15 @@ export function s4AxisWord(score) {
 }
 
 /**
- * "Why this is a Medium map" — the four size axes as a table: name, value, verdict
- * word, both thresholds, and where the band came from.
+ * The four size axes as a table: short label, value, the vote ladder with both
+ * thresholds, and whose band it is. Agreement, split and clamp are header chips.
  */
 function s4AxisCard(report) {
   const si = report.sizeInference || null;
   const axes = (si && si.axes) || [];
   if (!axes.length) return '';
+  const size = report.size || {};
+  const fixed = size.inferred === false;
   const rows = [];
   for (const a of axes) {
     const value = a.value;
@@ -840,32 +869,62 @@ function s4AxisCard(report) {
     const shown = typeof value === 'number' ? s4Val(value) : String(value);
     const thresholds = Array.from(a.thresholds || [], (t) => s4Val(Number(t)));
     const word = s4AxisWord(a.score === undefined ? 1 : a.score);
-    const bands = thresholds.length >= 2
-      ? `small under ${thresholds[0]} · large over ${thresholds[1]}`
-      : '—';
+    const [short, icon, showTerm] = S4_AXIS_SHORT[String(a.id)] || [String(a.name || ''), 'ruler', false];
+    const tag = (w) => (w === word
+      ? waTag(w, { variant: 'brand', appearance: 'filled', ariaCurrent: 'true' })
+        + el('span', esc(`votes ${w}`), { className: 'wa-visually-hidden' })
+      : waTag(w));
+    const cut = (t) => el('span', esc(t), { className: 'wa-caption-2xs wa-color-text-quiet' });
+    const ladder = thresholds.length >= 2
+      ? join(tag(S4_AXIS_WORDS[0]), cut(thresholds[0]), tag(S4_AXIS_WORDS[1]), cut(thresholds[1]),
+        tag(S4_AXIS_WORDS[2]))
+      : tag(word);
     rows.push([
-      el('b', esc(S4_AXIS_PLAIN[String(a.id)] || String(a.name || '')))
-        + el('span', esc(String(a.name || '')), {
-          className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block',
-        }),
+      el('span', waIcon(icon) + el('b', esc(short)), {
+        className: 'wa-cluster wa-gap-2xs wa-align-items-center wa-text-nowrap',
+      }) + (showTerm && a.name
+        ? el('span', esc(String(a.name)), { className: 'wa-caption-2xs wa-color-text-quiet', style: 'display:block' })
+        : ''),
       el('span', esc(`${shown} ${unit}`.trim()), { className: 'wa-text-nowrap' }),
-      chip(word, 'equals', { title: `${a.name} votes ${word}` }),
-      // The band and, beneath it, whose band it is (`S4_AXIS_BASIS`): an arguable
-      // band still moves the median vote, so the reader must be able to tell.
-      el('span', esc(bands), {
-        className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block',
-      }) + s4SourceTag(S4_AXIS_BASIS[String(a.id)] || 'interp'),
+      // An arguable band still moves the median vote, so every row says whose band it is.
+      el('div', join(
+        el('div', ladder, { className: 'wa-cluster wa-gap-3xs wa-align-items-center' }),
+        basisChip(S4_AXIS_BASIS[String(a.id)] || 'interp'),
+      ), { className: 'wa-stack wa-gap-3xs' }),
     ]);
   }
+
+  const chips = [];
+  if (fixed) {
+    chips.push(chip(`fixed at ${cap(size.name)}`, 'lock', { variant: 'warning' }));
+  } else if (si.unanimous) {
+    chips.push(chip(`${num(axes.length)} of ${num(axes.length)} axes agree`, 'check-double', { variant: 'success' }));
+  } else {
+    chips.push(chip('axes split · rounds down', 'arrow-down', { variant: 'warning' }));
+  }
+  if (!fixed && si.clamped) chips.push(chip('held within one step of area', 'lock'));
+
+  const why = [];
+  if (!fixed && !si.unanimous) {
+    why.push('Where the axes disagree the vote resolves down, to the smaller game: a map that '
+      + 'looks large by area and small by zone count will feel empty in play.');
+  }
+  if (!fixed && si.clamped) {
+    why.push('The vote was kept within one band of the area axis, the axis the rulebook itself '
+      + 'describes maps by.');
+  }
+
   return waCard(
-    // Scrollable, like every other table: four columns do not fit 360px.
-    dataTable(['What was measured', 'This map', 'Verdict', 'Bands'], rows),
+    el('div', join(
+      // Scrollable, like every other table: three columns do not fit 360px.
+      dataTable(['What was measured', 'This map', 'Vote'], rows),
+      why.length ? leadDetail('', esc(why.join(' ')), { summary: 'How the vote resolved' }) : '',
+    ), { className: 'wa-stack wa-gap-s' }),
     {
-      headerHtml: s4CardHeader(
-        `Why this is a ${cap((report.size || {}).name || (si && si.verdict) || '')} map`,
-        'Each axis votes independently, and every band says whose it is: only the area '
-        + "band is the rulebook's.",
-      ),
+      headerHtml: cardHeader(fixed ? 'The four size axes (not used)' : `Why this is a ${cap(size.name || si.verdict || '')} map`, {
+        caption: fixed ? 'Reported only; the size was fixed' : 'Four axes vote; the median sets the size',
+        chipsHtml: chips.join(''),
+      }),
       appearance: 'plain',
     },
   );
@@ -881,11 +940,101 @@ export function s4VerdictTitle(report) {
   return `${band}: a ${size} map`;
 }
 
+/** Distinct `DegradeCode`s of the unavailable metrics, in trace order. */
+function s4DropCodes(fitness) {
+  const codes = [];
+  for (const s of (fitness && fitness.subscores) || []) {
+    for (const m of s.metrics || []) {
+      const code = m.available ? null : (m.degrade || 'not_evaluated');
+      if (code && !codes.includes(code)) codes.push(code);
+    }
+  }
+  return codes;
+}
+
 /**
- * §01 — three to five dropcap paragraphs, entirely template-filled: the size
- * inference, the strongest sub-score, the weakest with its mitigations, any cap that
- * fired, and the day recommendation. No free prose: every sentence is a slot with
- * typed values, so none can drift from the numbers.
+ * The strongest and weakest measured sub-scores as two cards, each with its two most
+ * telling metrics as meters. A sub-score with no measured metric is never picked.
+ */
+function s4SuitCards(report) {
+  const f = report.fitness;
+  const measured = (m) => m.available && m.maxTenths > 0;
+  const subs = (f.subscores || []).filter((s) => s.maxTenths > 0 && (s.metrics || []).some(measured));
+  if (!subs.length) return '';
+  /** @type {Object<string, boolean>} */
+  const fixable = {};
+  for (const x of report.findings || []) if (x.mitigation) fixable[String(x.metricId)] = true;
+
+  const card = (sub, strongest) => {
+    const share = (m) => fillPct(m.pointsTenths, m.maxTenths);
+    const top = sortedBy((sub.metrics || []).filter(measured),
+      strongest ? (m) => [-share(m), m.id] : (m) => [share(m), m.id]).slice(0, 2);
+    const meters = top.map((m) => meter(
+      el('span', esc(m.name) + provChip(m.id), { className: 'wa-caption-s' }),
+      share(m),
+      el('span', join(
+        el('span', esc(s4MetricValue(m)), { style: 'display:block' }),
+        el('span', esc(s4Points(m.pointsTenths, m.maxTenths)), { className: 'wa-color-text-quiet' }),
+      ), { className: 'wa-caption-s' }),
+      { label: m.name, flank: '5.5rem' },
+    ));
+    const fix = !strongest && top.some((m) => fixable[m.id])
+      ? el('div', linkChip('#findings', 'what to do', 'wrench', { variant: 'success' }))
+      : '';
+    return waCard(el('div', meters.join('') + fix, { className: 'wa-stack wa-gap-s' }), {
+      headerHtml: cardHeader('', {
+        titleHtml: el('a', esc(sub.name), { href: `#trace-${sub.id}`, className: 'wa-link' }),
+        chipsHtml: strongest
+          ? chip('strongest', 'circle-up', { variant: 'success' })
+          : chip('weakest', 'circle-down', { variant: 'danger' }),
+        caption: `${s4Points(sub.earnedTenths, sub.maxTenths)} points`,
+      }),
+    });
+  };
+
+  const key = (s) => [fillPct(s.earnedTenths, s.maxTenths), s.id];
+  const best = maxBy(subs, key);
+  const worst = minBy(subs, key);
+  const cards = [card(best, true)];
+  if (worst.id !== best.id) cards.push(card(worst, false));
+  return el('div', cards.join(''), { className: 'wa-grid wa-gap-m', style: '--min-column-size:15rem' });
+}
+
+/** One chip row: a fired cap, else what could not be measured, else borderline questions. */
+function s4WatchOuts(report) {
+  const f = report.fitness;
+  const chips = [];
+  if (f.cappedBy) {
+    chips.push(linkChip('#trace', `capped: ${s4CapLabel(report, f.cappedBy)}`, 'lock', { variant: 'danger' }));
+    chips.push(el('span', esc(`raw ${num(f.rawScore, 1)} → `
+      + `${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'}`), { className: 'wa-caption-s' }));
+  } else if (f.availablePoints < 100) {
+    for (const s of f.subscores || []) {
+      if (!s.partial && !(s.missing && s.missing.length)) continue;
+      const all = s.metrics || [];
+      chips.push(linkChip(`#trace-${s.id}`,
+        `${s.name} · ${num(all.filter((m) => m.available).length)} of ${num(all.length)} measured`,
+        'circle-half-stroke', { variant: 'warning' }));
+    }
+    for (const code of s4DropCodes(f)) chips.push(degradeChip(code));
+  } else {
+    const n = (report.questions || []).filter((q) => q.borderline).length;
+    if (n) {
+      const fired = (report.recommendations || []).some((r) => r.id === 'settle_borderline');
+      chips.push(linkChip(fired ? '#rec-settle_borderline' : '#questions',
+        `${num(n)} borderline ${s4Plural(n, 'question')}`, 'circle-half-stroke', { variant: 'warning' }));
+    }
+  }
+  if (!chips.length) return '';
+  return el('div', join(
+    el('span', esc('Watch for'), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
+    ...chips,
+  ), { className: 'wa-cluster wa-gap-xs wa-align-items-center' });
+}
+
+/**
+ * §01 — three rows, every word templated: the size axes, the strongest and weakest
+ * sub-scores, and one watch-out chip row.
  *
  * @param {Object} payload @returns {string}
  */
@@ -894,147 +1043,10 @@ export function renderVerdict(payload) {
   const f = report.fitness;
   const size = report.size;
   if (!f || !size) return '';
-  // `size` and `sizeInference` are posted in the same `'network'` payload.
-  const si = report.sizeInference;
-
-  /** @type {Object<string, Object>} */
-  const mit = {};
-  for (const x of report.findings || []) {
-    if (x.mitigation) mit[String(x.metricId)] = x;
-  }
-
-  // Paragraphs are markup, not text: two link a sub-score name into its trace item.
-  const paras = [];
-
-  // 1 · the size inference: the unanimity clause and the clamp caveat (the axes
-  // themselves are in the table above).
-  let lead;
-  if (size.inferred) {
-    lead = `This map is a ${cap(si.verdict)} map. `
-      + 'Four independent axes vote on that, and they are in the table above.';
-    lead += ` ${si.note}`;
-    if (!si.unanimous) {
-      lead += ' Where the axes disagree the vote resolves down, to the smaller game: a map '
-        + 'that looks large by area and small by zone count will feel empty in play.';
-    }
-    if (si.clamped) {
-      lead += ' The vote was kept within one band of the area axis, the axis the rulebook '
-        + 'itself describes maps by.';
-    }
-  } else {
-    lead = `The game size was fixed at ${String(size.name).toUpperCase()} rather than inferred, so the four `
-      + 'inference axes in the table above are reported but not used.';
-  }
-  paras.push(esc(lead));
-
-  // 2 · the strongest sub-score
-  const subs = (f.subscores || []).filter((s) => s.maxTenths > 0);
-  const best = subs.length ? maxBy(subs, (s) => [s.earnedTenths / s.maxTenths, s.id]) : null;
-  if (best) {
-    const top = sortedBy(
-      (best.metrics || []).filter((m) => m.available && m.maxTenths > 0),
-      (m) => [-(m.pointsTenths / m.maxTenths), m.id],
-    ).slice(0, 2);
-    const detail = s4JoinWords(top.map(
-      (m) => `${String(m.name).toLowerCase()} at ${s4MetricValue(m)} `
-        + `(${s4Points(m.pointsTenths, m.maxTenths)} points)`,
-    ));
-    paras.push(join(
-      esc("The map's strongest suit is "),
-      el('a', esc(String(best.name).toLowerCase()), { href: `#trace-${best.id}`, className: 'wa-link' }),
-      // Stops at the metric detail; the hero already prints the score and band.
-      esc(`, which earns ${s4Points(best.earnedTenths, best.maxTenths)} points`
-        + `${detail ? `: ${detail}.` : '.'}`),
-    ));
-  }
-
-  // 3 · the weakest sub-score and its mitigations
-  if (subs.length) {
-    const worst = minBy(subs, (s) => [s.earnedTenths / s.maxTenths, s.id]);
-    const low = sortedBy(
-      (worst.metrics || []).filter((m) => m.available && m.maxTenths > 0),
-      (m) => [m.pointsTenths / m.maxTenths, m.id],
-    ).slice(0, 2);
-    if (worst.id !== best.id && low.length) {
-      const detail = s4JoinWords(low.map(
-        (m) => `${String(m.name).toLowerCase()} at ${s4MetricValue(m)} `
-          + `(${s4Points(m.pointsTenths, m.maxTenths)} points)`,
-      ));
-      let tail = `, at ${s4Points(worst.earnedTenths, worst.maxTenths)}: ${detail}.`;
-      const fixes = low.filter((m) => m.id in mit).map((m) => String(mit[m.id].mitigation));
-      if (fixes.length) tail += ` ${fixes.join(' ')}`;
-      paras.push(join(
-        esc('What costs it points is '),
-        el('a', esc(String(worst.name).toLowerCase()), { href: `#trace-${worst.id}`, className: 'wa-link' }),
-        esc(tail),
-      ));
-    }
-  }
-
-  // 4 · caps and missing data
-  if (f.cappedBy) {
-    paras.push(esc(
-      `One structural cap fired. The metrics add up to ${num(f.rawScore, 1)}, but `
-      + `${f.cappedBy} holds the published score at `
-      + `${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'} `
-      + '— a cap can only lower a score, and the score trace shows both numbers. '
-      + 'Treat it as the map telling you which conversation to have before you play.',
-    ));
-  } else if (f.availablePoints < 100) {
-    const names = new Set();
-    for (const s of f.subscores || []) {
-      if (s.partial || (s.missing && s.missing.length)) names.add(String(s.name).toLowerCase());
-    }
-    const missing = s4JoinWords(Array.from(names).sort(cmpStr));
-    paras.push(esc(
-      'Not everything could be measured: the score is computed from '
-      + `${num(f.availablePoints, 1)} of 100 available points`
-      + `${missing ? `, with ${missing} incomplete` : ''}. `
-      + 'What could not be measured comes out of the total rather than being guessed at.',
-    ));
-  } else {
-    const borderline = (report.questions || []).filter((q) => q.borderline);
-    if (borderline.length) {
-      const subjects = Array.from(new Set(borderline.map((q) => q.label))).sort(s4NaturalCmp);
-      const names = s4JoinWords(subjects.slice(0, 3));
-      paras.push(esc(
-        'Nothing capped the score, but the border did most of the work. '
-        + `${num(borderline.length)} ${s4Plural(borderline.length, 'question')} about `
-        + `${names}${subjects.length > 3 ? ' and others' : ''} would change verdict under a `
-        + 'modestly larger map. Out-of-border features do not exist for this game, so agree '
-        + 'the rectangle before anyone draws a card, and expect someone to hold up a phone '
-        + 'showing one of those features just outside the line.',
-      ));
-    }
-  }
-
-  // 5 · the day recommendation
-  const bestDay = s4BestDay(report);
-  const worstDay = s4WorstDay(report);
-  const per = f.perDay || {};
-  if (worstDay && bestDay in per && worstDay in per) {
-    // The SWING is the fact only this paragraph carries; house rule 1 and the day
-    // tiles already say which day to play.
-    paras.push(esc(
-      `The same map rates ${num(per[bestDay], 1)} on a ${s4DayLabel(report, bestDay)} and `
-      + `${num(per[worstDay], 1)} on a ${s4DayLabel(report, worstDay)} — a swing of `
-      + `${s4Signed(per[worstDay] - per[bestDay])} points, and the largest single thing `
-      + 'your group controls. The selector at the top re-reads every number on this page '
-      + 'for another day.',
-    ));
-  } else {
-    paras.push(esc(
-      'This feed distinguishes only one kind of service day, so there is no better or worse '
-      + 'day to play: every number on this page is measured on '
-      + `${s4DayLabel(report, bestDay)} service.`,
-    ));
-  }
-
-  const prose = el('div', paras.map((t) => el('p', t)).join(''), {
-    className: 'dropcap wa-prose', style: '--wa-prose-line-length:72ch', id: 'verdict-prose',
-  });
   return section('verdict', S4_ORDINAL, s4VerdictTitle(report),
-    el('div', join(s4AxisCard(report), prose), { className: 'wa-stack wa-gap-l' }),
+    el('div', join(s4AxisCard(report), s4SuitCards(report), s4WatchOuts(report)), {
+      className: 'wa-stack wa-gap-l',
+    }),
     { kicker: 'The verdict' });
 }
 
@@ -1043,42 +1055,45 @@ export function renderVerdict(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Where a threshold came from, in words, with its icon; the precise term survives in
- * the chip's `title` and the row's `data-basis`, which the interpretation styling keys on.
- *
- * @param {string} source @returns {string}
+ * Where a threshold came from, in words, with its icon; alias of `render/html.js`
+ * `basisChip`. The precise term survives in the chip's `title` and the row's `data-basis`.
  */
-export function s4SourceTag(source) {
-  const [variant, word, icon, term] = S4_SOURCE_TAG[source]
-    || ['neutral', source || '—', 'circle-question', source || ''];
-  return chip(word, icon, { variant, title: term ? `basis: ${term}` : word });
-}
+export const s4SourceTag = basisChip;
 
 /**
  * One sub-score's metrics: value, threshold, points, and where the rule came from.
  * Each row carries `id="prov-<metric id>"`, the target of every provenance chip. The
- * table is never truncated: a dropped metric is printed with its reason.
+ * table is never truncated: a dropped metric is printed with its cause chip.
  *
- * @param {ReadonlyArray<Object>} metrics @returns {string}
+ * @param {ReadonlyArray<Object>} metrics
+ * @param {Object} [opts] @param {boolean} [opts.singleDayType] the feed has one day type
+ * @returns {string}
  */
-export function s4TraceTable(metrics) {
+export function s4TraceTable(metrics, opts = {}) {
+  const { singleDayType = false } = opts;
   const head = el('thead', el('tr', ['Metric', 'Value', 'Threshold', 'Points', 'Source']
     .map((h) => el('th', esc(h))).join('')));
   const rows = [];
   for (const m of metrics || []) {
+    const flags = join(
+      m.available ? '' : degradeChip(m.degrade || 'not_evaluated'),
+      singleDayType && m.available && m.id === 'E1' ? chip('one day type · full marks', 'calendar-day') : '',
+    );
+    // The assumed-timetable note is printed once, in the section's warning callout.
+    const note = m.note && m.degrade !== 'assumed_schedule'
+      ? leadDetail('', esc(m.note), { summary: 'Why this threshold' })
+      : '';
     const cells = [
-      el('td', el('b', esc(m.name)) + (m.note
-        ? el('span', esc(m.note), {
-          className: 'wa-caption-xs',
-          style: 'display:block;color:var(--ink-3);max-width:62ch',
+      el('td', el('b', esc(m.name))
+        + (flags ? el('div', flags, { className: 'wa-cluster wa-gap-2xs' }) : '') + note),
+      el('td', m.available ? esc(s4MetricValue(m)) : '—'),
+      el('td', esc(s4RampShort(m.ramp)), { ariaLabel: s4RampText(m.ramp) }),
+      el('td', m.available
+        ? miniMeter(fillPct(m.pointsTenths, m.maxTenths), esc(s4Points(m.pointsTenths, m.maxTenths)), {
+          label: `${m.name} points`,
         })
-        : '')),
-      el('td', esc(m.available ? s4MetricValue(m) : 'not evaluated')),
-      el('td', esc(s4RampText(m.ramp))),
-      el('td', esc(m.available
-        ? s4Points(m.pointsTenths, m.maxTenths)
-        : `— / ${num(m.maxTenths / 10.0, 1)}`)),
-      el('td', s4SourceTag(m.source)),
+        : esc(`— / ${num(m.maxTenths / 10.0, 1)}`)),
+      el('td', basisChip(m.source)),
     ];
     rows.push(el('tr', cells.join(''), {
       id: `prov-${m.id}`,
@@ -1090,10 +1105,9 @@ export function s4TraceTable(metrics) {
 }
 
 /**
- * §02 — the explainability anchor: one accordion item per sub-score, each holding a
- * metric table. Interpretation rows are visually distinct and labelled in words. The
- * bar and the earned/max ride in the item's label, so the collapsed rows read as the
- * whole scorecard.
+ * §02 — the explainability anchor: a legend, the cap and measurability callouts, and
+ * one accordion item per sub-score holding its metric table. The bar and earned/max
+ * ride in the item's label, so the collapsed rows read as the whole scorecard.
  *
  * @param {Object} payload @returns {string}
  */
@@ -1101,106 +1115,124 @@ export function renderScoreTrace(payload) {
   const report = payload || {};
   const f = report.fitness;
   if (!f || !f.subscores || f.subscores.length === 0) return '';
+  const hasScore = f.score !== null && f.score !== undefined;
+  const caps = report.caps || [];
 
   const callouts = [];
   if (f.cappedBy) {
-    callouts.push(waCallout(el('p', esc(
-      `The metrics below add up to ${num(f.rawScore, 1)}, but ${f.cappedBy} caps the `
-      + `published score at ${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'}. A cap can only `
-      + 'lower a score. It fires on a structural fact about the map, not a threshold '
-      + 'crossing, and it is the first thing to fix if you want a better game.',
-    ), { className: 'wa-body-s' }), { variant: 'danger', icon: 'circle-exclamation' }));
+    const fired = caps.find((c) => c.id === f.cappedBy) || null;
+    callouts.push(waCallout(el('div', join(
+      el('div', join(
+        chip(s4CapLabel(report, f.cappedBy), 'lock', { variant: 'danger' }),
+        el('span', esc(`raw ${num(f.rawScore, 1)}`)),
+        waIcon('arrow-right'),
+        el('b', esc(`published ${hasScore ? num(f.score, 1) : '—'}`)),
+      ), { className: 'wa-cluster wa-gap-xs wa-align-items-center wa-body-s' }),
+      fired && fired.why ? el('p', esc(fired.why), { className: 'wa-body-s' }) : '',
+    ), { className: 'wa-stack wa-gap-2xs' }), { variant: 'danger', icon: 'circle-exclamation' }));
   }
   if (f.availablePoints < 100) {
-    callouts.push(waCallout(el('p', esc(
-      `Only ${num(f.availablePoints, 1)} of the 100 points could be measured on this map. `
-      + 'What could not be measured comes out of the total rather than being guessed at; '
-      + "its row below says 'not evaluated'.",
-    ), { className: 'wa-body-s' }), { variant: 'warning', icon: 'triangle-exclamation' }));
+    const codes = s4DropCodes(f);
+    let assumedNote = '';
+    for (const s of f.subscores) {
+      for (const m of s.metrics || []) {
+        if (!assumedNote && m.degrade === 'assumed_schedule' && m.note) assumedNote = String(m.note);
+      }
+    }
+    callouts.push(waCallout(el('div', join(
+      meter(el('span', esc('Points that could be measured'), { className: 'wa-caption-s' }),
+        fillPct(f.availablePoints, 100),
+        el('span', esc(`${num(f.availablePoints, 1)} / 100`), { className: 'wa-caption-s' }),
+        { label: 'Points that could be measured', flank: '4.5rem' }),
+      codes.length ? el('div', codes.map((c) => degradeChip(c)).join(''), { className: 'wa-cluster wa-gap-2xs' }) : '',
+      assumedNote
+        ? el('p', esc(assumedNote), { className: 'wa-body-s' })
+        : el('p', esc('Unmeasured points are dropped, never guessed.'), {
+          className: 'wa-caption-xs wa-color-text-quiet',
+        }),
+    ), { className: 'wa-stack wa-gap-2xs' }), { variant: 'warning', icon: 'triangle-exclamation' }));
   }
 
+  let capRow = '';
+  if (caps.length) {
+    const capChips = caps.map((c) => {
+      const label = c.label || String(c.id || '');
+      if (c.fired) return chip(`${label} · caps at ${num(c.cap)}`, 'circle-exclamation', { variant: 'danger' });
+      if (c.evaluated === false) return degradeChip('not_evaluated', { suffix: label });
+      return chip(label, 'circle-check', { variant: 'success' });
+    });
+    capRow = el('div', join(
+      el('span', esc('Structural caps'), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
+      ...capChips,
+    ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
+  }
+
+  const singleDayType = (report.days || []).length === 1;
   const items = [];
   for (const s of f.subscores) {
-    const pctage = s.maxTenths ? (100.0 * s.earnedTenths) / s.maxTenths : 0.0;
     let summary = `${s.id} · ${s.name} — ${s4Points(s.earnedTenths, s.maxTenths)} points`;
     let partial = '';
     if (s.partial) {
-      let nHave = 0;
-      for (const m of s.metrics || []) if (m.available) nHave += 1;
-      partial = `partial: ${num(nHave)} of ${num((s.metrics || []).length)} metrics`;
+      const all = s.metrics || [];
+      partial = `${num(all.filter((m) => m.available).length)}/${num(all.length)} measured`;
       summary += ` (${partial})`;
     }
     const label = join(
       el('span', join(
         el('strong', esc(`${s.id} · ${s.name}`), { className: 'wa-body-s' }),
-        partial ? el('span', esc(partial), { className: 'wa-caption-xs wa-color-text-quiet' }) : '',
+        partial ? chip(partial, 'circle-half-stroke', { variant: 'warning' }) : '',
       ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
       el('span', join(
-        waProgressBar(pctage, { label: summary, style: 'width:8rem' }),
+        waProgressBar(fillPct(s.earnedTenths, s.maxTenths), { label: summary, style: 'width:8rem' }),
         el('span', esc(s4Points(s.earnedTenths, s.maxTenths)), {
           className: 'wa-caption-s wa-color-text-quiet',
         }),
       ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
     );
-    const bodyHtml = el('div', join(
-      (s.missing && s.missing.length)
-        ? el('p', esc(`Metrics missing from this block: ${s4JoinWords(Array.from(s.missing).sort(cmpStr))}.`), {
-          className: 'wa-body-s wa-color-text-quiet',
-        })
-        : '',
-      s4TraceTable(s.metrics),
-    ), { className: 'wa-stack wa-gap-s' });
     // Every block starts collapsed: an open first item claims the sub-score the
     // reader arrived for is this one, and buries the other five below a long table.
-    items.push([`trace-${s.id}`, label, bodyHtml, false]);
+    items.push([`trace-${s.id}`, label, s4TraceTable(s.metrics, { singleDayType }), false]);
   }
 
-  const rampLegend = waCallout(el('p', join(
-    el('b', esc('How to read the threshold column.')),
-    esc(' “none at 0.35, full at 0.85” means you earn zero points at 0.35, all of them at '
-      + '0.85, and a straight line in between.'),
-  ), { className: 'wa-body-s' }), {
-    variant: 'neutral', appearance: 'plain', icon: 'circle-info',
-  });
+  const legendItems = [
+    [basisChip('rulebook'), ''],
+    [basisChip('feed'), ''],
+    [basisChip('interp'), ''],
+    [swatch('background:var(--gold);inline-size:3px;block-size:1em;border-radius:0'), 'our interpretation'],
+    [swatch('background:var(--ink-3);opacity:.45'), 'not evaluated'],
+    ['', '○ none · ● full · linear between'],
+  ];
+  // A pointer to the hero's one 100-point bar, not a second chart.
+  if (hasScore) legendItems.push([linkChip('#points-budget', '100-point bar', 'chart-simple'), '']);
+  const legend = legendRow(legendItems, { label: 'How to read the score trace' });
 
-  // A pointer to the hero's bar, not a second chart; the hero's meters link back
-  // down into `#trace-{id}`.
-  let budget = '';
-  if (f.score !== null && f.score !== undefined) {
-    budget = waCallout(el('p', join(
-      esc('The 100-point bar for this map is in '),
-      el('a', esc('the scorecard at the top of the page'), {
-        className: 'wa-link-plain', href: '#points-budget',
-      }),
-      esc(' — one block per sub-score, the grey tail what was not earned. The rows below '
-        + 'are where each block came from.'),
-    ), { className: 'wa-body-s' }), {
-      variant: 'neutral', appearance: 'plain', icon: 'chart-simple',
-    });
-  }
-
-  const lede = 'Every point on the dial comes from one of these rows: the metric, the '
-    + 'value measured on this feed, the shaping function that turned it into points, and '
-    + "whether the threshold is the rulebook's, the feed's own, or our interpretation. "
-    + 'Our-call rows carry a gold rule and are never presented as rules.';
   let answer = '';
-  const subs = f.subscores.filter((s) => s.maxTenths > 0);
-  if (f.score !== null && f.score !== undefined && subs.length) {
-    const worst = minBy(subs, (s) => [s.earnedTenths / s.maxTenths, s.id]);
-    const lost = (worst.maxTenths - worst.earnedTenths) / 10.0;
-    answer = el('p', esc(
-      `${num(f.score, 1)} out of 100. The biggest single loss is ${String(worst.name).toLowerCase()}, `
-      + `at ${num(lost, 1)} points.`,
-    ), { className: 'wa-body-s' });
+  const lossy = f.subscores.filter((s) => typeof s.lostTenths === 'number'
+    && (s.metrics || []).some((m) => m.available));
+  if (hasScore && lossy.length) {
+    const worst = sortedBy(lossy, (s) => [-s.lostTenths, s.id])[0];
+    const parts = [];
+    if (worst.lostTenths > 0) {
+      parts.push(el('span', esc('Biggest loss: ') + el('b', esc(String(worst.name).toLowerCase()))
+        + esc(`, −${num(worst.lostTenths / 10.0, 1)} points`)));
+    }
+    for (const s of f.subscores) {
+      const all = s.metrics || [];
+      if (!all.length || all.some((m) => m.available)) continue;
+      parts.push(degradeChip(all[0].degrade || 'not_evaluated', { suffix: s.name }));
+    }
+    if (parts.length) {
+      answer = el('div', parts.join(''), { className: 'wa-cluster wa-gap-xs wa-align-items-center wa-body-s' });
+    }
   }
   const body = el('div', join(
+    legend,
     callouts.join(''),
-    budget,
-    rampLegend,
+    capRow,
     waAccordion(items, { mode: 'single-collapsible', headingLevel: '3' }),
   ), { className: 'wa-stack wa-gap-m', id: 'prov-trace' });
   return section('trace', S4_ORDINAL, 'Where the points came from', body, {
-    kicker: 'Every point, traced', lede, answerHtml: answer,
+    kicker: 'Every point, traced', answerHtml: answer,
   });
 }
 
@@ -1209,14 +1241,20 @@ export function renderScoreTrace(payload) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * §03's second half — the findings quadrants as colour-utility `wa-card`s. The card's
- * heading is the finding's sentence, with its machine-built title as the caption. The
- * severity badge's variant follows the quadrant's tone, so a major plus is not an
- * alarm. A day-sensitive card gets the `[data-today]` outline on the day that bites.
+ * §03's second half — the findings quadrants as colour-utility `wa-card`s. A card leads
+ * with its metric's value and a points meter, then the finding's sentence, then what to
+ * do. A day-sensitive card gets the `[data-today]` outline on the day that bites.
  */
 function s4FindingsHalf(report) {
   const findings = report.findings || [];
   if (!findings.length) return '';
+  const metrics = s4MetricLookup(report);
+  const recs = report.recommendations || [];
+  const captions = {
+    plus: `over ${pct(FINDING_PLUS_ABOVE, 0)} of its points`,
+    minus: `under ${pct(FINDING_MINUS_BELOW, 0)} of its points`,
+    concern: `under ${pct(FINDING_MINUS_BELOW, 0)} · has a fix`,
+  };
   const blocks = [];
   for (const [quadrant, title, colour, tint, icon] of S4_QUADRANTS) {
     const items = findings.filter((x) => x.quadrant === quadrant);
@@ -1246,44 +1284,63 @@ function s4FindingsHalf(report) {
         );
       }
       const metricId = String(item.metricId || '');
-      const header = el('div', join(
-        el('span', esc(String(item.title || '')) + (metricId ? provChip(metricId) : ''), {
+      const m = metrics[metricId] || null;
+      const lead = m && m.available && m.maxTenths > 0
+        ? join(
+          el('span', esc(s4MetricValue(m)), { className: 'wa-heading-l', style: 'font-family:var(--sans)' }),
+          meter(el('span', esc(m.name) + provChip(metricId), { className: 'wa-caption-s' }),
+            fillPct(m.pointsTenths, m.maxTenths),
+            el('span', esc(s4Points(m.pointsTenths, m.maxTenths)), { className: 'wa-caption-s wa-color-text-quiet' }),
+            { label: m.name, flank: '4.5rem' }),
+        )
+        : el('p', esc(String(item.title || '')) + (metricId ? provChip(metricId) : ''), {
           className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet',
-        }),
-        el('span', badge, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
-      ), { className: 'wa-split wa-align-items-center wa-gap-s' });
+        });
       let footer = '';
       if (item.mitigation) {
-        footer = el('div', join(
-          el('b', esc('What to do'), {
-            className: 'wa-caption-xs wa-text-uppercase', style: 'color:var(--good-text)',
-          }),
-          esc(` · ${String(item.mitigation)}`),
-        ), { className: 'wa-body-s' });
+        const ruleIndex = quadrant === 'concern'
+          ? recs.findIndex((r) => (r.metricIds || []).includes(metricId))
+          : -1;
+        footer = ruleIndex >= 0
+          ? linkChip(`#rec-${recs[ruleIndex].id}`, `house rule ${num(ruleIndex + 1)}`, 'list-check', {
+            variant: 'success',
+          })
+          : el('div', chip('what to do', 'wrench', { variant: 'success' })
+            + el('span', esc(String(item.mitigation))), {
+            className: 'wa-cluster wa-gap-xs wa-align-items-center wa-body-s',
+          });
       }
       cards.push(waCard(
-        el('h4', esc(String(item.detail || '')), { className: 'wa-heading-xs wa-text-pretty' }),
-        { headerHtml: header, footerHtml: footer, className: tint, dataDay: dayKey || null },
+        el('div', join(
+          lead,
+          el('p', esc(String(item.detail || '')), { className: 'wa-body-s wa-text-pretty' }),
+        ), { className: 'wa-stack wa-gap-xs' }),
+        {
+          headerHtml: badge ? el('div', badge, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }) : '',
+          footerHtml: footer,
+          className: tint,
+          dataDay: dayKey || null,
+        },
       ));
     }
     blocks.push(el('div', join(
-      el('h4', s4Swatch(`background:${colour}`) + waIcon(icon) + esc(title), {
-        className: 'wa-heading-s wa-color-text-quiet wa-cluster wa-gap-s wa-align-items-center',
+      el('div', join(
+        el('h4', join(
+          swatch(`background:${colour}`),
+          waIcon(icon),
+          el('span', esc(title)),
+          waBadge(num(items.length), { variant: 'neutral', appearance: 'outlined' }),
+        ), { className: 'wa-heading-s wa-color-text-quiet wa-cluster wa-gap-s wa-align-items-center' }),
+        el('span', esc(captions[quadrant]), { className: 'wa-caption-xs wa-color-text-quiet' }),
+      ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
+      el('div', cards.join(''), {
+        className: 'wa-grid wa-gap-m', style: `--min-column-size:${quadrant === 'plus' ? '16rem' : '300px'}`,
       }),
-      el('div', cards.join(''), { className: 'wa-grid wa-gap-m', style: '--min-column-size:300px' }),
     ), { className: 'wa-stack wa-gap-s' }));
   }
 
-  const lede = 'A card appears when a scored metric crosses a '
-    + 'threshold: under 35% of its possible points is a minus (or a concern when there '
-    + 'is a known mitigation), over 85% is a plus. A card that only bites on one '
-    + 'service day says which day, and says “applies to your day” when that is the day '
-    + 'you picked above.';
   return el('div', join(
     subhead('What works, what fights you', { anchorId: 'findings' }),
-    el('p', esc(lede), {
-      className: 'wa-body-s wa-color-text-quiet', style: 'max-inline-size:72ch',
-    }),
     el('div', blocks.join(''), { className: 'wa-stack wa-gap-xl', id: 'findings-body' }),
   ), { className: 'wa-stack wa-gap-s' });
 }
@@ -1302,38 +1359,54 @@ function s4BorderDegrees(report) {
 }
 
 /**
- * §03's first half — the fired house rules as an `ol.recs`, in priority order, with
- * the whole checklist one `wa-copy-button` away as plain text for pasting into a chat.
+ * §03's first half — the fired house rules as an `ol.recs`, in priority order. Each
+ * card is an imperative lead, its figures as chips, and the rationale and source
+ * folded; the whole checklist is one `wa-copy-button` away as plain `text`.
  */
 function s4HouseRulesHalf(report) {
   const recs = report.recommendations || [];
   if (!recs.length) return '';
   const items = [];
   for (const rec of recs) {
+    const ex = rec.explain || null;
+    const lead = ex && ex.lead ? String(ex.lead) : String(rec.text || '');
+    const detail = ex ? String(ex.detail || '') : '';
+    const source = rec.evidence ? `Source: ${rec.evidence}` : '';
     const tags = [];
     if (rec.required) {
       // amber, not red: red on this page already means "out of the deck" / "dead".
       tags.push(chip('everyone must agree', 'circle-exclamation', { variant: 'warning' }));
     }
-    if (rec.evidence) {
-      tags.push(chip('why?', 'circle-question', { title: String(rec.evidence) }));
+    tags.push(degradeChip(rec.degrade));
+    tags.push(factChips(rec.facts));
+    for (const it of (rec.items || []).slice(0, 8)) tags.push(chip(String(it.label || it.id || '')));
+    if (rec.itemsMore > 0) {
+      tags.push(linkChip(rec.id === 'remove_curses' ? '#curses' : '#questions', `+${num(rec.itemsMore)} more`));
     }
-    // The map is the degrees' one home, so the border rule links there. An anchor
-    // around the chip, not an `href` on it: `wa-tag` is not a link.
-    if (rec.id === 'use_borders') {
-      tags.push(el('a', chip('go to the map', 'map-location-dot'), {
-        className: 'wa-link-plain', href: '#network',
-      }));
-    }
+    // The map is the degrees' one home, so the border rule links there.
+    if (rec.id === 'use_borders') tags.push(linkChip('#network', 'go to the map', 'map-location-dot'));
+    const kept = tags.filter((t) => t);
+    // The safety rule's body is the judgement itself, so it is never folded.
+    const body = rec.id === 'safety_exclusions'
+      ? join(
+        detail ? el('p', esc(detail), { className: 'wa-body-s' }) : '',
+        leadDetail('', esc(source), { summary: 'Source' }),
+      )
+      : leadDetail('', esc([detail, source].filter((t) => t).join(' ')), { summary: 'Details' });
     const card = waCard(el('div', join(
-      el('span', esc(String(rec.text || '')), { className: 'wa-body-m' }),
-      tags.length ? el('div', tags.join(''), { className: 'wa-cluster wa-gap-2xs' }) : '',
+      el('p', join(rec.icon ? waIcon(rec.icon) : '', el('b', esc(lead))), {
+        className: 'wa-body-m wa-cluster wa-gap-xs wa-align-items-center', style: 'flex-wrap:nowrap',
+      }),
+      kept.length ? el('div', kept.join(''), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }) : '',
+      body,
     ), { className: 'wa-stack wa-gap-2xs' }));
-    items.push(el('li', card));
+    items.push(el('li', card, { id: `rec-${rec.id}` }));
   }
-  const lede = `${num(recs.length)} house rules fired for this map, in the order they `
-    + 'matter. Each appears only when its condition is met; the last always fires, '
-    + 'because the rulebook demands that conversation and refuses to automate it.';
+  const required = recs.filter((r) => r.required).length;
+  const badges = join(
+    waBadge(num(recs.length), { variant: 'neutral', appearance: 'outlined' }),
+    required ? waBadge(`${num(required)} must agree`, { variant: 'warning' }) : '',
+  );
   const checklist = recs.map(
     (rec, i) => `${num(i + 1)}. ${rec.text || ''}`
       + (rec.id === 'use_borders' ? s4BorderDegrees(report) : '')
@@ -1341,12 +1414,10 @@ function s4HouseRulesHalf(report) {
   ).join('\n');
   return el('div', join(
     el('div', join(
-      subhead('House rules to agree before you start', { anchorId: 'recs' }),
+      subhead('House rules to agree before you start', { anchorId: 'recs', badgeHtml: badges }),
       waCopyButton(checklist, { label: 'Copy the checklist', id: 'reccopy' }),
     ), { className: 'wa-split wa-align-items-center wa-gap-s' }),
-    el('p', esc(lede), {
-      className: 'wa-body-s wa-color-text-quiet', style: 'max-inline-size:72ch',
-    }),
+    el('p', esc('Triggered by this map · priority order'), { className: 'wa-caption-s wa-color-text-quiet' }),
     el('ol', items.join(''), { className: 'recs', id: 'recs-list', style: 'max-width:78ch' }),
   ), { className: 'wa-stack wa-gap-s' });
 }
@@ -1354,7 +1425,8 @@ function s4HouseRulesHalf(report) {
 /**
  * §03 — what to agree, and what to expect. Either half may be empty; when only one
  * survives the section takes that half's title. `#recs` and `#findings` are `<h3 id>`
- * destinations inside it, so every inbound link and nav entry still resolves.
+ * destinations inside it, so every inbound link and nav entry still resolves. The
+ * counts ride as badges on each half's headings.
  *
  * @param {Object} payload @returns {string}
  */
@@ -1366,24 +1438,6 @@ export function renderYourGame(payload) {
   let title = 'What this means for your game';
   if (!findings) title = 'House rules to agree before you start';
   else if (!rules) title = 'What works, what fights you';
-
-  /** @type {Object<string, number>} */
-  const quads = {};
-  for (const x of report.findings || []) {
-    const k = String(x.quadrant || '');
-    quads[k] = (quads[k] || 0) + 1;
-  }
-  const recs = report.recommendations || [];
-  let required = 0;
-  for (const r of recs) if (r.required) required += 1;
-  const nRules = recs.length;
-  const answer = el('p', esc(
-    `${num(quads.plus || 0)} things this map does well, `
-    + `${num((quads.minus || 0) + (quads.concern || 0))} that fight you, and ${num(nRules)} house `
-    + `${s4Plural(nRules, 'rule')} — ${num(required)} of them your group has to agree on.`,
-  ), { className: 'wa-body-s' });
   const body = el('div', join(rules, findings), { className: 'wa-stack wa-gap-2xl' });
-  return section('yourgame', S4_ORDINAL, title, body, {
-    kicker: 'Before you play', answerHtml: answer,
-  });
+  return section('yourgame', S4_ORDINAL, title, body, { kicker: 'Before you play' });
 }

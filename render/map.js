@@ -25,20 +25,23 @@
  */
 
 import {
-  cmpStr, num, pct, mins, hhmm, prettyDate, quantile, jdump,
+  cmpStr, num, pct, mins, hhmm, prettyDate, quantile, jdump, fillPct,
 } from '../lib/core.js';
 
 import {
   esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton, waButton,
-  waCallout, waIcon, kpi, section, subhead, provChip,
+  waCallout, waIcon, waBadge, waProgressBar, kpi, section, subhead, provChip, chip,
+  basisChip, degradeChip, iconLabel, legendRow, cardHeader, dataTable,
 } from './html.js';
 
 import {
   S4_ORDINAL, fnum,
   s4Dist, s4Area, s4Plural, s4JoinWords,
-  s4Swatch, s4CardHeader,
+  s4Swatch,
   s4DayView, s4DayOrder, s4DayLabel, s4BestDay, s4LiveQuestions,
 } from './verdict.js';
+
+import { S4_STATUS_TAG, S4_STATUS_COUNT, S4_ACTION_TAG } from './deck.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Presentation constants (generate.py)
@@ -77,17 +80,17 @@ export const S4_HEADWAY_BINS = Object.freeze([
   Object.freeze([Infinity, '6', 'over 50']),
 ]);
 
-// Degradation thresholds from pages.md §5, named so the caption can quote them.
+// Degradation thresholds from pages.md §5, named so the legend cap chips can quote them.
 /** Above this the map draws zone centres only. (`_S4_MAX_MAP_STOPS`.) */
 const S4_MAX_MAP_STOPS = 5000;
 /** Above this the zone circles become dots only. (`_S4_MAX_MAP_ZONE_RINGS`.) */
 const S4_MAX_MAP_ZONE_RINGS = 1200;
-/** Above this the map caption prints the unreachable-zone count instead of names. */
+/** Above this no zone names are listed beside the unreachable-zone count chip. */
 const S4_MAX_NAMED_ZONES = 6;
 
 /** Above this the heatmap grid shows the busiest 25 and drawers the rest. */
 const S4_MAX_HEATMAP_ROUTES = 25;
-/** Below this the heatmap becomes one sentence. */
+/** Below this the headway card has no method disclosure and adds the Transit Line "Our call" chip. */
 const S4_MIN_HEATMAP_ROUTES = 3;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -146,12 +149,11 @@ function s4BboxLine(bbox) {
 }
 
 /**
- * `#border-suggest` — the worker found a tighter border and this is the offer:
- * measurement, consequence, what is left out, then two actions. Copy the four
- * numbers, and `#suggest-rerun`, which app.js wires (CONTRACT §05). The re-run is a
- * fresh document load replaying the sources from the feed cache, so it needs every
- * source addressable by URL: a chosen `File` cannot survive a reload, and the button
- * says so instead of failing later.
+ * `#border-suggest` — the worker found a tighter border and this is the offer: the
+ * whole network beside the reachable core, what is left out, then two actions. Copy
+ * the four numbers, and `#suggest-rerun`, which app.js wires (CONTRACT §05). The
+ * re-run is a fresh document load replaying the sources from the feed cache, so a
+ * chosen `File` cannot survive it, and the note says so instead of failing later.
  *
  * Every figure is the worker's; the renderer never derives one from another.
  *
@@ -164,32 +166,33 @@ function s4SuggestCallout(report, suggested) {
   if (!sb) return '';
   const size = report.size || {};
   const vote = sb.vote || {};
-  const startName = startStopName(report);
-  const dayLabel = s4DayLabel(report, sb.dayKey);
+  const whole = s4DayView(report, sb.dayKey);
   const byFeed = Array.isArray(sb.trimmedByFeed) ? sb.trimmedByFeed : [];
   // "mostly X (n)" only informs when there is more than one feed to attribute to.
   const mostly = byFeed.length > 1 && byFeed[0]
-    ? ` — mostly ${byFeed[0].agencyName} (${num(byFeed[0].count)})`
+    ? ` · mostly ${byFeed[0].agencyName} (${num(byFeed[0].count)})`
     : '';
-  // Upper-cased like every other size name on the page (the rulebook's spelling).
-  const suggestWord = String(sb.sizeName || '').toUpperCase();
-  const currentWord = String(size.name || '').toUpperCase();
-  // A core voting the run's OWN size is legitimate (`suggestBorder` only offers a box
-  // at least `SUGGEST_MIN_TRIM_SHARE` tighter), but "a MEDIUM game rather than
-  // MEDIUM" reads as a fault, so the same-size case gets its own half-sentence.
-  const measured = `Measured on those stops alone this is `
-    + `${suggestWord === currentWord ? 'still a' : 'a'} ${suggestWord} game `
-    + `(${s4Area(report, Number(vote.hullSqM || 0))}, ${num(vote.nZones || 0)} zones, `
-    + `T90 ${mins(Number(vote.t90Min || 0))})`;
-  const versus = suggestWord === currentWord
-    ? ', on the reachable core rather than on the whole network. '
-    : ` rather than ${currentWord || 'the size measured on the whole feed'}. `;
-  const sentence = `Within ${num(sb.hidingPeriodMin || 0)} minutes of ${startName} on a `
-    + `${dayLabel} the network keeps ${num(sb.coreStops || 0)} of `
-    + `${num(sb.allServedStops || 0)} stops carrying ${pct(Number(sb.eventShare || 0), 0)} `
-    + 'of the day\u2019s departures. '
-    + measured + versus
-    + `${num(sb.trimmedStops || 0)} stops lie outside${mostly}.`;
+  const sizeBadge = (name) => waBadge(String(name || '—').toUpperCase(),
+    { variant: 'neutral', appearance: 'outlined' });
+  const t90 = (x) => (fnum(x) === null ? '—' : mins(Number(x)));
+  const grid = dataTable(['', 'Whole network', 'Reachable core'], [
+    [esc('Size'), sizeBadge(size.name), sizeBadge(sb.sizeName)],
+    [esc('Area'), esc(s4Area(report, Number(whole.hullSqM || 0))),
+      esc(s4Area(report, Number(vote.hullSqM || 0)))],
+    [esc('Zones'), esc(num(fnum(whole.nZones) ?? (report.zones || []).length)),
+      esc(num(vote.nZones || 0))],
+    [esc('T90'), esc(t90(whole.t90Min)), esc(t90(vote.t90Min))],
+  ]);
+  const facts = el('div', join(
+    chip(`${num(sb.coreStops || 0)} of ${num(sb.allServedStops || 0)} stops kept`, 'location-dot'),
+    chip(`${pct(Number(sb.eventShare || 0), 0)} of departures`, 'bus'),
+    chip(`${num(sb.trimmedStops || 0)} outside${mostly}`, 'scissors'),
+  ), { className: 'wa-cluster wa-gap-2xs' });
+  const origin = markers(
+    iconLabel('star', startStopName(report)),
+    iconLabel('clock', `within ${num(sb.hidingPeriodMin || 0)} min`),
+    iconLabel('calendar-day', s4DayLabel(report, sb.dayKey)),
+  );
 
   const kinds = Array.isArray(report.sourceKinds) ? report.sourceKinds : [];
   const hasFile = kinds.includes('file');
@@ -209,8 +212,8 @@ function s4SuggestCallout(report, suggested) {
   // `role="status"` announces that write; `tabindex="-1"` lets app.js focus it, so a
   // keyboard reader lands on the explanation instead of on an inert-looking button.
   const note = el('p', hasFile
-    ? esc('Re-running needs feeds picked by URL \u2014 a file you chose cannot survive a reload. '
-      + 'Copy the border and set it in the landing frame\u2019s fields instead.')
+    ? join(waIcon('file-circle-xmark'), esc('Re-run needs URL feeds — files don’t '
+      + 'survive a reload. Copy the border into the landing fields.'))
     : '', {
     id: 'suggest-note', role: 'status', tabindex: '-1',
     className: 'wa-caption-s wa-color-text-quiet',
@@ -218,7 +221,9 @@ function s4SuggestCallout(report, suggested) {
 
   return waCallout(join(
     el('p', esc('A tighter border is on offer.'), { className: 'wa-heading-s' }),
-    el('p', esc(sentence), { className: 'wa-body-s' }),
+    origin,
+    grid,
+    facts,
     el('p', esc(`Suggested box: ${line} (south, west, north, east).`),
       { className: 'wa-caption-s wa-color-text-quiet' }),
     actions,
@@ -244,19 +249,20 @@ function startStopName(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * A `wa-cluster` of `.sw` swatches — the map legend, as a real `<ul>`.
- *
- * CAVEAT: the `<ul>`'s `native.css` block margin is zeroed only because
- * `wa-cluster`/`wa-split` parents reset child margins; an unclassed parent brings it back.
- * @param {ReadonlyArray<[string,string]>} items `[swatchHtml, plainText]`
+ * The map legend: `render/html.js` `legendRow` over `[swatchHtml, plainText]` items.
+ * The `<ul>`'s `native.css` margin is zeroed only inside a `wa-cluster`/`wa-stack` parent.
+ * @param {ReadonlyArray<[string,string,string?]>} items
+ * @param {Object} [opts] `legendRow`'s
  * @returns {string}
  */
-export function s4Legend(items) {
-  return el('ul', Array.from(items, ([swatchHtml, text]) => el(
-    'li',
-    swatchHtml + esc(text),
-    { className: 'wa-cluster wa-gap-2xs' },
-  )).join(''), { className: 'wa-cluster wa-gap-m wa-caption-xs wa-list-plain' });
+export function s4Legend(items, opts = {}) {
+  return legendRow(Array.from(items), opts);
+}
+
+/** A quiet one-line cluster of markers; '' when every part is empty. */
+function markers(...parts) {
+  const html = join(...parts);
+  return html ? el('div', html, { className: 'wa-cluster wa-gap-s wa-caption-xs' }) : '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -280,18 +286,19 @@ export function s4DayByKey(report, dayKey) {
  * day; the other five are map-wide or rulebook constants.
  *
  * `hl` is the `data-hl` the runtime binds tile↔map highlighting to, and is set only
- * on tiles that name a fact the map can point at. `n` is the one clause that sits
- * under the value and `more` the remainder, split here rather than inferred from the
- * prose: a note interpolates stop names, and "St. " is not a sentence end.
+ * on tiles that name a fact the map can point at. `n` is the one clause under the
+ * value (`nHtml`, when set, is that clause as markup), `more` the folded remainder,
+ * `sub` a visible sub-figure, `fill` a 0–100 bar from `fillPct` and `chips` markup
+ * that stays visible beside the note.
  *
  * @param {Object} report @param {string} dayKey
  * @returns {Array<{g:string,day:string,prov:string,v:string,l:string,n:string,
- *                  more?:string,hl?:string}>}
+ *                  nHtml?:string,more?:string,sub?:string,fill?:number,chips?:string,
+ *                  hl?:string}>}
  */
 export function s4Tiles(report, dayKey) {
   const v = s4DayView(report, dayKey);
   const size = report.size || {};
-  const label = s4DayLabel(report, dayKey);
   const nTotalRoutes = feedRouteCount(report);
   const questions = report.questions || [];
   const curses = report.curses || [];
@@ -330,11 +337,19 @@ export function s4Tiles(report, dayKey) {
   const departure = String((report.opts || {}).departure || '').slice(0, 5);
   const sizeWord = String(size.name || '').toUpperCase();
 
-  const dead = questions.filter(
-    (q) => q.status === 'dead' || q.status === 'degenerate',
-  ).length;
   const warned = curses.filter((c) => c.action === 'warn').length;
   const talked = curses.filter((c) => c.action === 'player-choice').length;
+  const unserved = fnum(g('unservedStops'));
+  const hpMin = num(size.hidingPeriodMin || 0);
+
+  // Only non-zero statuses, in deck.js's degradation order, each carrying its status key.
+  const statusRow = el('a', ['functional', 'weak', 'degenerate', 'dead', 'unknown'].map((k) => {
+    const n = questions.filter((q) => q.status === k).length;
+    return n ? el('span', iconLabel(S4_STATUS_TAG[k][1], `${num(n)} ${S4_STATUS_COUNT[k]}`),
+      { dataStatus: k }) : '';
+  }).join(''), { className: 'wa-link-plain wa-cluster wa-gap-s', href: '#questions' });
+  const rulesMark = el('span', join(waIcon('book'), esc('From the rules')),
+    { className: 'tile-tag', dataBasis: 'rulebook' });
 
   return [
     {
@@ -344,8 +359,7 @@ export function s4Tiles(report, dayKey) {
       hl: 'zones',
       v: num(nZones),
       l: 'Distinct hiding zones',
-      n: `One zone per ${radius} circle — a cover of the ${num(served)} stops with `
-        + `service on a ${label}.`,
+      n: `One per ${radius} circle over served stops`,
     },
     {
       g: 'map',
@@ -354,7 +368,7 @@ export function s4Tiles(report, dayKey) {
       hl: 'stops',
       v: `${num(served)} / ${num(inFeed)}`,
       l: 'Stops served / in the feed',
-      n: `${num(inFeed - served)} stops in the feed see no departure on a ${label}.`,
+      n: unserved === null ? '' : `${num(unserved)} with no departures`,
     },
     {
       g: 'map',
@@ -362,8 +376,7 @@ export function s4Tiles(report, dayKey) {
       prov: 'feed',
       v: `${num(g('routes', 0))} of ${num(nTotalRoutes)}`,
       l: 'Routes running',
-      n: `Route patterns with at least one trip on the representative ${label}, `
-        + `${prettyDate(repDate)}.`,
+      n: `≥ 1 trip on ${prettyDate(repDate)}`,
     },
     {
       g: 'map',
@@ -372,9 +385,9 @@ export function s4Tiles(report, dayKey) {
       hl: 'extent',
       v: s4Area(report, hull),
       l: 'Map area',
-      n: 'The area the buses actually cover — the convex hull of the served stops.',
-      more: 'The printed border box is '
-        + `${s4Area(report, Number(border.areaSqM || 0))}, because a rectangle is what `
+      n: 'Convex hull of served stops',
+      sub: `Border box · ${s4Area(report, Number(border.areaSqM || 0))}`,
+      more: 'The border is a box rather than the hull, because a rectangle is what '
         + 'players can agree on.',
     },
     {
@@ -384,9 +397,8 @@ export function s4Tiles(report, dayKey) {
       hl: 'extent',
       v: s4Dist(report, diameter, 1),
       l: 'Network diameter',
-      n: 'The longest straight line between two served stops.',
-      more: 'The smallest circle that holds the whole network has a radius of '
-        + `${s4Dist(report, Number(mec[2] || 0), 1)}.`,
+      n: 'Straight line, furthest two stops',
+      sub: `Enclosing circle radius · ${s4Dist(report, Number(mec[2] || 0), 1)}`,
     },
     {
       g: 'clock',
@@ -394,9 +406,8 @@ export function s4Tiles(report, dayKey) {
       prov: 'D1',
       v: `${hhmm(firstS)}–${hhmm(lastS)}`,
       l: 'Service window',
-      n: `${num(spanH, 1)} hours end to end.`,
-      more: "The median stop's last departure is "
-        + `${hhmm(medLast)}, which is the number that ends your game.`,
+      n: `${num(spanH, 1)} h end to end`,
+      chips: iconLabel('moon', `Last bus, median stop ${hhmm(medLast)}`),
     },
     {
       g: 'clock',
@@ -404,9 +415,9 @@ export function s4Tiles(report, dayKey) {
       prov: 'C1',
       v: headway !== null && headway !== undefined ? mins(headway) : '—',
       l: 'Median headway per stop',
-      n: 'All routes combined, 06:00–22:00.',
-      more: (worstGap !== null && worstGap !== undefined)
-        ? `The median stop's worst gap of the day is ${mins(worstGap)}.`
+      n: 'All routes · 06:00–22:00',
+      chips: (worstGap !== null && worstGap !== undefined)
+        ? iconLabel('hourglass-half', `Worst gap ${mins(worstGap)} (median stop)`)
         : '',
     },
     {
@@ -416,18 +427,23 @@ export function s4Tiles(report, dayKey) {
       hl: 'frequency',
       v: pct(freqShare),
       l: 'Stops on a 15-minute route',
-      n: `${num(freqStops)} stops where one single route-direction runs every `
-        + '15 minutes or better.',
+      fill: fillPct(freqShare),
+      n: `${num(freqStops)} stops · one route-direction ≤ 15 min`,
     },
     {
       g: 'clock',
       day: '',
       prov: 'rulebook',
-      v: `${num(size.hidingPeriodMin || 0)} min`,
+      v: `${hpMin} min`,
       l: 'Hiding period',
-      n: `${sizeWord} game: ${radius} hiding zones, `
-        + `${num(size.catalogueSize || 0)} questions in the deck, `
-        + `${num(size.photoLimitMin || 0)} minutes to answer a photo.`,
+      n: '',
+      nHtml: el('span', join(
+        waBadge(sizeWord || '—', { variant: 'neutral', appearance: 'outlined' }),
+        iconLabel('circle-dot', `${radius} zones`),
+        iconLabel('layer-group', `${num(size.catalogueSize || 0)} questions`),
+        iconLabel('camera', `${num(size.photoLimitMin || 0)} min per photo`),
+      ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
+      chips: rulesMark,
     },
     {
       g: 'clock',
@@ -435,21 +451,15 @@ export function s4Tiles(report, dayKey) {
       prov: 'A2',
       hl: 'reach',
       v: pct(reachShare),
-      // The value is a share of ZONES, so the note counts zones too, from the
-      // worker-computed `reachableZones`; the stop figure stays as the looser test.
+      // The value is a share of ZONES, so the note counts zones from the worker's
+      // `reachableZones`; the stop figure stays as the looser test.
       l: 'Zones reachable in the hiding period',
+      fill: reach === null ? null : fillPct(reachShare),
       n: (reach === null
-        ? `${num(reachN)} of ${num(served)} served stops are within `
-          + `${num(size.hidingPeriodMin || 0)} minutes of the start location at `
-          + `${departure}.`
-        : `${num(reach.reachableZones)} of ${num(nZones)} zones are within `
-          + `${num(size.hidingPeriodMin || 0)} minutes of ${startName} at ${departure} `
-          + `on a ${label}.`),
-      more: (reach === null
-        ? ''
-        : `The ${num(reach.unreachableZoneIds.length)} that are not are red on the `
-          + "map's reach layer, hollow where there is no journey at all. "
-          + `(${num(reachN)} of ${num(served)} served stops are, a looser test.)`),
+        ? `${num(reachN)} of ${num(served)} served stops within ${hpMin} min at ${departure}`
+        : `${num(reach.reachableZones)} of ${num(nZones)} zones · from ${startName} at ${departure}`),
+      sub: reach === null ? '' : `Stops: ${num(reachN)} of ${num(served)} (looser test)`,
+      chips: reach === null ? degradeChip('reach_not_measured') : '',
     },
     {
       g: 'deck',
@@ -457,8 +467,8 @@ export function s4Tiles(report, dayKey) {
       prov: 'B1',
       v: `${num(live)} of ${num(catalogue)}`,
       l: 'Questions that work here',
-      n: `Functional plus weak, out of the ${sizeWord} catalogue.`,
-      more: `${num(dead)} return a fixed or null answer and should be pre-briefed.`,
+      n: '',
+      nHtml: statusRow,
     },
     {
       g: 'deck',
@@ -466,8 +476,12 @@ export function s4Tiles(report, dayKey) {
       prov: 'curses',
       v: `${num(removed)} of ${num(curses.length)}`,
       l: 'Curses to take out of the deck',
-      n: `${num(warned)} more are weakened but stay in the deck, and `
-        + `${num(talked)} are a conversation to have rather than a measurement to take.`,
+      n: '',
+      nHtml: el('span', join(
+        iconLabel(S4_ACTION_TAG.warn[1], `${num(warned)} flagged, kept`),
+        iconLabel(S4_ACTION_TAG['player-choice'][1],
+          `${num(talked)} ${S4_ACTION_TAG['player-choice'][0]}`),
+      ), { className: 'wa-cluster wa-gap-s' }),
     },
   ];
 }
@@ -477,8 +491,8 @@ export function s4Tiles(report, dayKey) {
  * happens here, not around `#tiles`, because `renderDay()` replaces that container's
  * `innerHTML` wholesale.
  *
- * One clause sits under the value; the rest of the note goes in the tile's `More`
- * disclosure, so a group of tiles reads as numbers rather than as prose.
+ * One clause sits under the value; sub-figures and chips stay visible, and only a
+ * rationale folds into `More`.
  *
  * The deck group's tiles count questions and curses, which do not exist until the
  * `rules` stage; they are skeletons until then, so the rail neither prints "0 of 0"
@@ -488,12 +502,7 @@ export function s4Tiles(report, dayKey) {
  */
 export function s4TilesHtml(report, dayKey) {
   const tiles = s4Tiles(report, dayKey);
-  // A plain marker, not a `chip()`: a bordered tag beside a big number reads as a
-  // control the reader can press.
-  const dayChip = el('span', join(waIcon('calendar-day'), esc('changes by day')), {
-    className: 'tile-tag',
-    title: 'Measured on the selected service day',
-  });
+  const dayChip = dayMarker();
   const pending = !(report.questions || []).length;
   const groups = [];
   for (const [key, title] of S4_TILE_GROUPS) {
@@ -506,14 +515,22 @@ export function s4TilesHtml(report, dayKey) {
       : tiles.filter((t) => t.g === key).map((t) => {
         // The provenance superscript cites the value, so it stays on the clause
         // under it rather than moving into the disclosure.
-        const note = esc(t.n) + provChip(t.prov);
+        const note = (t.nHtml || esc(t.n)) + provChip(t.prov);
+        const bar = (t.fill ?? null) === null ? '' : waProgressBar(t.fill, { label: t.l });
         const more = t.more
           ? waDetails('More', el('p', esc(t.more), { className: 'wa-body-s wa-color-text-quiet' }), {
             className: 'tile-more', appearance: 'plain',
           })
           : '';
         return waCard(
-          join(kpi(t.v, t.l, note, { chipHtml: t.day ? dayChip : '' }), more),
+          join(
+            kpi(t.v, t.l, note, {
+              chipHtml: join(t.day ? dayChip : '', bar),
+              subHtml: t.sub ? esc(t.sub) : '',
+            }),
+            t.chips ? el('div', t.chips, { className: 'wa-cluster wa-gap-2xs wa-caption-xs' }) : '',
+            more,
+          ),
           { dataDaySensitive: t.day ? true : null, dataHl: t.hl || null },
         );
       });
@@ -575,20 +592,30 @@ export function renderGlanceRail(payload) {
     className: 'wa-stack wa-gap-l',
     id: 'tiles',
   });
-  const caption = 'Measured on the service day selected above, on the map you are '
-    + 'looking at. Tiles with a gold rule and a “changes by day” marker move when you '
-    + 'change the day; the rest are map-wide or come straight from the rulebook.';
-  // Its own paragraph under `#glance-hover-note`: app.js removes the sentence when
-  // MapLibre never loads, and the rest of the caption is true either way.
-  const hover = 'Where a tile names a place, hovering it lights that place on the map '
-    + 'above — or focus it and press Enter to pin it there.';
-  const capStyle = { className: 'wa-body-s wa-color-text-quiet', style: 'max-inline-size:72ch' };
+  // The hover hint is its own `<li id="glance-hover-note">`: app.js removes it when
+  // MapLibre never loads, and the rest of the key is true either way.
+  const key = legendRow([
+    [dayMarker(), ''],
+    [waIcon('lock'), 'others fixed'],
+    [waIcon('hand-pointer'), 'hover lights the map · Enter pins', 'glance-hover-note'],
+  ], { label: 'Tile key' });
   return el('div', join(
     subhead('At a glance'),
-    el('p', esc(caption), capStyle),
-    el('p', esc(hover), { id: 'glance-hover-note', ...capStyle }),
+    key,
     grid,
   ), { id: 'glance', className: 'wa-stack wa-gap-s' });
+}
+
+/**
+ * The day-sensitive tile marker. A plain marker, not a `chip()`: a bordered tag beside
+ * a big number reads as a control the reader can press.
+ * @returns {string}
+ */
+function dayMarker() {
+  return el('span', join(waIcon('calendar-day'), esc('changes by day')), {
+    className: 'tile-tag',
+    title: 'Measured on the selected service day',
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -687,19 +714,21 @@ export function s4HeatmapTable(report, rows, tableId) {
  * busiest `S4_MAX_HEATMAP_ROUTES` rows are the grid; every remaining route renders in
  * full in a second table below it, never as a "N more not shown" line.
  *
- * @param {Object} report @param {string} methodHtml @returns {string}
+ * @param {Object} report @param {string} methodHtml
+ * @param {string} [leadHtml] a visible marker row above the legend
+ * @returns {string}
  */
-export function s4Heatmap(report, methodHtml) {
+export function s4Heatmap(report, methodHtml, leadHtml = '') {
   const rows = s4HeatmapRows(report);
   const shown = rows.slice(0, S4_MAX_HEATMAP_ROUTES);
   const extra = rows.slice(S4_MAX_HEATMAP_ROUTES);
   // the fills live on `[data-hb]` alone (styles.css), so a `.sw` key needs no override.
-  const legend = s4Legend([
+  const legend = join(leadHtml, s4Legend([
     ...S4_HEADWAY_BINS.map(([, binId, label]) => [
       el('span', '', { className: 'sw', dataHb: binId }), label,
     ]),
     [el('span', '', { className: 'sw', dataHb: 'none' }), 'No service that day'],
-  ]);
+  ], { label: 'Headway key' }));
   let overflow = '';
   if (extra.length) {
     const n = extra.length;
@@ -739,8 +768,12 @@ export function renderTransitReality(payload) {
   const samples = report.travelSamples || [];
   const cards = [];
 
+  const bestKey = s4BestDay(report);
+  const bestLabel = s4DayLabel(report, bestKey);
+  const assumed = Boolean((report.metrics || {}).assumedSchedule);
+
   if (samples.length) {
-    // A reader must not be able to mistake these minutes for a straight-line guess.
+    // The chart's accessible description keeps the full reading; the page shows the key.
     const caption = `Scheduled minutes from ${startName} at ${departure} on the selected `
       + `day, to a fixed sample of ${num(samples.length)} busy zones — the same `
       + 'sample every day, so the bars are comparable across the selector. '
@@ -765,86 +798,99 @@ export function renderTransitReality(payload) {
       style: 'display:block;min-width:680px',
     });
     const legend = s4Legend([
-      [s4Swatch('background:var(--accent)'), `Fits the ${hp}-minute window`],
-      [s4Swatch('background:var(--gold-mark)'), 'Fits, but tight or two changes'],
-      [s4Swatch('background:var(--crit)'), 'Busts the hiding period'],
+      [s4Swatch('background:var(--accent)'), `Fits ${hp} min`],
+      [s4Swatch('background:var(--gold-mark)'), 'Fits, but > ¾ window or 2 changes'],
+      [s4Swatch('background:var(--crit)'), 'Busts the window'],
       [s4Swatch('background:transparent;border:1.5px dashed var(--baseline)'),
-        'No service on the selected day'],
-    ]);
+        'No service that day'],
+      [s4Swatch('background:transparent;border-block-start:1.5px dashed var(--baseline);'
+        + 'border-radius:0'), `${hp}-min hiding period`],
+    ], { label: 'Ride-time key' });
+    const method = el('ul', join(
+      el('li', iconLabel('calendar-check', 'Scheduled, not observed — a centre point, not a ceiling')),
+      el('li', iconLabel('shuffle', 'Real bus sequences, transfer waits included')),
+      el('li', iconLabel('repeat', `Same ${num(samples.length)} destinations every day`)),
+    ), { className: 'wa-stack wa-gap-3xs wa-caption-xs wa-list-plain', role: 'list' });
     cards.push(waCard(
       el('div', join(
+        assumed ? el('div', degradeChip('assumed_schedule'), { className: 'wa-cluster' }) : '',
         waScroller(chart),
         legend,
-        waDetails('How to read this chart',
-          el('p', esc(caption), { className: 'wa-body-s wa-color-text-quiet' }),
-          { appearance: 'plain' }),
+        waDetails('How to read this chart', method, { appearance: 'plain' }),
       ), { className: 'wa-stack wa-gap-s' }),
       {
-        headerHtml: s4CardHeader(
-          `Scheduled ride time from ${startName}`,
-          `Scheduled minutes to ${num(samples.length)} fixed destinations.`,
-        ),
+        headerHtml: cardHeader('Ride time from start', {
+          captionHtml: el('span', join(
+            waBadge(`${num(samples.length)} destinations`, { variant: 'neutral', appearance: 'outlined' }),
+            iconLabel('calendar', 'scheduled'),
+          ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
+        }),
       },
     ));
   }
 
   const headways = report.routeHeadways || [];
   const nRoutes = headways.length;
+  const subtitle = 'Headway: minutes between buses · per route-direction · per day';
+  const windowChip = chip('Median per route-direction · 10:00–14:00', 'clock');
   if (nRoutes >= S4_MIN_HEATMAP_ROUTES) {
-    // "Median … between 10:00 and 14:00" is the CLI's own wording; keep it.
-    let cap = 'Median minutes between departures per route — how often a bus comes — measured at '
-      + "the route's own stops between 10:00 and 14:00, one column per service day this "
-      + 'feed distinguishes. The technical name is headway. '
-      + 'Medians, not averages: a route that runs every 10 minutes at rush hour '
-      + 'and hourly at noon averages out to a figure that describes neither, and '
-      + 'midday is when you will be playing. '
-      + 'Darker = less frequent. A hatched cell means the route does not run that day. '
-      + 'The selected day is highlighted; hover any cell for its trip count.';
-    let subtitle = 'How often a bus comes, per route, per service day.';
-    if (nRoutes > S4_MAX_HEATMAP_ROUTES) {
-      const extra = nRoutes - S4_MAX_HEATMAP_ROUTES;
-      cap += ` This feed has ${num(nRoutes)} route rows; the busiest `
-        + `${num(S4_MAX_HEATMAP_ROUTES)} are in the grid and the other `
-        + `${num(extra)} are in the drawer beneath it, in full.`;
-      subtitle = `How often a bus comes. The busiest ${num(S4_MAX_HEATMAP_ROUTES)} of `
-        + `${num(nRoutes)} rows are in the grid; the rest are below it.`;
-    }
-    const method = waDetails('How to read this',
-      el('p', esc(cap), { className: 'wa-body-s wa-color-text-quiet' }),
-      { appearance: 'plain' });
-    cards.push(waCard(s4Heatmap(report, method), {
-      headerHtml: s4CardHeader('How often the buses come', subtitle),
+    // "Median … between 10:00 and 14:00" is the CLI's own wording; keep it in the method.
+    const method = waDetails('How to read this', join(
+      el('p', esc("Median minutes between departures at the route's own stops between 10:00 "
+        + 'and 14:00. Medians, not averages: a route that runs every 10 minutes at rush hour '
+        + 'and hourly at noon averages out to a figure that describes neither, and midday is '
+        + 'when you will be playing.'), { className: 'wa-body-s wa-color-text-quiet' }),
+      el('p', iconLabel('hand-pointer', 'Hover a cell for its trip count'), { className: 'wa-caption-xs' }),
+    ), { appearance: 'plain' });
+    const extra = s4HeatmapRows(report).slice(S4_MAX_HEATMAP_ROUTES).length;
+    const badge = extra
+      ? waBadge(`busiest ${num(S4_MAX_HEATMAP_ROUTES)} here · ${num(extra)} in drawer`,
+        { variant: 'neutral', appearance: 'outlined' })
+      : '';
+    cards.push(waCard(s4Heatmap(report, method, el('div', windowChip, { className: 'wa-cluster' })), {
+      headerHtml: cardHeader('How often the buses come', { caption: subtitle, chipsHtml: badge }),
     }));
   } else if (nRoutes) {
-    const labels = s4JoinWords(headways.map((h) => String(h.shortName || h.routeId || '')));
-    cards.push(waCard(el('p', esc(
-      `This network has ${num(nRoutes)} route${nRoutes !== 1 ? 's' : ''} — ${labels} — `
-      + 'too few for a frequency heatmap to say anything a sentence cannot. '
-      + 'Median headways are in the tile above. With this few routes the Transit Line '
-      + 'matching question is close to degenerate: expect it to identify a zone rather '
-      + 'than narrow the field.',
-    ), { className: 'wa-body-s' }), {
-      headerHtml: s4CardHeader('How often the buses come',
-        'Too few routes for a grid.'),
+    cards.push(waCard(el('div', join(
+      s4Heatmap(report, '', el('div', windowChip, { className: 'wa-cluster' })),
+      el('div', join(
+        chip('Transit Line ≈ always the same answer', 'equals', { appearance: 'filled' }),
+        basisChip('interp'),
+      ), { className: 'wa-cluster wa-gap-2xs' }),
+    ), { className: 'wa-stack wa-gap-s' }), {
+      headerHtml: cardHeader('How often the buses come', { caption: 'Too few routes to compare' }),
     }));
   }
 
   if (!cards.length) return '';
 
-  // The map's reach layer already shows reach; this section says what only it has:
-  // specific rides, and specific waits.
-  const lede = `Measured from ${startName}${departure ? ` at ${departure}` : ''} `
-    + '— the same origin as the map’s reach layer, in specific rides rather than in '
-    + 'colour. Later rounds start from the previous hider’s zone, so re-read them from '
-    + 'that stop rather than from the hub.';
-  const answer = el('p', esc(
-    `The map says how far ${hp} minutes gets you. This chart says how long `
-    + `${num(samples.length)} specific rides take, and the grid under it says how long `
-    + 'you wait for one.',
-  ), { className: 'wa-body-s' });
+  const fit = samples.filter((smp) => {
+    const cell = (smp.perDay || {})[bestKey];
+    return cell && cell.minutes !== null && cell.minutes !== undefined
+      && Number(cell.minutes) <= Number(size.hidingPeriodMin || 0);
+  }).length;
+  const headway = fnum(s4DayView(report, bestKey).medianHeadwayMin);
+  const answer = el('div', join(
+    samples.length
+      ? el('span', `${el('b', esc(`${num(fit)} of ${num(samples.length)}`))} sample rides fit `
+        + `the ${esc(hp)}-min window on a ${esc(bestLabel)}`)
+      : '',
+    headway === null ? ''
+      : el('span', `median headway ${el('b', esc(mins(headway)))} (all routes, 06:00–22:00)`),
+  ), { className: 'wa-cluster wa-gap-m wa-body-s' });
+  const ledeMarks = join(
+    iconLabel('star', startName),
+    departure ? iconLabel('clock', departure) : '',
+    el('a', esc('same origin as the map’s reach layer'), { className: 'wa-link', href: '#network' }),
+  );
   return section('transit', S4_ORDINAL, 'Getting around',
     el('div', cards.join(''), { className: 'wa-stack wa-gap-s' }),
-    { kicker: 'How long things take', lede, answerHtml: answer });
+    {
+      kicker: 'How long things take',
+      lede: 'Later rounds start from the last hider’s zone — re-read from there.',
+      ledeHtml: ledeMarks,
+      answerHtml: (samples.length || headway !== null) ? answer : '',
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -864,16 +910,15 @@ export function s4ReachDay(report, dayKey) {
 }
 
 /**
- * "What to notice" — two or three deterministic sentences under the map: which zones
- * the hiding period cannot reach, whether there is a hub worth camping, and whether
- * another service day is worse.
+ * "What to notice" — up to three chips under the map: how many zones the hiding
+ * period cannot reach (with their names when there are few), whether there is a hub
+ * worth camping, and whether another service day is worse.
  *
- * NETWORK-STAGE FACTS ONLY (`zones`, `zoneReach`, `hub`, `size`, `metrics`,
- * `routeSpokes`): this string renders inside §05, and a string that moves at `rules`
+ * NETWORK-STAGE FACTS ONLY (`zones`, `zoneReach`, `hub`, `size`, `routeSpokes`): this string renders inside §05, and a string that moves at `rules`
  * or `score` re-mounts the section and tears down the MapLibre instance.
  *
  * It counts, filters, sorts and slices; it does no arithmetic. Every quantity is
- * carried or the length of a filtered list — sentence three is a filter over two
+ * carried or the length of a filtered list — the third chip is a filter over two
  * carried id lists, never a subtraction of two counts.
  *
  * app.js pre-renders per-day variants into `DATA.days[k].map_caption_html`, so a day
@@ -889,19 +934,17 @@ export function s4MapCaption(report, dayKey) {
   const zones = r.zones || [];
   if (!zones.length || !size.hidingPeriodMin) return '';
   const hp = num(size.hidingPeriodMin);
-  const startName = startStopName(r);
   const label = s4DayLabel(r, dayKey);
   const spokesShown = (r.routeSpokes || []).length > 0;
-  const sentences = [];
+  const items = [];
 
   // ── 1. reach ────────────────────────────────────────────────────────────────
   const reach = s4ReachDay(r, dayKey);
   if (reach !== null) {
     const missed = reach.unreachableZoneIds || [];
     if (!missed.length) {
-      sentences.push(`Every one of the ${num(zones.length)} zones is reachable from `
-        + `${startName} inside the ${hp}-minute hiding period on a ${label}, which is `
-        + 'unusual and makes distance a weak question on this map.');
+      items.push(chip(`All ${num(zones.length)} zones reachable in ${hp} min · ${label} · `
+        + 'distance questions weak', 'circle-check', { variant: 'success' }));
     } else {
       // The ids arrive sorted, so the naming is sorted too. Naming stops at
       // `S4_MAX_NAMED_ZONES`: "A, B and 141 others" is a number wearing two names.
@@ -914,27 +957,21 @@ export function s4MapCaption(report, dayKey) {
         : (named.length <= 3
           ? s4JoinWords(named)
           : s4JoinWords([...named.slice(0, 2), `${num(rest.length)} others`]));
-      sentences.push(`The ${hp}-minute hiding period cannot reach `
-        + `${num(missed.length)} of the ${num(zones.length)} zones from ${startName} on a `
-        + `${label}${phrase ? ` — ${phrase}` : ''}. The reach layer is where they sit.`);
+      items.push(chip(`${num(missed.length)} of ${num(zones.length)} zones out of reach in `
+        + `${hp} min · ${label}`, 'circle-xmark', { variant: 'danger' }));
+      if (phrase) items.push(el('span', esc(phrase), { className: 'wa-caption-xs' }));
     }
   }
 
   // ── 2. structure ────────────────────────────────────────────────────────────
   if (hub.name) {
-    const shape = String(s4DayView(r, dayKey).networkShape || '').split('-').join(' ');
-    const share = pct(Number(hub.routeShare || 0));
-    sentences.push(hub.dominant
-      ? `One station, ${hub.name}, touches ${share} of the routes and the network reads `
-        + `as ${shape}, so `
-        + (spokesShown
-          ? 'the spokes layer draws the seekers’ cheapest move: camp the hub.'
-          : 'the seekers’ cheapest move is to camp the hub.')
-      : `No single station dominates this network — the busiest touches ${share} of the `
-        + 'routes — so there is no hub to camp'
-        + (spokesShown
-          ? '; turn on the spokes layer to see where the seekers will actually wait.'
-          : ' and the seekers have to spread out.'));
+    items.push(hub.dominant
+      ? chip(spokesShown
+        ? 'Seekers’ cheapest move: camp the ★ hub · spokes layer draws it'
+        : 'Seekers’ cheapest move: camp the ★ hub', 'star', { variant: 'warning' })
+      : chip(spokesShown
+        ? 'No hub to camp · spokes show where seekers wait'
+        : 'No hub to camp · seekers spread out', 'circle-nodes'));
   }
 
   // ── 3. the day that is worse ────────────────────────────────────────────────
@@ -953,34 +990,43 @@ export function s4MapCaption(report, dayKey) {
     if (extra > worstExtra) { worstExtra = extra; worstKey = key; }
   }
   if (worstKey !== null) {
-    sentences.push(`On a ${s4DayLabel(r, worstKey)}, another ${num(worstExtra)} `
-      + `${s4Plural(worstExtra, 'zone')} ${s4Plural(worstExtra, 'falls', 'fall')} outside `
-      + 'the window.');
+    items.push(chip(`${s4DayLabel(r, worstKey)}: ${num(worstExtra)} more `
+      + `${s4Plural(worstExtra, 'zone')} out of reach`, 'calendar-xmark', { variant: 'warning' }));
   }
 
-  if (!sentences.length) return '';
-  return el('p', esc(sentences.join(' ')), { className: 'wa-body-s' });
+  if (!items.length) return '';
+  return el('div', items.join(''), { className: 'wa-cluster wa-gap-xs wa-align-items-center' });
 }
 
 /**
- * The spoke layer's honesty sentences: what was drawn, and out of how many.
- * `MAX_MAP_SPOKES` is applied worker-side (lib/core.js), so a capped feed never ships
- * the dropped polylines, and a layer that quietly draws part of the network is
- * indistinguishable from a broken one.
+ * What the map leaves undrawn, one `[text, icon, variant]` chip spec per cap, each
+ * with its own count. `MAX_MAP_SPOKES` is applied worker-side (lib/core.js), so a
+ * capped feed never ships the dropped polylines, and without the chip a layer that
+ * draws part of the network is indistinguishable from a broken one.
  *
- * @param {Object} report @returns {string[]} zero, one or two sentences
+ * @param {Object} report
+ * @param {{stopsShown?: boolean, ringsShown?: boolean, spokesShown?: boolean}} [flags]
+ * @returns {Array<[string,string,string]>}
  */
-export function s4SpokeNotes(report) {
-  const cap = (report && report.spokeCap) || null;
-  if (!cap) return [];
+export function s4CapNotes(report, flags = {}) {
+  const {
+    stopsShown = true, ringsShown = true,
+    spokesShown = ((report && report.routeSpokes) || []).length > 0,
+  } = flags;
   const out = [];
-  if (Number(cap.shown || 0) < Number(cap.total || 0)) {
-    out.push(`The busiest ${num(cap.shown)} of the ${num(cap.total)} route-directions in `
-      + 'this feed are drawn; the rest would be a thicket at this scale.');
+  if (!stopsShown) {
+    out.push([`Stops not drawn (over ${num(S4_MAX_MAP_STOPS)}) · no Frequency`, 'eye-slash', 'warning']);
   }
-  if (cap.source === 'stops') {
-    out.push('This feed ships no route shapes, so each line is the route\u2019s ordered stop '
-      + 'sequence rather than the road it takes.');
+  if (!ringsShown) {
+    out.push([`Circles not drawn (over ${num(S4_MAX_MAP_ZONE_RINGS)} zones)`, 'eye-slash', 'warning']);
+  }
+  const cap = (report && report.spokeCap) || null;
+  if (cap && spokesShown) {
+    if (Number(cap.shown || 0) < Number(cap.total || 0)) {
+      out.push([`Busiest ${num(cap.shown)} of ${num(cap.total)} route-directions drawn`,
+        'filter', 'neutral']);
+    }
+    if (cap.source === 'stops') out.push(['Lines = stop order, not roads', 'bezier-curve', 'warning']);
   }
   return out;
 }
@@ -991,26 +1037,30 @@ export function s4SpokeNotes(report) {
  * writes that attribute when the `#colourby` radio moves.
  *
  * The reach block's labels and colours are §06's ride-chart legend's: the map and the
- * chart are two pictures of one measurement and may not use two vocabularies.
+ * chart are two pictures of one measurement and may not use two vocabularies. Counts
+ * appear here, in the base labels, and nowhere else on the card.
  *
  * @param {Object} report
- * @param {{stopsShown: boolean, ringsShown: boolean, spokesShown: boolean}} flags
+ * @param {{stopsShown: boolean, ringsShown: boolean, spokesShown: boolean,
+ *          suggestShown?: boolean}} flags
  * @returns {string}
  */
 export function s4MapLegends(report, flags) {
   const { stopsShown, ringsShown, spokesShown, suggestShown = false } = flags;
   const hub = report.hub || {};
   const size = report.size || {};
+  const border = report.border || {};
   const hp = num(size.hidingPeriodMin || 0);
-  const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
-  const startName = startStopName(report);
-  const departure = String((report.opts || {}).departure || '').slice(0, 5);
+  const bestKey = s4BestDay(report);
+  const reachDay = s4ReachDay(report, bestKey);
+  const startId = (report.opts && report.opts.startStopId) || '';
+  const startIsHub = !startId || startId === hub.stopId;
 
-  // A legend block: the swatch list in its own `wa-cluster` parent (s4Legend's <ul>
-  // relies on that for its margins), with an optional caption.
-  const block = (mode, items, note) => el('div', join(
-    el('div', s4Legend(items), { className: 'wa-cluster wa-gap-m' }),
-    note ? el('p', esc(note), { className: 'wa-caption-xs wa-color-text-quiet' }) : '',
+  // A legend block: the swatch list in its own `wa-cluster` parent (the <ul> relies on
+  // that for its margins), then an optional visible marker row.
+  const block = (mode, items, afterHtml, label) => el('div', join(
+    el('div', s4Legend(items, { label }), { className: 'wa-cluster wa-gap-m' }),
+    afterHtml,
   ), { dataLegendFor: mode, className: 'wa-stack wa-gap-3xs' });
 
   const always = [];
@@ -1018,21 +1068,27 @@ export function s4MapLegends(report, flags) {
     always.push([s4Swatch(
       'background:color-mix(in srgb, var(--accent) 18%, transparent);'
       + 'border:1px solid var(--accent)',
-    ), 'Zone circle (toggle)']);
+    ), 'Zone circle']);
   }
   if (spokesShown) {
     // Two swatches: a plain route line, and the gold heavier line of a route that
     // calls at the hub.
     always.push(
-      [s4Swatch('background:var(--ink-2);block-size:2px;border-radius:1px'), 'Route line (toggle)'],
+      [s4Swatch('background:var(--ink-2);block-size:2px;border-radius:1px'), 'Route line · selected day'],
       [s4Swatch('background:var(--gold-deep);block-size:3px;border-radius:1px'),
-        `Route calling at ${hub.name}`],
+        'Route calling at the ★ hub'],
     );
   }
-  always.push(
-    [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
-    [s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
-  );
+  always.push([el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }),
+    `${hub.name} · ${!startId ? 'inferred start' : (startId === hub.stopId ? 'start' : 'hub')}`]);
+  // A fallback box also carries border_not_applied.
+  const borderSwatch = s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)');
+  if (border.derivation === 'option_fallback') {
+    always.push([borderSwatch, 'Your box — not applied'], [degradeChip('border_not_applied'), '']);
+  } else {
+    always.push([borderSwatch,
+      border.derivation === 'option' ? 'Your border box' : 'Game border (inferred, padded)']);
+  }
   // The suggested frame is a thinner, SOLID gold line, so the two gold rectangles
   // read as different things.
   if (suggestShown) {
@@ -1040,43 +1096,44 @@ export function s4MapLegends(report, flags) {
       'Suggested border']);
   }
 
+  const zones = report.zones || [];
   const baseItems = [];
   if (stopsShown) {
-    baseItems.push([s4Swatch('background:var(--ink-2);border-radius:var(--wa-border-radius-circle)'), 'Served stop']);
+    baseItems.push([s4Swatch('background:var(--ink-2);border-radius:var(--wa-border-radius-circle)'),
+      `Served stop · ${num(servedStopCount(report, s4DayByKey(report, bestKey)))}`]);
   }
-  baseItems.push([s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'), 'Designated hiding zone']);
+  baseItems.push([s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'),
+    `Hiding zone · ${num(zones.length)}`]);
 
-  const blocks = [block('base', baseItems, '')];
+  const blocks = [block('base', baseItems, '', 'Map key')];
 
-  if (s4ReachDay(report, s4BestDay(report)) !== null) {
+  if (reachDay !== null) {
     // Every key draws exactly what the canvas draws: three carry the ring the map
     // strokes (fills alone are 1.5:1 on a pale basemap), and the no-journey key is
     // SOLID because MapLibre has no dash on a circle stroke.
     //
-    // The gold label differs from §06's "Fits, but tight or two changes" on purpose:
-    // the chart also bins on transfers, this layer bins on the window alone.
+    // The gold label differs from §06's on purpose: the chart also bins on transfers,
+    // this layer bins on the window alone.
     blocks.push(block('reach', [
       [s4Swatch('background:var(--accent);border-radius:var(--wa-border-radius-circle)'),
-        `Fits the ${hp}-minute window`],
+        `Fits ${hp} min`],
       [s4Swatch('background:var(--gold-mark);border:1.4px solid var(--gold-deep);'
         + 'border-radius:var(--wa-border-radius-circle)'),
-        'Fits, but past three quarters of the window'],
+        'Fits, past ¾ of window'],
       [s4Swatch('background:var(--crit);border:1.6px solid var(--ink);'
         + 'border-radius:var(--wa-border-radius-circle)'),
-        'Busts the hiding period'],
+        'Busts the window'],
       [s4Swatch('background:transparent;border:1.5px solid var(--ink-2);'
         + 'border-radius:var(--wa-border-radius-circle)'),
-        'No journey at all on the selected day'],
-    ], `Zone dots, coloured by scheduled travel time from ${startName} at ${departure} on `
-      + 'the selected day — the same measurement the ride chart under Getting around '
-      + 'draws as bars. '
-      + `Gold starts at three quarters of the ${hp} minutes; red is the cliff. Stops fade `
-      + `back so the zones read. Zones are ${radius} circles.`));
+        'No journey'],
+    ], markers(
+      iconLabel('clock', `Scheduled travel time from ${startIsHub ? '★' : startStopName(report)}`),
+      iconLabel('calendar-day', 'selected day'),
+      el('a', esc('same as the ride chart'), { className: 'wa-link', href: '#transit' }),
+    ), 'Reach key'));
   }
 
-  // The frequency block names its window: §06's grid is the median per
-  // route-direction between 10:00 and 14:00, this is the median per STOP over all
-  // routes between 06:00 and 22:00, and the two legitimately disagree.
+  // Names its window: per stop, all routes, 06:00–22:00, not the grid's 10:00–14:00.
   if (stopsShown) {
     blocks.push(block('frequency', [
       ...S4_HEADWAY_BINS.map(([, binId, label]) => [
@@ -1087,22 +1144,22 @@ export function s4MapLegends(report, flags) {
       [s4Swatch('background:color-mix(in srgb, var(--off) 45%, transparent);'
         + 'box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent)'),
         'No service that day'],
-    ], 'Stops, coloured by the median minutes between departures at that one stop, all '
-      + 'routes together, between 06:00 and 22:00 on the selected day. Lighter = more '
-      + 'service. The grid under Getting around measures one route direction at a time, '
-      + 'between 10:00 and 14:00, so the two legitimately disagree. Zone dots fade back '
-      + 'so the stops read.'));
+    ], markers(
+      iconLabel('location-dot', 'Median per stop · all routes'),
+      iconLabel('clock', '06:00–22:00'),
+      iconLabel('calendar-day', 'selected day'),
+      chip('≠ route grid 10:00–14:00', 'not-equal', { variant: 'warning' }),
+    ), 'Frequency key'));
   }
 
-  // The always-on block carries the cap sentence, because no colour mode hides it.
-  const capNotes = [];
-  if (!stopsShown) {
-    capNotes.push(`Over ${num(S4_MAX_MAP_STOPS)} served stops the individual dots are not `
-      + 'drawn, so this map has no frequency layer and Colour by offers Plain and Reach '
-      + 'only.');
-  }
-  if (spokesShown) capNotes.push(...s4SpokeNotes(report));
-  blocks.push(block('always', always, capNotes.join(' ')));
+  // The always-on block carries the cap and reach chips, because no colour mode hides them.
+  const capChips = join(
+    ...s4CapNotes(report, { stopsShown, ringsShown, spokesShown })
+      .map(([text, icon, variant]) => chip(text, icon, { variant })),
+    reachDay === null ? degradeChip('reach_not_measured') : '',
+  );
+  blocks.push(block('always', always,
+    capChips ? el('div', capChips, { className: 'wa-cluster wa-gap-2xs' }) : '', 'Always shown'));
   return blocks.join('');
 }
 
@@ -1151,51 +1208,8 @@ export function renderNetworkMap(payload) {
   const bestLabel = s4DayLabel(report, bestKey);
   const reachDay = s4ReachDay(report, bestKey);
   const startName = startStopName(report);
+  const departure = String((report.opts || {}).departure || '').slice(0, 5);
   const hpMin = num(size.hidingPeriodMin || 0);
-
-  const captionParts = [
-    'Live basemap.',
-    // The row set is the BUSIEST day's served stops on every day (CONTRACT §(d)
-    // `StopRow`); only the reach layer reads the selected day.
-    stopsShown
-      ? `Grey dots = each of the ${num(served)} stops with service on a ${bestLabel}, the `
-        + 'representative day (hover for the name and route count).'
-      : `This feed has ${num(served)} served stops, more than the `
-        + `${num(S4_MAX_MAP_STOPS)} this map draws individually, so only the `
-        + `${num(zones.length)} zone centres are plotted.`,
-    ringsShown
-      ? `Blue dots = the ${num(zones.length)} designated hiding zones; the switch draws each `
-        + `one's ${radius} rulebook circle.`
-      : `Blue dots = the ${num(zones.length)} designated hiding zones. There are too many to `
-        + 'draw every circle, so the radius toggle is unavailable.',
-    reachDay === null
-      ? ''
-      : `Colour by Reach recolours those zone dots by scheduled travel time from `
-        + `${startName}, with the ${hpMin}-minute hiding period as the cliff, and follows `
-        + 'the day selector. Colour by Plain is the flat blue.',
-    stopsShown
-      ? 'Colour by Frequency recolours the stops instead, on the same six steps as the '
-        + 'headway grid under Getting around — but measured per stop over all routes '
-        + 'between 06:00 and 22:00, a different question from that grid’s.'
-      : `Over ${num(S4_MAX_MAP_STOPS)} stops the individual dots are dropped, so the `
-        + 'frequency layer is unavailable and the colour selector offers Plain and Reach only.',
-    !spokesShown ? ''
-      : 'Route spokes draws each route-direction\u2019s own line under the dots, filtered '
-        + 'to the day you picked. Lines that call at the hub are gold and a shade heavier.',
-    !spokesShown ? '' : s4SpokeNotes(report).join(' '),
-    `★ = ${hub.name}, the inferred round-start station.`,
-    // The same three-way split as the border sentence below the map: on a fallback
-    // run the frame is drawn but "nothing outside it exists" is not true.
-    (border.derivation === 'option_fallback'
-      ? 'Dashed gold frame = the box you set. It kept fewer than half this network, so it '
-        + 'was drawn and not applied: the stops, zones and counts here are the whole network.'
-      : 'Dashed gold frame = the game border. Nothing outside it exists for this game.'),
-    !suggested ? ''
-      : 'Thin solid gold frame = the tighter border the analysis suggests; the note '
-        + 'under the map says what it keeps and offers to re-run inside it.',
-    'If your browser blocks the map library the map is omitted and everything below still works.',
-  ];
-  const caption = captionParts.filter((x) => x).join(' ');
 
   // Colour modes are exclusive (two ramps at once needs two legends), so this is a
   // radio group. It offers exactly the modes THIS feed has a column for, and exists
@@ -1207,7 +1221,7 @@ export function renderNetworkMap(payload) {
       ? ''
       : el('wa-radio', esc('Reach'), { value: 'reach', appearance: 'button', size: 's' }),
     // No Frequency button over `MAX_MAP_STOPS`: the per-stop headways ride with the
-    // stops and there is nothing to colour. The caption says so.
+    // stops and there is nothing to colour. The legend's cap chip says so.
     stopsShown
       ? el('wa-radio', esc('Frequency'), { value: 'frequency', appearance: 'button', size: 's' })
       : '',
@@ -1249,6 +1263,20 @@ export function renderNetworkMap(payload) {
   // digits: the copied artefact and the printed one can never disagree.
   const degText = degRows.map(([label, value]) => `${label} ${value}`).join('\n');
 
+  // `Border.derivation` (CONTRACT §(b)): `'option'` is the reader's rectangle used as
+  // given, with no padding; `'reach'` is the inferred, padded box; `'option_fallback'`
+  // is a box that kept under `IN_PLAY_MIN_SHARE` of the served stops, so the worker
+  // measured the whole network instead — and that must never be silent.
+  const fallback = border.derivation === 'option_fallback';
+  const padDist = s4Dist(report, Number(border.padM || 0), 2);
+  const borderChips = fallback ? ''
+    : join(
+      border.derivation === 'option'
+        ? chip('Your box · no padding', 'draw-polygon')
+        : join(basisChip('interp'), chip(`Padded ${padDist}`, 'draw-polygon')),
+      provChip('border'),
+    );
+
   const toolbar = el('div', join(
     // `#netlayers` so the runtime can remove the whole layer group when MapLibre is
     // blocked; the copy buttons beside them work without a map and stay.
@@ -1256,6 +1284,7 @@ export function renderNetworkMap(payload) {
       id: 'netlayers', className: 'wa-cluster wa-gap-s wa-align-items-center',
     }),
     el('div', join(
+      borderChips,
       // Slotted triggers, not the icon-only default: the two payloads are different
       // things and the buttons have to say which is which.
       waCopyButton(geojsonText, {
@@ -1269,34 +1298,50 @@ export function renderNetworkMap(payload) {
     ), { className: 'wa-cluster wa-gap-s wa-align-items-center' }),
   ), { id: 'netcontrols', className: 'wa-split wa-align-items-center wa-flex-wrap wa-gap-s' });
 
-  // `Border.derivation` (CONTRACT §(b)): `'option'` is the reader's rectangle used as
-  // given, with no padding; `'reach'` is the inferred, padded box; `'option_fallback'`
-  // is a box that kept under `IN_PLAY_MIN_SHARE` of the served stops, so the worker
-  // measured the whole network instead — and that must never be silent.
+  const fallbackCallout = fallback
+    ? waCallout(join(
+      degradeChip('border_not_applied'),
+      el('p', esc('Your box kept fewer than half the stops this network serves, so it is '
+        + 'drawn but not applied: every count here is the whole network.')
+        + provChip('border'), { className: 'wa-body-s' }),
+    ), { variant: 'warning', icon: 'triangle-exclamation' })
+    : '';
+
   const borderArea = s4Area(report, Number(border.areaSqM || 0));
-  const borderSentence = border.derivation === 'option_fallback'
-    ? `The border is the box you set on the landing map (no padding), and it covers `
-      + `${borderArea} — but it kept fewer than half the stops this network serves, so `
-      + 'nothing on this page was measured inside it: every count below is the whole '
-      + 'network. '
+  const borderDetail = fallback
+    ? `The border is the box you set on the landing map, with no padding. It covers ${borderArea}.`
     : border.derivation === 'option'
-      ? `The border is the box you set on the landing map (no padding). It covers `
-        + `${borderArea}. `
-      : 'The border is the bounding box of the in-map stops padded by one hiding-zone '
-        + `radius (${s4Dist(report, Number(border.padM || 0), 2)}), so every legal zone lies `
-        + `wholly inside it. It covers ${borderArea}. `;
+      ? `The border is the box you set on the landing map, used as given. It covers ${borderArea}.`
+      : `The border is the bounding box of the in-map stops padded by one hiding-zone radius `
+        + `(${padDist}), so every legal zone lies wholly inside it. It covers ${borderArea}.`;
   const howToRead = join(
-    el('p', esc(caption), { className: 'wa-body-s wa-color-text-quiet' }),
-    el('p', esc(
-      borderSentence
-      + 'Copy GeoJSON pastes into geojson.io, Google My Maps or a GPX app; Copy '
-      + 'coordinates gives the four labelled degrees as text.',
-    ) + provChip('border'), { className: 'wa-body-s wa-color-text-quiet' }),
+    el('p', esc(borderDetail) + provChip('border'), { className: 'wa-body-s wa-color-text-quiet' }),
+    el('ul', join(
+      el('li', iconLabel('copy', 'Copy GeoJSON: geojson.io, Google My Maps or a GPX app')),
+      el('li', iconLabel('copy', 'Copy coordinates: the four labelled degrees as text')),
+      stopsShown ? el('li', iconLabel('hand-pointer', 'Hover a stop for its name and route count')) : '',
+    ), { className: 'wa-stack wa-gap-3xs wa-caption-xs wa-list-plain', role: 'list' }),
+    stopsShown
+      ? el('p', esc('The frequency layer times each stop over all routes from 06:00 to 22:00; '
+        + 'the grid under Getting around times one route-direction from 10:00 to 14:00, so '
+        + 'the two legitimately disagree.'), { className: 'wa-body-s wa-color-text-quiet' })
+      : '',
   );
+
+  const follows = reachDay !== null && spokesShown ? 'Reach & spokes follow the day'
+    : reachDay !== null ? 'Reach follows the day'
+      : spokesShown ? 'Spokes follow the day' : '';
+  const headerCaption = el('span', join(
+    iconLabel('thumbtack', `Stops & zones: ${bestLabel}`),
+    follows ? el('span', join(waIcon('calendar-day'), esc(follows)), { className: 'tile-tag' }) : '',
+    iconLabel('star', startName),
+    departure ? iconLabel('clock', departure) : '',
+  ), { className: 'wa-cluster wa-gap-s' });
 
   const mapCard = waCard(
     el('div', join(
       toolbar,
+      fallbackCallout,
       // The frame is what the blocked-map callout targets (app.js `giveUp`), and what
       // the print block keeps when it hides `#netmap`; index.html's skeleton uses the
       // same id.
@@ -1327,36 +1372,27 @@ export function renderNetworkMap(payload) {
       waDetails('How to read this map', howToRead, { appearance: 'plain' }),
       waDetails('Exact coordinates', degrees, { appearance: 'plain', id: 'mapborder' }),
     ), { className: 'wa-stack wa-gap-s' }),
-    {
-      headerHtml: s4CardHeader(
-        `${num(served)} served stops, ${num(zones.length)} hiding zones and the border`,
-        `Everything that runs on a ${bestLabel}, the representative day. The reach layer `
-        + 'follows the day selector. Copy the border: every player must use the same one.',
-      ),
-    },
+    { headerHtml: cardHeader('Network map and border', { captionHtml: headerCaption }) },
   );
 
-  const shape = String(v.networkShape).split('-').join(' ');
-  const lede = `The raw playing field: every stop with service on a ${bestLabel}, and the `
-    + `${num(zones.length)} hiding zones one zone per `
-    + `${radius} circle produces. `
-    + `The network reads as ${shape}`
-    + (hub.dominant
-      ? `, with one station — ${hub.name} — touching ${pct(Number(hub.routeShare || 0))} of all routes`
-      : ', with no single dominant interchange')
-    + '.';
+  const shape = String(v.networkShape || '').split('-').join(' ');
+  const ledeChips = join(
+    shape ? chip(shape, 'diagram-project') : '',
+    hub.dominant
+      ? chip(`${hub.name} · ${pct(Number(hub.routeShare || 0))} of routes`, 'star')
+      : chip('No dominant interchange', 'circle-nodes'),
+  );
   // `unreachableZoneIds.length` is a lookup on a worker-computed list, not a
   // subtraction, and a `network`-stage fact, so it does not move this string later.
   const missed = reachDay === null ? null : reachDay.unreachableZoneIds.length;
-  const answer = el('p', esc(
-    `${num(zones.length)} places to hide`
-    + (missed === null
-      ? `, out of the ${num(served)} stops that run on a ${bestLabel}.`
-      : `, and ${num(missed)} of them the ${hpMin}-minute hiding period cannot reach from `
-        + `${startName} on a ${bestLabel}.`)
-    + " The numbers under the map are the same day's measurements; copy the border "
-    + 'before anyone draws a card.',
-  ), { className: 'wa-body-s' });
+  const answer = el('div', join(
+    el('span', `${el('b', esc(num(zones.length)))} places to hide`),
+    missed === null
+      ? el('span', `${el('b', esc(num(served)))} served stops on a ${esc(bestLabel)}`)
+      : el('span', `${el('b', esc(num(missed)))} out of reach in ${esc(hpMin)} min on a `
+        + esc(bestLabel)),
+    el('span', esc('everyone copies the same border')),
+  ), { className: 'wa-cluster wa-gap-m wa-body-s' });
   // The stat rail's host, empty. app.js mounts `renderGlanceRail` into it and
   // re-mounts it on its own clock without this string — or the map — moving.
   const glanceHost = el('div', '', {
@@ -1370,5 +1406,8 @@ export function renderNetworkMap(payload) {
 
   return section('network', S4_ORDINAL, 'The map you’re playing on',
     join(el('div', mapCard, { className: 'wa-stack wa-gap-s' }), glanceHost),
-    { kicker: 'The network', lede, answerHtml: answer });
+    {
+      kicker: 'The network', lede: `The raw playing field on a ${bestLabel}.`,
+      ledeHtml: ledeChips, answerHtml: answer,
+    });
 }
