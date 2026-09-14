@@ -73,6 +73,15 @@
          `progresswait` the "still working" heartbeat. -->
     <div id="hydration" data-role="progress" data-when="running" class="wa-stack wa-gap-3xs">
       <wa-progress-bar id="hydration-progress" data-role="progressbar" value="0" label="Analysis progress"></wa-progress-bar>
+      <ol data-role="stepper" class="wa-cluster wa-gap-3xs wa-list-plain" aria-hidden="true">
+        <li data-step="feed" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="file-zipper"></wa-icon><span class="step-word">Feed</span></wa-tag></li>
+        <li data-step="days" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="calendar"></wa-icon><span class="step-word">Days</span></wa-tag></li>
+        <li data-step="network" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="route"></wa-icon><span class="step-word">Network</span></wa-tag></li>
+        <li data-step="geo" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="map"></wa-icon><span class="step-word">Map</span></wa-tag></li>
+        <li data-step="rules" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="list-check"></wa-icon><span class="step-word">Rules</span></wa-tag></li>
+        <li data-step="score" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="gauge"></wa-icon><span class="step-word">Score</span></wa-tag></li>
+        <li data-step="provenance" data-state="pending"><wa-tag size="s" pill variant="neutral" appearance="outlined"><wa-icon name="book-open"></wa-icon><span class="step-word">Sources</span></wa-tag></li>
+      </ol>
       <!-- The stage words are the live region; the percent is `aria-hidden` inside it
            because it changes about a hundred times a run and the bar already says it. -->
       <span id="hydration-status" class="wa-caption-xs wa-color-text-quiet wa-text-truncate" role="status" aria-live="polite"><span data-role="progresslabel">Starting…</span><span data-role="progresspct" aria-hidden="true"></span></span>
@@ -275,13 +284,19 @@
                 <p class="kicker wa-caption-s wa-text-uppercase">Jet Lag: The Game · Hide+Seek</p>
                 <h1 class="wa-heading-xl">Is your city a good map?</h1>
                 <!-- What a GTFS feed IS belongs to the bring-your-own disclosure. -->
-                <p id="landing-lede" class="wa-body-s">Pick a transit system for a 100-point read on its hiding places, its questions and its curses. Everything runs in this browser; the feed is never uploaded.</p>
+                <p id="landing-lede" class="wa-body-s">Pick a transit system; get a 100-point read on:</p>
+                <ul class="wa-cluster wa-gap-s wa-caption-s wa-list-plain" role="list">
+                  <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="location-dot"></wa-icon><span>hiding places</span></span></li>
+                  <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="circle-question"></wa-icon><span>questions</span></span></li>
+                  <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="wand-magic-sparkles"></wa-icon><span>curses</span></span></li>
+                </ul>
+                <p class="wa-caption-s"><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center wa-color-text-quiet"><wa-icon name="lock"></wa-icon><span>Runs in your browser; nothing uploaded.</span></span></p>
               </header>
 
               <!-- `app.js` fills this from `render/landing.js` once `data/feeds.json`
-                   has loaded. `initLanding` replaces the line below with the same
-                   sentence a frame later, so a slow catalogue reads as loading. -->
-              <div data-role="pickerbody"><p class="wa-caption-s wa-color-text-quiet" role="status">Loading the list of transit feeds…</p></div>
+                   has loaded. `initLanding` rewrites the same skeleton markup a frame
+                   later, so a slow catalogue reads as loading. -->
+              <div data-role="pickerbody"><wa-skeleton class="sk-row"></wa-skeleton><wa-skeleton class="sk-row"></wa-skeleton><wa-skeleton class="sk-row"></wa-skeleton><span class="wa-visually-hidden" role="status">Loading the list of transit feeds…</span></div>
 
               <!-- The one-feed flow, demoted to a disclosure: the fallback when the
                    catalogue never loads, MapLibre is blocked, or the feed was never
@@ -303,9 +318,9 @@
                 <div slot="dropzone" class="wa-stack wa-gap-2xs">
                   <wa-icon name="file-zipper"></wa-icon>
                   <span class="wa-heading-s">Drop a GTFS <code>.zip</code> here</span>
-                  <span class="wa-caption-s wa-color-text-quiet">or click to choose one from your disk</span>
+                  <span class="wa-caption-s wa-color-text-quiet">or click to browse</span>
                 </div>
-                <span slot="hint" class="wa-caption-s wa-color-text-quiet">A GTFS feed is a zip of CSV files — <code>stops.txt</code>, <code>trips.txt</code>, <code>stop_times.txt</code> and friends. Nothing else is read.</span>
+                <span slot="hint" class="wa-caption-s wa-color-text-quiet">GTFS zip: <code>stops.txt</code> · <code>trips.txt</code> · <code>stop_times.txt</code> …; nothing else is read.</span>
               </wa-file-input>
 
               <!-- Two wa-dividers: --spacing:0 because the wa-stack owns the rhythm,
@@ -326,10 +341,10 @@
                    so the form silently stops working. `inputmode="url"` keeps the phone
                    keyboard; `readSources` validates with `new URL()`. -->
               <wa-input type="text" id="opt-url" data-opt="url" name="url" label="Feed URL" inputmode="url" spellcheck="false" placeholder="https://example.org/gtfs.zip"></wa-input>
-              <!-- Page prose, not `slot="hint"`: 72ch of CORS explanation does not belong
-                   inside the field's accessible description or its width. -->
-              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Fetching a URL only works if the agency's server sends CORS headers, and many do not. If it fails, download the zip yourself and drop it in above.</p>
-              <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Looking for a feed? Try the <a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database</a> or <a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland</a>.</p>
+              <!-- Page prose, not `slot="hint"`: the CORS caveat stays out of the field's
+                   accessible description. -->
+              <p class="wa-caption-s wa-color-text-quiet wa-cluster wa-gap-2xs wa-align-items-center"><wa-tag appearance="outlined" pill size="s" variant="warning"><wa-icon name="triangle-exclamation"></wa-icon>Many servers block this (CORS)</wa-tag><span>If it fails, drop the zip above instead.</span></p>
+              <p class="wa-caption-s wa-color-text-quiet wa-cluster wa-gap-xs wa-align-items-center"><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="magnifying-glass"></wa-icon><span>Find feeds:</span></span><a class="wa-link" href="https://mobilitydatabase.org" rel="noopener noreferrer" target="_blank">Mobility Database <wa-icon name="arrow-up-right-from-square"></wa-icon></a><a class="wa-link" href="https://www.transit.land" rel="noopener noreferrer" target="_blank">Transitland <wa-icon name="arrow-up-right-from-square"></wa-icon></a></p>
 
                </div>
               </wa-details>
@@ -339,7 +354,7 @@
                   <!-- Eight fields are inferred and ship blank; departure time, board
                        slack and border shape ship hardcoded defaults. The sentence must
                        not claim all eleven are inferred. -->
-                  <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Every field here is an override. Most are inferred from the feed if left alone; departure time, board slack and border shape are fixed defaults. Change one only if you know better than the feed.</p>
+                  <p class="wa-caption-s wa-color-text-quiet" style="max-inline-size:72ch">Optional overrides. Blank fields are inferred; departure time, board slack and border shape have defaults.</p>
 
                   <div id="landing-fields" class="wa-grid wa-gap-m" style="--min-column-size:220px">
 
@@ -350,7 +365,7 @@
                          is. `with-clear` gets the reader back there after picking a size. -->
                     <wa-select id="opt-size" data-opt="sizeOverride" name="size" label="Game size"
                                placeholder="Infer from the map" with-clear
-                               hint="Sets the deck, the hiding period and the zone radius unless you override those too.">
+                               hint="Sets deck, hiding period and zone radius unless overridden.">
                       <wa-option value="small">Small</wa-option>
                       <wa-option value="medium">Medium</wa-option>
                       <wa-option value="large">Large</wa-option>
@@ -360,19 +375,15 @@
                          step="10"` would reject 400, 500 and the rulebook's 402.336, and a
                          stepMismatch inside a collapsed <wa-details> kills the submit
                          silently. app.js rejects `<= 0` in words. -->
-                    <wa-input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" min="1" step="any" inputmode="decimal" placeholder="from the game size" label="Zone radius" hint="Metres. How far from a stop a hider may be."></wa-input>
+                    <wa-input type="number" id="opt-zone-radius" data-opt="zoneRadiusM" name="zone-radius" min="1" step="any" inputmode="decimal" placeholder="from the game size" label="Zone radius" hint="Max distance from a stop."><span slot="end" class="wa-caption-xs">m</span></wa-input>
 
-                    <wa-input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" min="1" step="1" inputmode="numeric" placeholder="from the game size" label="Hiding period" hint="Minutes the hider gets before the seekers start."></wa-input>
+                    <wa-input type="number" id="opt-hiding-period" data-opt="hidingPeriodMin" name="hiding-period" min="1" step="1" inputmode="numeric" placeholder="from the game size" label="Hiding period" hint="Hider’s head start."><span slot="end" class="wa-caption-xs">min</span></wa-input>
 
-                    <!-- Hint as a slotted span, not the attribute: the attribute is set as
-                         text and would print the <code> tags. -->
-                    <wa-input type="text" id="opt-start-stop" data-opt="startStopId" name="start-stop" spellcheck="false" placeholder="stop_id — inferred hub" label="Start stop">
-                      <span slot="hint">A <code>stop_id</code> from the feed. Overrides the inferred round-start station.</span>
-                    </wa-input>
+                    <wa-input type="text" id="opt-start-stop" data-opt="startStopId" name="start-stop" spellcheck="false" placeholder="stop_id — inferred hub" label="Start stop" hint="Round-start station."></wa-input>
 
                     <!-- The group's own `label` is the visible label and `hint` lands in
                          the fieldset's `aria-describedby`; do not add a second label. -->
-                    <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Out-of-border features do not exist for this game, so this changes real answers.">
+                    <wa-radio-group id="opt-border-shape" data-opt="borderShape" name="border-shape" value="bbox" orientation="horizontal" size="s" label="Border shape" hint="Nothing outside the border exists for this game, so answers change.">
                       <wa-radio value="bbox" appearance="button">Rectangle</wa-radio>
                       <wa-radio value="circle" appearance="button">Circle</wa-radio>
                     </wa-radio-group>
@@ -384,28 +395,23 @@
                          frame exists so two editors cannot disagree. With no frame (a
                          zip or a pasted URL) the field is writable and readOptions
                          parses it; that path must not be lost. -->
-                    <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" hint="Four numbers: south, west, north, east. With a feed picked on the map, edit the frame there instead — this mirrors it. Blank means the border is fitted to the network." data-border-mode="none"></wa-input>
+                    <wa-input type="text" id="opt-border-bbox" data-opt="borderBbox" name="border-bbox" spellcheck="false" inputmode="decimal" placeholder="S, W, N, E" label="Border box" data-border-mode="none"><span slot="hint"><span data-when-mode="none">Blank = fitted to the network.</span><span data-when-mode="set"><wa-tag appearance="outlined" pill size="s" variant="neutral"><wa-icon name="link"></wa-icon>Mirrors the map frame</wa-tag></span></span></wa-input>
 
-                    <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="When the clock starts on the representative day."></wa-input>
+                    <wa-input type="time" id="opt-departure" data-opt="departure" name="departure" step="1" value="09:00:00" label="Departure time" hint="Clock start on the representative day."></wa-input>
 
                     <!-- `step="1"`: the unit is seconds and any non-negative integer is
                          legal. `step="30"` would make 45 a stepMismatch and kill the
                          submit silently, as on the zone-radius field. -->
-                    <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Seconds of grace for making a connection. Zero assumes you sprint."></wa-input>
+                    <wa-input type="number" id="opt-board-slack" data-opt="boardSlackS" name="board-slack" min="0" step="1" inputmode="numeric" value="0" label="Board slack" hint="Connection grace; 0 = sprint."><span slot="end" class="wa-caption-xs">s</span></wa-input>
 
                     <!-- Blank is the feed's own start date. Nothing ranks dates by
                          busyness; `s1Representative` (service.js) breaks ties toward the
-                         QUIETER day, and the hint says so. -->
-                    <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Which calendar date to read the schedule for, kept within the feed's window. Blank uses the feed's start date, which is not necessarily representative."></wa-input>
+                         QUIETER day, so the hint says blank is not necessarily typical. -->
+                    <wa-input type="date" id="opt-as-of" data-opt="asOf" name="as-of" label="Analysis date" hint="Schedule date, within the feed's window. Blank = feed start, not necessarily representative."></wa-input>
 
-                    <!-- Slotted hints again, for the <code> the attribute cannot carry. -->
-                    <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops">
-                      <span slot="hint">Out-of-play stations. Comma-separated <code>stop_id</code>s.</span>
-                    </wa-input>
+                    <wa-input type="text" id="opt-exclude-stops" data-opt="excludeStops" name="exclude-stops" spellcheck="false" placeholder="stop_id, stop_id, …" label="Exclude stops" hint="Out-of-play stations."></wa-input>
 
-                    <wa-input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" spellcheck="false" placeholder="route_id, route_id, …" label="Exclude routes">
-                      <span slot="hint">Routes your group agreed are off limits. Comma-separated <code>route_id</code>s.</span>
-                    </wa-input>
+                    <wa-input type="text" id="opt-exclude-routes" data-opt="excludeRoutes" name="exclude-routes" spellcheck="false" placeholder="route_id, route_id, …" label="Exclude routes" hint="Agreed off-limits routes."></wa-input>
 
                     <!-- Full width via `wa-span-grid`: a URL does not fit a 220px column.
                          NOT `type="url"`, for the collapsed-<wa-details> reason on the
@@ -413,7 +419,7 @@
                          DEFAULT_WORLD_BASE_URL in `osm/worldfile.js`; the placeholder does
                          not repeat it, so there is only one copy to go stale. -->
                     <wa-input type="text" id="opt-world-base-url" data-opt="worldBaseUrl" name="world-base-url" class="wa-span-grid" spellcheck="false" inputmode="url" autocomplete="off" placeholder="the published map files" label="Map file base URL">
-                      <span slot="hint">Where the map files are served from — the directory holding <code>manifest.json</code>. Blank uses the published one.</span>
+                      <span slot="hint">Directory holding <code>manifest.json</code>. Blank = the published files.</span>
                     </wa-input>
 
                   </div>
@@ -423,13 +429,13 @@
                        detection is `:scope > [slot="hint"]`); its reading width comes
                        from `#advanced wa-switch::part(hint)` in styles.css. -->
                   <wa-switch id="opt-refresh" data-opt="refresh" name="refresh" size="s">Ignore the cached transit feed
-                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">The transit feed is cached in this browser and reused. Turn this on to download it again, for instance when the operator has published a new one. Map files are always read from the network regardless.</span>
+                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Re-download the feed, e.g. after an operator update.</span>
                   </wa-switch>
 
                   <!-- `offline` is live end to end (app.js, worker.js, cache.js) and
                        CONTRACT §(c) does not drop it, so it needs a control. -->
                   <wa-switch id="opt-offline" data-opt="offline" name="offline" size="s">Use only the cached transit feed
-                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Never download the feed: use the cached copy, or stop if there is none. The map files are still read over the network.</span>
+                    <span slot="hint" class="wa-caption-xs wa-color-text-quiet">Cached feed only; stops if none. Map files still need the network.</span>
                   </wa-switch>
 
                 </div>
@@ -539,7 +545,7 @@
            `renderDay()` rewrites. -->
       <div id="glance" data-section="glance" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-s">
         <h3 class="wa-heading-s wa-color-text-quiet wa-text-uppercase">At a glance</h3>
-        <p class="wa-body-s wa-color-text-quiet" style="max-inline-size:72ch">Measured on the service day selected above. Tiles with a gold rule and a “changes by day” chip move when you change the day; the rest are map-wide or come from the rulebook.</p>
+        <div class="wa-stack wa-gap-2xs sk-body" style="max-inline-size:72ch"><wa-skeleton class="sk-lede"></wa-skeleton><wa-skeleton class="sk-lede" style="inline-size:64%"></wa-skeleton></div>
         <div id="tiles" class="wa-stack wa-gap-l sk-body">
           <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
             <div class="sk-tile"><wa-skeleton></wa-skeleton><wa-skeleton style="inline-size:80%"></wa-skeleton><wa-skeleton style="inline-size:95%"></wa-skeleton></div>
@@ -692,7 +698,7 @@
       <header class="wa-stack wa-gap-3xs">
         <p class="kicker wa-caption-s wa-text-uppercase">The curse deck</p>
         <h2 class="wa-heading-2xl" data-n="06">Every curse, checked</h2>
-        <p class="wa-body-l">Every curse in the hider's deck, checked against this map's geography and this feed's network. A count is the number of qualifying features inside the border; outside does not exist for this game.</p>
+        <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
       <div class="wa-stack wa-gap-l sk-body">
         <!-- the deck strip: one segment per curse, keep / flag / remove -->
@@ -786,9 +792,15 @@
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:10rem"></wa-skeleton></span>
         <span class="wa-stack wa-gap-3xs"><wa-skeleton style="block-size:1.2em;inline-size:4rem"></wa-skeleton><wa-skeleton style="block-size:.7em;inline-size:11rem"></wa-skeleton></span>
       </div>
-      <!-- app.js prepends the "Built from …'s GTFS feed" sentence; the rest is true of
-           every run. -->
-      <p id="footer-credit" class="wa-body-s" style="max-width:88ch">Map features from OpenStreetMap contributors, ODbL. Administrative divisions from the Overture Maps Foundation. Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking on the day.</p>
+      <!-- The credits true of every run; render/deck.js `renderFooter` adds the feed and
+           analysis-date items and the run's admin source. -->
+      <ul id="footer-credit" class="wa-cluster wa-gap-s wa-caption-s wa-list-plain" role="list" aria-label="Credits">
+        <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="map"></wa-icon><span>Map features © OpenStreetMap contributors, ODbL</span></span></li>
+        <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="layer-group"></wa-icon><span>Admin divisions: Overture Maps Foundation</span></span></li>
+        <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="map-location-dot"></wa-icon><span>Basemap: OpenFreeMap, OpenMapTiles data</span></span></li>
+        <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="book"></wa-icon><span>Rules: Jet Lag: The Game&#x27;s Hide+Seek rulebook</span></span></li>
+        <li><span class="icon-label wa-cluster wa-gap-2xs wa-align-items-center"><wa-icon name="circle-info"></wa-icon><span>Scheduled times are planning estimates — check live tracking on the day</span></span></li>
+      </ul>
       <a href="#top" class="wa-link wa-caption-s wa-cluster wa-gap-2xs"><wa-icon name="arrow-up"></wa-icon>Back to top</a>
     </div>
   </footer>

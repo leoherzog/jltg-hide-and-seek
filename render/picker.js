@@ -25,16 +25,16 @@
  * @module render/picker
  */
 
-import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, num, coord } from '../lib/core.js';
+import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, coord } from '../lib/core.js';
 import { bboxOf, bboxUnion, bboxIntersection, bboxAreaSqM, bboxScale } from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
-  labelOf, placeOf, spanKmOf, sourceRefFor, osmSourceRef, exampleMapsFor,
+  labelOf, placeOf, sourceRefFor, osmSourceRef, exampleMapsFor,
 } from '../lib/catalog.js';
-import { esc } from './html.js';
 import {
   renderResults, renderResultsSummary, renderPicks, renderPickerNote, renderExampleMaps,
-  renderBorderRow, renderBorderCaption, PICK_CAP,
+  renderBorderRow, renderBorderCaption, renderBorderChips, renderDrawHint, renderPicksCount,
+  renderMapNote, renderMarkerTip, PICK_CAP, NUDGE_DEG,
 } from './landing.js';
 
 /**
@@ -49,8 +49,6 @@ const CLOSE_PX = 10;
 const DEDUPE_DEG = 1e-7;
 /** Half the side of a border handle's 24 px hit box (drawn as a 6 px circle). */
 const HANDLE_PX = 12;
-/** Shift+Arrow in an edge field moves that edge this far. About a kilometre. */
-const NUDGE_DEG = 0.01;
 /** Shrink / Grow move every side by this share of the box. */
 const BORDER_STEP = 0.1;
 /** Pixel distance from the frame's OUTLINE that grabs the whole box. The fill is not
@@ -59,15 +57,6 @@ const EDGE_PX = 8;
 /** A move drag does nothing until the pointer has travelled this far, so a 1 px
  *  jitter during a pan cannot turn an `'auto'` frame `'custom'`. */
 const MOVE_PX = 4;
-/** What `#picker-draw-hint` says, by mode. `keyboard` answers an activation with no
- *  pointer behind it, which the hand-rolled tool has no way to serve. */
-const DRAW_HINTS = {
-  idle: 'Click the map to add corners, or Shift-drag a rectangle.',
-  drawing: 'Click to add corners. Enter or Finish shape closes it; Backspace removes '
-    + 'the last corner; Esc cancels.',
-  keyboard: 'Drawing needs a mouse or touch. Use the search box to pick feeds instead.',
-};
-
 /** Breathing room around a fitted box, on every side the panel does not cover. */
 const FIT_PAD = 40;
 /** `.landing-panel`'s own margin (`--wa-space-m`), which the panel's width omits. */
@@ -143,6 +132,7 @@ export function initPicker(root, handlers = {}) {
   const mapHost = $('catalog-map');
   const picksList = $('picks-list');
   const picksCount = $('picks-count');
+  const picksBox = $('picks');
   const noteBox = $('picker-note');
   const drawBtn = $('draw-shape');
   const clearBtn = $('draw-clear');
@@ -194,6 +184,8 @@ export function initPicker(root, handlers = {}) {
     border: null,
     /** what `#border-row` was last built for, so a rebuild happens only on a shape change */
     borderRowKey: '',
+    /** the chips `#border-caption` last drew, so a drag rebuilds them only on a change */
+    captionChips: '',
     /** a handle or outline drag in progress: `{kind, handle, origin, point, start, moved}`;
      *  `point` is the mousedown in screen pixels, which `MOVE_PX` is measured against */
     borderDrag: null,
@@ -352,7 +344,7 @@ export function initPicker(root, handlers = {}) {
     if (row.a) {                                   // needs an API key: not fetchable here
       const label = labelOf(row);
       // `st.blocked` describes the last action only: every search, shape and clear resets it.
-      if (!st.blocked.includes(label)) st.blocked.push(label);
+      if (!st.blocked.some((b) => b.label === label)) st.blocked.push({ label, href: row.d || '' });
       renderPicksAndNote();
       return false;
     }
@@ -401,6 +393,32 @@ export function initPicker(root, handlers = {}) {
   // Delegated from the box, so the note can be rebuilt without rebinding.
   if (noteBox) {
     on(noteBox, 'click', (event) => {
+      const act = event.target.closest ? event.target.closest('[data-note-action]') : null;
+      if (act) {
+        event.preventDefault();
+        const action = act.getAttribute('data-note-action');
+        if (action === 'redraw') {
+          // The same keyboard refusal as Draw a shape.
+          if (event.detail === 0) {
+            setDrawHint('keyboard');
+            if (search) safeFocus(search);
+            return;
+          }
+          if (st.ring) clearRing();
+          setDrawing(true);
+        } else if (action === 'regional' && swRegional) {
+          // Setting `checked` fires no `change`.
+          swRegional.checked = true;
+          onSwitch();
+          if (!act.isConnected) {
+            const add = resultsBox && !resultsBox.hidden
+              ? resultsBox.querySelector('[data-add]:not([disabled])') : null;
+            if (add) safeFocus(add);
+            else if (search) safeFocus(search);
+          }
+        }
+        return;
+      }
       const btn = event.target.closest ? event.target.closest('[data-osm-build]') : null;
       if (!btn) return;
       event.preventDefault();
@@ -423,7 +441,7 @@ export function initPicker(root, handlers = {}) {
           id,
           label: ref.label,
           where: '',
-          badge: 'estimated from OpenStreetMap',
+          badge: 'OSM lines · timetable assumed',
           icon: 'map-location-dot',
         });
         continue;
@@ -452,17 +470,18 @@ export function initPicker(root, handlers = {}) {
     const views = pickViews();
     picksList.innerHTML = renderPicks(views);
     if (st.focusHint && st.focusHint.list === 'picks') refocus();
-    picksCount.textContent = views.length === 1
-      ? '1 feed selected'
-      : `${num(views.length)} feeds selected`;
+    picksCount.innerHTML = renderPicksCount(views.length, PICK_CAP);
+    const capped = slotsUsed() >= PICK_CAP;
+    if (picksBox) picksBox.toggleAttribute('data-full', capped);
     const osm = osmPick();
     noteBox.innerHTML = renderPickerNote({
-      capped: slotsUsed() >= PICK_CAP,
+      capped,
       blocked: st.blocked,
       ringEmpty: st.ringEmpty,
       // Offered only while a drawn shape is vacant, a slot is free and it is untaken.
-      osmOffer: Boolean(st.ring) && st.ringVacant && !osm && slotsUsed() < PICK_CAP,
+      osmOffer: Boolean(st.ring) && st.ringVacant && !osm && !capped,
       osmPicked: Boolean(osm),
+      regionalOn: Boolean(swRegional && swRegional.checked),
     });
   }
 
@@ -477,7 +496,7 @@ export function initPicker(root, handlers = {}) {
     resultsBox.innerHTML = renderResults(st.results, {
       selectedIds: new Set(st.selected.keys()),
       full: slotsUsed() >= PICK_CAP,
-      total: st.resultsTotal,
+      more: Math.max(0, st.resultsTotal - st.results.length),
     });
     if (summaryBox && st.searching) {
       summaryBox.hidden = false;
@@ -616,9 +635,10 @@ export function initPicker(root, handlers = {}) {
 
   // ── the draw tool ─────────────────────────────────────────────────────────
 
-  /** One of `DRAW_HINTS`' keys, into the live region under the draw buttons. */
+  /** `idle`, `drawing` or `keyboard`, into the live region under the draw buttons.
+   *  `keyboard` answers an activation with no pointer behind it. */
   function setDrawHint(key) {
-    if (drawHint) drawHint.textContent = DRAW_HINTS[key] || '';
+    if (drawHint) drawHint.innerHTML = renderDrawHint(key);
   }
 
   function setDrawing(value) {
@@ -890,12 +910,13 @@ export function initPicker(root, handlers = {}) {
     captionTimer = setTimeout(() => {
       captionTimer = null;
       const node = borderRow ? borderRow.querySelector('#border-caption') : null;
-      if (!node) return;
-      const settled = node.textContent;
+      const text = node ? node.querySelector('[data-caption-text]') : null;
+      if (!node || !text) return;
+      const settled = text.textContent;
       node.removeAttribute('aria-live');
       // Blank and re-write in one task: the mutation is what makes it speak.
-      node.textContent = '';
-      node.textContent = settled;
+      text.textContent = '';
+      text.textContent = settled;
     }, CAPTION_QUIET_MS);
   }
 
@@ -913,6 +934,7 @@ export function initPicker(root, handlers = {}) {
     const key = [Boolean(view.border), view.overlap, view.hasRing, view.osmPicked].join('|');
     if (key !== st.borderRowKey) {
       st.borderRowKey = key;
+      st.captionChips = renderBorderChips(view);
       const html = renderBorderRow(view);
       borderRow.innerHTML = html;
       borderRow.hidden = !html;
@@ -921,7 +943,14 @@ export function initPicker(root, handlers = {}) {
     if (!view.border) return;
     const caption = borderRow.querySelector('#border-caption');
     if (caption) {
-      caption.textContent = renderBorderCaption(view);
+      const chips = caption.querySelector('[data-caption-chips]');
+      const chipsHtml = renderBorderChips(view);
+      if (chips && chipsHtml !== st.captionChips) {
+        st.captionChips = chipsHtml;
+        chips.innerHTML = chipsHtml;
+      }
+      const text = caption.querySelector('[data-caption-text]');
+      if (text) text.textContent = renderBorderCaption(view);
       quietCaption(caption);
     }
     const edges = { s: 0, w: 1, n: 2, e: 3 };
@@ -1356,11 +1385,7 @@ export function initPicker(root, handlers = {}) {
   function showTip(event, row) {
     const box = tip();
     if (!box) return;
-    box.innerHTML = `<b>${esc(labelOf(row))}</b>${esc(placeOf(row))}`
-      + `<br>about ${esc(num(spanKmOf(row)))} km across`
-      + (row.a ? '<br>Needs an API key — this page cannot fetch it.' : '')
-      + (row.r ? '<br>Regional / long-distance.' : '')
-      + (row.x ? '<br>No longer updated.' : '');
+    box.innerHTML = renderMarkerTip(row);
     box.style.display = 'block';
     const w = box.offsetWidth;
     const x = Math.min(event.originalEvent.clientX + 14, window.innerWidth - w - 12);
@@ -1581,8 +1606,7 @@ export function initPicker(root, handlers = {}) {
     if (drawHint) drawHint.hidden = true;
     if (mapNote) {
       mapNote.hidden = false;
-      mapNote.textContent = 'The map library did not load, so the map and the drawing '
-        + 'tool are not here. The search box above finds every one of the same feeds.';
+      mapNote.innerHTML = renderMapNote();
     }
   }
 
