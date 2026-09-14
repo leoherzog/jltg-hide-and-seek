@@ -26,19 +26,21 @@
 //
 // @module render/strategy
 
-import { cmpStr, num, pct, mins, rhu, coord, prettyDate } from '../lib/core.js';
 import {
-  esc, el, join, waIcon, waCard, waCallout, waButton, waBadge, waDetails,
+  cmpStr, num, pct, mins, rhu, coord, prettyDate, fillPct,
+} from '../lib/core.js';
+import {
+  esc, el, join, waIcon, waCard, waButton, waBadge, waTag, waDetails,
   waAccordion, chip, meter, searchInput, pullQuote, section, subhead,
-  dataTable,
+  dataTable, swatch, basisChip, degradeChip, miniMeter, linkChip, iconLabel,
+  legendRow, leadDetail, cardHeader,
 } from './html.js';
 import {
   fnum,
   s4Dist, s4Val, s4Plural, s4NaturalCmp, s4JoinWords, s4DayLabel, s4BestDay, s4WorstDay,
-  s4LiveQuestions, s4MetricLookup, s4Swatch, s4CardHeader, s4SourceTag,
+  s4LiveQuestions, s4MetricLookup, s4RampText,
 } from './verdict.js';
-// Read-only, like `verdict.js`: the map legends are a shared vocabulary.
-import { s4Legend } from './map.js';
+import { S4_STATUS_TAG } from './deck.js';
 // Pure frozen data, safe on the main thread. Read for one field: a tentacle question's
 // `param`, its reach in miles, which `QuestionAudit` does not carry (CONTRACT.md §(b)).
 import { QUESTIONS } from '../rules/catalogue.js';
@@ -52,32 +54,25 @@ import { QUESTIONS } from '../rules/catalogue.js';
  */
 export const AXES = Object.freeze([
   Object.freeze(['IR', 'Information resistance',
-    'How many other zones give the seekers the same answers you do. A zone whose '
-    + 'answer vector is shared with many others survives questioning; a zone with a '
-    + 'unique answer vector is named by one cheap question.',
+    'How many zones answer like you.',
     'Seeking — every question is answered truthfully, so the only defence is being '
     + 'indistinguishable.']),
   Object.freeze(['R', 'Reach',
-    'Whether you can actually get here inside the hiding period, and how many '
-    + 'changes it costs.',
+    'Can you get here in time, in how many changes.',
     "Hiding Zones — “if the hiding period ends and you're somewhere else, then "
     + "that's where your hiding zone is.”"]),
   Object.freeze(['S', 'Service',
-    'Onward departures, the gap between them, and how much margin you have on the '
-    + 'last ride out of the zone.',
+    'Onward departures, gaps and last-ride margin.',
     'Curses & powerups — Move costs your whole hand and needs a bus to exist.']),
   Object.freeze(['E', 'Endgame spots',
-    'Publicly-accessible places inside the circle where you can legally freeze when '
-    + 'a seeker walks in, and whether they are clustered or scattered.',
+    'Legal freeze spots in the circle, clustered or scattered.',
     'Hiding Spots — publicly accessible during all game hours, within 10 ft of a '
     + 'mapped path.']),
   Object.freeze(['A', 'Amenities',
-    'A bathroom you can use, food and water, and shelter — the things that decide '
-    + 'whether you can sit here for hours.',
+    'Toilet, food, water, shelter.',
     "Hiding — “you're free to do whatever you like”, for as long as it takes."]),
   Object.freeze(['X', 'Exposure',
-    'Map-edge and radar exposure, how many neighbouring zones share your patch, and '
-    + 'how expensive you are for the seekers to reach.',
+    'Edge and radar exposure, crowding, seeker cost.',
     'Radar Questions — an outlier is pinned by one question; Measuring — distance '
     + 'from the seekers is itself information.']),
 ]);
@@ -101,19 +96,24 @@ export const AXIS_PLAIN = Object.freeze({
 });
 
 /**
- * Zone flag → `[label, wa-tag variant, icon]`. (generate.py `_S5_FLAG_TEXT` +
+ * Zone flag → `[label, wa-tag variant, icon, shortLabel]`. (generate.py `_S5_FLAG_TEXT` +
  * `_S5_FLAG_ICON`, joined once here for both this file and `simulator.js`.) The icon
  * exists so a flag is never colour alone.
  */
 export const FLAG_TEXT = Object.freeze({
-  no_service: Object.freeze(['No service', 'danger', 'circle-exclamation']),
-  unreachable: Object.freeze(['Unreachable in the hiding period', 'danger', 'circle-exclamation']),
-  pinned: Object.freeze(['Pinned by one question', 'danger', 'circle-exclamation']),
-  no_legal_spot: Object.freeze(['No legal endgame spot found', 'warning', 'triangle-exclamation']),
-  no_toilet: Object.freeze(['No public toilet', 'warning', 'triangle-exclamation']),
-  strands_seekers: Object.freeze(['Strands the seekers', 'warning', 'triangle-exclamation']),
-  edge_zone: Object.freeze(['Circle crosses the border', 'warning', 'triangle-exclamation']),
-  osm_thin: Object.freeze(['Thin OSM coverage', 'neutral', 'circle-info']),
+  no_service: Object.freeze(['No service', 'danger', 'circle-exclamation', 'No service']),
+  unreachable: Object.freeze(['Unreachable in the hiding period', 'danger', 'circle-exclamation',
+    'Unreachable']),
+  pinned: Object.freeze(['Pinned by one question', 'danger', 'circle-exclamation',
+    'Pinned by 1 question']),
+  no_legal_spot: Object.freeze(['No legal endgame spot found', 'warning', 'triangle-exclamation',
+    'No legal spot']),
+  no_toilet: Object.freeze(['No public toilet', 'warning', 'triangle-exclamation', 'No toilet']),
+  strands_seekers: Object.freeze(['Strands the seekers', 'warning', 'triangle-exclamation',
+    'Strands seekers']),
+  edge_zone: Object.freeze(['Circle crosses the border', 'warning', 'triangle-exclamation',
+    'Edge zone']),
+  osm_thin: Object.freeze(['Thin OSM coverage', 'neutral', 'circle-info', 'Thin OSM']),
 });
 
 /** Simulator mode → its button label, in button order. (generate.py.) */
@@ -218,6 +218,9 @@ export function bar(earnedTenths, maxTenths) {
   return rhu((100.0 * (earnedTenths || 0)) / maxTenths, 1);
 }
 
+/** The shares of this map's best zone at which `band()` steps up; the legend prints them. */
+export const BAND_CUTS = Object.freeze({ top: 0.9, good: 0.75, fair: 0.55 });
+
 /**
  * Colour band for the map and the rail, relative to this map's own best zone.
  * (`_s5_band`.) Relative on purpose: a 41-point zone is a bad hide on a great map and
@@ -229,9 +232,9 @@ export function bar(earnedTenths, maxTenths) {
 export function band(overall, best) {
   if (best <= 0) return 'un';
   const share = overall / best;
-  if (share >= 0.9) return 'top';
-  if (share >= 0.75) return 'good';
-  if (share >= 0.55) return 'fair';
+  if (share >= BAND_CUTS.top) return 'top';
+  if (share >= BAND_CUTS.good) return 'good';
+  if (share >= BAND_CUTS.fair) return 'fair';
   return 'weak';
 }
 
@@ -286,6 +289,11 @@ function subjectKey(questionId) {
   return dot === -1 ? id : id.slice(dot + 1);
 }
 
+/** A question's short verdict: `explain.lead`, else the full `why`. */
+function leadOf(q) {
+  return (q && q.explain && q.explain.lead) || (q && q.why) || '';
+}
+
 /** Questions in id order — the CLI sorts before every chip loop. */
 function questionsById(report) {
   return Array.from((report && report.questions) || []).sort((a, b) => cmpStr(a.id, b.id));
@@ -312,9 +320,26 @@ function tentacleReachWords(reaches) {
 }
 
 /** One zone flag, as icon **and** word — never colour alone. (`_s5_flag_chip`.) */
-function flagChip(flag) {
-  const [label, variant, icon] = FLAG_TEXT[flag] || [flag, 'neutral', 'circle-info'];
-  return chip(label, icon, { variant });
+function flagChip(flag, { short = false } = {}) {
+  const [label, variant, icon, shortLabel] = FLAG_TEXT[flag] || [flag, 'neutral', 'circle-info'];
+  return chip(short && shortLabel ? shortLabel : label, icon, { variant });
+}
+
+/** A question status in §07's words. */
+function statusChip(status) {
+  const [word, icon, variant, appearance] = S4_STATUS_TAG[status]
+    || [status, 'circle-question', 'neutral', 'outlined'];
+  return chip(word, icon, { variant, appearance });
+}
+
+/** Where the numbers came from; a degraded source shows its degradation chip instead. */
+function sourceChips(report, timetableLabel = 'Timetable') {
+  const assumed = Boolean((report.metrics || {}).assumedSchedule);
+  const geoAvailable = Boolean((report.geo || {}).available);
+  return join(
+    assumed ? degradeChip('assumed_schedule') : chip(timetableLabel, 'wave-square'),
+    geoAvailable ? chip('OpenStreetMap', 'map') : degradeChip('osm_unavailable'),
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -340,9 +365,11 @@ function flagChip(flag) {
  * @property {string[]} flags @property {boolean} excluded @property {string} excludeReason
  * @property {string[]} stopIds @property {string[]} routeNames
  * @property {number|null} travelMin
+ * @property {number|null} travelShare  R1 `raw`: travel ÷ hiding period
  * @property {Object[]} threats @property {Object[]} metrics
  * @property {Object[]} spots @property {number} spotsTotal
  * @property {Object<string,number>} inventory
+ * @property {boolean} osmReady  the map layer loaded and this zone has an inventory entry
  * @property {ServiceView} service
  */
 
@@ -470,11 +497,13 @@ export function zoneViews(report) {
       stopIds: Array.from(zone.stopIds || []),
       routeNames,
       travelMin,
+      travelShare: r1raw,
       threats: Array.from(score.threats || []),
       metrics: Array.from(score.metrics || []),
       spots: spots.slice(0, SPOTS_SHIPPED),
       spotsTotal: spots.length,
       inventory,
+      osmReady: Boolean(geo.available && Object.hasOwn(geo.zoneInventory || {}, zid)),
       service,
     });
   }
@@ -482,12 +511,15 @@ export function zoneViews(report) {
 }
 
 /**
- * @typedef {{miles:number, label:string, why:string, usable:boolean}} RadarChip
+ * @typedef {{miles:number, label:string, why:string, usable:boolean,
+ *            status:string, lead:string, degrade:string|null}} RadarChip
  * @typedef {{key:string, label:string, count:number,
- *            why:string, usable:boolean, reachMi:number|null}} CatChip
+ *            why:string, usable:boolean, reachMi:number|null,
+ *            status:string, lead:string, degrade:string|null}} CatChip
  *
  * `reachMi` is the tentacle chip's own reach in miles (`TENTACLE_ID_REACH_MI`), `null`
- * on matching and measuring chips. The simulator measures against THIS number.
+ * on matching and measuring chips. The simulator measures against THIS number. `lead`
+ * is the question's `explain.lead`, or its `why` when the audit carries no split.
  */
 
 /**
@@ -519,6 +551,9 @@ export function modeChips(report) {
       label: q.label,
       why: q.why,
       usable: q.status === 'functional' || q.status === 'weak',
+      status: q.status,
+      lead: leadOf(q),
+      degrade: q.degrade ?? null,
     });
   }
   radar.sort((a, b) => a.miles - b.miles);
@@ -542,6 +577,9 @@ export function modeChips(report) {
           && Array.isArray(features) && features.length > 0,
         // per QUESTION, not per game size (see `TENTACLE_ID_REACH_MI`)
         reachMi: mode === 'tentacle' ? (TENTACLE_ID_REACH_MI[q.id] ?? null) : null,
+        status: q.status,
+        lead: leadOf(q),
+        degrade: q.degrade ?? null,
       });
     }
     out[mode] = chips;
@@ -614,23 +652,29 @@ export function poiCategories(report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * One axis row of the pick card and the dossier: plain name, letter, bar, earned/max.
- * An axis whose maximum is zero was never measurable and prints the words, never `0.0 / 0`.
+ * One axis row of the pick card: short name, letter, bar, earned/max. An axis whose
+ * maximum is zero was never measurable and draws no bar, never `0.0 / 0`.
  */
-function axisMeter(view, axis) {
+function axisMeter(view, axis, geoAvailable) {
+  const [longName, shortName] = AXIS_PLAIN[axis];
   const label = el('span', join(
-    el('span', esc(AXIS_PLAIN[axis][0]), { className: 'wa-caption-s' }),
+    el('span', esc(shortName), { className: 'wa-caption-s' }),
     el('code', esc(axis), { className: 'wa-caption-2xs' }),
   ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
-  if (!view.axisMax[axis]) {
-    return meter(label, 0, el('span', esc('not measured'), {
-      className: 'wa-caption-s wa-color-text-quiet',
-    }), { flank: '3rem', label: AXIS_PLAIN[axis][0] });
-  }
+  if (!view.axisMax[axis]) return unmeasuredRow(label, geoAvailable);
   const right = el('span', esc(`${num(view.axes[axis], 1)} / ${num(view.axisMax[axis], 0)}`), {
     className: 'wa-caption-s wa-color-text-quiet',
   });
-  return meter(label, view.bars[axis], right, { flank: '3rem', label: AXIS_PLAIN[axis][0] });
+  return meter(label, view.bars[axis], right, { flank: '4.5rem', label: longName });
+}
+
+/** An unmeasurable axis: its label and the cause, with no bar. */
+function unmeasuredRow(labelHtml, geoAvailable) {
+  return el('div', join(labelHtml, geoAvailable
+    ? el('span', esc('not measured'), { className: 'wa-caption-s wa-color-text-quiet' })
+    : degradeChip('osm_unavailable')), {
+    className: 'wa-split wa-flex-wrap wa-gap-2xs wa-align-items-center',
+  });
 }
 
 /**
@@ -646,15 +690,21 @@ function pickCard(report, view) {
   const hub = report.hub || {};
   const period = Number(size.hidingPeriodMin) || 0;
 
-  let ride;
-  if (view.travelMin === null || !period) {
-    ride = `Not reachable from ${hub.name} inside the hiding period.`;
-  } else {
-    ride = `${mins(view.travelMin)} from ${hub.name} — ${pct(view.travelMin / period)} `
-      + 'of the hiding period.';
-  }
+  const ride = (view.travelShare === null || !period)
+    ? el('p', esc(`Not reachable from ${hub.name} in time`), {
+      className: 'wa-caption-s wa-color-text-quiet',
+    })
+    : meter(
+      el('span', esc(`Ride from ${hub.name}`), { className: 'wa-caption-s' }),
+      fillPct(view.travelShare),
+      el('span', esc(`${mins(view.travelMin)} · ${pct(view.travelShare, 0)}`), {
+        className: 'wa-caption-s wa-color-text-quiet',
+      }),
+      { flank: '6rem', label: 'Share of the hiding period spent riding' },
+    );
 
-  const meters = AXIS_IDS.map((a) => axisMeter(view, a)).join('');
+  const geoAvailable = Boolean((report.geo || {}).available);
+  const meters = AXIS_IDS.map((a) => axisMeter(view, a, geoAvailable)).join('');
   const flags = view.flags.map((f) => flagChip(f)).join('');
 
   const header = el('div', join(
@@ -667,13 +717,14 @@ function pickCard(report, view) {
   ), { className: 'wa-split' });
 
   const body = el('div', join(
-    el('p', esc(ride), { className: 'wa-body-s' }),
+    ride,
     el('div', meters, { className: 'wa-stack wa-gap-2xs' }),
     flags ? el('div', flags, { className: 'wa-cluster wa-gap-2xs' }) : '',
     view.routeNames.length
-      ? el('p', esc(`Routes: ${view.routeNames.join(', ')}`), {
-        className: 'wa-caption-s wa-color-text-quiet',
-      })
+      ? el('div', join(
+        waIcon('bus', { label: 'Routes' }),
+        view.routeNames.map((name) => waTag(name)).join(''),
+      ), { className: 'wa-cluster wa-gap-3xs wa-align-items-center' })
       : '',
   ), { className: 'wa-stack wa-gap-m' });
 
@@ -688,9 +739,10 @@ function pickCard(report, view) {
 }
 
 /**
- * The hero: kicker, headline, lede, two chips, the pick card, and the one link out.
- * `href="#top"` leaves the route (spec §5.1): `applyRoute` treats any hash that is not
- * `#strategy` as an exit, and the link is visible only from inside the secret view.
+ * The hero: kicker, headline, the chip strip (with the two source states), the pick
+ * card, and the one link out. `href="#top"` leaves the route (spec §5.1): `applyRoute`
+ * treats any hash that is not `#strategy` as an exit, and the link is visible only from
+ * inside the secret view.
  */
 function hero(report, views) {
   const feed = report.feed || {};
@@ -700,14 +752,12 @@ function hero(report, views) {
   const zones = report.zones || [];
   const dossiers = report.dossierZoneIds || [];
 
-  const lede = `${num(zones.length)} candidate hiding zones scored on six axes, `
-    + `${num(dossiers.length)} written up in full. Every number below comes from `
-    + `${agency}'s own schedule and from OpenStreetMap — nothing here is an opinion `
-    + 'about the city.';
-
   const chips = join(
     chip(`${String(size.name || '').toUpperCase()} game`, 'ruler-combined', { variant: 'warning' }),
     chip(`${num(zones.length)} scored zones`, 'location-dot'),
+    chip(`${num(AXIS_IDS.length)} axes`, 'chart-simple'),
+    chip(`${num(dossiers.length)} dossiers`, 'file-lines'),
+    sourceChips(report),
   );
 
   const back = el('a', join(waIcon('arrow-left'), esc('Back to the feasibility report')), {
@@ -719,7 +769,6 @@ function hero(report, views) {
       className: 'kicker wa-caption-s wa-text-uppercase',
     }),
     el('h1', esc(`Where to hide in ${place}`), { className: 'wa-heading-4xl' }),
-    el('p', esc(lede), { className: 'wa-body-l', style: 'max-inline-size:46ch' }),
     el('div', chips, { className: 'wa-cluster wa-gap-2xs' }),
     back,
   ), { className: 'wa-stack wa-gap-xs', style: 'flex:1 1 24rem' });
@@ -740,8 +789,8 @@ function hero(report, views) {
 
 /**
  * §01's map card: the mode buttons, the MapLibre host, the readout, the legend.
- * Order is controls → map → readout → legend → method, and none of the first four
- * may be collapsed: `#s-map` is a MapLibre container, which reads its size once.
+ * Order is steps → controls → map → readout → legend → method, and none of controls,
+ * map, readout or legend may be collapsed: `#s-map` is a MapLibre container, which reads its size once.
  */
 function mapCard(report) {
   const size = report.size || {};
@@ -755,9 +804,11 @@ function mapCard(report) {
   // Not `s4ChipGroup` itself because it cannot express `disabled`, and a dead mode
   // shown disabled-with-reason is the point of this row. (generate.py.)
   const chips = modeChips(report);
-  const reasons = [];
+  const geoAvailable = Boolean((report.geo || {}).available);
+  const reasons = new Map();
   const radios = MODE_LABEL.map(([mode, label]) => {
-    let reason = '';
+    let cause = '';
+    let text = '';
     if (mode !== 'explore') {
       const category = MODE_CATEGORY[mode];
       const family = questions.filter((q) => q.category === category);
@@ -766,23 +817,26 @@ function mapCard(report) {
         // The audit holds only this size's deck, so an empty family means the RULEBOOK
         // left the category out; today that is only tentacles in SMALL games
         // (`rules/catalogue.js`). Not a map problem, so not blamed on the geography.
-        reason = category === 'tentacle'
-          ? 'The rulebook says the tentacle question cannot be used in SMALL games, so a '
-            + 'SMALL deck contains none.'
-          : `A ${String(size.name || '').toUpperCase()} game's deck contains no `
-            + `${label.toLowerCase()} question.`;
+        cause = basisChip('rulebook');
+        text = `not in ${String(size.name || '').toUpperCase()} decks`;
       } else if (!live.length) {
-        reason = family[0].why
-          || `No ${label.toLowerCase()} question functions on this map.`;
+        // A degradation is the whole family's cause; one question's lead would misname it.
+        cause = family[0].degrade ? degradeChip(family[0].degrade) : statusChip(family[0].status);
+        text = family[0].degrade ? '' : leadOf(family[0]);
       } else if (mode !== 'thermo' && !(chips[mode] || []).length) {
         // A live question with no selectable subject: `modeChips` derives its
         // categories from what the OSM stage returned (see `geoKeys`), so with the map
         // layer off the mode would open on an empty option row. Dead is dead.
-        reason = 'No mapped category on this map backs a question of that kind, so the '
-          + 'simulator has nothing to measure against.';
+        cause = degradeChip(geoAvailable ? 'osm_not_queried' : 'osm_unavailable');
+        text = geoAvailable ? 'nothing to measure against' : '';
       }
     }
-    if (reason) reasons.push([label, reason]);
+    const reason = Boolean(cause);
+    if (reason) {
+      const key = `${cause}\n${text}`;
+      if (!reasons.has(key)) reasons.set(key, { cause, text, labels: [] });
+      reasons.get(key).labels.push(label);
+    }
     return el('wa-radio', join(
       waIcon(MODE_ICON[mode]),
       esc(label),
@@ -808,84 +862,89 @@ function mapCard(report) {
   });
 
   // Printed, not a `title`: a disabled control is not focusable, so a tooltip on it
-  // is reachable only by pointer hover.
-  const modesWhy = reasons.length
-    ? el('div', reasons.map(([label, why]) => el(
+  // is reachable only by pointer hover. Modes sharing a reason are named together.
+  const modesWhy = reasons.size
+    ? el('div', Array.from(reasons.values(), (r) => el(
       'p',
-      join(el('b', esc(label)), esc(`— ${why}`)),
-      { className: 'wa-caption-xs wa-color-text-quiet' },
+      join(el('b', esc(s4JoinWords(r.labels))), r.cause, esc(r.text)),
+      { className: 'wa-caption-xs wa-color-text-quiet wa-cluster wa-gap-2xs wa-align-items-center' },
     )).join(''), { id: 's-modes-why', className: 'wa-stack wa-gap-3xs' })
     : '';
 
-  const caption = [
-    'Live basemap.',
-    `Each dot is one of the ${num(zones.length)} candidate hiding zones, coloured by score `
-    + 'until you pick a question mode — then by the answer that zone would have to give.',
-    `The selected zone's true ${radiusLabel} rulebook circle is drawn around its designated `
-    + 'station.',
-    'Amber “edge” means the circle straddles the answer boundary, so the honest answer '
-    + 'depends on where inside your zone you are actually standing.',
-    '★ marks the round-start station. Dashed gold = the game border.',
-    'If your browser blocks the map, it is omitted and everything below still works.',
-  ].join(' ');
+  const steps = el('ol', [
+    ['compass', 'Pick a mode'],
+    ['location-crosshairs', 'Drop a seeker'],
+    ['users', 'Hide in the biggest colour'],
+  ].map(([icon, word], i) => el('li', join(
+    i ? waIcon('arrow-right') : '',
+    iconLabel(icon, word, { quiet: false }),
+  ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })).join(''), {
+    className: 'wa-cluster wa-gap-xs wa-caption-s wa-list-plain',
+    role: 'list',
+    dataPrint: 'hide',
+  });
 
-  // Three keys, because the dots carry two encodings: the view OPENS in explore mode,
-  // where they are score bands. Same `s4Legend` the report's maps use.
-  const dot = (token) => s4Swatch(
+  // The dots carry two encodings and the view OPENS in explore mode, where they are
+  // score bands; simulator.js sets `data-mode` so CSS shows only the live key.
+  const dot = (token) => swatch(
     `background:var(${token});border-radius:var(--wa-border-radius-circle)`,
   );
+  const poi = poiCategories(report);
+  const capped = poi.capped.map((k) => chip(
+    `${poi.categories[k].label}: first ${num(poi.cap)} only`, 'filter', { variant: 'warning' },
+  )).join('');
   const legend = el('div', join(
-    el('p', esc('Before you load a question — each zone’s score band:'), {
-      className: 'wa-caption-xs wa-color-text-quiet',
-    }),
-    s4Legend([
-      [dot('--gold-mark'), 'Top — within a tenth of this map’s best'],
+    el('div', legendRow([
+      [dot('--gold-mark'), `Top · ≥${pct(BAND_CUTS.top, 0)} of best`],
       [dot('--accent'), 'Good'],
       [dot('--warn'), 'Fair'],
-      [dot('--off'), 'Weak, or nothing measurable to score'],
-    ]),
-    el('p', esc('With a question loaded — the answer that zone would have to give:'), {
-      className: 'wa-caption-xs wa-color-text-quiet',
-    }),
-    s4Legend([
-      [dot('--q-yes'), 'Yes / hotter / in reach'],
-      [dot('--q-no'), 'No / colder / out of reach'],
-      [dot('--q-edge'), 'Edge — the circle straddles it'],
-      [dot('--q-un'), 'Awaiting input'],
-    ]),
-    s4Legend([
+      [dot('--off'), 'Weak or unscored'],
+    ], {
+      label: 'Score band key',
+      leadHtml: chip('No question · score band', MODE_ICON.explore),
+    }), { dataLegend: 'score' }),
+    el('div', join(
+      legendRow([
+        [dot('--q-yes'), 'Yes / hotter / in reach'],
+        [dot('--q-no'), 'No / colder / out of reach'],
+        [dot('--q-edge'), 'Edge — answer depends where you stand'],
+        [dot('--q-un'), 'Awaiting input'],
+      ], {
+        label: 'Answer key',
+        leadHtml: chip('Question loaded · answer', MODE_ICON.radar),
+      }),
+      el('p', esc('Survival = share of zones giving your answer'), {
+        className: 'wa-caption-xs wa-color-text-quiet',
+      }),
+    ), { dataLegend: 'answer', className: 'wa-stack wa-gap-3xs' }),
+    legendRow([
       [el('span', esc('★'), { style: 'color:var(--gold-deep);font-weight:800' }), hub.name],
-      [s4Swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
-    ]),
-  ), { className: 'wa-stack wa-gap-2xs' });
+      [swatch('background:transparent;border:1.5px dashed var(--gold-deep)'), 'Game border'],
+      [swatch('background:transparent;border:1.5px solid var(--accent);'
+        + 'border-radius:var(--wa-border-radius-circle)'), 'Selected zone’s rulebook circle'],
+    ], { label: 'Map marks' }),
+    capped ? el('div', capped, { className: 'wa-cluster wa-gap-2xs' }) : '',
+  ), { id: 's-legend', className: 'wa-stack wa-gap-2xs' });
 
-  const poi = poiCategories(report);
-  const cappedNames = poi.capped.map((k) => poi.categories[k].label);
-  const cappedNote = cappedNames.length
-    ? `${s4JoinWords(cappedNames)} carry more mapped features than the `
-      + `${num(poi.cap)} the simulator holds per category, so their answers are drawn from `
-      + 'the first that many rather than from all of them.'
-    : '';
-
-  const how = waDetails('How the simulator works', el('div', join(
-    el('p', esc(
-      'This simulator runs the same model that produced the scores against one seeker '
-      + 'you place yourself, instead of the sample the score averages over. Dead question '
-      + 'categories are shown disabled, with the reason.',
-    ), { className: 'wa-body-s' }),
-    cappedNote ? el('p', esc(cappedNote), { className: 'wa-body-s wa-color-text-quiet' }) : '',
-  ), { className: 'wa-stack wa-gap-s' }), { appearance: 'plain' });
+  const how = waDetails('How the simulator works', el('p', esc(
+    'This simulator runs the same model that produced the scores against one seeker '
+    + 'you place yourself, instead of the sample the score averages over.',
+  ), { className: 'wa-body-s' }), { appearance: 'plain' });
 
   return waCard(el('div', join(
+    steps,
     modes,
     modesWhy,
     el('div', '', { id: 's-opts', className: 'wa-stack wa-gap-2xs', dataPrint: 'hide' }),
     el('div', '', { id: 's-map', dataPrint: 'hide' }),
-    el('p', '', { id: 's-readout', className: 'wa-body-s', ariaLive: 'polite' }),
+    el('div', '', { id: 's-readout', className: 'wa-body-s', ariaLive: 'polite' }),
     legend,
     how,
   ), { className: 'wa-stack wa-gap-s' }), {
-    headerHtml: s4CardHeader('The map', caption),
+    headerHtml: cardHeader('The map', {
+      caption: 'Live basemap',
+      chipsHtml: chip(`${num(zones.length)} zones`, 'location-dot'),
+    }),
   });
 }
 
@@ -962,20 +1021,16 @@ function printDossiers() {
 /** §01 — the map, the simulator, the ranked rail and the dossier, in one section. */
 function sectionShortlist(report) {
   const size = report.size || {};
-  const zones = report.zones || [];
-  const answer = el('p', esc(
-    `${num(zones.length)} zones were scored, each a ${s4Dist(report, size.zoneRadiusM || 0, 2)} `
-    + `circle around its designated station, and ${num(s4LiveQuestions(report))} of the deck's `
-    + 'questions function here. Pick a question mode to see what each one would do to the field.',
-  ), { className: 'wa-body-s' });
+  const answer = el('div', join(
+    chip(`${s4Dist(report, size.zoneRadiusM || 0, 2)} circles`, 'circle-dot'),
+    chip(`${num(s4LiveQuestions(report))} of ${num((report.questions || []).length)} `
+      + 'questions live', 'circle-check'),
+  ), { className: 'wa-cluster wa-gap-2xs' });
 
   return section('s-zones', '01', 'The shortlist',
     join(mapCard(report), railAndDossier(report), printDossiers()), {
-      kicker: 'The map, and what each question would do to it',
+      kicker: 'Map & question simulator',
       answerHtml: answer,
-      lede: 'Pick a question mode, drop a seeker, and watch the map partition. What you are '
-        + 'looking for is a zone that stays the same colour as a large crowd of others. '
-        + 'Survival is the share of zones that would give the same answer as yours.',
     });
 }
 
@@ -1000,8 +1055,8 @@ const TABLE_HEADERS = Object.freeze([
 /**
  * The same eleven words as flat column labels. `wa-data-grid`'s `label` is a bare
  * string, so the axis's `<code>` chip folds into the text. The letter is KEPT in
- * parentheses: the axis legend above the table links `#s-axis-{AXIS}` by it, and
- * CONTRACT §(g) note 3 makes that legend the substitute for the CLI's tooltips.
+ * parentheses: the 'Best on each axis' rows above the table link `#s-axis-{AXIS}` by it,
+ * and CONTRACT §(g) note 3 makes those rows the substitute for the CLI's tooltips.
  */
 export const TABLE_LABELS = Object.freeze(
   TABLE_HEADERS.map(([word, axis]) => (axis ? `${word} (${axis})` : word)),
@@ -1012,51 +1067,41 @@ function sectionWholeField(report, views) {
   const zones = report.zones || [];
   const ref = referenceScore(report);
   const excluded = views.filter((v) => v.excluded);
+  const geoAvailable = Boolean((report.geo || {}).available);
 
   // Axis winners: the best non-excluded zone on each axis, in `views` order so a tie
-  // goes to the better-ranked zone. An unmeasurable axis gets no card.
-  const winners = [];
-  for (const [axis, name] of AXES) {
+  // goes to the better-ranked zone. Every axis gets a row, measured or not, because
+  // its `<code>` letter is the link into §04 that replaces the CLI's header tooltips.
+  const winnerRows = AXES.map(([axis]) => {
+    const [longName, shortName] = AXIS_PLAIN[axis];
     const maxPts = ref ? pts(ref.axisMax[axis]) : 0;
-    if (!maxPts) continue;
+    const head = join(
+      el('a', el('code', esc(axis)), { href: `#s-axis-${axis}`, className: 'wa-link' }),
+      el('span', esc(shortName), { className: 'wa-caption-s' }),
+    );
+    const cluster = 'wa-cluster wa-gap-2xs wa-align-items-center';
+    if (!maxPts) return el('li', unmeasuredRow(el('span', head, { className: cluster }), geoAvailable));
     let best = null;
     for (const v of views) {
       if (v.excluded) continue;
       if (best === null || v.axes[axis] > best.axes[axis]) best = v;
     }
-    if (best === null) continue;
-    winners.push(waCard(join(
-      el('p', join(el('code', esc(axis)), esc(` · ${AXIS_PLAIN[axis][0]}`)), {
-        className: 'wa-caption-xs wa-text-uppercase',
+    if (best === null) return el('li', el('span', head, { className: cluster }));
+    return el('li', meter(
+      el('span', join(head, el('b', esc(best.name), { className: 'wa-caption-s' })), {
+        className: cluster,
       }),
-      el('p', esc(best.name), { className: 'wa-heading-s' }),
-      el('p', esc(`${num(best.axes[axis], 1)} of ${num(maxPts, 1)} pt · ${name}`), {
+      best.bars[axis],
+      el('span', esc(`${num(best.axes[axis], 1)} / ${num(maxPts, 0)}`), {
         className: 'wa-caption-s wa-color-text-quiet',
       }),
-    ), { className: 'wa-brand' }));
-  }
-  const winnersBlock = winners.length
-    ? el('div', join(
-      subhead('Best on each axis'),
-      el('div', winners.join(''), {
-        className: 'wa-grid wa-gap-m', style: '--min-column-size:14rem',
-      }),
-    ), { className: 'wa-stack wa-gap-xs' })
-    : '';
-
-  // The axis legend replaces the CLI's six header tooltips: a link into §04 survives
-  // touch, print and Ctrl+F. Out of the sticky strip on purpose (six entries under a
-  // 7rem header would take a third of a phone viewport). A real `<ul>`, not
-  // `s4Legend`, because each entry is a link, a name and a points figure.
-  const legend = el('ul', AXES.map(([axis]) => el('li', join(
-    el('a', el('code', esc(axis)), { href: `#s-axis-${axis}`, className: 'wa-link' }),
-    el('span', esc(AXIS_PLAIN[axis][0]), { className: 'wa-caption-s' }),
-    el('span', esc(`${num(ref ? pts(ref.axisMax[axis]) : 0, 0)} pt`), {
-      className: 'wa-caption-xs wa-color-text-quiet',
-    }),
-  ), { className: 'wa-cluster wa-gap-3xs wa-align-items-center' })).join(''), {
-    className: 'wa-cluster wa-gap-m wa-list-plain',
-  });
+      { flank: '4rem', label: `${longName}: ${best.name}` },
+    ));
+  }).join('');
+  const winnersBlock = el('div', join(
+    subhead('Best on each axis'),
+    waCard(el('ul', winnerRows, { className: 'wa-stack wa-gap-s wa-list-plain', role: 'list' })),
+  ), { className: 'wa-stack wa-gap-xs' });
 
   const controls = el('div', join(
     searchInput('s-filter', {
@@ -1101,34 +1146,28 @@ function sectionWholeField(report, views) {
   if (excluded.length) {
     const rows = excluded.map((v) => [
       esc(v.name),
-      esc(v.excludeReason || 'excluded'),
+      el('div', join(
+        v.flags.filter((f) => f === 'unreachable' || f === 'no_service')
+          .map((f) => flagChip(f, { short: true })).join(''),
+        el('span', esc(v.excludeReason || 'excluded'), { className: 'wa-caption-xs' }),
+      ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
       esc(v.travelMin === null ? '—' : mins(v.travelMin, 0)),
     ]);
     excludedBlock = waDetails('Zones outside the ranking', join(
-      el('p', esc(
-        'These are still scored and still in the table above — they are held out of the '
-        + 'ranking because you cannot reach them inside the hiding period, or because the '
-        + 'designated station has no service on the selected day.',
-      ), { className: 'wa-body-s' }),
+      el('p', esc('Still scored and in the table; held out of the ranking.'), {
+        className: 'wa-body-s',
+      }),
       dataTable(['Zone', 'Why', 'Travel time'], rows),
     ));
   }
 
-  const answer = el('p', esc(
-    `Every one of the ${num(zones.length)} scored zones is in this table`
-    + (excluded.length ? `, including the ${num(excluded.length)} held out of the ranking` : '')
-    + '. Sort by the column you care about.',
-  ), { className: 'wa-body-s' });
-
   return section('s-all', '02', 'The whole field',
-    el('div', join(winnersBlock, legend, controls, table, pager, excludedBlock), {
+    el('div', join(winnersBlock, controls, table, pager, excludedBlock), {
       className: 'wa-stack wa-gap-l',
     }), {
       kicker: `All ${num(zones.length)} scored zones`
         + (excluded.length ? ` · ${num(excluded.length)} outside the ranking` : ''),
-      answerHtml: answer,
-      lede: 'The ranking above is one set of weights. Sort this table by whichever axis '
-        + 'matters to you and it will give you a different shortlist — which is the point.',
+      lede: 'One ranking, six axes: sort by the one you care about.',
     });
 }
 
@@ -1138,154 +1177,209 @@ function sectionWholeField(report, views) {
 
 /**
  * §03 — rulebook tips parameterised from this feed, dropped when they do not apply.
- * The clause each tip comes from lives in the card's footer. Six to nine tips
- * typically; five with no OpenStreetMap data.
+ * Each card shows its basis, its figures as chips, and the rulebook sections it cites,
+ * with the clause text folded.
  */
 function sectionTactics(report) {
   const size = report.size || {};
   const geo = report.geo || {};
   const hub = report.hub || {};
   const metrics = s4MetricLookup(report);
+  const radius = s4Dist(report, size.zoneRadiusM || 0, 2);
   const tips = [];
+  const para = (text) => el('p', esc(text), { className: 'wa-body-s' });
+  const lines = (rows) => el('ul', rows.map(([icon, text]) => el(
+    'li', iconLabel(icon, text, { quiet: false }),
+  )).join(''), { className: 'wa-stack wa-gap-3xs wa-body-s wa-list-plain', role: 'list' });
+  const figure = (labelHtml, fill, valueText, label) => meter(
+    labelHtml, fill,
+    el('span', esc(valueText), { className: 'wa-caption-s wa-color-text-quiet' }),
+    { flank: '4rem', label },
+  );
 
-  tips.push([
-    `Spend the whole ${num(size.hidingPeriodMin)} minutes`,
-    'Your hiding window is the only free movement you get. Wherever you are standing when '
-    + 'the timer ends is your zone, so plan the ride, not just the destination — and check '
-    + 'the travel time in the dossier before you commit to a zone.',
-    "Hiding Zones — “if the hiding period ends and you're somewhere else, then that's "
-    + 'where your hiding zone is.”',
-  ]);
+  tips.push({
+    title: 'Spend the whole hiding period',
+    basis: 'rulebook',
+    chips: chip(mins(size.hidingPeriodMin), 'hourglass-half'),
+    body: para('Where you stand when the timer ends is your zone. Plan the ride, not just the '
+      + 'destination.'),
+    clauses: [['Hiding Zones', "“if the hiding period ends and you're somewhere else, then "
+      + 'that\'s where your hiding zone is.”']],
+  });
 
-  tips.push([
-    'Scope your endgame spot early, then wander',
-    `Inside your ${s4Dist(report, size.zoneRadiusM || 0, 2)} circle you can shop, eat and `
-    + 'sightsee — but the moment a seeker walks in off transit you freeze where you stand. '
-    + 'Know exactly where you will be standing, and pre-take the photos you can, so a photo '
-    + 'timer never forces you to sprint.',
-    'Hiding Spots — the spot is final the moment the end game starts.',
-  ]);
+  tips.push({
+    title: 'Scope your endgame spot early, then wander',
+    basis: 'interp',
+    chips: chip(`${radius} circle`, 'circle-dot'),
+    body: para('Wander inside your circle, but you freeze the moment a seeker walks in. Know '
+      + 'your spot and pre-take the photos you can.'),
+    clauses: [['Hiding Spots', 'the spot is final the moment the end game starts.']],
+  });
 
   const parks = (geo.counts || {}).park;
   if (parks) {
-    tips.push([
-      'Parks are the best-in-class final spot',
-      'Publicly accessible at all hours and no risk of being asked to leave — though this '
-      + `tool does not check the ten-feet-of-a-mapped-path rule. This map has ${num(parks)} of `
-      + 'them. A large park is doubly useful: “nearest park” measures to the map icon, so '
-      + 'you can be standing in one park and truthfully name a different one.',
-      'Hiding Spots — publicly accessible during all game hours; Matching — measure to the '
-      + 'map icon.',
-    ]);
+    tips.push({
+      title: 'Parks are the best-in-class final spot',
+      basis: 'interp',
+      chips: chip(`${num(parks)} parks`, 'tree'),
+      body: join(
+        para('Public at all hours. “Nearest park” measures to the icon, so a big park lets '
+          + 'you name another.'),
+        (geo.available && geo.pathJoinEvaluated === false)
+          ? el('div', degradeChip('path_join_not_evaluated', { suffix: '10 ft rule' }), {
+            className: 'wa-cluster',
+          })
+          : '',
+      ),
+      clauses: [
+        ['Hiding Spots', 'publicly accessible during all game hours'],
+        ['Matching', 'measure to the map icon.'],
+      ],
+    });
   }
 
-  tips.push([
-    'Businesses are a mid-round tool, not a hiding spot',
-    'The rulebook warns against stores and businesses as final spots — loitering draws '
-    + 'attention and opening hours rarely cover all game hours. Use them for a bathroom, food '
-    + 'and warmth during the middle of the round, then be somewhere public when the endgame '
-    + 'starts.',
-    "Hiding Spots — “we'd suggest avoiding stores or other businesses.”",
-  ]);
+  tips.push({
+    title: 'Businesses are a mid-round tool, not a hiding spot',
+    basis: 'rulebook',
+    chips: '',
+    body: para('Loitering draws attention and opening hours rarely cover the game. Use them '
+      + 'for a bathroom, food and warmth mid-round.'),
+    clauses: [['Hiding Spots', "“we'd suggest avoiding stores or other businesses.”"]],
+  });
 
   if (size.name !== 'small') {
     const tentacles = (report.questions || []).filter(
       (q) => q.category === 'tentacle' && (q.status === 'functional' || q.status === 'weak'),
     );
     if (tentacles.length) {
-      const named = Array.from(new Set(tentacles.map((q) => q.label)))
-        .sort(cmpStr).slice(0, 4).join(', ');
+      const named = Array.from(new Set(tentacles.map((q) => q.label))).sort(cmpStr);
       // Per question, never `size.tentacleReachMi`: a LARGE deck has both 1-mile and
       // 15-mile tentacles. (`TENTACLE_ID_REACH_MI`.)
       const reaches = tentacleReachesMi(tentacles);
-      const words = tentacleReachWords(reaches);
-      const reachClause = reaches.length > 1
-        ? `Each question carries its own reach — ${words} on this map — measured from the `
-        : `The reach is ${words}, measured from the `;
-      tips.push([
-        'Respect the tentacle categories',
-        `The live tentacle categories here are ${named}. ${reachClause}`
-        + 'seekers, not from you, so a target well outside your zone can still be the name '
-        + 'you have to give. You must be inside that reach yourself as well: if you are not, '
-        + 'the honest answer is that you are not within reach, and it names nothing. '
-        + 'A zone where the category is absent or ambiguous blunts the whole family — and a '
-        + 'null answer still pays you a card draw.',
-        `Tentacle Questions — “(You must also be within ___ miles.)”; ${words} of reach in a `
-        + `${String(size.name || '').toUpperCase()} game.`,
-      ]);
+      tips.push({
+        title: 'Respect the tentacle categories',
+        basis: 'rulebook',
+        chips: reaches.map((r) => chip(`${s4Val(r)} ${s4Plural(r, 'mile')}`, 'ruler')).join(''),
+        body: join(
+          el('div', named.map((label) => chip(label, 'diagram-project')).join(''), {
+            className: 'wa-cluster wa-gap-2xs',
+          }),
+          lines([
+            ['arrows-to-dot', 'Measured from the seekers: the name can lie far outside your zone'],
+            ['circle-xmark', 'Outside the reach yourself? The answer is “not within reach”'],
+            ['hand', 'A null answer still pays you a card draw'],
+          ]),
+          leadDetail('', esc('A zone where the category is absent or ambiguous blunts the '
+            + 'whole family.'), { summary: 'Absent categories' }),
+        ),
+        clauses: [['Tentacle Questions', '“(You must also be within ___ miles.)”']],
+      });
     }
   }
 
-  tips.push([
-    'Radar targets you, not your zone',
-    'If the ring clips your circle but not your body, the honest answer is no. Stand on the '
-    + `far side of your ${s4Dist(report, size.zoneRadiusM || 0, 2)} disc from the seekers' `
-    + 'likely approach — the simulator above shows exactly which zones turn amber, and amber '
-    + 'is the band where standing in the right half of your own circle changes the answer.',
-    'Radar Questions — the answer is about your location, not your zone.',
-  ]);
+  tips.push({
+    title: 'Radar targets you, not your zone',
+    basis: 'rulebook',
+    chips: '',
+    body: el('p', join(
+      esc('If the ring clips your circle but not your body, the answer is no. Stand on the '
+        + `far side of your ${radius} disc; `),
+      swatch('background:var(--q-edge);border-radius:var(--wa-border-radius-circle)'),
+      esc(' edge zones in the simulator are where that matters.'),
+    ), { className: 'wa-body-s' }),
+    clauses: [['Radar Questions', 'the answer is about your location, not your zone.']],
+  });
 
-  tips.push([
-    'Build the deck to end the round holding time',
-    'Time bonuses only count if they are in your hand when you are caught. Aim for roughly '
-    + 'half bonuses, a quarter powerups, a quarter curses — and remember that Move costs your '
-    + 'entire hand, reveals your original station, and cannot be played in the end game.',
-    'The Hider Deck — six-card hand limit; Powerups — Move.',
-  ]);
+  tips.push({
+    title: 'Build the deck to end the round holding time',
+    basis: 'interp',
+    chips: '',
+    body: join(
+      para('Bonuses count only if they are in your hand when you are caught.'),
+      el('div', join(
+        chip('~½ time bonuses', 'clock'),
+        chip('~¼ powerups', 'bolt'),
+        chip('~¼ curses', 'hand-sparkles'),
+      ), { className: 'wa-cluster wa-gap-2xs' }),
+      el('p', esc('Move'), { className: 'wa-caption-s wa-color-text-quiet' }),
+      lines([
+        ['hand', 'Costs your whole hand'],
+        ['eye', 'Reveals your original station'],
+        ['ban', 'Not playable in the end game'],
+      ]),
+    ),
+    clauses: [['The Hider Deck', 'six-card hand limit'], ['Powerups', 'Move.']],
+  });
 
   const evening = metrics.D2;
   const eveningRaw = evening ? fnum(evening.raw) : null;
   if (eveningRaw !== null && eveningRaw < 0.85) {
-    // This view has no day banner, so the sentence names the day instead.
+    // This view has no day banner, so the card names the day instead. An assumed
+    // timetable keeps `raw` but not `available`, and its share is never printed.
     const worstKey = s4WorstDay(report);
-    const worstClause = worstKey
-      ? ` ${s4DayLabel(report, worstKey)} is the worst day on this map, so settle which day `
-        + 'you are playing before you even shortlist a zone.'
-      : '';
-    tips.push([
-      'Watch the service clock',
-      `Only ${pct(eveningRaw)} of zones still have service at the end of the round's playing `
-      + 'hours. Late in the day an hourly zone has no Move escape — and the seekers know '
-      + `it.${worstClause}`,
-      'Powerups — Move requires a departure to exist.',
-    ]);
+    const measured = evening.available !== false;
+    tips.push({
+      title: 'Watch the service clock',
+      basis: 'interp',
+      chips: join(
+        measured ? '' : degradeChip(evening.degrade || 'assumed_schedule'),
+        worstKey
+          ? chip(`Worst: ${s4DayLabel(report, worstKey)}`, 'calendar-xmark', { variant: 'warning' })
+          : '',
+      ),
+      body: join(
+        measured
+          ? figure(el('span', esc('Zones served at round end'), { className: 'wa-caption-s' }),
+            fillPct(eveningRaw), pct(eveningRaw), 'Zones served at round end')
+          : '',
+        para('Late on, an hourly zone has no Move escape, and the seekers know it.'
+          + (worstKey ? ' Settle the day before you shortlist.' : '')),
+      ),
+      clauses: [['Powerups', 'Move requires a departure to exist.']],
+    });
   }
 
   // Fixed in the port: the CLI reads `metrics["hub_route_share"]`, a key never emitted,
   // so this tip never fired there. `Metrics.hubDominance` is the intended value.
   const dominance = fnum((report.metrics || {}).hubDominance);
   if (dominance !== null && dominance >= 0.5) {
-    tips.push([
-      'Assume the seekers pass through the hub',
-      `${hub.name} carries ${pct(dominance)} of this network's routes, so almost every seeker `
-      + 'journey crosses it. Zones whose only path from the seekers runs back through the hub '
-      + 'buy you the transfer penalty twice.',
-      'Seeking — seekers move on the same transit you do.',
-    ]);
+    tips.push({
+      title: 'Assume the seekers pass through the hub',
+      basis: 'interp',
+      chips: '',
+      body: join(
+        figure(el('span', join(
+          el('span', esc(hub.name), { className: 'wa-caption-s' }),
+          el('span', esc('share of routes'), { className: 'wa-caption-xs wa-color-text-quiet' }),
+        ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
+        fillPct(dominance), pct(dominance), 'Share of routes through the hub'),
+        para('Zones reached only back through the hub cost the seekers the transfer twice.'),
+      ),
+      clauses: [['Seeking', 'seekers move on the same transit you do.']],
+    });
   }
 
-  const items = tips.map(([title, body, clause]) => el('li', waCard(
+  const items = tips.map((tip) => el('li', waCard(
     el('div', join(
-      el('p', esc(title), { className: 'wa-heading-s' }),
-      el('p', esc(body), { className: 'wa-body-s' }),
-    ), { className: 'wa-stack wa-gap-2xs' }),
+      el('div', join(
+        el('p', esc(tip.title), { className: 'wa-heading-s' }),
+        el('div', join(basisChip(tip.basis), tip.chips), { className: 'wa-cluster wa-gap-2xs' }),
+      ), { className: 'wa-split wa-flex-wrap wa-gap-xs wa-align-items-center' }),
+      tip.body,
+    ), { className: 'wa-stack wa-gap-xs' }),
     {
-      footerHtml: el('p', join(waIcon('book'), esc(clause)), {
-        className: 'wa-caption-s wa-color-text-quiet wa-cluster wa-gap-2xs',
+      footerHtml: leadDetail('', tip.clauses.map(([name, text]) => el('p', join(
+        el('b', esc(name)), ' ', esc(text),
+      ))).join(''), {
+        summary: 'Rule text',
+        chipsHtml: tip.clauses.map(([name]) => chip(name, 'book')).join(''),
       }),
     },
   ))).join('');
 
-  const answer = el('p', esc(
-    `${num(tips.length)} things to do differently on this map, in the order they matter.`,
-  ), { className: 'wa-body-s' });
-
   return section('s-tactics', '03', 'How to play this map',
     el('ol', items, { className: 'recs wa-stack wa-gap-s' }), {
-      kicker: 'The playbook for this map',
-      answerHtml: answer,
-      lede: 'Everything below follows from the official rules applied to this particular '
-        + 'network — each tip names the clause it comes from.',
+      kicker: `The playbook for this map · ${num(tips.length)} tips`,
     });
 }
 
@@ -1299,32 +1393,30 @@ function sectionTactics(report) {
  * plain name, the letter and what it is worth.
  */
 function sectionAxes(report) {
-  const zones = report.zones || [];
+  const geo = report.geo || {};
   const ref = referenceScore(report);
 
   // The example that makes `surv` concrete: the sharpest live question on this map.
-  let example = '';
-  const live = (report.questions || []).filter(
-    (q) => (q.status === 'functional' || q.status === 'weak') && fnum(q.survMean) !== null,
-  );
-  if (live.length && zones.length) {
-    let sharp = null;
-    for (const q of live) {
-      if (sharp === null || q.survMean < sharp.survMean
-        || (q.survMean === sharp.survMean && cmpStr(q.id, sharp.id) < 0)) sharp = q;
-    }
-    const remaining = Math.max(1, rhu(sharp.survMean * zones.length, 0));
-    example = `On this map, asking “${sharp.label}” leaves on average ${num(remaining)} of `
-      + `${num(zones.length)} zones still standing.`;
-  }
+  const sharp = (report.questions || [])
+    .filter((q) => (q.status === 'functional' || q.status === 'weak') && fnum(q.survMean) !== null)
+    .sort((a, b) => (a.survMean - b.survMean) || cmpStr(a.id, b.id))[0] || null;
+  const example = sharp
+    ? el('div', join(
+      el('p', join(esc('Sharpest live question: '), el('b', esc(`“${sharp.label}”`))), {
+        className: 'wa-caption-s',
+      }),
+      miniMeter(fillPct(sharp.survMean), esc(`${pct(sharp.survMean, 0)} of zones left on average`), {
+        label: 'Share of zones left after the sharpest question',
+      }),
+    ), { className: 'wa-stack wa-gap-3xs' })
+    : '';
 
-  // The page's thesis, in its metric-naming form, in both axes it is about.
-  const tension = waCallout(el('p', esc(
-    'Reach and Exposure pull against each other on purpose, and that tension is the whole '
-    + 'game. R1 rewards a zone you can actually get to inside the hiding period; X3 rewards '
-    + 'a zone the seekers find expensive to reach. A zone that scores well on both is '
-    + 'genuinely rare, and it is what you are shopping for below.',
-  ), { className: 'wa-body-s' }), { variant: 'brand', appearance: 'plain', icon: 'circle-info' });
+  // The pull quote carries the thesis; here its two metrics link to each other.
+  const tension = el('p', join(
+    linkChip('#s-axis-R', 'R1 · you can reach it', 'route'),
+    waIcon('arrows-left-right', { label: 'pulls against' }),
+    linkChip('#s-axis-X', 'X3 · they can’t', 'shield'),
+  ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
 
   const items = AXES.map(([axis, name, what, clause]) => {
     const maxPts = ref ? pts(ref.axisMax[axis]) : 0;
@@ -1333,35 +1425,48 @@ function sectionAxes(report) {
       // `IR1` belongs to `IR`, not `I`: match only when the rest of the id is digits.
       if (!m.id.startsWith(axis) || !/^\d+$/.test(m.id.slice(axis.length))) continue;
       rows.push([
-        el('code', esc(m.id)) + ' ' + esc(m.name),
+        join(
+          el('code', esc(m.id)), ' ', esc(m.name),
+          m.available === false ? ` ${degradeChip(m.degrade || 'not_evaluated')}` : '',
+          leadDetail('', esc(m.note || ''), { summary: 'Why' }),
+        ),
         esc(m.unit || '—'),
+        esc(s4RampText(m.ramp)),
         esc(`${num(pts(m.maxTenths), 1)} pt`),
-        s4SourceTag(m.source),
-        esc(m.note || ''),
+        basisChip(m.source),
       ]);
     }
 
+    let status;
+    if (maxPts) {
+      status = waBadge(`${num(maxPts, 1)} pt`, { variant: 'neutral', appearance: 'outlined' });
+    } else if (geo.available) {
+      status = waBadge('not measured on this map', { variant: 'neutral', appearance: 'outlined' });
+    } else {
+      status = degradeChip('osm_unavailable');
+    }
     const label = join(
       el('span', join(
         el('strong', esc(AXIS_PLAIN[axis][0]), { className: 'wa-body-s' }),
         el('code', esc(axis), { className: 'wa-caption-2xs' }),
         el('span', esc(name), { className: 'wa-caption-xs wa-color-text-quiet' }),
       ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
-      waBadge(maxPts ? `${num(maxPts, 1)} pt` : 'not measured on this map', {
-        variant: 'neutral', appearance: 'outlined',
-      }),
+      el('span', join(
+        (axis === 'E' && geo.available && geo.pathJoinEvaluated === false)
+          ? degradeChip('path_join_not_evaluated', { suffix: '10 ft rule' })
+          : '',
+        status,
+      ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
     );
 
     const body = el('div', join(
       el('p', esc(what), { className: 'wa-body-s' }),
-      (axis === 'IR' && example) ? el('p', esc(example), { className: 'wa-body-s' }) : '',
-      maxPts ? '' : el('p', esc(
-        'Nothing on this axis could be measured on this map — OpenStreetMap data was not '
-        + 'available — so its points were dropped from the denominator rather than scored '
-        + 'and lost. Every zone reads the same here, and none of them was penalised.',
-      ), { className: 'wa-body-s wa-color-text-quiet' }),
+      axis === 'IR' ? example : '',
+      maxPts ? '' : el('p', esc('Its points were left out of the total, so no zone was penalised.'), {
+        className: 'wa-body-s wa-color-text-quiet',
+      }),
       (axis === 'R' || axis === 'X') ? tension : '',
-      rows.length ? dataTable(['Metric', 'Unit', 'Max', 'Basis', 'Note'], rows) : '',
+      rows.length ? dataTable(['Metric', 'Unit', 'Threshold', 'Max', 'Basis'], rows) : '',
       el('p', esc('Rulebook: ') + el('em', esc(clause)), {
         className: 'wa-caption-s wa-color-text-quiet',
       }),
@@ -1374,21 +1479,18 @@ function sectionAxes(report) {
     href: '#s-all', className: 'wa-link wa-cluster wa-gap-2xs',
   }), { className: 'wa-caption-s' });
 
-  const answer = el('p', esc(
-    `Every one of the ${num(zones.length)} zones sat the same six-axis exam, and every point `
-    + 'it earned is listed in its own dossier.',
-  ), { className: 'wa-body-s' });
-
   return section('s-axes', '04', 'How zones are scored',
     el('div', join(waAccordion(items, { mode: 'multiple', headingLevel: '3' }), back), {
       className: 'wa-stack wa-gap-m',
     }), {
-      kicker: 'Six axes, one hundred points',
-      answerHtml: answer,
-      lede: 'Every zone is scored the same way, from the feed and from OpenStreetMap. Nothing '
-        + 'here is a matter of taste: each axis is a list of named metrics with published '
-        + "thresholds, and every zone's dossier shows which of them it earned. Open an "
-        + 'axis for its metrics and the rulebook clause behind it.',
+      kicker: `Six axes, ${num(SCORE_MAX)} points`,
+      ledeHtml: join(
+        el('span', esc('Basis:'), { className: 'wa-caption-s wa-color-text-quiet' }),
+        basisChip('rulebook'), basisChip('feed'), basisChip('interp'),
+        el('span', esc('Open an axis for its metrics and rulebook clause.'), {
+          className: 'wa-caption-s',
+        }),
+      ),
     });
 }
 
@@ -1415,13 +1517,13 @@ function sectionMethod(report) {
   const rows = [
     ['Zones scored', esc(num(zones.length))],
     ['Zone radius', esc(s4Dist(report, size.zoneRadiusM || 0, 2))],
-    ['Game size', esc(`${String(size.name || '').toUpperCase()}`
-      + `${size.inferred ? ' (inferred)' : ' (given)'}`)],
+    ['Game size', esc(String(size.name || '').toUpperCase())
+      + (size.inferred ? ` ${chip('inferred', 'wand-magic-sparkles', { variant: 'warning' })}` : '')],
     ['Hiding period', esc(mins(size.hidingPeriodMin))],
     // Per question, not per size: a LARGE deck prints both reaches, a SMALL deck none.
     ['Tentacle reach', esc(tentacleReaches.length
       ? tentacleReachWords(tentacleReaches)
-      : `none — no tentacle question in a ${String(size.name || '').toUpperCase()} game`)],
+      : `none (not in ${String(size.name || '').toUpperCase()} decks)`)],
     ['Round start', esc(hub.name)],
     ['Departure', esc(opts.departure || '')],
     ['Day shown', esc(s4DayLabel(report, s4BestDay(report)))],
@@ -1434,18 +1536,19 @@ function sectionMethod(report) {
 
   const body = el('div', join(
     dataTable(['Parameter', 'Value'], rows.map(([k, v]) => [esc(k), v])),
-    el('p', esc(
-      'Zone scores come from the feed and from OpenStreetMap; the full method and the '
-      + 'complete score trace are on the feasibility report. '
-      + 'Scheduled times are planning estimates — verify against live tracking on game day.',
-    ), { className: 'wa-body-s' }),
+    el('ul', [
+      iconLabel('circle-info', 'Scheduled times are estimates; check live tracking'),
+      iconLabel('file-lines', 'Full method and score trace: the feasibility report'),
+    ].map((row) => el('li', row)).join(''), {
+      className: 'wa-stack wa-gap-2xs wa-body-s wa-list-plain', role: 'list',
+    }),
   ), { className: 'wa-stack wa-gap-m' });
 
-  const answer = el('p', esc(
-    `Everything on this page was produced from ${agency}'s published timetable and from `
-    + `OpenStreetMap, for a ${String(size.name || '').toUpperCase()} game starting at `
-    + `${hub.name}.`,
-  ), { className: 'wa-body-s' });
+  const answer = el('div', join(
+    sourceChips(report, agency),
+    chip(`${String(size.name || '').toUpperCase()} game`, 'ruler-combined', { variant: 'warning' }),
+    chip(hub.name, 'star'),
+  ), { className: 'wa-cluster wa-gap-2xs' });
 
   return section('s-method', '05', 'Method & parameters', body, {
     kicker: 'What produced these rankings',
@@ -1482,23 +1585,32 @@ export function renderStrategy(report) {
   const views = zoneViews(rep);
   if (!views.length) return '';
 
-  // The page's thesis, as the CLI keeps it: a pull quote on the hero, repeated in
-  // metric-naming form inside §04's R and X items.
+  // The page's thesis, as the CLI keeps it: a pull quote on the hero; §04's R and X
+  // items link its two metrics.
   const thesis = pullQuote(
     'A zone you can actually reach and a zone the seekers find expensive to reach are '
     + 'opposite things. One that scores well on both is genuinely rare — and it is what you '
     + 'are shopping for below.',
   );
 
-  const credit = 'Map features from OpenStreetMap contributors, ODbL. Administrative '
-    + 'divisions from the Overture Maps Foundation. '
-    + 'Basemap tiles by OpenFreeMap, from OpenMapTiles data. Rules from Jet Lag: The '
-    + "Game's Hide+Seek rulebook. Scheduled times are planning estimates — check live tracking "
-    + 'on the day.';
+  const p = rep.provenance || {};
+  const credits = [
+    ['map', 'Map features © OpenStreetMap contributors, ODbL'],
+    ['layer-group', p.adminSource === 'overture'
+      ? 'Admin divisions: Overture Maps Foundation'
+      : 'Admin divisions © OpenStreetMap contributors, ODbL'],
+    ['map-location-dot', 'Basemap: OpenFreeMap, OpenMapTiles data'],
+    ['book', "Rules: Jet Lag: The Game's Hide+Seek rulebook"],
+  ];
 
   // `href="#strategy"`, not `#top`: `#top` is the report hero and leaving is what it does.
   const footer = el('footer', join(
-    el('p', esc(credit), { className: 'wa-body-s', style: 'max-width:88ch' }),
+    el('ul', credits.map(([icon, text]) => el('li', iconLabel(icon, text, { quiet: false })))
+      .join(''), {
+      className: 'wa-cluster wa-gap-s wa-caption-s wa-list-plain',
+      role: 'list',
+      ariaLabel: 'Credits',
+    }),
     el('a', join(waIcon('arrow-up'), esc('Back to top')), {
       href: '#strategy', className: 'wa-link wa-caption-s wa-cluster wa-gap-2xs',
     }),

@@ -32,15 +32,16 @@
 // @module render/simulator
 
 import {
-  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, M_PER_MILE, num, pct, mins, coord,
+  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, M_PER_MILE, num, pct, mins, coord, fillPct,
 } from '../lib/core.js';
 import { haversineM } from '../lib/geo.js';
 import {
-  esc, el, join, waIcon, waCard, waCallout, waTag, waButton, waDetails,
-  waProgressBar, chip, meter, dataTable,
+  esc, el, join, waIcon, waCard, waTag, waBadge, waButton, waDetails,
+  waProgressBar, chip, meter, dataTable, degradeChip, iconLabel, miniMeter, kpi,
 } from './html.js';
 import {
-  s4Imperial, s4Dist, s4Val, s4Plural, s4MetricValue, s4Points, s4SourceTag,
+  s4Imperial, s4Dist, s4Val, s4Plural, s4MetricValue, s4Points, s4SourceTag, s4RampText,
+  s4JoinWords,
 } from './verdict.js';
 import {
   zoneViews, modeChips, poiCategories,
@@ -52,13 +53,55 @@ import {
 // Presentation constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** The prompt each seeker mode prints until it has what it needs (generate.py). `explore` needs nothing. */
+/** The prompt each seeker mode prints until it has what it needs. `explore` needs nothing. */
 const MODE_NEED = Object.freeze({
-  radar: 'Click the map to place the seekers, or use the button above.',
-  match: 'Click the map to place the seekers, or use the button above.',
-  measure: 'Click the map to place the seekers, or use the button above.',
-  tentacle: 'Click the map to place the seekers, or use the button above.',
-  thermo: 'Click the map twice — the start of the leg, then the end — or use the button above.',
+  radar: 'Click the map or use the button',
+  match: 'Click the map or use the button',
+  measure: 'Click the map or use the button',
+  tentacle: 'Click the map or use the button',
+  thermo: 'or use the button',
+});
+
+/** Zone inventory key → [label, icon]. `toilets_wide` counts a ring 1.5× the circle. */
+const INVENTORY_LABEL = Object.freeze({
+  advertising: Object.freeze(['ads', 'rectangle-ad']),
+  amusement_park: Object.freeze(['amusement parks', 'ticket']),
+  aquarium: Object.freeze(['aquariums', 'fish']),
+  bench: Object.freeze(['benches', 'chair']),
+  bridge: Object.freeze(['bridges', 'bridge']),
+  building: Object.freeze(['buildings', 'building']),
+  cafe: Object.freeze(['cafes', 'mug-hot']),
+  car_street: Object.freeze(['car streets', 'car']),
+  coastline: Object.freeze(['coastline', 'water']),
+  commercial_airport: Object.freeze(['airports', 'plane']),
+  fast_food: Object.freeze(['fast food', 'burger']),
+  footpath: Object.freeze(['footpaths', 'person-walking']),
+  foreign_consulate: Object.freeze(['consulates', 'flag']),
+  golf_course: Object.freeze(['golf courses', 'golf-ball-tee']),
+  green: Object.freeze(['green spaces', 'leaf']),
+  grocery: Object.freeze(['groceries', 'basket-shopping']),
+  high_speed_rail: Object.freeze(['high-speed rail', 'train']),
+  hospital: Object.freeze(['hospitals', 'hospital']),
+  library: Object.freeze(['libraries', 'book']),
+  mountain: Object.freeze(['mountains', 'mountain']),
+  movie_theater: Object.freeze(['cinemas', 'film']),
+  museum: Object.freeze(['museums', 'building-columns']),
+  newsagent: Object.freeze(['newsagents', 'newspaper']),
+  park: Object.freeze(['parks', 'tree']),
+  pitch: Object.freeze(['pitches', 'futbol']),
+  place_of_worship: Object.freeze(['places of worship', 'place-of-worship']),
+  platform: Object.freeze(['platforms', 'train-subway']),
+  rail_line: Object.freeze(['rail lines', 'train']),
+  rail_station: Object.freeze(['rail stations', 'train']),
+  restaurant: Object.freeze(['restaurants', 'utensils']),
+  shelter: Object.freeze(['shelters', 'umbrella']),
+  shop: Object.freeze(['shops', 'shop']),
+  street: Object.freeze(['streets', 'road']),
+  toilets: Object.freeze(['toilets', 'restroom']),
+  toilets_wide: Object.freeze(['toilets nearby', 'restroom']),
+  tree: Object.freeze(['trees', 'tree']),
+  water: Object.freeze(['water bodies', 'water']),
+  zoo: Object.freeze(['zoos', 'hippo']),
 });
 
 /**
@@ -86,9 +129,9 @@ const NARROW_QUERY = '(max-width: 920px)';
  * @type {Object<string, [string, string, string]>}  answer → [word, variant, icon]
  */
 const ANSWER_TEXT = Object.freeze({
-  yes: Object.freeze(['mostly yes', 'success', 'circle-check']),
-  no: Object.freeze(['mostly no', 'danger', 'circle-xmark']),
-  edge: Object.freeze(['mostly on the edge', 'warning', 'scale-balanced']),
+  yes: Object.freeze(['yes', 'success', 'circle-check']),
+  no: Object.freeze(['no', 'danger', 'circle-xmark']),
+  edge: Object.freeze(['on the edge', 'warning', 'scale-balanced']),
   un: Object.freeze(['no answer yet', 'neutral', 'circle-question']),
 });
 
@@ -99,12 +142,12 @@ const ANSWER_TEXT = Object.freeze({
  * @type {Object<string, [string, string, string]>}
  */
 const TENTACLE_TEXT = Object.freeze({
-  yes: Object.freeze(['mostly a name in reach', 'success', 'circle-check']),
-  no: Object.freeze(['mostly not within reach', 'danger', 'circle-xmark']),
-  edge: Object.freeze(['mostly on the edge', 'warning', 'scale-balanced']),
+  yes: Object.freeze(['a name in reach', 'success', 'circle-check']),
+  no: Object.freeze(['not within reach', 'danger', 'circle-xmark']),
+  edge: Object.freeze(['on the edge', 'warning', 'scale-balanced']),
   /* not "no answer yet": here `un` is the engine's class `-2`, the seekers named a
      category with nothing inside their own circle. See `majorityGroup`. */
-  un: Object.freeze(['mostly nothing in reach to name', 'neutral', 'circle-question']),
+  un: Object.freeze(['nothing in reach to name', 'neutral', 'circle-question']),
 });
 
 /**
@@ -198,10 +241,17 @@ function rankKey(view) {
 }
 
 /** A dossier block head. `subhead()` is an `h3`; these sit under `#s-title`, itself an `h3`. */
-function blockHead(text) {
-  return el('h4', esc(text), {
+function blockHead(text, badgeHtml = '') {
+  return el('h4', esc(text) + (badgeHtml ? ` ${badgeHtml}` : ''), {
     className: 'wa-heading-s wa-color-text-quiet wa-text-uppercase',
   });
+}
+
+/** Markup as a DOM node, for a `wa-data-grid` formatter; grid cells sit in its shadow root. */
+function htmlNode(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  return t.content.firstElementChild;
 }
 
 /** True while the guide is the view on screen; the fragment may carry state after a `?`. */
@@ -287,7 +337,6 @@ function buildInstance(root, report) {
    */
   const tentacleReachM = new Map((chips.tentacle || [])
     .map((c) => [c.key, (Number(c.reachMi) || 0) * M_PER_MILE]));
-  const HIDING_MIN = Number(size.hidingPeriodMin) || 0;
   const hubName = (report.hub && report.hub.name) || 'the hub';
   const imperial = s4Imperial(report);
   const mapLabels = views.length <= MAX_MAP_ZONES;
@@ -340,6 +389,7 @@ function buildInstance(root, report) {
   let themeObserver = null;
   let dark = document.documentElement.classList.contains('wa-dark');
   let destroyed = false;
+  let mapFailed = false;
 
   // ═════════════════════════════════════════════════════════════════════════
   // Reader state in the fragment — `#strategy?mode=…`
@@ -602,16 +652,6 @@ function buildInstance(root, report) {
     majority = majorityGroup(tally);
   }
 
-  /**
-   * One zone's current answer, in the words it is actually given in: in tentacle mode
-   * `no` is "not within reach", and a tip saying "no" would say the opposite.
-   */
-  function answerWord(view) {
-    const a = answers.get(view.id) || 'un';
-    if (mode === 'tentacle' && a === 'no') return 'not within reach';
-    return a;
-  }
-
   /** Does this zone have any service at all? Two places read it; both must agree. */
   function served(view) {
     return Boolean(view.service && view.service.served);
@@ -731,14 +771,17 @@ function buildInstance(root, report) {
     label.append(dot, score, ` ${view.name}`);
     node.appendChild(label);
     node.addEventListener('click', (ev) => { ev.stopPropagation(); select(view.id); });
-    bindTip(node, () => join(
-      el('b', esc(view.name)),
-      `#${view.rank === null ? '—' : num(view.rank)} · ${num(view.overall, 1)}/${num(view.max, 0)}`,
-      mode === 'explore' ? '' : `answer: ${esc(answerWord(view))}`,
-      mode === 'tentacle' && tentacleNames.get(view.id)
-        ? `nearest in reach: ${esc(tentacleNames.get(view.id))}`
-        : '',
-    ));
+    bindTip(node, () => {
+      const [word, variant, icon] = (mode === 'tentacle' ? TENTACLE_TEXT : ANSWER_TEXT)[
+        answers.get(view.id) || 'un'] || ANSWER_TEXT.un;
+      const name = mode === 'tentacle' ? tentacleNames.get(view.id) : '';
+      return join(
+        el('b', esc(view.name)),
+        el('div', `#${view.rank === null ? '—' : num(view.rank)} · ${num(view.overall, 1)}/${num(view.max, 0)}`),
+        mode === 'explore' ? '' : el('div', chip(word, icon, { variant, size: 's' })),
+        name ? iconLabel('location-dot', name, { quiet: false }) : '',
+      );
+    });
     return node;
   }
 
@@ -800,8 +843,8 @@ function buildInstance(root, report) {
   /**
    * The draggable seeker crosshair. Dragging it re-answers every question live.
    * MapLibre gives a custom marker no focusability, so the node is made a real control:
-   * `tabindex="0"`, a name, and arrow keys that nudge it. With the "Place the seekers
-   * at …" button in `#s-opts` that is the whole keyboard path.
+   * `tabindex="0"`, a name, and arrow keys that nudge it. With the "Place seekers at …"
+   * button in `#s-opts` that is the whole keyboard path.
    */
   function placeSeeker() {
     if (!map) return;
@@ -896,6 +939,7 @@ function buildInstance(root, report) {
     if (destroyed) return;
     if (!maplibregl || !maplibregl.Map) {
       host.hidden = true;
+      mapFailed = true;
       paint();
       return;
     }
@@ -920,6 +964,7 @@ function buildInstance(root, report) {
       console.warn('[strategy] MapLibre failed — map omitted', err);
       host.innerHTML = '';
       host.hidden = true;
+      mapFailed = true;
       paint();
       return;
     }
@@ -952,68 +997,79 @@ function buildInstance(root, report) {
   function readoutLead() {
     const label = (poi.categories && poi.categories[opt.cat] && poi.categories[opt.cat].label)
       || opt.cat || 'feature';
-    if (mode === 'radar') return `Within ${s4Val(opt.radar)} mi: `;
-    if (mode === 'thermo') return 'Hotter (closer to the end of your leg): ';
-    if (mode === 'match') return `Same nearest ${label}: `;
+    if (mode === 'radar') return `Within ${s4Val(opt.radar)} mi`;
+    if (mode === 'thermo') return 'Hotter: closer to the end of your leg';
+    if (mode === 'match') return `Same nearest ${label}`;
     /* not "that ${label}": each side measures to the instance nearest itself */
-    if (mode === 'measure') return `Nearer their own ${label} than you are to yours: `;
+    if (mode === 'measure') return `Nearer their own ${label} than you to yours`;
     /* counts the zones that must name something; the rest answer "not within reach" */
-    if (mode === 'tentacle') return `Within reach, and so having to name a ${label}: `;
+    if (mode === 'tentacle') return `Within reach of a ${label}`;
     return '';
   }
 
   /**
-   * The sentence under the map. The closing percentage is the client twin of
-   * `survivalFractions`: the share of the field held by the largest group giving the
-   * IDENTICAL answer (`majorityGroup`), edge zones in no group. `aria-live="polite"`,
-   * so every repaint is read out.
+   * The partition under the map: one chip per answer class, then the survival share, the
+   * client twin of `survivalFractions`: the share of the field held by the largest group
+   * giving the IDENTICAL answer (`majorityGroup`), edge zones in no group.
+   * `aria-live="polite"`, so every repaint is read out.
    */
   function renderReadout() {
     const host = $('s-readout');
     if (!host) return;
+    const row = (...parts) => el('div', join(...parts), {
+      className: 'wa-cluster wa-gap-xs wa-align-items-center',
+    });
+    const noMap = mapFailed ? degradeChip('map_unavailable') : '';
     if (mode === 'explore') {
-      host.textContent = 'Zones coloured by score band. Click one for its dossier.';
+      host.innerHTML = row(noMap, iconLabel('hand-pointer',
+        mapFailed ? 'Pick a zone from the list' : 'Click a zone for its dossier'));
       return;
     }
-    if ((mode === 'thermo' && !(thermoA && thermoB)) || (mode !== 'thermo' && !seeker)) {
-      host.textContent = MODE_NEED[mode] || '';
+    if (mode === 'thermo' && !(thermoA && thermoB)) {
+      const step = (done, text, icon) => chip(text, icon, done
+        ? { variant: 'success', appearance: 'filled-outlined', size: 's' } : { size: 's' });
+      host.innerHTML = mapFailed
+        ? row(noMap, iconLabel('hand-pointer', 'Use the leg button above'))
+        : row(
+          step(Boolean(thermoA), 'Start', 'location-dot'),
+          waIcon('arrow-right'),
+          step(false, 'End', 'flag-checkered'),
+          el('span', esc(MODE_NEED.thermo), { className: 'wa-caption-s wa-color-text-quiet' }),
+          el('span', esc(thermoA ? 'Start placed; click the end of the leg'
+            : 'Click the start of the leg'), { className: 'wa-visually-hidden' }),
+        );
+      return;
+    }
+    if (mode !== 'thermo' && !seeker) {
+      host.innerHTML = row(noMap, iconLabel(mapFailed ? 'hand-pointer' : 'location-crosshairs',
+        mapFailed ? 'Use the button above' : (MODE_NEED[mode] || '')));
       return;
     }
     /* `opt.cat` is shared by the three category modes, so it can name a category this
        mode has no question for (a park is never a tentacle subject) */
     if ((mode === 'match' || mode === 'measure' || mode === 'tentacle')
       && !(chips[mode] || []).some((c) => c.key === opt.cat)) {
-      host.textContent = 'Pick a category above.';
+      host.innerHTML = row(noMap, iconLabel('hand-pointer', 'Pick a category above'));
       return;
     }
     const total = views.length;
-    const yes = counts.yes || 0;
-    const no = counts.no || 0;
-    const edge = counts.edge || 0;
-    /* the dominant answer as a word, so colour is never the only channel */
-    let top = 'un';
-    for (const k of ['yes', 'no', 'edge', 'un']) {
-      if ((counts[k] || 0) > (counts[top] || 0)) top = k;
-    }
     const words = mode === 'tentacle' ? TENTACLE_TEXT : ANSWER_TEXT;
-    const [word, variant, icon] = words[top] || words.un;
-    /* the tentacle mode's third answer is a real answer, so it is counted out loud */
-    const notInReach = mode === 'tentacle' && no
-      ? `. ${el('b', num(no))} are not within reach of the seekers and say so`
-      : '';
-    host.innerHTML = join(
-      esc(readoutLead())
-        + el('b', num(yes)) + ` of ${num(total)} zones`
-        + (edge
-          ? `, plus ${el('b', num(edge))} on the edge where the answer depends on`
-            + ' where in the circle they stand'
-          : '')
-        + notInReach
-        + '. Survival for a zone in the majority group'
-        + (majority.word ? ` (${esc(majority.word)})` : '')
-        + ` is ${total ? pct(majority.size / total, 0) : pct(0, 0)}.`,
-      chip(word, icon, { variant, size: 's' }),
-    );
+    /* every map colour repeated as an icon and a word; tentacle `no` is a real answer */
+    const partition = ['yes', 'edge', 'no', 'un'].filter((k) => counts[k]).map((k) => {
+      const [word, variant, icon] = words[k];
+      return chip(`${num(counts[k])} ${word}`, icon, { variant, size: 's' });
+    }).join('');
+    const survival = `${total ? pct(majority.size / total, 0) : pct(0, 0)} survival`
+      + (majority.word ? ` · ${majority.word}` : '');
+    host.innerHTML = el('div', join(
+      row(noMap, el('span', esc(`${readoutLead()} · ${num(total)} zones`), {
+        className: 'wa-caption-s wa-color-text-quiet',
+      })),
+      partition ? el('div', partition, { className: 'wa-cluster wa-gap-2xs' }) : '',
+      miniMeter(fillPct(majority.size, total), esc(survival), {
+        label: 'Share of zones in the majority answer group',
+      }),
+    ), { className: 'wa-stack wa-gap-2xs' });
   }
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -1032,7 +1088,12 @@ function buildInstance(root, report) {
     const shown = views.filter((v) => !v.excluded).slice(0, 40);
     host.innerHTML = shown.map((v) => {
       const off = !served(v);
-      const routes = v.routeNames.length ? v.routeNames.join(', ') : '—';
+      const extra = v.routeNames.length - 3;
+      const routes = join(
+        v.routeNames.slice(0, 3).map((r) => waTag(r, { pill: false })).join(''),
+        extra > 0 ? waBadge(`+${num(extra)}`, { variant: 'neutral', appearance: 'outlined' }) : '',
+        off ? chip('No service', 'circle-exclamation', { variant: 'danger', size: 's' }) : '',
+      );
       const body = el(
         'div',
         join(
@@ -1041,10 +1102,11 @@ function buildInstance(root, report) {
               className: 'wa-caption-s wa-color-text-quiet',
             }),
             el('span', esc(v.name), { className: 'wa-heading-xs' }),
-            el('span', esc(routes) + (off ? ' · no service' : ''), {
-              className: 'wa-caption-xs wa-color-text-quiet',
-            }),
-            waProgressBar((100 * v.overall) / v.max, { label: v.name }),
+            routes ? el('div', routes, {
+              className: 'wa-cluster wa-gap-3xs',
+              title: v.routeNames.join(', ') || null,
+            }) : '',
+            waProgressBar(fillPct(v.overall, v.max), { label: v.name }),
           ), { className: 'wa-stack wa-gap-3xs' }),
           el('span', num(v.overall, 1), { className: 'wa-heading-xs' }),
         ),
@@ -1091,29 +1153,45 @@ function buildInstance(root, report) {
   // The dossier
   // ═════════════════════════════════════════════════════════════════════════
 
-  /** The travel sentence, DERIVED from metric R1 and never re-measured (generate.py). */
-  function travelText(view) {
-    if (view.travelMin === null || view.travelMin === undefined) {
-      return 'not reachable in the hiding period';
+  /** Block 1 — stops and ride time, DERIVED from metric R1 and never re-measured (generate.py). */
+  function leadBlock(view) {
+    const stops = view.stopIds.length;
+    let ride = '';
+    if (view.travelMin !== null && view.travelMin !== undefined) {
+      ride = iconLabel('clock', `${mins(view.travelMin, 1)} from ${hubName}`);
+    } else if (!view.flags.includes('unreachable') && !view.flags.includes('no_service')) {
+      /* the unreachable and no-service flag chips already say it */
+      ride = iconLabel('clock', 'Not reachable in the hiding period');
     }
-    const share = HIDING_MIN ? pct(view.travelMin / HIDING_MIN, 0) : '—';
-    return `${mins(view.travelMin, 1)} from ${hubName} — ${share} of the hiding period`;
+    return join(
+      el('div', join(iconLabel('location-dot', `${num(stops)} ${s4Plural(stops, 'stop')}`), ride), {
+        className: 'wa-cluster wa-gap-s',
+      }),
+      view.travelShare === null || view.travelShare === undefined ? '' : meter(
+        el('span', esc('Hiding period used'), { className: 'wa-caption-s' }),
+        fillPct(view.travelShare),
+        el('span', pct(view.travelShare, 0), { className: 'wa-caption-s' }),
+        { flank: '3rem', label: 'Share of the hiding period spent riding here' },
+      ),
+    );
   }
 
   /** Block 3 — the questions that single this zone out, and what each leaves standing. */
   function threatsBlock(view) {
-    if (!view.threats.length) {
-      return el(
-        'p',
-        esc('No question on this map singles this zone out.'),
-        { className: 'wa-body-s' },
+    if (!view.threats.length) return degradeChip('not_evaluated', { suffix: 'no live questions' });
+    return el('div', view.threats.map((t) => {
+      let answer = waTag(t.answer);
+      if (t.answerKey === 'null') answer = chip('null', 'ban');
+      else if (t.answerKey === 'unknown') answer = degradeChip('not_evaluated');
+      return meter(
+        el('span', join(esc(t.label), answer), {
+          className: 'wa-cluster wa-gap-2xs wa-align-items-center wa-caption-s',
+        }),
+        fillPct(t.surv),
+        el('span', `${num(t.zonesRemaining)} left · ${pct(t.surv, 0)}`, { className: 'wa-caption-s' }),
+        { flank: '7rem', label: `${t.label}: share of zones left` },
       );
-    }
-    return dataTable(['Question', 'Your answer', 'Leaves'], view.threats.map((t) => [
-      esc(t.label),
-      esc(t.answer),
-      `${num(t.zonesRemaining)} ${s4Plural(t.zonesRemaining, 'zone')} (${pct(t.surv, 0)})`,
-    ]));
+    }).join(''), { className: 'wa-stack wa-gap-xs' });
   }
 
   /** Block 4 — the six axes, each linking to its own §04 accordion item. */
@@ -1127,13 +1205,15 @@ function buildInstance(root, report) {
           className: 'wa-link wa-caption-s wa-cluster wa-gap-2xs wa-align-items-center',
         },
       );
-      const measured = Boolean(view.axisMax[a]);
-      const right = el(
-        'span',
-        measured ? `${num(view.axes[a], 1)}/${num(view.axisMax[a], 1)}` : esc('not measured'),
-        { className: 'wa-caption-s' },
-      );
-      return meter(label, measured ? view.bars[a] || 0 : 0, right, {
+      if (!view.axisMax[a]) {
+        return el('div', join(label, degradeChip('not_evaluated')), {
+          className: 'wa-split wa-gap-s wa-align-items-center', dataAvailable: '0',
+        });
+      }
+      const right = el('span', `${num(view.axes[a], 1)}/${num(view.axisMax[a], 1)}`, {
+        className: 'wa-caption-s',
+      });
+      return meter(label, view.bars[a] || 0, right, {
         flank: '3rem', label: (AXIS_PLAIN[a] || [a])[0],
       });
     }).join('');
@@ -1141,30 +1221,34 @@ function buildInstance(root, report) {
 
   /** Block 5 — where the round can legally end inside this circle. */
   function spotsBlock(view) {
+    if (!view.osmReady) return degradeChip('osm_unavailable');
     if (!view.spots.length) {
-      return el(
-        'p',
-        esc('No candidate legal endgame spot was found inside this circle. '
-          + 'The rulebook needs somewhere publicly accessible during every game hour.'),
-        { className: 'wa-body-s' },
-      );
+      return el('div', join(
+        view.flags.includes('no_legal_spot')
+          ? '' : chip('None found', 'triangle-exclamation', { variant: 'warning' }),
+        el('span', esc('Needs public access every game hour'), {
+          className: 'wa-caption-s wa-color-text-quiet',
+        }),
+      ), { className: 'wa-cluster wa-gap-xs wa-align-items-center' });
     }
+    /* without the path join every spot is verify-on-site, so the chip says it once */
+    const unjoined = (report.geo || {}).pathJoinEvaluated === false;
     const list = el('ul', view.spots.map((s) => el('li', join(
-      esc(s.name),
-      el('span', `— ${esc(s.type)}, ${s4Dist(report, s.distanceM, 2)}`
-        + (s.enclosed ? ', enclosed' : '')
-        + (s.verify ? `, ${el('strong', esc('verify hours'))}` : ''), {
-        className: 'wa-caption-s',
+      el('span', esc(s.name), { className: 'wa-body-s' }),
+      el('span', esc([s.type, s4Dist(report, s.distanceM, 2)]
+        .concat(s.enclosed ? ['enclosed'] : []).join(' · ')), {
+        className: 'wa-caption-s wa-color-text-quiet',
       }),
-    ), { className: 'wa-body-s' })).join(''), { className: 'wa-stack wa-gap-3xs' });
-    if (view.spotsTotal <= view.spots.length) return list;
-    return join(list, el(
-      'p',
-      `${num(view.spotsTotal)} ${s4Plural(view.spotsTotal, 'candidate')} found;`
-        + ` the ${num(view.spots.length)} strongest`
-        + ` ${s4Plural(view.spots.length, 'is', 'are')} listed.`,
-      { className: 'wa-caption-s wa-color-text-quiet' },
-    ));
+      s.verify && !unjoined ? chip('verify on site', 'eye', { variant: 'warning', size: 's' }) : '',
+    ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })).join(''), {
+      className: 'wa-stack wa-gap-3xs wa-list-plain', role: 'list',
+    });
+    return join(
+      unjoined ? el('div', degradeChip('path_join_not_evaluated', { suffix: 'check each on site' }), {
+        className: 'wa-cluster',
+      }) : '',
+      list,
+    );
   }
 
   /**
@@ -1176,58 +1260,61 @@ function buildInstance(root, report) {
   function serviceBlock(view) {
     const svc = view.service || {};
     if (!svc.served) {
-      return join(
-        waCallout(el('p', esc('No service at this station.'), { className: 'wa-body-s' }), {
-          variant: 'danger', appearance: 'filled-outlined',
-        }),
-        el('p', esc('You cannot reach this zone, and you cannot leave it.'), {
-          className: 'wa-body-s',
-        }),
-      );
+      const caption = iconLabel('ban', 'Can’t reach it, can’t leave it');
+      if (view.flags.includes('no_service')) return caption;
+      return el('div', join(
+        chip('No service', 'circle-exclamation', { variant: 'danger' }), caption,
+      ), { className: 'wa-cluster wa-gap-xs wa-align-items-center' });
     }
-    const parts = [
-      view.routeNames.length ? esc(view.routeNames.join(', ')) : '—',
-      `${num(svc.routes)} ${s4Plural(svc.routes, 'route')}`,
-    ];
-    if (svc.headwayMin !== null && svc.headwayMin !== undefined) {
-      parts.push(`typically every ${mins(svc.headwayMin, 1)}`);
-    }
-    parts.push(`${num(svc.frequentStops)} of ${num(svc.servedStops)}`
-      + ` ${s4Plural(svc.servedStops, 'stop')} in the circle`
-      + ` ${s4Plural(svc.servedStops, 'is', 'are')} frequent`);
-    if (svc.exitMarginMin !== null && svc.exitMarginMin !== undefined) {
-      parts.push(`${mins(svc.exitMarginMin, 1)} of margin on the last ride home`);
-    }
+    const has = (x) => x !== null && x !== undefined;
+    const tile = (value, label, chipHtml = '') => kpi(value, label, '', { size: 's', chipHtml });
+    const tiles = join(
+      tile(num(svc.routes), 'Routes'),
+      has(svc.headwayMin) ? tile(mins(svc.headwayMin, 1), 'Headway') : '',
+      tile(`${num(svc.frequentStops)}/${num(svc.servedStops)}`, 'Frequent stops',
+        waProgressBar(fillPct(svc.frequentStops, svc.servedStops), { label: 'Frequent stops' })),
+      has(svc.exitMarginMin) ? tile(mins(svc.exitMarginMin, 1), 'Last-ride margin') : '',
+    );
+    const names = view.routeNames;
+    const tags = names.length ? el('div', join(
+      names.slice(0, 6).map((n) => waTag(n, { pill: false })).join(''),
+      names.length > 6
+        ? waBadge(`+${num(names.length - 6)}`, { variant: 'neutral', appearance: 'outlined' }) : '',
+    ), { className: 'wa-cluster wa-gap-3xs', title: names.join(', ') }) : '';
     return join(
-      el('p', parts.join(' · '), { className: 'wa-body-s' }),
-      el('p', `Measured on ${esc(svc.dayLabel)}, the day the scores were computed on.`, {
-        className: 'wa-caption-s wa-color-text-quiet',
-      }),
+      el('div', tiles, { className: 'wa-grid wa-gap-s', style: '--min-column-size:7rem' }),
+      tags,
+      iconLabel('calendar-day', `Measured on ${svc.dayLabel}`),
     );
   }
 
   /** Block 7 — what the circle actually contains. */
   function amenitiesBlock(view) {
+    if (!view.osmReady) return degradeChip('osm_unavailable');
     const entries = Object.keys(view.inventory || {}).map((k) => [k, view.inventory[k]]);
-    const inner = entries.length
-      ? entries.map(([k, v]) => waTag(`${k} ${num(v)}`, {
-        size: 's', appearance: 'outlined', pill: false,
-      })).join('')
-      : el('span', esc('Nothing catalogued inside the circle.'), { className: 'wa-caption-s' });
-    return el('div', inner, { className: 'wa-cluster wa-gap-2xs' });
+    if (!entries.length) return chip('None', 'circle-minus');
+    return el('div', entries.map(([k, v]) => {
+      const [label, icon] = INVENTORY_LABEL[k] || [k, 'circle-info'];
+      return waTag(`${num(v)} ${label}`, { icon, pill: false, title: k });
+    }).join(''), { className: 'wa-cluster wa-gap-2xs' });
   }
 
-  /** Block 8 — every metric this zone earned, one click down. */
+  /** Block 8 — every metric this zone earned, one click down; each note lives in §04. */
   function evidenceBlock(view) {
-    const rows = view.metrics.map((m) => [
-      el('code', esc(m.id)) + ` ${esc(m.name)}`,
-      m.available === false ? '—' : esc(s4MetricValue(m)),
-      esc(s4Points(m.pointsTenths, m.maxTenths)),
-      s4SourceTag(m.source) + (m.note ? ` — ${esc(m.note)}` : ''),
-    ]);
+    const rows = view.metrics.map((m) => {
+      const axis = (String(m.id).match(/^[A-Z]+/) || [''])[0];
+      const code = el('code', esc(m.id));
+      return [
+        `${AXIS_IDS.includes(axis) ? el('a', code, { href: `#s-axis-${axis}`, className: 'wa-link' }) : code} ${esc(m.name)}`,
+        m.available === false ? degradeChip(m.degrade || 'not_evaluated') : esc(s4MetricValue(m)),
+        esc(s4RampText(m.ramp)),
+        esc(s4Points(m.pointsTenths, m.maxTenths)),
+        s4SourceTag(m.source),
+      ];
+    });
     return waDetails(
-      'Full evidence — every metric this zone earned',
-      dataTable(['Metric', 'Value', 'Earned', 'Basis'], rows),
+      `Evidence · ${num(view.metrics.length)} metrics`,
+      dataTable(['Metric', 'Value', 'Threshold', 'Earned', 'Basis'], rows),
       { id: `s-ev-${view.id}` },
     );
   }
@@ -1238,16 +1325,18 @@ function buildInstance(root, report) {
   }
 
   /**
-   * The score line. A cap is a flag key or a metric id, so it is printed through the
-   * flag table or the metric's own name: a reader is owed words, not `no_legal_spot`.
+   * The score line as markup. A cap is a flag key or a metric id, so its chip is worded
+   * through the flag table or the metric's own name, never `no_legal_spot`.
    */
-  function scoreLine(view) {
-    const line = `${num(view.overall, 1)} / ${num(view.max, 0)}`;
+  function scoreHtml(view) {
+    const line = esc(`${num(view.overall, 1)} / ${num(view.max, 0)}`);
     if (!view.cappedBy) return line;
     const flag = FLAG_TEXT[view.cappedBy];
     const metric = view.metrics.find((m) => m.id === view.cappedBy);
-    const words = (flag && flag[0]) || (metric && metric.name) || view.cappedBy;
-    return `${line} · held back: ${words}`;
+    const words = (flag && (flag[3] || flag[0])) || (metric && metric.name) || view.cappedBy;
+    return join(line, chip(`capped: ${words}`, flag ? flag[2] : 'arrow-down', {
+      variant: flag ? flag[1] : 'neutral', size: 's',
+    }));
   }
 
   /**
@@ -1266,17 +1355,18 @@ function buildInstance(root, report) {
       return chip(label, icon, { variant, size: 's', pill: true });
     }).join('');
 
+    const spotsBadge = view.spotsTotal > view.spots.length
+      ? waBadge(`top ${num(view.spots.length)} of ${num(view.spotsTotal)}`, {
+        variant: 'neutral', appearance: 'outlined',
+      })
+      : '';
+
     return join(
-      el('p', join(
-        el('b', esc('The stop this zone is measured from:')),
-        `${esc(view.name)} · ${num(view.stopIds.length)}`
-          + ` ${s4Plural(view.stopIds.length, 'stop')} inside the circle`
-          + ` · ${esc(travelText(view))}`,
-      ), { className: 'wa-body-s' }),
+      leadBlock(view),
       flags ? el('div', flags, { className: 'wa-cluster wa-gap-2xs' }) : '',
       blockHead('What finds you'), threatsBlock(view),
       blockHead('Score'), scoreBlock(view),
-      blockHead('Endgame spots'), spotsBlock(view),
+      blockHead('Endgame spots', spotsBadge), spotsBlock(view),
       blockHead('Service'), serviceBlock(view),
       blockHead('Amenities'), amenitiesBlock(view),
       evidence ? evidenceBlock(view) : '',
@@ -1291,7 +1381,7 @@ function buildInstance(root, report) {
     if (!body) return;
     const view = byId.get(selected);
     if (title) title.textContent = dossierTitle(view);
-    if (score) score.textContent = scoreLine(view);
+    if (score) score.innerHTML = scoreHtml(view);
     body.innerHTML = dossierBody(view);
   }
 
@@ -1310,7 +1400,9 @@ function buildInstance(root, report) {
         {
           headerHtml: el('div', join(
             el('h3', esc(dossierTitle(v)), { className: 'wa-heading-s' }),
-            el('span', esc(scoreLine(v)), { className: 'wa-caption-s wa-color-text-quiet' }),
+            el('span', scoreHtml(v), {
+              className: 'wa-caption-s wa-color-text-quiet wa-cluster wa-gap-2xs wa-align-items-center',
+            }),
           ), { className: 'wa-split' }),
         },
       )).join('');
@@ -1333,7 +1425,8 @@ function buildInstance(root, report) {
    * an unranked zone stays last ascending and first descending, as before. Flags sort
    * on `flags.length`.
    *
-   * Formatter strings are escaped by the component, so no `esc()` here. Every
+   * Formatter strings are escaped by the component, so no `esc()` here; Flags returns a
+   * node whose chip text went through `chip()`. Every
    * comparator is explicit: table-core's `'auto'` samples the first ten rows to pick an
    * algorithm, which is not a sort. Only Zone is searchable; see `searchMatches`.
    */
@@ -1361,7 +1454,17 @@ function buildInstance(root, report) {
     {
       id: 'flags', label: TABLE_LABELS[9], flex: 2, minWidth: 150, searchable: false,
       value: (v) => v.flags.length, comparator: cmpNum,
-      formatter: (_x, v) => v.flags.map((f) => (FLAG_TEXT[f] || [f])[0]).join(', '),
+      /* short word on the chip; the long label is the dossier's, `title` only repeats it */
+      formatter: (_x, v) => (v.flags.length ? htmlNode(el('span', join(
+        v.flags.slice(0, 2).map((f) => {
+          const [long, variant, icon, short] = FLAG_TEXT[f] || [f, 'neutral', 'circle-info'];
+          return chip(short || long, icon, { variant, size: 's', title: long });
+        }).join(''),
+        v.flags.length > 2
+          ? waBadge(`+${num(v.flags.length - 2)}`, { variant: 'neutral', appearance: 'outlined' })
+          : '',
+      ), { style: 'display:flex;flex-wrap:nowrap;gap:var(--wa-space-3xs);align-items:center' }))
+        : ''),
     },
     {
       id: 'travel', label: TABLE_LABELS[10], align: 'end', width: 112, searchable: false,
@@ -1541,10 +1644,12 @@ function buildInstance(root, report) {
    * as `s4ChipGroup` (render/deck.js) builds. Not reused because it cannot disable an
    * option, and a dead radius or category shown disabled-with-reason is the point.
    * The reasons are PRINTED, not put in a `title`: a disabled control is not focusable,
-   * so a tooltip on it is reachable by pointer hover and nothing else.
+   * so a tooltip on it is reachable by pointer hover and nothing else. Options sharing a
+   * reason are named together beside it, printed once.
    *
    * @param {string} groupId @param {string} label
-   * @param {ReadonlyArray<{value:string,text:string,usable:boolean,why:string}>} items
+   * @param {ReadonlyArray<{value:string, text:string, usable:boolean, why:string,
+   *   lead:string, degrade:string|null}>} items
    * @param {string} value @param {(v: string) => void} onPick
    * @returns {string} the markup; the caller writes it and binds the group
    */
@@ -1558,10 +1663,18 @@ function buildInstance(root, report) {
       size: 's',
       disabled: it.usable ? null : true,
     })).join('');
-    const why = items.filter((it) => !it.usable && it.why).map((it) => el(
+    const groups = new Map();
+    for (const it of items) {
+      const text = it.lead || it.why || '';
+      if (it.usable || !(text || it.degrade)) continue;
+      const key = `${it.degrade || ''}\n${text}`;
+      if (!groups.has(key)) groups.set(key, { text, degrade: it.degrade, names: [] });
+      groups.get(key).names.push(it.text);
+    }
+    const why = Array.from(groups.values(), (g) => el(
       'p',
-      join(el('b', esc(it.text)), esc(`— ${it.why}`)),
-      { className: 'wa-caption-xs wa-color-text-quiet' },
+      join(el('b', esc(s4JoinWords(g.names))), degradeChip(g.degrade), esc(g.text)),
+      { className: 'wa-caption-xs wa-color-text-quiet wa-cluster wa-gap-2xs wa-align-items-center' },
     )).join('');
     optionBind = { groupId, onPick };
     return join(
@@ -1589,12 +1702,17 @@ function buildInstance(root, report) {
     optionBind = null;
 
     /* clustered, not stacked: a full-bleed button reads as the card's primary action */
+    /* the thermometer's visible text is terse, so its accessible name is the full action */
     const seedButtonHtml = mode === 'thermo'
-      ? waButton(`Run the leg from ${hubName} to the selected zone`, {
-        size: 's', appearance: 'outlined', dataSeed: 'leg',
-      })
-      : (MODE_NEED[mode] ? waButton(`Place the seekers at ${hubName}`, {
-        size: 's', appearance: 'outlined', dataSeed: 'seeker',
+      ? el('wa-button', join(
+        waIcon('route', { slot: 'start' }),
+        el('span', esc(`Leg: ${hubName} → selected zone`), { ariaHidden: 'true' }),
+        el('span', esc(`Run the leg from ${hubName} to the selected zone`), {
+          className: 'wa-visually-hidden',
+        }),
+      ), { variant: 'neutral', appearance: 'outlined', size: 's', dataSeed: 'leg' })
+      : (MODE_NEED[mode] ? waButton(`Place seekers at ${hubName}`, {
+        size: 's', appearance: 'outlined', dataSeed: 'seeker', icon: 'location-crosshairs',
       }) : '');
     const seed = seedButtonHtml
       ? el('div', seedButtonHtml, { className: 'wa-cluster wa-gap-2xs' })
@@ -1607,6 +1725,7 @@ function buildInstance(root, report) {
         'Radar radius',
         (chips.radar || []).map((r) => ({
           value: String(r.miles), text: r.label, usable: r.usable, why: r.why,
+          lead: r.lead, degrade: r.degrade,
         })),
         String(opt.radar),
         (v) => { opt.radar = Number(v); paint(); },
@@ -1617,6 +1736,7 @@ function buildInstance(root, report) {
         'Category',
         (chips[mode] || []).map((c) => ({
           value: c.key, text: `${c.label} (${num(c.count)})`, usable: c.usable, why: c.why,
+          lead: c.lead, degrade: c.degrade,
         })),
         opt.cat || '',
         (v) => { opt.cat = v; paint(); },
@@ -1665,6 +1785,8 @@ function buildInstance(root, report) {
    */
   function paint() {
     computeAnswers();
+    const legend = $('s-legend');
+    if (legend) legend.setAttribute('data-mode', mode);
     repaintMarkers();
     updateCircle();
     renderReadout();
