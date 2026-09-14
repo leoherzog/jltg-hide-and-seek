@@ -44,7 +44,7 @@ import {
 import { catalogueFor } from './rules/catalogue.js';
 import {
   answerSignature, survivalFractions, globalQuestionOrder, auditQuestions,
-  auditCurses, seekerSample,
+  auditCurses, seekerSample, questionCategories,
 } from './rules/audit.js';
 
 // `rules/score.js` (CONTRACT.md §(a)) is imported dynamically so its absence
@@ -103,7 +103,7 @@ const PHASES = Object.freeze([
   ['network:samples', 'Sampling ride times', 60],
   ['geo', 'Reading the map files', 180],
   ['rules:questions', 'Auditing the question deck', 60],
-  ['rules:surv', 'Measuring information resistance', 60],
+  ['rules:surv', 'Testing the questions', 60],
   ['score', 'Scoring the city', 30],
   ['provenance', 'Writing the receipts', 10],
 ]);
@@ -294,12 +294,15 @@ export async function runPipeline(options, source, emit) {
 
   /** @type {string[]} */
   const degradations = [];
+  /** @type {Object<string, string>} degradation message → `DEGRADE_KIND` code */
+  const degradationCodes = {};
 
   const log = (level, message) => post({ type: 'log', level, message: String(message) });
-  const degrade = (message) => {
+  const degrade = (message, code) => {
     const text = String(message);
     degradations.push(text);
-    post({ type: 'degraded', message: text });
+    degradationCodes[text] = code;
+    post({ type: 'degraded', message: text, code });
   };
   const nonFatal = (stage, err) => {
     const message = (err && err.message) ? err.message : String(err);
@@ -401,17 +404,16 @@ export async function runPipeline(options, source, emit) {
           degrade(`${srcs[i].label} was built from OpenStreetMap's rail, metro and tram `
             + 'lines rather than read from a published timetable. Where the lines run is '
             + 'measured; how often they run is assumed, so every score that rests on the '
-            + 'timetable is dropped rather than guessed at.');
+            + 'timetable is dropped rather than guessed at.', 'assumed_schedule');
         }
       } catch (err) {
         // One dead mirror must not kill a merged run; a single source falls through
         // to the fatal below.
         if (srcs.length === 1) throw err;
-        // Not `nonFatal` as well: app.js files a non-fatal `error` as its own
-        // degradation, so the diagnostic goes to the log and the sentence is the record.
+        // Not `nonFatal` as well: the `degraded` sentence is the record; the diagnostic goes to the log.
         log('warn', `feed: ${(err && err.message) || err}`);
-        degrade(`${srcs[i].label} could not be read (${(err && err.message) || err}); `
-          + 'the report covers the other feeds only.');
+        degrade(`${srcs[i].label} could not be read (${(err && err.name) || 'Error'}); `
+          + 'the report covers the other feeds only.', 'feed_skipped');
       }
     }
     if (!loaded.length) {
@@ -432,7 +434,7 @@ export async function runPipeline(options, source, emit) {
     types = dayTypes(feed, start, end);
     if (types.length < 2) {
       degrade('This feed schedules every day the same way, so there is no weekday '
-        + 'and weekend difference to report.');
+        + 'and weekend difference to report.', 'single_day_type');
     }
   } catch (err) {
     fatal('feed', err);
@@ -537,7 +539,8 @@ export async function runPipeline(options, source, emit) {
           + 'and count on this page is measured over the whole network instead.'
         : 'The stops and routes you excluded would have removed more than half the '
           + 'network, so they were not applied: every count on this page is measured over '
-          + 'the whole network instead.');
+          + 'the whole network instead.',
+      opts.borderBbox ? 'border_not_applied' : 'exclusions_not_applied');
     }
   }
   try {
@@ -574,9 +577,13 @@ export async function runPipeline(options, source, emit) {
     // Zones outside a supplied border cease to exist: the cover runs over the in-play set.
     const centres = zoneCover(inPlay ?? best.servedStopIds, size.zoneRadiusM, events, pos);
     zones = buildZones(feed, best, centres, size.zoneRadiusM, proj, inPlay);
-    progress.report(0.5, 'Re-measuring at the resolved zone radius');
+    progress.report(0.5, 'Re-measuring the zones');
     metrics = networkMetrics(feed, days, proj, hub, size.zoneRadiusM, inPlay);
     metrics.inPlayFallback = inPlayFallback;
+    metrics.unservedStops = metrics.stopsInFeed - metrics.servedStops;
+    for (const k of Object.keys(metrics.perDay).sort(cmpStr)) {
+      metrics.perDay[k].unservedStops = metrics.stopsInFeed - metrics.perDay[k].servedStops;
+    }
     // One clone-safe boolean on the object every scoring entry point already gets.
     // Run-level and conservative: ONE invented timetable in the merge makes every
     // schedule-derived number assumed, since after `mergeFeeds` nothing can tell them apart.
@@ -656,9 +663,9 @@ export async function runPipeline(options, source, emit) {
     log('warn', `OSM layer unavailable: ${err && err.message ? err.message : err}`);
     nonFatal('geo', err);
     degrade(`The OpenStreetMap files could not be read (${name}), so every question, `
-      + 'curse and score that needs map features is excluded rather than guessed at.');
-    geo = emptyGeoData(border.bbox,
-      'The map files could not be read; OSM-backed scores are excluded.');
+      + 'curse and score that needs map features is excluded rather than guessed at.',
+    'osm_unavailable');
+    geo = emptyGeoData(border.bbox);
   }
   progress.finish();
 
@@ -666,6 +673,7 @@ export async function runPipeline(options, source, emit) {
 
   // ── S3 questions ──────────────────────────────────────────────────────────
   let questions = [];
+  let categories = [];
   let curses = [];
   let signatures = Object.create(null);
   let surv = Object.create(null);
@@ -676,6 +684,7 @@ export async function runPipeline(options, source, emit) {
     questions = auditQuestions(size, geo, gtfsFacts, zones, metrics, border, {
       onProgress: progress.sink(),
     });
+    categories = questionCategories(questions);
     curses = auditCurses(size, geo, gtfsFacts, geo.admin.countryCode, metrics);
     progress.finish();
 
@@ -689,14 +698,14 @@ export async function runPipeline(options, source, emit) {
     for (let i = 0; i < live.length; i++) {
       const q = live[i];
       signatures[q.id] = answerSignature(defs[q.id], zones, geo, gtfsFacts, proj);
-      progress.report(0.4 * ((i + 1) / Math.max(1, live.length)), 'Computing answer signatures');
+      progress.report(0.4 * ((i + 1) / Math.max(1, live.length)), 'Answering every question');
     }
     const seekers = seekerSample(zones);
     for (let i = 0; i < live.length; i++) {
       const q = live[i];
       surv[q.id] = survivalFractions(defs[q.id], signatures[q.id], zones, seekers);
       progress.report(0.4 + 0.3 * ((i + 1) / Math.max(1, live.length)),
-        'Computing survival fractions');
+        'Answering every question');
     }
     const k = GREEDY_K[size.name];
     [order, funnel] = globalQuestionOrder(questions, signatures, zones, k, {
@@ -711,7 +720,7 @@ export async function runPipeline(options, source, emit) {
   } catch (err) {
     nonFatal('rules', err);
     degrade(`The question audit failed (${(err && err.name) || 'Error'}), so the questions `
-      + 'and curse-deck sections are incomplete.');
+      + 'and curse-deck sections are incomplete.', 'audit_failed');
   }
 
   post({
@@ -719,6 +728,7 @@ export async function runPipeline(options, source, emit) {
     stage: 'rules',
     payload: {
       questions,
+      questionCategories: categories,
       curses,
       questionOrder: order,
       questionFunnel: funnel,
@@ -738,7 +748,7 @@ export async function runPipeline(options, source, emit) {
   progress.begin(10);
   if (!score) {
     degrade(`The scoring layer could not be loaded (${SCORE_ERROR}), so the verdict, `
-      + 'the score trace and the house rules are missing.');
+      + 'the score trace and the house rules are missing.', 'score_failed');
     post({
       type: 'error',
       stage: 'score',
@@ -755,7 +765,8 @@ export async function runPipeline(options, source, emit) {
         times, back, size, metrics, proj);
       ranked = score.rankZones(zoneScores);
       progress.report(0.7, 'Scoring the city');
-      fitness = score.scoreFitness(metrics, questions, zones, zoneScores, size, days);
+      fitness = score.scoreFitness(metrics, questions, zones, zoneScores, size, days,
+        best.dayType.key);
       // The Python signature; it does not take `zoneScores`.
       caps = score.fitnessCaps(metrics, questions, zones, size, days);
       const zoneById = Object.create(null);
@@ -768,7 +779,7 @@ export async function runPipeline(options, source, emit) {
     } catch (err) {
       nonFatal('score', err);
       degrade(`Scoring failed (${(err && err.name) || 'Error'}), so the verdict and the `
-        + 'score trace are incomplete.');
+        + 'score trace are incomplete.', 'score_failed');
     }
   }
   progress.finish();
@@ -799,7 +810,7 @@ export async function runPipeline(options, source, emit) {
     } catch (err) {
       nonFatal('provenance', err);
       degrade(`The provenance record could not be assembled (${(err && err.name) || 'Error'}), `
-        + 'so the sources section is incomplete.');
+        + 'so the sources section is incomplete.', 'provenance_failed');
     }
   }
   progress.finish();
@@ -807,7 +818,11 @@ export async function runPipeline(options, source, emit) {
   post({
     type: 'stage',
     stage: 'provenance',
-    payload: { provenance, degradations: degradations.slice() },
+    payload: {
+      provenance,
+      degradations: degradations.slice(),
+      degradationCodes: { ...degradationCodes },
+    },
   });
 
   const place = (geo.admin && geo.admin.placeName) || feed.agencyName;
@@ -832,6 +847,7 @@ export async function runPipeline(options, source, emit) {
     spokeCap: spokes.cap,
     geo,
     questions,
+    questionCategories: categories,
     questionOrder: order,
     questionFunnel: funnel,
     curses,
@@ -844,6 +860,7 @@ export async function runPipeline(options, source, emit) {
     place,
     provenance,
     degradations: degradations.slice(),
+    degradationCodes: { ...degradationCodes },
     // Not in the CLI's `Report`; the renderers read them off the report object (§(d)).
     caps,
     stops,

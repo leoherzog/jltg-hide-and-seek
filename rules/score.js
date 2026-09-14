@@ -13,12 +13,13 @@
 
 import {
   GENERATOR, VERSION, M_PER_MILE, SEEKER_SAMPLE_CAP,
-  cmpStr, rhu, num, pct, mins, miles, hhmm, quantile,
+  FINDING_MINUS_BELOW, FINDING_PLUS_ABOVE, FITNESS_MIN_AVAILABLE_POINTS,
+  cmpStr, rhu, num, pct, mins, miles, hhmm, quantile, fillPct, fare,
 } from '../lib/core.js';
 import { bboxOf, bboxContains, Projection } from '../lib/geo.js';
 import { cacheBackend } from '../lib/cache.js';
 import { busiestDay } from '../gtfs/service.js';
-import { QUESTIONS, INTERPRETATIONS } from './catalogue.js';
+import { QUESTIONS, CURSES, INTERPRETATIONS } from './catalogue.js';
 import {
   globalQuestionOrder, s3JointBlockShare, s3ReferenceSeeker, s3Answer, s3Join,
 } from './audit.js';
@@ -129,10 +130,11 @@ const S3_ASSUMED_DROP_NOTE = 'Not measured on this run: the timetable behind thi
  * @param {'ramp'|'rramp'|'plateau'|'table'} kind @param {number[]} args
  * @param {'rulebook'|'feed'|'interp'} source @param {string} note
  * @param {boolean} [available]
+ * @param {string|null} [degrade] the `DegradeCode` when unavailable; `not_evaluated` if omitted
  * @returns {Object} a `Metric`
  */
 function s3Metric(mid, name, raw, unit, frac, maxPoints, kind, args, source, note,
-  available = true) {
+  available = true, degrade = null) {
   const points = (available && frac !== null && frac !== undefined)
     ? tenths(frac, maxPoints) : 0;
   return {
@@ -146,6 +148,7 @@ function s3Metric(mid, name, raw, unit, frac, maxPoints, kind, args, source, not
     source,
     note,
     available,
+    degrade: available ? null : (degrade || 'not_evaluated'),
   };
 }
 
@@ -267,10 +270,11 @@ function s3OneRouteShare(days) {
  * @param {number|null} sharedSignatureShare
  * @param {boolean} weekendAvailable @param {string} weekendNote
  * @param {boolean} questionsAvailable
+ * @param {string|null} [questionsDegrade] the B metrics' `DegradeCode` when unavailable
  * @returns {Object[]} `SubScore[]`
  */
 function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable, weekendNote,
-  questionsAvailable) {
+  questionsAvailable, questionsDegrade = null) {
   const hidingH = size.hidingPeriodMin / 60.0;
   const required = size.requiredHours;
   // `s3View` copies the whole metrics table onto every view, so the per-day
@@ -310,7 +314,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       `Functional plus half of weak, over the ${num(qstats.total)} questions that `
       + `could be evaluated. Under a third live and the seekers are re-asking `
       + `questions at doubled cost while the hider farms cards.`,
-      questionsAvailable && qstats.liveShare !== null),
+      questionsAvailable && qstats.liveShare !== null, questionsDegrade),
     s3Metric('B2', 'Categories with two or more functional questions', qstats.categoryDepth,
       'share',
       qstats.categoryDepth === null ? null : ramp(qstats.categoryDepth, 0.50, 1.00),
@@ -318,20 +322,20 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       `Out of ${num(size.categoryCount)} categories in a ${size.name.toUpperCase()} game. `
       + `Two matters because Drained Brain bans three questions across different `
       + `categories and Spotty Memory forces a category on you.`,
-      questionsAvailable && qstats.categoryDepth !== null),
+      questionsAvailable && qstats.categoryDepth !== null, questionsDegrade),
     s3Metric('B3', 'Mean quality of the functional questions', qstats.meanQuality, '0–1',
       qstats.meanQuality === null ? null : ramp(qstats.meanQuality, 0.25, 0.65),
       5, 'ramp', [0.25, 0.65], 'interp',
       'A live question that splits the map 97/3 is technically alive and practically '
       + 'useless.',
-      questionsAvailable && qstats.meanQuality !== null),
+      questionsAvailable && qstats.meanQuality !== null, questionsDegrade),
     s3Metric('B4', 'Randomize risk', qstats.randomizeRisk, 'share',
       qstats.randomizeRisk === null ? null : rramp(qstats.randomizeRisk, 0.10, 0.40),
       4, 'rramp', [0.10, 0.40], 'rulebook',
       'Randomize redraws within the same category, so the category-weighted dead '
       + 'share is exactly the chance the powerup hands the hider a free card. The '
       + 'rulebook permits a randomize onto a null question outright.',
-      questionsAvailable && qstats.randomizeRisk !== null),
+      questionsAvailable && qstats.randomizeRisk !== null, questionsDegrade),
   ];
 
   const headway = get(view, 'medianHeadwayMin');
@@ -352,8 +356,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
     s3Metric('C2', 'Traverse ratio (T90 ÷ hiding period)', traverse, 'ratio',
       traverse === null ? null : plateau(traverse, 0.40, 0.80, 2.50, 4.50), 7,
       'plateau', [0.40, 0.80, 2.50, 4.50], assumed ? 'interp' : 'feed',
-      `Crossing this network costs ${num(traverse || 0, 2)} hiding periods. Below `
-      + `0.40 the map collapses — every radar is yes and “far away” stops existing. `
+      `Below 0.40 the map collapses — every radar is yes and “far away” stops existing. `
       + `Above 4.50 the map is bigger than the game.`,
       traverse !== null),
     s3Metric('C3', 'Share of stops on a frequent route-direction', nullish(frequent), 'share',
@@ -451,6 +454,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
         m.available = false;
         m.pointsTenths = 0;
         m.note = S3_ASSUMED_DROP_NOTE;
+        m.degrade = 'assumed_schedule';
       }
     }
   }
@@ -473,6 +477,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
     if (availMax === 0) {
       out.push({
         id: sid, name, metrics: rows, earnedTenths: 0, maxTenths: full, partial: true, missing,
+        lostTenths: 0,
       });
     } else {
       const scaled = Math.trunc(rhu(earned * full / availMax));
@@ -484,6 +489,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
         maxTenths: full,
         partial: missing.length > 0,
         missing,
+        lostTenths: full - scaled,
       });
     }
   }
@@ -507,13 +513,17 @@ function nullish(v) { return (v === undefined || v === null) ? null : v; }
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
  * @param {Object<string, Object>} zoneScores @param {Object} size @param {Object[]} days
+ * @param {string|null} [selectedDayKey] the day `perDayDelta` is measured against
  * @returns {Object} a `Fitness`
  */
-export function scoreFitness(metrics, questions, zones, zoneScores, size, days) {
+export function scoreFitness(metrics, questions, zones, zoneScores, size, days,
+  selectedDayKey = null) {
   const qstats = s3QuestionStats(questions, size);
   // B is dropped whole when most of the catalogue is `unknown` (no map data);
   // the headline then says "computed from 75 of 100 points" (scoring.md §1.10.2).
   const questionsAvailable = qstats.total >= 6 && qstats.total >= 0.5 * size.catalogueSize;
+  const questionsDegrade = questions.some((q) => q.degrade === 'osm_unavailable')
+    ? 'osm_unavailable' : null;
 
   const n = zones.length;
   let shared = null;
@@ -538,7 +548,7 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
 
   const headView = s3View(metrics, null, size);
   const subs = s3Subscores(headView, qstats, size, shared, !singleType, weekendNote,
-    questionsAvailable);
+    questionsAvailable, questionsDegrade);
 
   let availableTenths = 0;
   let earnedTenths = 0;
@@ -565,7 +575,7 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
     }
   }
 
-  if (availablePoints < 60.0) score = null;
+  if (availablePoints < FITNESS_MIN_AVAILABLE_POINTS) score = null;
 
   let band = 'insufficient data for an overall rating';
   if (score !== null) {
@@ -579,7 +589,7 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
   for (const dayKey of sortedKeys(get(metrics, 'perDay') || {})) {
     const view = s3View(metrics, dayKey, size);
     const rows = s3Subscores(view, qstats, size, shared, !singleType, weekendNote,
-      questionsAvailable);
+      questionsAvailable, questionsDegrade);
     let availTenths = 0;
     let got = 0;
     for (const s of rows) {
@@ -597,6 +607,12 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
     perDay[dayKey] = value;
   }
 
+  const perDayDelta = Object.create(null);
+  const selected = selectedDayKey === null ? undefined : get(perDay, selectedDayKey);
+  if (selected !== undefined) {
+    for (const dayKey of sortedKeys(perDay)) perDayDelta[dayKey] = rhu(perDay[dayKey] - selected, 1);
+  }
+
   return {
     score,
     rawScore: raw,                      // raw_score
@@ -605,6 +621,7 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days) 
     subscores: subs,
     availablePoints: rhu(availablePoints, 1),   // available_points
     perDay,                             // per_day
+    perDayDelta,
   };
 }
 
@@ -635,6 +652,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 40.0,
       fired: Boolean(n && n < 30),
       evaluated: Boolean(n),
+      label: `at least ${num(30)} zones`,
       why: n
         ? `${num(n)} distinct hiding zones, against the rulebook\'s own SMALL floor of 30 `
           + 'stations.'
@@ -645,6 +663,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 45.0,
       fired: evaluated && qstats.categoriesWithLive < 3,
       evaluated,
+      label: `at least ${num(3)} live categories`,
       why: evaluated
         ? `${num(qstats.categoriesWithLive)} of ${num(size.categoryCount)} question `
           + 'categories have at least one functional question.'
@@ -655,6 +674,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 25.0,
       fired: longest !== null && longest < 4.0,
       evaluated: longest !== null,
+      label: `at least ${num(4)} h of service`,
       why: longest !== null
         ? `The longest service day spans ${num(longest || 0, 1)} hours, against the `
           + 'rulebook\'s shortest game of 4.'
@@ -665,6 +685,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 45.0,
       fired: reach !== null && Number(reach) < 0.15,
       evaluated: reach !== null,
+      label: `at least ${pct(0.15, 0)} reachable`,
       why: reach !== null
         ? `${pct(Number(reach))} of zones are reachable inside the hiding period from the `
           + 'start location.'
@@ -675,6 +696,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 50.0,
       fired: oneRoute >= 0.90,
       evaluated: Boolean(days && days.length),
+      label: `no route reaches ${pct(0.90, 0)} of stops`,
       why: (days && days.length)
         ? `The single most widespread route reaches ${pct(oneRoute)} of served stops. `
           + 'Above 90% the map is one-dimensional and every question degenerates to '
@@ -941,13 +963,14 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
     const threats = [];
     for (const [qid, value] of perQ.slice(0, 3)) {
       const q = defs.get(qid);
-      const [, wording] = s3Answer(q, signatures[qid], zones, index, ref);
+      const [answerKey, wording] = s3Answer(q, signatures[qid], zones, index, ref);
       threats.push({
         questionId: qid,                                        // question_id
         label: audits.has(qid) ? audits.get(qid).label : q.label,
         surv: rhu(value, 4),
         answer: wording,
         zonesRemaining: Math.trunc(rhu(value * n)),             // zones_remaining
+        answerKey,
       });
     }
 
@@ -1017,6 +1040,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
           + `zone; a 60-minute headway makes that unplayable from here. Scored out of 4 rather `
           + `than 5 so the three service metrics sum to the axis\'s 15 points.`,
       !assumed && onward !== null,
+      assumed ? 'assumed_schedule' : null,
     ));
 
     // ── E · endgame spots ────────────────────────────────────────────────
@@ -1029,6 +1053,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       spotWeight += Number(s.weight || 0.0);
       if (s.enclosed) enclosedCount += 1;
     }
+    const osmDegrade = geo.available ? null : 'osm_unavailable';
     const clusters = spots.length ? s3SpotClusters(spots, proj) : 0;
     const enclosedShare = spots.length ? enclosedCount / spots.length : 0.0;
     metricsRows.push(s3Metric(
@@ -1039,6 +1064,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       + 'verify-on-the-ground and features with restrictive opening hours count half — '
       + 'OpenStreetMap does not know whether a plaza is locked at night.',
       osmReady,
+      osmDegrade,
     ));
     metricsRows.push(s3Metric(
       'E2', 'Separate spot clusters', clusters, 'clusters',
@@ -1046,6 +1072,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       'You may wander until the end game triggers, so separate clusters mean the seekers\' '
       + 'entry point does not decide your fate.',
       osmReady,
+      osmDegrade,
     ));
     metricsRows.push(s3Metric(
       'E3', 'Spots enclosed by a park, plaza or campus', enclosedShare, 'share',
@@ -1053,6 +1080,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       'interp',
       'A spot inside a polygon beats a lone point on a pavement.',
       osmReady,
+      osmDegrade,
     ));
 
     // ── A · amenities ────────────────────────────────────────────────────
@@ -1069,6 +1097,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       + 'access. Mapped toilets score 1.0, one just outside the circle 0.5, and a library or '
       + 'park inside the circle adds 1.0.',
       osmReady,
+      osmDegrade,
     ));
     let food = 0;
     for (const key of ['cafe', 'restaurant', 'fast_food', 'grocery']) food += getNum(inv, key);
@@ -1078,6 +1107,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       'Cafés, restaurants, fast food and groceries. The rulebook tells you to identify these '
       + 'in your zone before the round starts.',
       osmReady,
+      osmDegrade,
     ));
     const shelter = getNum(inv, 'shelter') * 1.5
       + Math.min(2.0, getNum(inv, 'bench') * 0.25)
@@ -1089,6 +1119,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       + 'Weather is a stated rulebook concern nothing here can forecast; shelter is the '
       + 'proxy.',
       osmReady,
+      osmDegrade,
     ));
 
     // ── X · exposure ─────────────────────────────────────────────────────
@@ -1316,7 +1347,7 @@ function s3FindingDetail(metric, metrics, questions) {
   if (mid === 'B1') {
     const dead = questions.filter((q) => q.status === 'dead' || q.status === 'degenerate');
     return `${num(dead.length)} of ${num(questions.length)} questions in this size\'s catalogue are `
-      + 'dead or degenerate, and every one of them still pays the hider a card if asked.';
+      + 'dead or degenerate.';
   }
   if (mid === 'B2') {
     return `${pct(r)} of the size\'s question categories have two or more functional questions.`;
@@ -1402,12 +1433,12 @@ export function deriveFindings(fitness, metrics, questions) {
     for (const metric of ms) {
       if (!metric.available || metric.maxTenths <= 0) continue;
       const frac = metric.pointsTenths / metric.maxTenths;
-      if (frac >= 0.35 && frac <= 0.85) continue;
+      if (frac >= FINDING_MINUS_BELOW && frac <= FINDING_PLUS_ABOVE) continue;
       let mitigation = nullish(get(S3_MITIGATION, metric.id));
       let quadrant;
       let severity;
       let title;
-      if (frac < 0.35) {
+      if (frac < FINDING_MINUS_BELOW) {
         quadrant = mitigation ? 'concern' : 'minus';
         severity = frac < 0.15 ? 'high' : (frac < 0.25 ? 'medium' : 'low');
         title = `${metric.name} scores ${num(metric.pointsTenths / 10.0, 1)} of `
@@ -1433,6 +1464,20 @@ export function deriveFindings(fitness, metrics, questions) {
     || (rank[b.severity] - rank[a.severity])
     || cmpStr(a.metricId, b.metricId));
   return rows;
+}
+
+/** The findings a fired house rule answers, keyed by rule id. */
+const REC_METRIC_IDS = Object.freeze({
+  play_day: Object.freeze(['E1']),
+  brief_dead_questions: Object.freeze(['B1']),
+  check_timetable: Object.freeze(['C1']),
+  end_timer: Object.freeze(['D1']),
+  reachability_brief: Object.freeze(['A2']),
+});
+
+/** One always-visible chip on a house rule; `text` is already formatted. */
+function fact(text, icon, variant = 'neutral', fill = null) {
+  return { text, icon, variant, fill };
 }
 
 /**
@@ -1461,8 +1506,23 @@ export function deriveRecommendations(reportParts) {
   const assumed = Boolean(get(metrics, 'assumedSchedule'));
   const out = [];
 
-  const add = (rid, priority, text, evidence, required = false) => {
-    out.push({ id: rid, priority, text, evidence, required });
+  /** The page's split of a rule: `lead`/`detail` are an `Explain`; `text` stays whole. */
+  const add = (rid, priority, text, evidence, required = false, parts = {}) => {
+    const items = parts.items || [];
+    out.push({
+      id: rid,
+      priority,
+      required,
+      text,
+      evidence,
+      explain: { lead: parts.lead || '', detail: parts.detail || '' },
+      icon: parts.icon || '',
+      facts: parts.facts || [],
+      items,
+      itemsMore: Math.max(0, items.length - 8),
+      metricIds: get(REC_METRIC_IDS, rid) || [],
+      degrade: parts.degrade || null,
+    });
   };
 
   // 1 · which day
@@ -1474,12 +1534,24 @@ export function deriveRecommendations(reportParts) {
       `Play on ${bestLabel}. Service on the quieter weekend day drops to `
       + `${pct(Number(weekend))} of a weekday\'s trips, and every question that depends on `
       + 'being able to move gets worse with it.',
-      `E1 weekend_ratio = ${num(Number(weekend), 2)}`, Number(weekend) < 0.35);
+      `E1 weekend_ratio = ${num(Number(weekend), 2)}`, Number(weekend) < 0.35, {
+        lead: `Play on ${bestLabel}`,
+        detail: 'Every question that depends on being able to move gets worse on the quieter '
+          + 'weekend day.',
+        icon: 'calendar-day',
+        facts: [fact(`weekend ${pct(Number(weekend))} of weekday trips`, 'calendar-minus',
+          'warning')],
+      });
   } else {
     add('play_day', 10,
       `Any day works here, but ${bestLabel} carries the most service and is the day every `
       + 'number on this page is computed for.',
-      `best day = ${bestKey}`);
+      `best day = ${bestKey}`, false, {
+        lead: `Any day works; prefer ${bestLabel}`,
+        detail: 'It carries the most service and is the day every number on this page is '
+          + 'computed for.',
+        icon: 'calendar-day',
+      });
   }
 
   // 2 · where the round starts
@@ -1489,13 +1561,26 @@ export function deriveRecommendations(reportParts) {
       + 'routes, so it is the only place from which the whole map is reachable inside the '
       + 'hiding period — and it is where the seekers will start anyway.',
       `F1 hub_dominance = ${num(hub.routeShare, 3)}, network shape `
-      + `${get(metrics, 'networkShape')}`);
+      + `${get(metrics, 'networkShape')}`, false, {
+        lead: `Start at ${hub.name}`,
+        detail: 'It is the only place from which the whole map is reachable inside the hiding '
+          + 'period, and it is where the seekers will start anyway.',
+        icon: 'star',
+        facts: [fact(`${pct(hub.routeShare)} of routes`, 'star')],
+      });
   } else if (hub !== null) {
-    const alts = hub.alternatives.slice(0, 3).map(([, name]) => name).join(', ');
+    const top = hub.alternatives.slice(0, 3);
+    const alts = top.map(([, name]) => name).join(', ');
     add('start_at_hub', 20,
       `This network has no dominant hub, so agree a start station before you begin. The `
       + `three busiest are ${hub.name}${alts ? `, ${alts}` : ''}.`,
-      `network shape ${get(metrics, 'networkShape')}`);
+      `network shape ${get(metrics, 'networkShape')}`, false, {
+        lead: 'Pick a start station together',
+        detail: 'This network has no dominant hub; these are its busiest stations.',
+        icon: 'star',
+        items: [{ id: String(hub.stopId), label: hub.name }]
+          .concat(top.map(([sid, name]) => ({ id: String(sid), label: name }))),
+      });
   }
 
   // 3 · the border
@@ -1512,11 +1597,22 @@ export function deriveRecommendations(reportParts) {
           + 'extend past it'
         : `border padded by ${num(border.padM)} m — one hiding-zone radius, so every legal `
           + 'zone lies wholly inside';
+    const derivedFact = derivation === 'option' || derivation === 'option_fallback'
+      ? fact('your box, unpadded', 'draw-polygon')
+      : fact(`padded ${num(border.padM)} m`, 'draw-polygon');
     add('use_borders', 30,
       'Use exactly the border printed under the map, and copy the GeoJSON rather than '
       + 'redrawing it. The rulebook is emphatic that every player must be using the same '
       + 'set of borders, and on this map the border decides which questions work at all.',
-      borderBasis, true);
+      borderBasis, true, {
+        lead: 'Use exactly this border',
+        detail: 'Copy the GeoJSON rather than redrawing it. The rulebook is emphatic that every '
+          + 'player must be using the same set of borders, and on this map the border decides '
+          + 'which questions work at all.',
+        icon: 'draw-polygon',
+        facts: [derivedFact],
+        degrade: derivation === 'option_fallback' ? 'border_not_applied' : null,
+      });
   }
 
   // 4 · is this a transit game at all
@@ -1525,7 +1621,11 @@ export function deriveRecommendations(reportParts) {
       `This system rates ${num(fitness.score, 1)} out of 100 — ${fitness.band.toLowerCase()}. `
       + 'Before you house-rule around it, read the rulebook\'s cars or on-foot variant: a '
       + 'map that is just borders and street termini beats a broken transit game.',
-      `fitness ${num(fitness.score, 1)} / 100, band “${fitness.band}”`, true);
+      `fitness ${num(fitness.score, 1)} / 100, band “${fitness.band}”`, true, {
+        lead: 'Read the cars or on-foot variant first',
+        detail: 'A map that is just borders and street termini beats a broken transit game.',
+        icon: 'person-running',
+      });
   }
 
   // 5 · does the inferred size actually fit
@@ -1535,32 +1635,49 @@ export function deriveRecommendations(reportParts) {
       `The map\'s own numbers point at a ${implied.toUpperCase()} game while the parameters in use `
       + `are ${size.name.toUpperCase()}. Either shrink the border or switch size — the hiding period `
       + 'and the zone radius are what make distance mean something.',
-      `axes imply ${implied}, running as ${size.name}`);
+      `axes imply ${implied}, running as ${size.name}`, false, {
+        lead: 'Shrink the border or switch size',
+        detail: 'The hiding period and the zone radius are what make distance mean something.',
+        icon: 'ruler-combined',
+        facts: [
+          fact(`map says ${implied.toUpperCase()}`, 'ruler-combined', 'warning'),
+          fact(`playing ${size.name.toUpperCase()}`, 'gamepad'),
+        ],
+      });
   }
 
   // 6 · the dead list
   const dead = questions.filter((q) => q.status === 'dead' || q.status === 'degenerate');
   if (dead.length) {
-    const sample = dead.slice().sort((a, b) => cmpStr(a.id, b.id)).slice(0, 5)
-      .map((q) => q.label).join(', ');
+    const deadSorted = dead.slice().sort((a, b) => cmpStr(a.id, b.id));
+    const sample = deadSorted.slice(0, 5).map((q) => q.label).join(', ');
     add('brief_dead_questions', 40,
       `Read the dead list out before the first round. ${num(dead.length)} questions here `
-      + `return null or a known answer — ${sample}`
-      + `${dead.length > 5 ? '…' : ''} — and asking one costs the seekers a slot and pays `
-      + 'the hider a card.',
+      + `return null or a known answer — ${sample}${dead.length > 5 ? '…' : '.'}`,
       `B1: ${num(dead.length)} dead or degenerate questions`,
-      dead.length > questions.length / 3);
+      dead.length > questions.length / 3, {
+        lead: 'Read the dead list out',
+        detail: `Do it before the first round: ${num(dead.length)} questions here return null `
+          + 'or a known answer.',
+        icon: 'list-check',
+        items: deadSorted.map((q) => ({ id: q.id, label: q.label })),
+      });
   }
 
   // 7 · the deck
   const removals = curses.filter((c) => c.action === 'remove');
   if (removals.length) {
-    const names = s3Join(removals.slice().sort((a, b) => cmpStr(a.id, b.id)).map((c) => c.name));
+    const removalsSorted = removals.slice().sort((a, b) => cmpStr(a.id, b.id));
+    const names = s3Join(removalsSorted.map((c) => c.name));
     add('remove_curses', 45,
       `Take ${num(removals.length)} curse${removals.length !== 1 ? 's' : ''} out of the deck `
       + `before you shuffle: ${names}. Each one is either uncastable here or explicitly `
       + 'removed by the rulebook.',
-      'Curse deck audit, tiers 1 and 2', true);
+      'Curse deck audit, tiers 1 and 2', true, {
+        lead: 'Remove before you shuffle',
+        icon: 'ban',
+        items: removalsSorted.map((c) => ({ id: c.id, label: c.name })),
+      });
   }
   // Only the two spending curses trigger this rule: `u_turn` also carries
   // 'player-choice' on an assumed-schedule run and must not switch it on.
@@ -1572,22 +1689,37 @@ export function deriveRecommendations(reportParts) {
       + 'Impressionable Consumer and Lemon Phylactery all require a purchase; the rulebook '
       + 'flags the first two and is silent about the third, which is an inconsistency. Treat '
       + 'them as one switch.',
-      'rules.md ambiguity spending_curse_inconsistency');
+      'rules.md ambiguity spending_curse_inconsistency', false, {
+        lead: 'Decide: does anyone spend money?',
+        detail: 'Egg Partner, Impressionable Consumer and Lemon Phylactery all require a '
+          + 'purchase. Treat them as one switch.',
+        icon: 'coins',
+      });
   }
 
   // 8 · when it ends
   const medianLast = get(metrics, 'medianLastDepartureS');
   if (medianLast) {
+    const assumedCaveat = 'On this run the timetable is assumed from OpenStreetMap, so treat '
+      + 'this time as a default to agree on, not a measurement — and check the real last '
+      + 'departures.';
     add('end_timer', 50,
       `Set an end-of-game timer at ${hhmm(Number(medianLast) - 1800)}. That is 30 minutes `
       + 'before the median last departure, which is the point after which a hider in an '
       + 'average zone can no longer get anywhere — including home.'
       // On an assumed schedule the quoted time is the synthesizer's window read back.
-      + (assumed
-        ? ' On this run the timetable is assumed from OpenStreetMap, so treat this time as '
-          + 'a default to agree on, not a measurement — and check the real last departures.'
-        : ''),
-      `median last departure ${hhmm(Number(medianLast))}`);
+      + (assumed ? ` ${assumedCaveat}` : ''),
+      `median last departure ${hhmm(Number(medianLast))}`, false, {
+        lead: 'Set an end-of-game timer',
+        detail: 'After the median last departure a hider in an average zone can no longer get anywhere, '
+          + `including home.${assumed ? ` ${assumedCaveat}` : ''}`,
+        icon: 'stopwatch',
+        facts: [
+          fact(hhmm(Number(medianLast) - 1800), 'stopwatch', 'brand'),
+          fact(`last bus ${hhmm(Number(medianLast))} − ${mins(30)}`, 'bus'),
+        ],
+        degrade: assumed ? 'assumed_schedule' : null,
+      });
   }
 
   // 9 · fares
@@ -1608,10 +1740,23 @@ export function deriveRecommendations(reportParts) {
       }
       const fareAgency = String(get(feed, 'fareAgency') || '');
       const whose = fareAgency ? `on ${fareAgency}` : 'in this feed';
+      const fareText = fare(price, currency);
+      const fareFacts = [fact(`${fareText} per ride`, 'ticket')];
+      if (transfers !== '') {
+        fareFacts.push(String(transfers) !== '0'
+          ? fact('transfers included', 'circle-check', 'success')
+          : fact('no free transfers', 'circle-xmark', 'warning'));
+      }
+      if (fareAgency) fareFacts.push(fact(fareAgency, 'building'));
       add('carry_fare', 55,
-        `Carry fare. A single ride is ${price} ${currency} ${whose}.${note} Both sides `
+        `Carry fare. A single ride is ${fareText} ${whose}.${note} Both sides `
         + 'will board more often than they expect.',
-        'fare_attributes.txt');
+        'fare_attributes.txt', false, {
+          lead: 'Carry fare',
+          detail: 'Both sides will board more often than they expect.',
+          icon: 'ticket',
+          facts: fareFacts,
+        });
     }
   }
 
@@ -1620,11 +1765,29 @@ export function deriveRecommendations(reportParts) {
     `A ${size.name.toUpperCase()} game gives ${num(size.photoLimitMin)} minutes to answer a photo `
     + `question and ${num(size.otherLimitMin)} minutes for everything else, and the Move `
     + `powerup grants ${num(size.moveGrantMin)} minutes. Put a visible timer on it.`,
-    `rulebook size table, ${size.name}`);
+    `rulebook size table, ${size.name}`, false, {
+      lead: 'Put a visible timer on it',
+      detail: `These are a ${size.name.toUpperCase()} game's answer limits and the Move `
+        + 'powerup\'s grant.',
+      icon: 'hourglass-half',
+      facts: [
+        fact(`photo ${mins(size.photoLimitMin)}`, 'camera'),
+        fact(`other ${mins(size.otherLimitMin)}`, 'circle-question'),
+        fact(`Move ${mins(size.moveGrantMin)}`, 'person-running'),
+      ],
+    });
   add('hand_limit', 61,
     'Hand limit is 6, raised to 7 or 8 only by Draw 1 Expand 1. Going over forces an immediate '
     + 'play-or-discard, and time bonuses only count if you are still holding them at the end.',
-    'rulebook, hider deck');
+    'rulebook, hider deck', false, {
+      lead: `Hand limit ${num(6)}`,
+      icon: 'hand',
+      facts: [
+        fact(`${num(7)}–${num(8)} only via Draw 1 Expand 1`, 'up-right-from-square'),
+        fact('over → play or discard now', 'hand'),
+        fact('time bonuses count only if held', 'clock'),
+      ],
+    });
 
   // 11 · frequency and reachability warnings
   // Gated off on an assumed schedule: C1 is dropped there for the same reason.
@@ -1634,7 +1797,12 @@ export function deriveRecommendations(reportParts) {
       `Agree that either side may check live departures at any time. The median stop here `
       + `sees a bus every ${mins(Number(headway))}; without the timetable the game becomes a `
       + 'coin flip about which bus somebody caught.',
-      `C1 median_headway_min = ${num(Number(headway), 1)}`);
+      `C1 median_headway_min = ${num(Number(headway), 1)}`, false, {
+        lead: 'Allow live departure checks at any time',
+        detail: `The median stop here sees a bus every ${mins(Number(headway))}; without the `
+          + 'timetable the game becomes a coin flip about which bus somebody caught.',
+        icon: 'calendar-check',
+      });
   }
   const reach = nullish(get(metrics, 'reachableZoneShare'));
   if (reach !== null && Number(reach) < 0.85) {
@@ -1642,25 +1810,42 @@ export function deriveRecommendations(reportParts) {
       `Warn the hider that only ${pct(Number(reach))} of the map is reachable inside the `
       + 'hiding period from the start location. Plan the journey before the clock starts — '
       + 'the rulebook\'s advice is to go somewhere you know you can get to.',
-      `A2 reachable_zone_share = ${num(Number(reach), 3)}`);
+      `A2 reachable_zone_share = ${num(Number(reach), 3)}`, false, {
+        lead: 'Plan the ride before the clock starts',
+        detail: 'Warn the hider; the share is measured from the start location. The rulebook\'s '
+          + 'advice is to go somewhere you know you can get to.',
+        icon: 'route',
+        facts: [fact(`${pct(Number(reach))} reachable in hiding period`, 'route', 'neutral',
+          fillPct(Number(reach)))],
+      });
   }
 
   // 12 · borderline questions
   const borderline = questions.filter((q) => q.borderline);
   if (borderline.length) {
     const subjects = [];
+    const subjectItems = [];
     for (const q of borderline.slice().sort((a, b) => cmpStr(a.id, b.id))) {
-      if (!subjects.includes(q.label)) subjects.push(q.label);
+      if (subjects.includes(q.label)) continue;
+      subjects.push(q.label);
+      subjectItems.push({ id: q.id, label: q.label });
     }
     const sample = s3Join(subjects.slice(0, 3));
+    const changes = `${num(borderline.length)} question${borderline.length !== 1 ? 's' : ''} `
+      + 'would change status if you drew the line slightly wider.';
     add('settle_borderline', 66,
       `Settle the edge cases out loud before the round. ${sample}`
-      + `${subjects.length > 3 ? '…' : ''} sits just outside the border, so `
-      + `${num(borderline.length)} question`
-      + `${borderline.length !== 1 ? 's' : ''} would change status if you drew the line `
-      + 'slightly wider. A player checking on their phone will see the feature and argue.',
+      + `${subjects.length > 3 ? '…' : ''} ${subjects.length !== 1 ? 'sit' : 'sits'} just `
+      + `outside the border, so ${changes} A player checking on their phone will see the `
+      + 'feature and argue.',
       `${num(borderline.length)} borderline questions across ${num(subjects.length)} subjects`,
-      true);
+      true, {
+        lead: 'Settle the edge cases out loud',
+        detail: `These sit just outside the border: ${changes} A player checking on their phone `
+          + 'will see the feature and argue.',
+        icon: 'circle-half-stroke',
+        items: subjectItems,
+      });
   }
 
   // 13 · rail-free feeds
@@ -1671,14 +1856,20 @@ export function deriveRecommendations(reportParts) {
     const names = s3Join(railDead.slice().sort((a, b) => cmpStr(a.id, b.id)).map((q) => q.label));
     add('no_rail_note', 67,
       `There is no rail mode in this feed, so ${names} are dead. Brief the seekers: that is `
-      + `${num(railDead.length)} question${railDead.length !== 1 ? 's' : ''} that pay the `
-      + 'hider a card and teach nothing.',
+      + `${num(railDead.length)} question${railDead.length !== 1 ? 's' : ''}.`,
       // A merged real-plus-OSM run read part of the mode set off OSM route
       // relations, so the evidence names that source. A purely synthesized
       // source is all rail and never lands here.
       assumed
         ? 'Route types, partly synthesized from OSM route tags: none in the rail-like set'
-        : 'GTFS route types: no route_type in the rail-like set');
+        : 'GTFS route types: no route_type in the rail-like set', false, {
+        lead: 'No rail in this feed',
+        detail: `${names} ${railDead.length !== 1 ? 'are' : 'is'} dead. Brief the seekers.`,
+        icon: 'train',
+        facts: [fact(`${num(railDead.length)} rail question${railDead.length !== 1 ? 's' : ''} `
+          + 'dead', 'train', 'danger')],
+        degrade: assumed ? 'assumed_schedule' : null,
+      });
   }
 
   // 14 · long games need rest
@@ -1687,7 +1878,13 @@ export function deriveRecommendations(reportParts) {
       'Agree rest periods in advance — at least 10 hours is the rulebook\'s recommendation — '
       + 'and remember that everyone resumes from their exact position, and that the '
       + 'publicly-accessible test for a hiding spot does not apply during a rest period.',
-      'rulebook, game sizes');
+      'rulebook, game sizes', false, {
+        lead: 'Agree rest periods in advance',
+        detail: 'At least 10 hours is the rulebook\'s recommendation. Everyone resumes from '
+          + 'their exact position, and the publicly-accessible test for a hiding spot does not '
+          + 'apply during a rest period.',
+        icon: 'moon',
+      });
   }
 
   // 15 · the one rule that always fires
@@ -1696,8 +1893,15 @@ export function deriveRecommendations(reportParts) {
     + 'safe going there. The rulebook requires this conversation and refuses to automate '
     + 'it. Exclude those stops and routes so every number on these pages matches the map '
     + 'you are playing.',
-    'The rulebook requires this conversation and explicitly refuses to automate it.',
-    true);
+    'rulebook, safety',
+    true, {
+      lead: 'Agree the safety exclusions first',
+      detail: 'Agree which areas are off the map because someone does not feel safe going '
+        + 'there. The rulebook requires this conversation and refuses to automate it. Exclude '
+        + 'those stops and routes so every number on these pages matches the map you are '
+        + 'playing.',
+      icon: 'shield-heart',
+    });
 
   out.sort((a, b) => (a.priority - b.priority) || cmpStr(a.id, b.id));
   return out;
@@ -1741,6 +1945,19 @@ function synthArgv(opts, feeds = []) {
   return argv;
 }
 
+const AFFECT_METRIC_ID = /^(CAP_[A-Z_]+|[A-F]\d|IR\d|[RSEAX]\d)$/;
+const QUESTION_LABEL = new Map(QUESTIONS.map((q) => [q.id, q.label]));
+const CURSE_NAME = new Map(CURSES.map((c) => [c.id, c.name]));
+
+/** Classify one `INTERPRETATIONS[].affects` entry as a metric, question, curse or free text. */
+function affectLink(entry) {
+  const id = String(entry);
+  if (AFFECT_METRIC_ID.test(id)) return { kind: 'metric', id, label: id };
+  if (QUESTION_LABEL.has(id)) return { kind: 'question', id, label: QUESTION_LABEL.get(id) };
+  if (CURSE_NAME.has(id)) return { kind: 'curse', id, label: CURSE_NAME.get(id) };
+  return { kind: 'text', id, label: id };
+}
+
 /**
  * Assemble the provenance block: what was fetched, what was assumed. Contains no
  * timestamp not derived from `feed_info` or `options.asOf`. `border` is read only
@@ -1780,6 +1997,8 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
       cacheKey: q.cacheKey,
       endpoint: q.endpoint,
       partial: q.partial,
+      source: q.source,
+      layer: nullish(q.layer),
     });
   }
 
@@ -1787,13 +2006,27 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
   for (const k of ['1', '2', '3', '4']) adminLevels[k] = nullish(get(geo.admin.ordinals, k));
 
   const derivation = border && typeof border.derivation === 'string' ? border.derivation : '';
+  const synthesized = feeds.some((r) => r && r.synthesized);
   const interpretations = INTERPRETATIONS.slice()
     .sort((a, b) => cmpStr(a.id, b.id))
-    .map((row) => ({
-      id: row.id,
-      text: (row.byDerivation && derivation && row.byDerivation[derivation]) || row.text,
-      affects: Array.from(row.affects),
-    }));
+    .map((row) => {
+      const text = (row.byDerivation && derivation && row.byDerivation[derivation]) || row.text;
+      const lead = (row.byDerivationLead && derivation && row.byDerivationLead[derivation])
+        || row.lead || '';
+      const out = {
+        id: row.id,
+        text,
+        affects: Array.from(row.affects),
+        explain: { lead, detail: text },
+        applies: row.id.startsWith('osm_synth_') ? synthesized : true,
+        affectLinks: row.affects.map(affectLink),
+      };
+      if (row.groups) {
+        out.groups = row.groups.map((g) => ({ label: g.label, basis: g.basis, ids: Array.from(g.ids) }));
+      }
+      if (row.data) out.data = row.data;
+      return out;
+    });
 
   return {
     feedUrl: feed.source,                       // feed_url

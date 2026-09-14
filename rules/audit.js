@@ -20,11 +20,11 @@
 
 import {
   M_PER_MILE, QUARTER_MILE_M, SEEKER_SAMPLE_CAP, SURV_FULL_UNIVERSE_MAX,
-  cmpStr, rhu, num, pct, mins, miles, quantile,
+  cmpStr, rhu, num, pct, mins, miles, quantile, fillPct, explainText,
 } from '../lib/core.js';
 import { Projection, bboxContains, bboxExpand } from '../lib/geo.js';
 import { GEO_CATEGORIES, LOW_STREETVIEW_COUNTRIES } from '../osm/geodata.js';
-import { QUESTIONS, CURSES, catalogueFor } from './catalogue.js';
+import { QUESTIONS, CURSES, THERMO_DEGENERATE_SHARE, catalogueFor } from './catalogue.js';
 
 const RAD = Math.PI / 180.0;
 
@@ -1341,6 +1341,97 @@ function blockSpan(signature) {
   return [sizes.length, sizes[0], sizes[sizes.length - 1]];
 }
 
+/** A zone-count range such as `2–68`, or one number when both ends match. */
+function zoneSpan(smallest, largest) {
+  return smallest === largest ? num(smallest) : `${num(smallest)}–${num(largest)}`;
+}
+
+/** One always-visible row chip; `text` is already formatted. */
+function fact(text, icon, variant = 'neutral', fill = null) {
+  return { text, icon, variant, fill };
+}
+
+/** The borderline sentence for `extra` features just outside a modestly wider border. */
+function marginSentence(extra, zoneRadius) {
+  return `${num(extra)} ${extra === 1 ? 'sits' : 'sit'} just outside a border drawn `
+    + `${num(Math.max(2 * zoneRadius, 250.0))} m wider, so this call is sensitive to where `
+    + 'you draw the line.';
+}
+
+function capitalise(s) {
+  return `${s.slice(0, 1).toUpperCase()}${s.slice(1)}`;
+}
+
+/**
+ * '3 Miles' before '10 Miles': digit runs compare as integers, the rest casefolded,
+ * the raw string last. (port of verdict.js `s4NaturalCmp`)
+ */
+function naturalCmp(a, b) {
+  const key = (s) => {
+    const k = s.split(/(\d+)/).map((p) => (/^\d+$/.test(p) ? [1, Number(p)] : [0, p.toLowerCase()]));
+    k.push([0, s]);
+    return k;
+  };
+  const ka = key(String(a));
+  const kb = key(String(b));
+  for (let i = 0; i < Math.min(ka.length, kb.length); i++) {
+    const [ta, va] = ka[i];
+    const [tb, vb] = kb[i];
+    if (ta !== tb) return ta - tb;
+    if (va !== vb) return typeof va === 'number' ? va - vb : cmpStr(va, vb);
+  }
+  return ka.length - kb.length;
+}
+
+const S3_CATEGORY_ORDER = Object.freeze([
+  'matching', 'measuring', 'radar', 'thermometer', 'photo', 'tentacle',
+]);
+
+/**
+ * Per-category question health for §07: status counts, `health` (functional plus half
+ * of weak) and `risk` (dead plus degenerate) as shares of the category, and the dead or
+ * degenerate questions. (port of deck.js `s4QuestionCategories`)
+ * @param {Array<Object>} questions  QuestionAudit rows with final statuses
+ * @returns {Array<Object>} QuestionCategory rows
+ */
+export function questionCategories(questions) {
+  const rows = Array.from(questions || []);
+  const order = Array.from(S3_CATEGORY_ORDER);
+  const extra = [];
+  for (const q of rows) {
+    const c = String(q.category || '');
+    if (!order.includes(c) && !extra.includes(c)) extra.push(c);
+  }
+  order.push(...extra.sort(cmpStr));
+  const out = [];
+  for (const category of order) {
+    const members = rows.filter((q) => q.category === category);
+    if (!members.length) continue;
+    const counts = { functional: 0, weak: 0, degenerate: 0, dead: 0, unknown: 0 };
+    for (const q of members) {
+      if (Object.prototype.hasOwnProperty.call(counts, q.status)) counts[q.status] += 1;
+    }
+    const n = members.length;
+    const gone = [];
+    for (const q of members) {
+      if (q.status !== 'dead' && q.status !== 'degenerate') continue;
+      const label = String(q.label || '');
+      if (gone.some((g) => g.label === label)) continue;
+      gone.push({ id: q.id, label, status: q.status });
+    }
+    gone.sort((a, b) => naturalCmp(a.label, b.label));
+    out.push({
+      category,
+      n,
+      counts,
+      health: (counts.functional + 0.5 * counts.weak) / n,
+      risk: (counts.dead + counts.degenerate) / n,
+      gone,
+    });
+  }
+  return out;
+}
+
 /**
  * Give every question in the catalogue a status and a quality score. The status
  * rule differs per category:
@@ -1372,6 +1463,10 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
   const zoneRadius = Number(size.zoneRadiusM);
   const out = [];
   const catalogue = catalogueFor(size);
+  const redundant = geo.available && Array.isArray(geo.redundantPairs) ? geo.redundantPairs : [];
+  const mountainZero = geo.available
+    && Object.prototype.hasOwnProperty.call(geo.counts || {}, 'mountain')
+    && geo.counts.mountain === 0;
 
   for (let qi = 0; qi < catalogue.length; qi++) {
     const q = catalogue[qi];
@@ -1383,7 +1478,12 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
     /** @type {number|null} */ let coverage = null;
     let borderline = false;
     let status = 'unknown';
-    let why = 'Not evaluated.';
+    let lead = 'Not evaluated';
+    let detail = '';
+    /** @type {Array<Object>} */ let facts = [];
+    /** @type {string|null} */ let degrade = null;
+    /** @type {string|null} */ let interpId = null;
+    /** @type {number|null} */ let marginN = null;
 
     // ── matching ──────────────────────────────────────────────────────────
     if (q.category === 'matching') {
@@ -1391,39 +1491,34 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         const [pois, queried] = inBorderPois(geo, q.geodataRef, border.bbox);
         if (!queried) {
           status = 'unknown';
-          why = notQueriedWhy(geo, s3Noun(q.geodataRef, 2));
+          ({ lead, detail, degrade } = notQueried(geo, s3Noun(q.geodataRef, 2)));
         } else {
           instances = pois.length;
           const margin = marginCount(geo, q.geodataRef, border.bbox, zoneRadius);
           borderline = (instances === 0 && margin >= 1) || (instances === 1 && margin >= 2);
+          if (borderline) marginN = margin - instances;
           if (instances === 0) {
             status = 'dead';
-            why = `No ${s3Noun(q.geodataRef, 1)} inside the border. Out-of-border `
-              + 'features do not exist for this game, so the answer is always null '
-              + '— and a null still pays the hider a card.';
-            if (margin) {
-              why += ` ${num(margin)} sit just outside a border drawn `
-                + `${num(Math.max(2 * zoneRadius, 250.0))} m wider, so this call is `
-                + 'sensitive to where you draw the line.';
-            }
+            lead = `No ${s3Noun(q.geodataRef, 1)} inside the border`;
+            detail = 'Out-of-border features do not exist for this game, so the answer is always null.';
           } else if (instances === 1) {
             status = 'degenerate';
-            why = `One ${s3Noun(q.geodataRef, 1)} inside the border, so every `
-              + "zone's nearest is the same one and the answer is always yes.";
+            lead = `One ${s3Noun(q.geodataRef, 1)} inside the border`;
+            detail = "Every zone's nearest is the same one, so the answer is always yes.";
           } else {
             quality = s3Quality(q, sig, zones, seekers);
             const [classes, smallest, largest] = blockSpan(sig);
             status = quality < 0.12 ? 'weak' : 'functional';
-            why = `${num(instances)} ${s3Noun(q.geodataRef, instances)} inside the `
-              + `border; ${num(classes)} of them are the nearest to at least one `
-              + `zone, and those cells hold ${num(smallest)}–${num(largest)} zones `
-              + 'each.';
-            if (status === 'weak') {
-              why += ' The cells are so fine that a random seeker almost never '
-                + 'shares yours, so the answer is nearly always no — and a no '
-                + "eliminates only that seeker's own cell.";
-            }
+            lead = '';
+            const verb = classes === 1 ? 'is' : 'are';
+            facts = [
+              fact(`${num(classes)} ${verb} someone's nearest`, 'location-dot'),
+              fact(`${zoneSpan(smallest, largest)} zones per group`, 'layer-group'),
+            ];
+            detail = `${num(classes)} ${s3Noun(q.geodataRef, classes)} ${verb} the nearest to at least `
+              + `one zone, and those cells hold ${zoneSpan(smallest, largest)} zones each.`;
           }
+          if (marginN !== null) detail = `${detail} ${marginSentence(marginN, zoneRadius)}`;
         }
       } else if (kind === 'gtfs_transit_line') {
         const routes = Number(metrics.routes || 0);
@@ -1431,38 +1526,40 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         const [classes] = blockSpan(sig);
         if (routes === 0) {
           status = 'dead';
-          why = 'No routes serve this map.';
+          lead = 'No routes serve this map';
         } else if (routes === 1) {
           status = 'degenerate';
-          why = "One route serves the whole map, so everyone's nearest transit line is it.";
+          lead = 'One route serves the whole map';
+          detail = "Everyone's nearest transit line is it.";
         } else {
           // Scored like any matching question: the rulebook's only precondition is
           // timing (aboard and moving), and Curse of the Urban Explorer must be
-          // drawn and played, so it is prose, not `unaskable`. Deliberate
+          // drawn and played, so it is scored, not `unaskable`. Deliberate
           // divergence from generate.py, which hard-codes `unaskable` here.
           quality = s3Quality(q, sig, zones, seekers);
           status = quality < 0.12 ? 'weak' : 'functional';
-          const sharp = quality >= 0.12
-            ? 'cuts hard when it lands'
-            : "almost always answers no, and a no eliminates only the seeker's own set";
-          why = `${num(routes)} routes produce ${num(classes)} distinct route sets across `
-            + `${num(n)} zones, so it ${sharp}. Asking it costs timing, not terrain: you `
-            + 'must be aboard a vehicle and moving when the question goes out, which on '
-            + `${num(routes)} routes is a matter of planning the ask. One caveat — if the `
-            + 'hider draws Curse of the Urban Explorer, pays its cost and plays it, '
-            + 'transit is closed to you for the rest of the run and this question goes '
-            + 'with it.';
+          lead = status === 'functional'
+            ? `${num(classes)} distinct route sets, so it cuts hard when it lands`
+            : `${num(classes)} distinct route sets, so it almost always answers no`;
+          facts = [fact('ask while aboard and moving', 'bus')];
+          detail = `${num(routes)} routes produce them across ${num(n)} zones.`
+            + (status === 'weak' ? " A no eliminates only the seeker's own set." : '');
         }
       } else if (kind === 'gtfs_name_length') {
         const [classes, , largest] = blockSpan(sig);
         instances = classes;
         if (classes < 2) {
           status = 'degenerate';
-          why = 'Every station name on this map is the same length.';
+          lead = 'Every station name on this map is the same length';
         } else {
           quality = s3Quality(q, sig, zones, seekers);
           status = quality < 0.12 ? 'weak' : 'functional';
-          why = `${num(classes)} distinct station-name lengths across ${num(n)} zones, `
+          lead = '';
+          facts = [
+            fact(`${num(classes)} name lengths`, 'text-width'),
+            fact(`largest shares ${num(largest)} zones`, 'layer-group'),
+          ];
+          detail = `${num(classes)} distinct station-name lengths across ${num(n)} zones, `
             + `the largest sharing ${num(largest)} zones.`;
         }
       } else if (kind === 'street') {
@@ -1471,44 +1568,51 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
           : null;
         if (counted === null) {
           status = 'unknown';
-          why = notQueriedWhy(geo, 'streets and paths');
+          ({ lead, detail, degrade } = notQueried(geo, 'streets and paths'));
         } else if (counted === 0) {
           status = 'dead';
-          why = 'No mapped street or path inside the border.';
+          lead = 'No mapped street or path inside the border';
         } else {
           instances = counted;
           quality = s3Quality(q, sig, zones, seekers);
           status = quality < 0.12 ? 'weak' : 'functional';
-          why = `${num(counted)} mapped street and path ways, effectively one nearest per `
-            + 'zone, so the answer is almost always no — and a no eliminates exactly '
-            + 'one zone. Live, but the weakest matching question on this map.';
+          lead = '';
+          facts = [
+            fact('one nearest per zone', 'road'),
+            fact('weakest matching question', 'arrow-down-short-wide', 'warning'),
+          ];
+          detail = 'Effectively one nearest per zone, so the answer is almost always no. Live, '
+            + 'but the weakest matching question on this map.';
         }
       } else if (kind === 'landmass') {
         const [pois, queried] = inBorderPois(geo, 'coastline', border.bbox);
         if (!queried) {
           status = 'unknown';
-          why = notQueriedWhy(geo, 'coastline');
+          ({ lead, detail, degrade } = notQueried(geo, 'coastline'));
         } else if (!pois.length) {
           status = 'degenerate';
           instances = 1;
-          why = 'No coastline inside the border, so the whole map is one landmass and '
-            + 'the answer is always yes.';
+          lead = 'No coastline inside the border';
+          detail = 'The whole map is one landmass, so the answer is always yes.';
         } else if (pois.every((p) => (p.tags || {}).derived)) {
           // Every shore was derived from a water body larger than the map, so
           // the water bounds the map rather than splitting it.
           status = 'degenerate';
           instances = 1;
-          why = 'The only shore inside the border belongs to a water body larger than '
-            + 'the map, so it bounds the map rather than splitting it: the land is '
-            + 'one landmass and the answer is always yes.';
+          lead = 'The only shore bounds the map';
+          detail = 'It belongs to a water body larger than the map, so it bounds the map rather '
+            + 'than splitting it: the land is one landmass and the answer is always yes.';
         } else {
           status = 'unknown';
           instances = pois.length;
-          why = 'Coastline crosses the border, so the map spans more than one landmass; '
+          degrade = 'no_result';
+          lead = 'Landmasses not assembled';
+          detail = 'Coastline crosses the border, so the map spans more than one landmass; '
             + 'assembling landmasses from coastline ways is out of scope here.';
         }
       } else if (kind === 'admin') {
-        ({ status, instances, quality, why } = adminMatching(q, arg, sig, geo, zones, seekers));
+        ({ status, instances, quality, lead, detail, facts, degrade } = adminMatching(
+          q, arg, sig, geo, zones, seekers));
       }
 
     // ── measuring ─────────────────────────────────────────────────────────
@@ -1517,43 +1621,42 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         const [pois, queried] = inBorderPois(geo, q.geodataRef, border.bbox);
         if (!queried) {
           status = 'unknown';
-          why = notQueriedWhy(geo, s3Noun(q.geodataRef, 2));
+          ({ lead, detail, degrade } = notQueried(geo, s3Noun(q.geodataRef, 2)));
         } else {
           instances = pois.length;
           const margin = marginCount(geo, q.geodataRef, border.bbox, zoneRadius);
           borderline = instances === 0 && margin >= 1;
+          if (borderline) marginN = margin;
           if (instances === 0) {
             status = 'dead';
-            why = `No ${s3Noun(q.geodataRef, 1)} inside the border, so this always `
-              + 'returns null — which costs the seekers a question and pays the '
-              + 'hider a card.';
-            if (margin) {
-              why += ` ${num(margin)} sit just outside a border drawn `
-                + `${num(Math.max(2 * zoneRadius, 250.0))} m wider, so the call is `
-                + 'sensitive to where you draw the line.';
-            }
+            lead = `No ${s3Noun(q.geodataRef, 1)} inside the border`;
+            detail = 'This always returns null.';
+            if (marginN !== null) detail = `${detail} ${marginSentence(marginN, zoneRadius)}`;
           } else {
             quality = s3Quality(q, sig, zones, seekers);
             const values = sig.filter((v) => v !== null && v !== undefined);
             const lo = values.length ? minOf(values) : 0.0;
             const hi = values.length ? maxOf(values) : 0.0;
             status = quality < 0.30 ? 'weak' : 'functional';
-            why = `${num(instances)} ${s3Noun(q.geodataRef, instances)} inside `
-              + `the border; the zones sit ${miles(lo)}–${miles(hi)} from the `
-              + 'nearest one, so the distance ring cuts the map cleanly.';
-            if (instances === 1) {
-              why += ' A single instance is not a weakness here: one clean ring is '
-                + 'among the strongest measuring questions there is.';
+            lead = '';
+            facts = [fact(`${miles(lo)}–${miles(hi)} to nearest`, 'ruler-horizontal')];
+            detail = `The zones sit ${miles(lo)}–${miles(hi)} from the nearest one.`;
+            if (instances === 1 && status === 'functional') {
+              facts.push(fact('one clean ring', 'bullseye', 'success'));
+              detail += ' A single instance is not a weakness here: one clean ring is among the '
+                + 'strongest measuring questions there is.';
             }
           }
         }
       } else if (kind === 'border_line') {
-        ({ status, instances, quality, why } = borderMeasuring(q, arg, sig, geo, zones, seekers));
+        ({ status, instances, quality, lead, detail, facts, degrade, interpId } = borderMeasuring(
+          q, arg, sig, geo, zones, seekers));
       } else if (kind === 'dem') {
         status = 'unknown';
-        why = 'Elevation needs a digital elevation model this pipeline deliberately does '
-          + 'not carry. On a map with real terrain this question probably works; it is '
-          + 'reported as not evaluated rather than guessed.';
+        degrade = 'no_dem';
+        lead = 'Probably works on real terrain';
+        detail = 'Elevation needs a digital elevation model this pipeline deliberately does not '
+          + 'carry. It is reported as not evaluated rather than guessed.';
       }
 
     // ── radar ─────────────────────────────────────────────────────────────
@@ -1564,26 +1667,30 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       const hit = table[radius] === undefined ? null : table[radius];
       if (diameter && radius >= diameter) {
         status = 'degenerate';
-        why = `${miles(radius)} is wider than the map's ${miles(diameter)} diameter, so the `
+        lead = '';
+        facts = [fact(`${miles(radius)} wider than the ${miles(diameter)} map`, 'expand')];
+        detail = `${miles(radius)} is wider than the map's ${miles(diameter)} diameter, so the `
           + 'answer is always yes.';
       } else if (radius < zoneRadius) {
         status = 'weak';
-        why = `${miles(radius)} is smaller than the ${miles(zoneRadius)} hiding-zone `
-          + 'radius, so the disc cannot even cover one zone. This is an endgame tool, '
-          + 'not a search tool.';
+        lead = `Smaller than one ${miles(zoneRadius)} hiding zone`;
+        facts = [fact('endgame tool', 'crosshairs')];
+        detail = `${miles(radius)} is smaller than the ${miles(zoneRadius)} hiding-zone radius, `
+          + 'so the disc cannot even cover one zone. This is an endgame tool, not a search tool.';
       } else {
         status = quality < 0.25 ? 'weak' : 'functional';
-        const share = hit;
-        why = `A ${miles(radius)} disc covers `
-          + `${share !== null ? pct(share) : 'part'} of the map's station pairs, `
-          + 'so the yes and no branches are both worth buying.';
         if (q.param === null || q.param === undefined) {
-          why = 'The seekers name the distance, so this radar can never be dead. On '
-            + `this map the sharpest choice is about ${miles(radius)}, which splits `
-            + 'the zone set closest to evenly.';
-        }
-        if (status === 'weak') {
-          why += ' One branch is rare enough that the expected narrowing is small.';
+          lead = `Sharpest choice here ≈ ${miles(radius)}`;
+          facts = [fact('seekers pick the radius', 'sliders')];
+          detail = 'The seekers name the distance, so this radar can never be dead. On this map '
+            + `the sharpest choice is about ${miles(radius)}, which splits the zone set closest `
+            + 'to evenly.';
+        } else if (hit === null) {
+          lead = `A ${miles(radius)} disc covers part of the map's station pairs`;
+        } else {
+          lead = '';
+          facts = [fact(`disc covers ${pct(hit)} of station pairs`, 'bullseye', 'neutral', fillPct(hit))];
+          detail = `A ${miles(radius)} disc covers ${pct(hit)} of the map's station pairs.`;
         }
       }
 
@@ -1593,19 +1700,21 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       quality = s3Quality(q, sig, zones, seekers);
       if (diameter && leg > diameter) {
         status = 'dead';
-        why = `A ${miles(leg)} leg is longer than the map's ${miles(diameter)} diameter: `
-          + 'the seekers cannot travel it without leaving the map. Interpretation — '
-          + 'the rulebook does not say what happens beyond the border.';
-      } else if (diameter && leg > 0.70 * diameter) {
+        interpId = 'thermometer_beyond_map';
+        lead = `A ${miles(leg)} leg is longer than the map`;
+        detail = `The map's diameter is ${miles(diameter)}, so the seekers cannot travel the leg `
+          + 'without leaving the map. The rulebook does not say what happens beyond the border.';
+      } else if (diameter && leg > THERMO_DEGENERATE_SHARE * diameter) {
         status = 'degenerate';
-        why = `A ${miles(leg)} leg is more than 0.7 of the map's ${miles(diameter)} `
-          + 'diameter, so the seekers end up outside the zone set and the answer stops '
-          + 'depending on where you are. Interpretation.';
+        interpId = 'thermometer_beyond_map';
+        lead = `A ${miles(leg)} leg is over ${num(THERMO_DEGENERATE_SHARE, 1)} of the map`;
+        detail = `The map's diameter is ${miles(diameter)}, so the seekers end up outside the zone `
+          + 'set and the answer stops depending on where you are.';
       } else {
         status = quality < 0.20 ? 'weak' : 'functional';
-        why = `A ${miles(leg)} leg splits the map through the perpendicular bisector of `
-          + "the seekers' move; averaged over eight bearings it lands "
-          + `${pct(quality / 2)} of the way to an even split.`;
+        lead = `A ${miles(leg)} leg splits the map`;
+        detail = "The split runs through the perpendicular bisector of the seekers' move, "
+          + 'averaged over eight bearings.';
       }
 
     // ── photo ─────────────────────────────────────────────────────────────
@@ -1613,7 +1722,7 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       const evaluated = sig.filter((v) => v !== null && v !== undefined);
       if (!evaluated.length) {
         status = 'unknown';
-        why = notQueriedWhy(geo, 'the subject of this photo');
+        ({ lead, detail, degrade } = notQueried(geo, 'photo subject'));
       } else {
         let yes = 0;
         for (const v of evaluated) if (v) yes++;
@@ -1621,34 +1730,33 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         quality = s3Quality(q, sig, zones, seekers);
         if (coverage <= 0.0) {
           status = 'dead';
-          why = 'No zone on this map contains the subject, so every hider answers “I '
-            + 'cannot answer the question” — which still pays them a card.';
+          lead = 'No zone contains the subject';
+          detail = 'Every hider answers “I cannot answer the question”.';
         } else if (coverage >= 1.0) {
           status = 'degenerate';
-          why = 'Every zone can answer this, so as a locational question it carries no '
-            + 'information. The photograph itself may still show the seekers '
-            + 'something — a landmark, a shadow, a skyline — that no model can score.';
+          lead = 'Answerable from any zone';
+          facts = [fact('photo still shows something', 'camera')];
+          detail = 'As a locational question it carries no information.';
         } else if (coverage < 0.15 || coverage > 0.85) {
           status = 'weak';
-          why = `${pct(coverage)} of zones contain the subject, so one branch is rare. `
-            + 'Note which branch: the rare answer is the informative one, and “I '
-            + 'cannot answer” is a real answer that pays the hider.';
+          lead = 'One branch is rare';
         } else {
           status = 'functional';
-          why = `${pct(coverage)} of zones contain the subject, so both answers are `
-            + 'worth buying.';
+          lead = 'Both answers are worth buying';
         }
         if (evaluated.length < n) {
-          why += ` Evaluated for ${num(evaluated.length)} of ${num(n)} zones; the rest had `
-            + 'no OpenStreetMap coverage for the subject.';
+          facts.push(fact(`partial · ${num(evaluated.length)} of ${num(n)} zones`,
+            'circle-half-stroke', 'warning'));
+          detail = `${detail} Evaluated for ${num(evaluated.length)} of ${num(n)} zones; the rest `
+            + 'had no OpenStreetMap coverage for the subject.';
         }
         if (q.id === 'photo.train_platform' && !gtfsFacts.has_rail) {
           const railOsm = geo.counts.rail_station === undefined ? 0 : geo.counts.rail_station;
-          why = 'Every route in this feed is a bus, so no zone has a train platform to '
-            + 'photograph and every hider answers “I cannot answer the question” — '
-            + 'which still pays them a card.';
+          lead = 'Every route in this feed is a bus';
+          detail = 'No zone has a train platform to photograph, so every hider answers “I cannot '
+            + 'answer the question”.';
           if (railOsm) {
-            why += ` OpenStreetMap does show ${num(railOsm)} railway `
+            detail += ` OpenStreetMap does show ${num(railOsm)} railway `
               + `station${railOsm === 1 ? '' : 's'} inside the border; agree `
               + 'in advance whether an intercity platform your transit map does '
               + 'not draw counts.';
@@ -1664,45 +1772,67 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         if (!gtfsFacts.has_rail) {
           status = 'dead';
           instances = 0;
-          why = "Every route in this feed is a bus. The rulebook's metro lines are the "
-            + 'coloured rail lines a map app draws, so this question has nothing to '
-            + "name here — at the game's most expensive price, draw 4 keep 2.";
+          lead = 'Every route in this feed is a bus';
+          detail = "The rulebook's metro lines are the coloured rail lines a map app draws, so "
+            + 'this question has nothing to name here.';
         } else if (!feats.length) {
           status = 'unknown';
-          why = 'This feed has rail routes, but none of them reaches a candidate zone, '
-            + 'so no line position could be derived.';
+          degrade = 'no_result';
+          lead = 'No rail line reaches a zone';
+          detail = 'This feed has rail routes, but none of them reaches a candidate zone, so no '
+            + 'line position could be derived.';
         } else {
-          ({ status, instances, quality, why } = tentacleVerdict(
-            q, sig, feats, zones, seekers, n, reach, 'metro line'));
+          ({ status, instances, quality, lead, detail, facts, interpId } = tentacleVerdict(
+            q, sig, feats, zones, seekers, n, reach));
         }
       } else {
         const [pois, queried] = inBorderPois(geo, q.geodataRef, border.bbox);
         const label = s3Noun(q.geodataRef, 2);
         if (!queried) {
           status = 'unknown';
-          why = notQueriedWhy(geo, label);
+          ({ lead, detail, degrade } = notQueried(geo, label));
         } else {
           instances = pois.length;
           const margin = marginCount(geo, q.geodataRef, border.bbox, zoneRadius);
           borderline = (instances === 0 && margin >= 1) || (instances === 1 && margin >= 2);
+          if (borderline) marginN = margin - instances;
           if (instances === 0) {
             status = 'dead';
-            why = `No ${s3Noun(q.geodataRef, 1)} inside the border, and this `
-              + 'is the most expensive '
-              + 'question in the game to ask: draw 4, keep 2, all of it paid to '
-              + 'the hider for a null.';
+            lead = `No ${s3Noun(q.geodataRef, 1)} inside the border`;
           } else if (instances === 1) {
             status = 'degenerate';
-            why = `One ${s3Noun(q.geodataRef, 1)} inside the border, so the `
-              + 'question collapses into the intersection of two radars — for '
-              + "twice a radar's price.";
+            lead = `One ${s3Noun(q.geodataRef, 1)} inside the border`;
+            facts = [fact('two radars at twice the price', 'clone')];
+            detail = 'The question collapses into the intersection of two radars, for twice a '
+              + "radar's price.";
           } else {
-            ({ status, instances, quality, why } = tentacleVerdict(
-              q, sig, feats, zones, seekers, n, reach, label));
+            ({ status, instances, quality, lead, detail, facts, interpId } = tentacleVerdict(
+              q, sig, feats, zones, seekers, n, reach));
           }
+          if (marginN !== null) detail = `${detail} ${marginSentence(marginN, zoneRadius)}`;
         }
       }
     }
+
+    if (status === 'dead' && mountainZero && (q.geodataRef === 'mountain'
+        || q.id === 'photo.tallest_mountain_visible_from_transit_station')) {
+      facts.push(fact('a map app may label a hill', 'mountain'));
+      detail = `${detail} No named peak or volcano is mapped inside the border. A map app may `
+        + 'still label a hill from its own gazetteer, so treat this question as '
+        + 'dead-with-a-caveat.';
+    }
+    if (q.category === 'matching' && q.geodataRef) {
+      for (const p of redundant) {
+        const other = p.a === q.geodataRef ? p.bLabel : (p.b === q.geodataRef ? p.aLabel : null);
+        if (other === null) continue;
+        facts.push(fact(`same answer as ${other}`, 'clone', 'warning'));
+        detail = `${detail} ${p.aLabel} and ${p.bLabel} each have exactly one instance on this `
+          + `map and their icons are ${num(p.distanceM)} m apart, so the two matching questions `
+          + 'are the same bit of information bought twice.';
+      }
+    }
+    if (status === 'unknown' && degrade === null) degrade = 'not_evaluated';
+    detail = detail.trim();
 
     out.push({
       id: q.id,
@@ -1714,7 +1844,12 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       instances,
       coverage: coverage === null ? null : rhu(coverage, 4),
       selector,
-      why,
+      why: explainText(lead, detail),
+      explain: { lead, detail },
+      facts,
+      degrade,
+      interpId,
+      marginCount: marginN,
       survMean: null,
       borderline,
       // Card price from the catalogue definition, so `#questions` carries real numbers.
@@ -1727,16 +1862,41 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
 }
 
 /**
- * The one sentence that explains an `unknown`, without pretending it is a zero.
+ * Explain an `unknown` from a missing map layer or key without pretending it is a zero.
  * (generate.py `_s3_not_queried_why`)
+ * @returns {{lead: string, detail: string, degrade: string}}
  */
-function notQueriedWhy(geo, what) {
+function notQueried(geo, what) {
   if (!geo.available) {
-    return `The OpenStreetMap layer was not available on this run, so ${what} could not be `
-      + 'counted. Not evaluated — which is not the same as none.';
+    return {
+      lead: `${capitalise(what)} not counted`,
+      detail: 'The OpenStreetMap layer was not available on this run. Not evaluated, which is '
+        + 'not the same as none.',
+      degrade: 'osm_unavailable',
+    };
   }
-  return `${what.slice(0, 1).toUpperCase()}${what.slice(1)} was not queried on this run, so this `
-    + 'question is not evaluated. Not evaluated is not the same as none.';
+  return {
+    lead: `${capitalise(what)} not queried`,
+    detail: 'This question is not evaluated on this run. Not evaluated is not the same as none.',
+    degrade: 'osm_not_queried',
+  };
+}
+
+/** The `unknown` row for an administrative question whose country is not resolved. */
+function countryUnresolved(geo, subject, target) {
+  return {
+    status: 'unknown',
+    instances: null,
+    quality: 0.0,
+    lead: `${subject} not checked`,
+    detail: (geo.available
+      ? "The map's country could not be resolved, "
+      : 'The OpenStreetMap layer was not available on this run, ')
+      + `so no ${target}. Administrative levels are never guessed.`,
+    facts: [],
+    degrade: geo.available ? 'country_unresolved' : 'osm_unavailable',
+    interpId: null,
+  };
 }
 
 /**
@@ -1747,13 +1907,8 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
   const word = Object.prototype.hasOwnProperty.call(S3_ORDINAL_WORD, ordinal)
     ? S3_ORDINAL_WORD[ordinal] : String(ordinal);
   if (!geo.available || geo.admin.source === 'unknown') {
-    return {
-      status: 'unknown',
-      instances: null,
-      quality: 0.0,
-      why: "The map's country could not be resolved, so no administrative level could be "
-        + 'assigned to this ordinal. Administrative levels are never guessed.',
-    };
+    return countryUnresolved(geo, `${capitalise(word)} division`,
+      'administrative level could be assigned to this ordinal');
   }
   const raw = (geo.admin.ordinals || {})[ordinal];
   const level = raw === undefined ? null : raw;
@@ -1762,8 +1917,11 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
       status: 'unknown',
       instances: null,
       quality: 0.0,
-      why: `This country has no ${word} administrative division inside the map, so the `
-        + 'question is not evaluated rather than counted as dead.',
+      lead: `No ${word} administrative division`,
+      detail: 'This country has none inside the map, so the question is not evaluated rather '
+        + 'than counted as dead.',
+      facts: [],
+      degrade: 'no_division',
     };
   }
   const names = Array.from(new Set(sig.filter((v) => v))).sort(cmpStr);
@@ -1772,8 +1930,10 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
       status: 'unknown',
       instances: 0,
       quality: 0.0,
-      why: `admin_level=${level} exists for this country but no zone centre resolved to one, `
-        + `so the ${word} division could not be read.`,
+      lead: `${capitalise(word)} division not read`,
+      detail: `admin_level=${level} exists for this country but no zone centre resolved to one.`,
+      facts: [],
+      degrade: 'no_result',
     };
   }
   if (names.length === 1) {
@@ -1781,20 +1941,29 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
       status: 'degenerate',
       instances: 1,
       quality: 0.0,
-      why: `The whole map is inside ${names[0]}, so every zone's ${word} division is the same `
-        + 'and the answer is always yes.',
+      lead: `The whole map is inside ${names[0]}`,
+      detail: `Every zone's ${word} division is the same, so the answer is always yes.`,
+      facts: [],
+      degrade: null,
     };
   }
   const quality = s3Quality(q, sig, zones, seekers);
   const [, smallest, largest] = blockSpan(sig);
-  const listed = names.slice(0, 4).join(', ') + (names.length > 4 ? '…' : '');
-  const status = quality < 0.12 ? 'weak' : 'functional';
+  const shown = names.slice(0, 4);
+  const more = names.length - shown.length;
+  const facts = shown.map((name) => fact(name, 'map-pin'));
+  if (more > 0) facts.push(fact(`+${num(more)} more`, 'ellipsis'));
+  facts.push(fact(`${zoneSpan(smallest, largest)} zones per group`, 'layer-group'));
   return {
-    status,
+    status: quality < 0.12 ? 'weak' : 'functional',
     instances: names.length,
     quality,
-    why: `${num(names.length)} ${word} divisions cover the map (${listed}) at `
-      + `admin_level=${level}; their zone counts run ${num(smallest)}–${num(largest)}.`,
+    lead: '',
+    detail: `Divisions at admin_level=${level}: ${shown.join(', ')}`
+      + `${more > 0 ? ` and ${num(more)} more` : ''}; their zone counts run `
+      + `${num(smallest)}–${num(largest)}.`,
+    facts,
+    degrade: null,
   };
 }
 
@@ -1805,69 +1974,74 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
 function borderMeasuring(q, ordinal, sig, geo, zones, seekers) {
   const word = Object.prototype.hasOwnProperty.call(S3_ORDINAL_WORD, ordinal)
     ? S3_ORDINAL_WORD[ordinal] : String(ordinal);
+  const subject = ordinal === 0 ? 'international border' : `${word} administrative division border`;
+  const base = { facts: [], degrade: null, interpId: null };
   if (!geo.available || geo.admin.source === 'unknown') {
-    return {
-      status: 'unknown',
-      instances: null,
-      quality: 0.0,
-      why: "The map's country could not be resolved, so no boundary level could be checked. "
-        + 'Administrative levels are never guessed.',
-    };
+    return countryUnresolved(geo, capitalise(subject), 'boundary level could be checked');
   }
   const ordinals = geo.admin.ordinals || {};
   const levels = geo.admin.borderLevels || {};
   if (ordinal && (ordinals[ordinal] === undefined || ordinals[ordinal] === null)) {
     return {
+      ...base,
       status: 'unknown',
       instances: null,
       quality: 0.0,
-      why: `This country has no ${word} administrative division, so there is no such `
-        + 'boundary to measure to.',
+      lead: `No ${word} administrative division`,
+      detail: 'There is no such boundary to measure to.',
+      degrade: 'no_division',
     };
   }
   if (!Object.prototype.hasOwnProperty.call(levels, ordinal)) {
     return {
+      ...base,
       status: 'unknown',
       instances: null,
       quality: 0.0,
-      why: 'The boundary-crossing audit did not return a result for this level.',
+      lead: 'Boundary audit returned nothing',
+      detail: 'The boundary-crossing audit did not return a result for this level.',
+      degrade: 'no_result',
     };
   }
   if (!levels[ordinal]) {
-    const subject = ordinal === 0
-      ? 'international border'
-      : `${word} administrative division border`;
     return {
+      ...base,
       status: 'dead',
       instances: 0,
       quality: 0.0,
-      why: `No ${subject} crosses the map, so this always returns null. The matching twin `
-        + 'of this question can still be alive: being inside one division is not the same '
-        + 'as being near its edge.',
+      lead: `No ${subject} crosses the map`,
+      detail: 'This always returns null. The matching twin of this question can still be alive: '
+        + 'being inside one division is not the same as being near its edge.',
     };
   }
+  const article = ordinal === 0 ? 'An' : 'A';
   if (sig.every((v) => v === null || v === undefined)) {
     return {
+      ...base,
       status: 'unknown',
       instances: 1,
       quality: 0.0,
-      why: `A ${word} boundary line does cross the map, but every zone centre sits on the `
-        + 'same side of it, so the distance to it could not be derived from the zone set. '
-        + 'Treat it as live and measure it by hand.',
+      lead: 'Measure this one by hand',
+      detail: `${article} ${word} boundary line does cross the map, but every zone centre sits on `
+        + 'the same side of it, so the distance to it could not be derived from the zone set. '
+        + 'Treat it as live.',
+      degrade: 'no_result',
     };
   }
   const quality = s3Quality(q, sig, zones, seekers);
   const values = sig.filter((v) => v !== null && v !== undefined);
   const lo = values.length ? minOf(values) : 0.0;
   const hi = values.length ? maxOf(values) : 0.0;
-  const status = quality < 0.30 ? 'weak' : 'functional';
   return {
-    status,
+    ...base,
+    status: quality < 0.30 ? 'weak' : 'functional',
     instances: 1,
     quality,
-    why: `A ${word} boundary crosses the map. Distance to it is approximated by the distance `
-      + `to the nearest zone in a different division, which runs ${miles(lo)}–${miles(hi)} `
-      + '— an upper bound on the true distance, and an interpretation.',
+    lead: `${article} ${subject} crosses the map`,
+    detail: 'Distance to it is approximated by the distance to the nearest zone in a different '
+      + `division, which runs ${miles(lo)}–${miles(hi)}: an upper bound on the true distance.`,
+    facts: [fact(`${miles(lo)}–${miles(hi)} to nearest`, 'ruler-horizontal')],
+    interpId: 'admin_border_distance_proxy',
   };
 }
 
@@ -1875,7 +2049,7 @@ function borderMeasuring(q, ordinal, sig, geo, zones, seekers) {
  * N≥2 tentacles: functional when the tentacle usually has more than one arm.
  * (generate.py `_s3_tentacle_verdict`)
  */
-function tentacleVerdict(q, sig, feats, zones, seekers, n, reach, label) {
+function tentacleVerdict(q, sig, feats, zones, seekers, n, reach) {
   const reachSq = reach * reach;
   const inReachCounts = [];
   for (const z of zones) {
@@ -1893,9 +2067,12 @@ function tentacleVerdict(q, sig, feats, zones, seekers, n, reach, label) {
       status: 'functional',
       instances: feats.length,
       quality,
-      why: `${num(feats.length)} ${label} inside the border; the median zone has `
-        + `${num(medianArms)} of them within ${miles(reach)}, so the answer names one of `
-        + 'several and is worth its draw-4-keep-2 price.',
+      lead: '',
+      detail: `The median zone has ${num(medianArms)} within ${miles(reach)}, so the `
+        + 'answer names one of several.',
+      facts: [fact(`median zone: ${num(medianArms)} within ${miles(reach)}`,
+        'arrows-split-up-and-left')],
+      interpId: null,
     };
   }
   const arms = medianArms < 1 ? 'none' : num(medianArms);
@@ -1903,11 +2080,18 @@ function tentacleVerdict(q, sig, feats, zones, seekers, n, reach, label) {
     status: 'weak',
     instances: feats.length,
     quality,
-    why: `${num(feats.length)} ${label} inside the border, but the median zone has ${arms} `
-      + `within ${miles(reach)} — the tentacle usually has at most one arm, so the answer `
-      + `mostly repeats a radar at twice the cost. ${pct(covered)} of zones have any in `
-      + 'reach at all. In-reach counts here are measured from the zone; in play both '
-      + 'reach tests are anchored on the seeker.',
+    lead: '',
+    detail: `The median zone has ${arms} within ${miles(reach)}, so the tentacle usually has at `
+      + 'most one arm and the answer mostly repeats a radar at twice the cost. '
+      + `${pct(covered)} of zones have one in reach. In-reach counts here are measured from `
+      + 'the zone; in play both reach tests are anchored on the seeker.',
+    facts: [
+      fact(`median zone: ${arms} within ${miles(reach)}`, 'arrows-split-up-and-left'),
+      fact(`${pct(covered)} of zones have one in reach`, 'arrows-split-up-and-left', 'neutral',
+        fillPct(covered)),
+      fact('≈ a radar at twice the cost', 'clone', 'warning'),
+    ],
+    interpId: 'tentacle_weak_is_a_radar',
   };
 }
 
@@ -1936,6 +2120,15 @@ const S3_CURSE_PREDICATE_WORDS = Object.freeze({
     + 'different route',
 });
 
+// Curses whose map-specific judgement is an INTERPRETATIONS row.
+const S3_CURSE_INTERP = Object.freeze({
+  egg_partner: 'spending_curses_grouped',
+  impressionable_consumer: 'spending_curses_grouped',
+  lemon_phylactery: 'spending_curses_grouped',
+  urban_explorer: 'urban_explorer_cost',
+  spotty_memory: 'spotty_memory_small_game',
+});
+
 /**
  * Decide keep / warn / remove / player-choice for all 24 curses.
  *
@@ -1954,6 +2147,7 @@ const S3_CURSE_PREDICATE_WORDS = Object.freeze({
 export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
   const counts = geo.available ? geo.curseCounts : {};
   const cuisines = geo.available ? geo.cuisines : {};
+  const stats = geo.available && geo.cuisineStats ? geo.cuisineStats : null;
   const uTurn = gtfsFacts.u_turn || {};
   const windowH = size.name === 'large' ? 1.0 : 0.5;
   const out = [];
@@ -1964,7 +2158,10 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
     let predicate = Object.prototype.hasOwnProperty.call(S3_CURSE_PREDICATE_WORDS, pk)
       ? S3_CURSE_PREDICATE_WORDS[pk] : 'not map-contingent';
     let action = 'keep';
-    let why = c.removalRule;
+    let lead = '';
+    let detail = c.removalRule;
+    const facts = c.test ? [fact(c.test, 'filter')] : [];
+    /** @type {string|null} */ let degrade = null;
 
     if (c.id === 'unguided_tourist') {
       predicate = 'Static Street View coverage table for country '
@@ -1972,115 +2169,148 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
       count = null;
       if (countryCode === null || countryCode === undefined) {
         action = 'warn';
-        why = "The map's country could not be resolved, so Street View coverage is "
-          + 'unknown. Check it yourself before you shuffle: the rulebook removes this '
-          + 'curse wherever coverage is poor.';
+        degrade = geo.available ? 'country_unresolved' : 'osm_unavailable';
+        lead = 'check Street View coverage yourself before you shuffle';
+        detail = `${c.removalRule} The map's country could not be resolved, so Street View `
+          + 'coverage is unknown; the rulebook removes this curse wherever coverage is poor.';
       } else if (LOW_STREETVIEW_COUNTRIES.includes(countryCode)) {
         action = 'remove';
-        why = `\`${countryCode}\` is on the low-Street-View list the rulebook's own example `
-          + '(Germany) belongs to, so this curse comes out of the deck.';
+        facts.push(fact(String(countryCode).toUpperCase(), 'globe'),
+          fact('Street View · low', 'street-view', 'danger'));
+        detail = `${c.removalRule} \`${countryCode}\` is on the low-Street-View list.`;
       } else {
-        why = `\`${countryCode}\` has broad Street View coverage, so the curse stays in.`;
+        facts.push(fact(String(countryCode).toUpperCase(), 'globe'),
+          fact('Street View · broad', 'street-view', 'success'));
+        detail = `${c.removalRule} \`${countryCode}\` has broad Street View coverage.`;
       }
     } else if (c.id === 'u_turn') {
       const share = Number(uTurn.multi_route_stop_share || 0.0);
       const wait = uTurn.median_wait_other_route_min === undefined
         ? null : uTurn.median_wait_other_route_min;
+      const windowMin = windowH * 60;
       count = null;
+      facts.push(fact(`${pct(share)} of stops have a 2nd route`, 'shuffle', 'neutral', fillPct(share)));
       if (metrics && metrics.assumedSchedule) {
         // The wait comes from a synthesized timetable, so neither branch below
         // is a measurement; the route-share half is real geometry and still quoted.
         action = 'player-choice';
-        why = `${pct(share)} of stops carry a second route — that much is real mapped `
-          + 'geometry — but the wait for a departure on a different route comes from a '
-          + 'timetable synthesized from OpenStreetMap, so whether the escape hatch opens '
-          + `inside the card's ${num(windowH * 60)}-minute window is assumed, not measured. `
-          + 'Check the real timetable before you count on this card either way. Never '
-          + 'removed — the hatch is printed on the card.';
-      } else if (share < 0.20 || (wait !== null && wait > windowH * 60)) {
-        action = 'warn';
-        why = `Only ${pct(share)} of stops carry a second route`
-          + (wait !== null
-            ? ', and the median wait for a departure on a different route is '
-              + `${mins(wait)} against the card's ${num(windowH * 60)}-minute window`
-            : '')
-          + ". The card's escape hatch opens more often than the curse bites, so "
-          + 'expect it to fizzle. Never removed — the hatch is printed on the card.';
+        degrade = 'assumed_schedule';
+        lead = 'check the real timetable before you count on it';
+        detail = `${c.removalRule} ${pct(share)} of stops carry a second route, which is real `
+          + 'mapped geometry, but the wait for a departure on a different route comes from a '
+          + 'timetable synthesized from OpenStreetMap, so whether the escape hatch opens inside '
+          + `the card's ${num(windowMin)}-minute window is assumed, not measured.`;
       } else {
-        why = `${pct(share)} of stops carry a second route`
-          + (wait !== null ? ` and the median wait for a different route is ${mins(wait)}` : '')
-          + ', so the curse usually bites. Never removed.';
+        if (wait !== null) {
+          facts.push(fact(`median wait ${mins(wait)} · window ${mins(windowMin)}`, 'clock'));
+        }
+        if (share < 0.20 || (wait !== null && wait > windowMin)) {
+          action = 'warn';
+          facts.push(fact('expect it to fizzle', 'circle-minus', 'warning'));
+          detail = `${c.removalRule} Only ${pct(share)} of stops carry a second route`
+            + (wait !== null
+              ? ', and the median wait for a departure on a different route is '
+                + `${mins(wait)} against the card's ${num(windowMin)}-minute window`
+              : '')
+            + ". The card's escape hatch opens more often than the curse bites.";
+        } else {
+          detail = `${c.removalRule} ${pct(share)} of stops carry a second route`
+            + (wait !== null
+              ? ` and the median wait for a different route is ${mins(wait)} against the card's `
+                + `${num(windowMin)}-minute window`
+              : '')
+            + ', so the curse usually bites.';
+        }
       }
     } else if (c.id === 'egg_partner' || c.id === 'impressionable_consumer') {
       action = 'player-choice';
       if (count === 0) {
         action = 'remove';
-        why = `${c.removalRule} Here the secondary check also fails: the map has none of `
-          + 'the shops this curse needs, so it is uncastable anyway.';
-      } else {
-        why = `${c.removalRule} Geometry allows it`
-          + (count !== null ? ` (${num(count)} qualifying shops on the map)` : '')
-          + '; whether you want to buy things during the game is a conversation, not '
-          + 'a measurement.';
+        lead = 'uncastable here anyway';
+        detail = `${c.removalRule} The map has none of the shops this curse needs.`;
       }
     } else if (c.id === 'bridge_troll') {
       if (count === null) {
         action = 'warn';
-        why = "Bridges could not be counted on this run, so the rulebook's own removal test "
-          + 'could not be applied.';
+        lead = 'removal test not applied';
+        detail = `${c.removalRule} Bridges could not be counted on this run, so the rulebook's `
+          + 'own removal test could not be applied.';
       } else if (count === 0) {
         action = 'remove';
-        why = 'No bridges on the game map. The rulebook says outright to remove this '
-          + 'curse in that case.';
+        lead = 'no bridges on the game map';
       } else {
-        // The card's definition of a bridge includes rail and covered ones.
-        why = `${num(count)} bridges on the map — road, path and rail — so the curse `
-          + 'stays in. Check that some of them are ones a seeker can physically stand '
-          + 'under.';
+        lead = 'check a seeker can stand under one';
       }
     } else if (c.id === 'distant_cuisine') {
       const distinct = Object.keys(cuisines).length;
       if (count === null) {
         action = 'warn';
-        why = 'Restaurant cuisine tags were not available on this run.';
-      } else if (count === 0) {
-        action = 'remove';
-        why = "No restaurant on the map is tagged with a single foreign country's "
-          + 'cuisine, so this curse can never be cast.';
-      } else if (distinct <= 1) {
-        action = 'warn';
-        why = `${num(count)} qualifying restaurants but only one distinct country, so `
-          + 'every one of them is the same distance away and the curse is a formality.';
-      } else if (count < 5) {
-        action = 'warn';
-        why = `Only ${num(count)} qualifying restaurants across ${num(distinct)} countries. `
-          + 'Castable, but the hider has to be lucky with their zone.';
+        lead = 'cuisine tags not read';
+        detail = `${c.removalRule} Restaurant cuisine tags were not available on this run.`;
       } else {
-        why = `${num(count)} restaurants across ${num(distinct)} distinct foreign cuisines. `
-          + 'Remember this is a floor: many restaurants carry no cuisine tag at all.';
+        if (count === 0) {
+          action = 'remove';
+          lead = 'can never be cast';
+        } else if (distinct <= 1) {
+          action = 'warn';
+          lead = 'only one country';
+          facts.push(fact('only 1 country', 'utensils', 'warning'));
+          detail = `${c.removalRule} ${num(count)} qualifying restaurants, but only 1 distinct `
+            + 'country.';
+        } else if (count < 5) {
+          action = 'warn';
+          lead = 'the hider has to be lucky with their zone';
+          facts.push(fact(`${num(distinct)} countries`, 'utensils'),
+            fact('under 5', 'utensils', 'warning'));
+          detail = `${c.removalRule} Only ${num(count)} qualifying restaurants, under 5, across `
+            + `${num(distinct)} countries.`;
+        } else {
+          facts.push(fact(`${num(distinct)} countries`, 'utensils'));
+          detail = `${c.removalRule} ${num(distinct)} distinct foreign cuisines.`;
+        }
+        if (stats && stats.total > 0) {
+          const share = stats.tagged / stats.total;
+          facts.push(fact(`${pct(share)} cuisine-tagged · a floor`, 'utensils', 'neutral',
+            fillPct(stats.tagged, stats.total)));
+          detail = `${detail} This is a floor: ${pct(share)} of restaurants carry a cuisine tag.`;
+        } else if (count > 0) {
+          detail = `${detail} This is a floor: many restaurants carry no cuisine tag at all.`;
+        }
       }
     } else if (c.tier === 2) {
       if (count === null) {
         action = 'warn';
-        why = `${c.removalRule} The count was not available on this run.`;
+        detail = `${c.removalRule} The count was not available on this run.`;
       } else if (count === 0) {
         action = 'remove';
-        why = `${c.removalRule} The map's count is zero.`;
-      } else {
-        why = `${c.removalRule} The map's count is ${num(count)}, so it stays in.`;
+        lead = 'none on this map';
       }
     } else if (c.tier === 3) {
       if (count !== null && count === 0) {
         action = 'warn';
-        why = `${c.removalRule} Nothing on this map satisfies the predicate, so expect `
-          + 'this one to stall. It is still never auto-removed.';
-      } else if (count !== null) {
-        why = `${c.removalRule} Map-wide count: ${num(count)}.`;
+        lead = 'expect this one to stall';
+        detail = `${c.removalRule} Nothing on this map satisfies the predicate. It is still never `
+          + 'auto-removed.';
       }
     }
 
+    if (degrade === null && count === null && pk && pk !== 'u_turn') {
+      degrade = geo.available ? 'osm_not_queried' : 'osm_unavailable';
+    }
+
     out.push({
-      id: c.id, name: c.name, tier: c.tier, action, predicate, count, why,
+      id: c.id,
+      name: c.name,
+      tier: c.tier,
+      action,
+      predicate,
+      count,
+      why: explainText(lead, detail),
+      explain: { lead, detail },
+      facts,
+      degrade,
+      interpId: Object.prototype.hasOwnProperty.call(S3_CURSE_INTERP, c.id)
+        ? S3_CURSE_INTERP[c.id] : null,
     });
   }
   return out;

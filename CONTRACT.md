@@ -39,12 +39,12 @@ block; it is built from `state.report` in memory.
 | `styles.css` | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
 | `app.js` | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | main | see §(e) |
-| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame`. Also the page's **single implementation** of the `s4*` day and unit helpers — `s4Imperial`, `s4Signed`, `s4JoinWords`, `s4DayView`, `s4DayOrder`, `s4DayLabel`, `s4BestDay`, `s4WorstDay` — imported by `app.js`, `render/map.js` and `render/strategy.js` (`app.js` aliases them to bare names); and the deterministic primitives `sortedBy(items, keyFn)` and `fnum(x)`, consumed by `render/deck.js` and `render/map.js`. `cmpKey` stays module-private, reached only through `sortedBy`. |
-| `render/map.js` | main | `renderGlanceRail`, `renderNetworkMap`, `renderTransitReality`, `s4TilesHtml`, `s4MapCaption`, `s4Legend`, `S4_HEADWAY_BINS`, `s4DayByKey` (`app.js` takes the last one for day switching). It **re-exports nothing**; consumers take the day helpers from `render/verdict.js` directly. |
-| `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance` |
-| `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field: a tentacle question's own `param`, which `QuestionAudit` does not carry. |
+| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame`. Also the page's **single implementation** of the `s4*` day and unit helpers — `s4Imperial`, `s4Signed`, `s4JoinWords`, `s4DayView`, `s4DayOrder`, `s4DayLabel`, `s4BestDay`, `s4WorstDay` — imported by `app.js`, `render/map.js` and `render/strategy.js` (`app.js` aliases them to bare names); and the deterministic primitives `sortedBy(items, keyFn)` and `fnum(x)`, consumed by `render/deck.js` and `render/map.js`. `cmpKey` stays module-private, reached only through `sortedBy`. `s4SourceTag` and `s4Swatch` are aliases of `render/html.js`'s `basisChip` and `swatch`; `s4CardHeader(title, caption)` is a positional wrapper over `cardHeader`; `s4RampShort(spec)` is the terse threshold form of `s4RampText`. |
+| `render/map.js` | main | `renderGlanceRail`, `renderNetworkMap`, `renderTransitReality`, `s4TilesHtml`, `s4MapCaption`, `s4Legend`, `S4_HEADWAY_BINS`, `s4DayByKey` (`app.js` takes the last one for day switching). It **re-exports nothing**; consumers take the day helpers from `render/verdict.js` directly. `s4Legend` delegates to `render/html.js` `legendRow`. |
+| `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance`, `S4_STATUS_TAG`, `S4_STATUS_COUNT`, `S4_ACTION_TAG` |
+| `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `BAND_CUTS`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field: a tentacle question's own `param`, which `QuestionAudit` does not carry. `FLAG_TEXT[flag]` is `[label, variant, icon, shortLabel]`. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` paragraph INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderPickerNote` takes `{capped, blocked, ringEmpty, osmOffer, osmPicked}` and prints only the hard cap, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. |
+| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`, `renderBorderChips`, `renderDrawHint`, `renderPicksCount`, `renderMapNote`, `renderMarkerTip`, `NUDGE_DEG`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` paragraph INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderResults(rows, {more, …})` receives the overflow count from `render/picker.js`. `renderPickerNote` takes `{capped, blocked: Array<{label, href}>, ringEmpty, osmOffer, osmPicked, regionalOn}` and prints only the hard cap, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. That sentence fills the caption's visually hidden `[data-caption-text]`; `renderBorderChips` draws the visible, `aria-hidden` `[data-caption-chips]`, mode chip first. |
 | `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. The picker writes `#picker-draw-hint` per mode — idle, drawing, and the refusal — and a `click` on Draw a shape whose `detail === 0` (a keyboard activation) refuses draw mode outright, writes that refusal and moves focus to the search box, because every vertex of the hand-rolled tool is a pointer event. `fitRows` pads `fitBounds` by the measured `.landing-panel` — the left column above 48rem, the bottom sheet below — and fires on the 0→1 pick as well as for the example chips, so the first feed taken is framed and no later one moves the view. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
@@ -59,11 +59,11 @@ block; it is built from `state.report` in memory.
 | `gtfs/network.js` | worker | `zoneCover`, `buildZones`, `networkMetrics`, `routeHeadways`, `radarLiveness`. `networkMetrics`, `s1DayMetrics` and `buildZones` take a trailing `inPlay: string[]|null`; the metrics memo key gains `in:<length>:<stableHash(join(','))>`, or the literal `'all'` when `inPlay` is null, which keeps a no-override run on its original key. `inPlayForDay` is the one place the per-day intersection is written; it falls back to the whole day when the intersection is empty. |
 | `gtfs/infer.js` | worker | `inferHub`, `inferBorder`, `inferGameSize`, `travelTimeSamples`, `gtfsQuestionFacts`, `excludedStopSet`, `inPlayStopIds`, `hubRun`, `suggestBorder`. `hubRun(feed, day, originId, departS)` is the **one** memoised forward RAPTOR from the run's origin (`s1Cache` key `raptor:<dayKey>:<origin>:<departS>`), shared by `inferBorder`, `s1DayMetrics` and `suggestBorder`. `gtfs/network.js` imports `hubRun` and `gtfs/infer.js` imports `networkMetrics`: a **function-body-only** cycle that ESM hoisting resolves, commented at both imports. Do not add a top-level use on either side. |
 | `osm/flatgeobuf.js` | worker | `FlatGeobufReader`, `levelBounds`, `nodeCount`, `GEOMETRY_TYPE`. Pure transport: reads a FlatGeobuf over HTTP Range, knows nothing about parks. |
-| `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `worldTransitRoutes`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine` |
-| `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData`. Only `GEO_CATEGORIES` and `LOW_STREETVIEW_COUNTRIES` cross into `rules/audit.js`; `CAR_STREET_SELECTOR` is the `car_street` entry's own `selector` (declared above the table so it can be), so audit reads it through `GEO_CATEGORIES` like every other category. |
-| `osm/synth.js` | worker | `synthesizeFeedZip` plus the frozen `SYNTH_*` assumption constants (`SYNTH_MODE_ROUTE_TYPE`, `SYNTH_MODE_SPEED_KMH`, `SYNTH_MODE_HEADWAY_S`, `SYNTH_DWELL_S`, `SYNTH_SERVICE_WINDOW_S`, `SYNTH_TEMPLATE_ANCHOR_S`, `SYNTH_CALENDAR_DAYS`, `SYNTH_FALLBACK_ASOF`, `SYNTH_CLUSTER_NAME_M`, `SYNTH_CLUSTER_ANY_M`, `SYNTH_HEADWAY_MIN_S`, `SYNTH_HEADWAY_MAX_S`), quoted by `rules/catalogue.js`'s three `osm_synth_*` INTERPRETATIONS rows — move a constant and re-sync that prose. Pure and synchronous: `worldTransitRoutes` output + the drawn ring + `asOf` → a byte-deterministic GTFS zip (`Uint8Array`) the **untouched** `loadFeed` accepts, plus prose notes. Imported DYNAMICALLY by `worker.js` only for a `kind:'osm'` source. Harness: `node tools/test-synth.mjs`, network-free. |
-| `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, the radar radii as `S1_RADAR_MILES`. `INTERPRETATIONS`' `map_border_derivation` row is plain data: `text` is the `'reach'` sentence and `byDerivation` holds `{option: '…the box you set on the landing map, with no padding…'}`; `buildProvenance` picks between them. A `text` that became a callback would break every main-thread reader that treats this file as data. |
-| `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses` |
+| `osm/worldfile.js` | worker | `openWorld`, `worldPois`, `worldCount`, `worldDensity`, `worldAdminAreas`, `worldTransitRoutes`, `adminAreasAt`, `featuresToPois`, `representativeFromGeometry`, `worldProvenance`, `worldStatsLine`, `worldLayerRecord`, `worldSnapshot` |
+| `osm/geodata.js` | worker | `GEO_CATEGORIES`, `CAR_STREET_SELECTOR`, `FOOT_WAY_SELECTOR`, `LOW_STREETVIEW_COUNTRIES`, `collectGeodata`, `buildPoiIndex`, `zoneInventory`, `adminInfo`, `curseCounts`, `legalEndgameSpots`, `emptyGeoData(bbox)`. Only `GEO_CATEGORIES` and `LOW_STREETVIEW_COUNTRIES` cross into `rules/audit.js`; `CAR_STREET_SELECTOR` is the `car_street` entry's own `selector` (declared above the table so it can be), so audit reads it through `GEO_CATEGORIES` like every other category. |
+| `osm/synth.js` | worker | `synthesizeFeedZip` plus the frozen `SYNTH_*` assumption constants (`SYNTH_MODE_ROUTE_TYPE`, `SYNTH_MODE_SPEED_KMH`, `SYNTH_MODE_HEADWAY_S`, `SYNTH_DWELL_S`, `SYNTH_SERVICE_WINDOW_S`, `SYNTH_TEMPLATE_ANCHOR_S`, `SYNTH_CALENDAR_DAYS`, `SYNTH_FALLBACK_ASOF`, `SYNTH_CLUSTER_NAME_M`, `SYNTH_CLUSTER_ANY_M`, `SYNTH_HEADWAY_MIN_S`, `SYNTH_HEADWAY_MAX_S`), quoted by `rules/catalogue.js`'s three `osm_synth_*` INTERPRETATIONS rows in both `text` and `data` — move a constant and re-sync both. Pure and synchronous: `worldTransitRoutes` output + the drawn ring + `asOf` → a byte-deterministic GTFS zip (`Uint8Array`) the **untouched** `loadFeed` accepts, plus prose notes. Imported DYNAMICALLY by `worker.js` only for a `kind:'osm'` source. Harness: `node tools/test-synth.mjs`, network-free. |
+| `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, the radar radii as `S1_RADAR_MILES`. `INTERPRETATIONS`' `map_border_derivation` row is plain data: `text` is the `'reach'` sentence and `byDerivation` holds `{option: '…the box you set on the landing map, with no padding…'}`; `buildProvenance` picks between them. A `text` that became a callback would break every main-thread reader that treats this file as data. Also `THERMO_DEGENERATE_SHARE`. `INTERPRETATIONS` rows may carry `lead`, `byDerivationLead`, `groups` and `data`; `CURSES` rows carry `test`. All plain data. |
+| `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses`, `questionCategories` |
 | `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance(opts, feed, geo, size, asOf, degradations, border = null)`. The trailing `Border` is optional; a caller that omits it gets the `'reach'` interpretation text. The provenance shape gains only `borderSource`; `argv` is untouched because it echoes the CLI's own flags and there is no flag for where a box came from. |
 
 **Import edges added deliberately.** `rules/score.js` imports `busiestDay` from
@@ -81,10 +81,12 @@ RADAR_SAMPLE_PAIRS RADAR_DEAD_HIGH RADAR_DEAD_LOW SEEKER_SAMPLE_CAP
 SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN IN_PLAY_MIN_SHARE
 SUGGEST_MIN_TRIM_SHARE SUGGEST_MIN_EVENT_SHARE SUGGEST_MIN_CORE_STOPS
 SUGGEST_MIN_CORE_SHARE
-MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES`
+MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES
+DEGRADE_KIND FINDING_MINUS_BELOW FINDING_PLUS_ABOVE FITNESS_MIN_AVAILABLE_POINTS`
 
 Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
-dowOf dateRange lowerMedian quantile cmpStr jdump sha256Bytes sha256Text stableHash`
+dowOf dateRange lowerMedian quantile cmpStr jdump sha256Bytes sha256Text stableHash
+fillPct explainText fare`
 
 Notes:
 * `num(x, dp = 0, {comma = true})`. Python keyword args are a trailing options object.
@@ -100,6 +102,8 @@ Notes:
 * `num(-0.4)` returns `'-0'`. Python does too. Kept deliberately.
 * `hhmm`/`hhmmss` never modulo 86400. `hhmm(87360) === '24:16'`.
 * `dowOf`/`dateRange`/`prettyDate` are pure calendar arithmetic on `'YYYYMMDD'`. **Never** `new Date(string)` — that reads the host timezone. `prettyDate` hard-codes English abbreviations so it cannot follow the browser locale.
+* `fillPct(part, whole = 1)` is the one channel from a measured fraction to a bar's 0–100 value; a renderer never multiplies or divides for a fill. `explainText(lead, detail)` builds the legacy `why` from an `Explain`. `fare(price, currency)` formats a `fare_attributes` price without `Intl`.
+* `DEGRADE_KIND` is the closed vocabulary of degraded and limited states (§(f) rule 8).
 
 ### `lib/geo.js` — exported symbols
 
@@ -141,6 +145,21 @@ snake_case Python original — provenance only.
 Python `frozenset` → JS **Array, sorted** unless stated otherwise (a `Set` is not
 clone-safe). Python `tuple` → JS **Array**. Python `dict[str, X]` → JS plain object keyed
 by string; **iteration order is never significant** — sort the keys.
+
+### Shared row shapes
+
+```js
+/** @typedef {{lead: string, detail: string}} Explain
+ * `lead` is templated plain text of at most 14 words (a house rule: an imperative of at
+ * most 8; an interpretation: at most 6), no trailing period, '' only when `facts` carry the
+ * finding. `detail` is zero or more sentences, folded on the page. Every number in `lead`
+ * or `facts` also appears in the record's full string (a `Recommendation`: `text` or `evidence`). */
+/** @typedef {Object} Fact  // one always-visible chip, formatted worker-side
+ * @property {string} text @property {string} icon
+ * @property {'neutral'|'brand'|'success'|'warning'|'danger'} variant
+ * @property {number|null} fill  // 0..100 from fillPct(), or null */
+/** @typedef {string} DegradeCode  // a key of lib/core.js DEGRADE_KIND; see §(f) rule 8 */
+```
 
 ### Feed layer
 
@@ -201,6 +220,7 @@ by string; **iteration order is never significant** — sort the keys.
  * @property {string} agencyName @property {string} agencyUrl @property {string} timezone
  * @property {string} feedStart @property {string} feedEnd @property {string} feedVersion
  * @property {number} stops @property {number} routes @property {number} trips
+ * @property {boolean} synthesized   // true iff built from an OpenStreetMap ring
  */
 
 /**
@@ -454,12 +474,13 @@ reconcile them; the goldens move if you do.
  * `rawBbox`, `trimmedStopIds` and `derivation` are returned by `inferBorder`; `derivation`
  * conditions `rules/catalogue.js`'s `map_border_derivation` row.
  *
- * THREE derivations, three sentences, carried by every place that describes the border:
- * §05's sentence under the map and its legend line (render/map.js), the
- * `map_border_derivation` interpretation (`byDerivation`), the `use_borders` house rule's
- * evidence (rules/score.js) and §07's border row (render/deck.js). `'option_fallback'` is
- * the one case where the drawn border and the measured numbers disagree, so worker.js
- * ALSO emits a `degraded` message for it.
+ * THREE derivations, each named distinctly wherever the border is described: §05's legend
+ * label and copy-cluster chip (`render/map.js`), the `map_border_derivation`
+ * interpretation's `lead` and `text` (`byDerivationLead`, `byDerivation`), the `use_borders`
+ * house rule's facts (`rules/score.js`) and §09's border row (`render/deck.js`).
+ * `'option_fallback'` is the one case where the drawn border and the measured numbers
+ * disagree, so worker.js ALSO emits a `degraded` message (`border_not_applied`), and every
+ * one of those places shows `degradeChip('border_not_applied')`.
  */
 
 /**
@@ -571,6 +592,8 @@ reconcile them; the goldens move if you do.
  *                                                    //   (2) for the six density-grid categories, always true —
  *                                                    //   the map-wide total is EXACT but the per-zone breakdown
  *                                                    //   is approximate. See §(f) rule 3.
+ * @property {'feature'|'density'} source
+ * @property {{url:string, features:number, bytes:number, sha256:string}|null} layer // null when no file shipped
  */
 
 /**
@@ -640,18 +663,33 @@ like OSM `admin_level`s but do not mean the same thing.
  * @property {Object<string, LegalSpot[]>} legalSpots              // legal_spots — zoneId → candidate endgame spots, best first
  * @property {OverpassQueryRecord[]} queries                       // queries
  * @property {string[]} notes                                      // notes — honesty notes that MUST reach the page
+ * @property {Object<string, DegradeCode>} noteCodes               // note → code
+ * @property {boolean} pathJoinEvaluated                           // always false; the join has no local equivalent
+ * @property {string|null} snapshot                                // 'YYYYMMDD'
+ * @property {number|null} densityCellM
+ * @property {{strong:string[], weak:string[]}} osmCoverage
+ * @property {{tagged:number, total:number, qualifying:number}|null} cuisineStats
+ * @property {string[]} cuisineRejected
+ * @property {number|null} iconOffsetP90M
+ * @property {{segments:number, names:string[]}|null} derivedShore
+ * @property {Array<{a,b,aLabel,bLabel,distanceM}>} redundantPairs
  */
 ```
 
-The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox, note)`
+The unavailable form, which `osm/geodata.js` exports as `emptyGeoData(bbox)`
 (mirrors `build_report`):
 
 ```js
 { available: false, bbox, pois: {}, counts: {}, zoneInventory: {}, zonePolygonHits: {},
   admin: { countryCode: null, countryName: null, placeName: null,
            ordinals: {}, perZone: {}, borderLevels: {}, source: 'unknown' },
-  curseCounts: {}, cuisines: {}, legalSpots: {}, queries: [], notes: [note] }
+  curseCounts: {}, cuisines: {}, legalSpots: {}, queries: [],
+  notes: [], noteCodes: {}, pathJoinEvaluated: false,
+  snapshot: null, densityCellM: null, osmCoverage: {strong: [], weak: []}, cuisineStats: null,
+  cuisineRejected: [], iconOffsetP90M: null, derivedShore: null, redundantPairs: [] }
 ```
+
+The worker's `osm_unavailable` degradation is the one record of the failure.
 
 The manifest also lists **`transit_route`** — assembled OSM route relations
 (subway/train/light_rail/tram/monorail/funicular), one MultiLineString feature per
@@ -728,24 +766,38 @@ the worker's ordinary per-source catch.
  * @property {string} castingCost    // casting_cost
  * @property {string[]} blocks       // blocks
  * @property {string|null} predicateKey // predicate_key — curse-predicate key, or null
- * @property {string} removalRule    // removal_rule — plain words, printed on the page
+ * @property {string} removalRule    // removal_rule — plain words, printed folded under the row
  * @property {string} quote          // quote — verbatim rulebook trigger, tier 1 only
+ * @property {string} test           // at most 8 words, tier 1–2; '' otherwise
  */
 
 /**
  * @typedef {Object} QuestionAudit   // class QuestionAudit. One question's verdict — the core of §07.
  * @property {string} id @property {string} category @property {string} label @property {string} text
- * @property {'functional'|'weak'|'degenerate'|'dead'} status // status
- *   // `unaskable`/`unknown` are gone: no map can earn either, so nothing downstream branches on them.
+ * @property {'functional'|'weak'|'degenerate'|'dead'|'unknown'} status // status
  * @property {number} quality              // quality — 0..1, normalised per category
  * @property {number|null} instances       // instances — in-border N; null when not evaluated
  * @property {number|null} coverage        // coverage — photo questions: share of zones with the subject
  * @property {string} selector             // selector — the exact Overpass selector, or a GTFS note
- * @property {string} why                  // why — one sentence, printed next to the status
+ * @property {string} why                  // why — explainText(explain.lead, explain.detail)
  * @property {number|null} survMean        // surv_mean — mean surv over Z, for the funnel. FILLED IN PLACE by scoreZones; render questions AFTER scoring.
  * @property {boolean} borderline          // borderline — would flip under a modestly larger border
  * @property {number} draw                 // draw — card draw price, copied from the catalogue question definition
  * @property {number} keep                 // keep — card keep price, copied from the catalogue question definition
+ * @property {Explain} explain
+ * @property {Fact[]} facts
+ * @property {DegradeCode|null} degrade    // non-null iff status is unknown; a partial evaluation is a warning Fact
+ * @property {string|null} interpId
+ * @property {number|null} marginCount
+ */
+
+/**
+ * @typedef {Object} QuestionCategory  // one element of Report.questionCategories — questionCategories().
+ * Health and risk are computed at the rules stage; renderers read them.
+ * @property {string} category @property {number} n
+ * @property {{functional:number, weak:number, degenerate:number, dead:number, unknown:number}} counts
+ * @property {number} health @property {number} risk
+ * @property {Array<{id:string, label:string, status:string}>} gone
  */
 
 /**
@@ -754,7 +806,9 @@ the worker's ordinary per-source catch.
  * @property {'keep'|'warn'|'remove'|'player-choice'} action // action
  * @property {string} predicate      // predicate
  * @property {number|null} count     // count
- * @property {string} why            // why
+ * @property {string} why            // why — explainText(explain.lead, explain.detail)
+ * @property {Explain} explain @property {Fact[]} facts
+ * @property {DegradeCode|null} degrade @property {string|null} interpId
  */
 ```
 
@@ -775,6 +829,7 @@ the worker's ordinary per-source catch.
  * @property {'rulebook'|'feed'|'interp'} source // source
  * @property {string} note           // note
  * @property {boolean} available     // available — false ⇒ DROPPED FROM THE DENOMINATOR, never imputed
+ * @property {DegradeCode|null} degrade // null iff available
  */
 
 /**
@@ -786,6 +841,7 @@ the worker's ordinary per-source catch.
  * @property {number} maxTenths      // max_tenths
  * @property {boolean} partial       // partial
  * @property {string[]} missing      // missing — metric ids dropped from the denominator
+ * @property {number} lostTenths     // maxTenths − earnedTenths over available metrics
  */
 
 /**
@@ -798,6 +854,7 @@ the worker's ordinary per-source catch.
  * @property {SubScore[]} subscores  // subscores
  * @property {number} availablePoints// available_points
  * @property {Object<string, number>} perDay // per_day — dayKey → score
+ * @property {Object<string, number>} perDayDelta // dayKey → score − selected-day score, 1 dp; {} without a selected day
  */
 
 /**
@@ -806,6 +863,7 @@ the worker's ordinary per-source catch.
  * rather than silently omitting it.
  * @property {string} id @property {number} cap
  * @property {boolean} fired @property {boolean} evaluated @property {string} why
+ * @property {string} label          // the threshold as a short templated phrase
  */
 
 /**
@@ -816,6 +874,7 @@ the worker's ordinary per-source catch.
  * @property {number} surv           // surv — 0..1
  * @property {string} answer         // answer
  * @property {number} zonesRemaining // zones_remaining
+ * @property {string} answerKey      // the answer class key
  */
 
 /**
@@ -871,6 +930,7 @@ the worker's ordinary per-source catch.
  * @property {Object<string,number>} reachableZonesWithinMinutes
  * @property {Object<string,number>} reachWithinHidingPeriodBySize
  * @property {Object<string,number>} reachableZoneShareBySize
+ * @property {number} unservedStops // stopsInFeed − servedStops, stamped by worker.js
  */
 
 /**
@@ -972,8 +1032,12 @@ the worker's ordinary per-source catch.
  * The house rules whose preconditions hold, in fixed priority order. ONE RULE ALWAYS FIRES:
  * agree the safety exclusions — the rulebook demands that conversation and explicitly
  * refuses to automate the polygon.
- * @property {string} id @property {string} title @property {string} body
- * @property {string} [why] @property {string} [icon] @property {string} [variant]
+ * @property {string} id @property {number} priority @property {boolean} required
+ * @property {string} text // the full chat-ready rule; the copied checklist reads only this
+ * @property {string} evidence @property {Explain} explain @property {string} icon
+ * @property {Fact[]} facts @property {Array<{id:string,label:string}>} items
+ * @property {number} itemsMore // items beyond the eight the page shows as tags
+ * @property {string[]} metricIds @property {DegradeCode|null} degrade
  */
 
 /**
@@ -997,7 +1061,9 @@ the worker's ordinary per-source catch.
  * @property {string[]} excludedStops @property {string[]} excludedRoutes
  * @property {'landing'|'suggestion'|null} borderSource // echoed from `Options.borderSource`; `argv` is unchanged
  * @property {boolean} llmUsed                     // always false in the browser port
- * @property {Array<{id:string,text:string,affects:string[]}>} interpretations // sorted by id
+ * @property {Array<{id, text, affects:string[], explain:Explain, applies:boolean, affectLinks:Array<{kind:'metric'|'question'|'curse'|'text', id, label}>, groups?:Array<{label, basis, ids}>, data?:Object}>} interpretations // sorted by id
+ *   // `applies` is false only for an `osm_synth_*` row on a run with no synthesized
+ *   // source; such rows still print, grouped.
  * @property {string[]} degradations
  */
 ```
@@ -1035,6 +1101,8 @@ the worker's ordinary per-source catch.
  * @property {string} place                       // place — geo.admin.placeName || feed.agencyName
  * @property {Provenance} provenance              // provenance
  * @property {string[]} degradations              // degradations
+ * @property {QuestionCategory[]} questionCategories
+ * @property {Object<string, DegradeCode>} degradationCodes // degradation message → code
  */
 ```
 
@@ -1180,8 +1248,8 @@ path the golden numbers are measured on.
 | progress | `{ type:'progress', stage:string, label:string, done:number, total:number }` | Fine-grained; drives the header progress bar. **`total` may grow** as work is discovered — the UI must not assume it is fixed. |
 | stage | `{ type:'stage', stage:string, payload:object }` | A section's data is ready. See the stage table. |
 | log | `{ type:'log', level:'info'\|'warn', message:string }` | Diagnostics. Never rendered as report content. |
-| degraded | `{ type:'degraded', message:string }` | Appended to `Report.degradations` and shown in the page's degradation callout. |
-| error | `{ type:'error', stage:string, message:string, fatal:boolean }` | `fatal: false` ⇒ the run continues degraded. `fatal: true` ⇒ no further messages will arrive. |
+| degraded | `{ type:'degraded', message:string, code:DegradeCode }` | Appended to `Report.degradations`, recorded in `Report.degradationCodes`, shown in the toast and §09. |
+| error | `{ type:'error', stage:string, message:string, fatal:boolean }` | `fatal: false` ⇒ the run continues degraded. `fatal: true` ⇒ no further messages will arrive. A non-fatal `error` is logged by `app.js`, never rendered: every non-fatal error is paired with a templated `degraded` message, which is the record. |
 | done | `{ type:'done', report: Report }` | The complete `Report`. Always last. |
 
 **Every payload must be structured-clone-safe**: plain objects, arrays, numbers, strings,
@@ -1198,9 +1266,9 @@ internally but must flatten before emitting. `Projection` crosses as `{lat0, lon
 | 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 |
 | 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, suggestedBorder: SuggestedBorder\|null, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], zoneReach: ZoneReach, routeSpokes: RouteSpoke[], spokeCap: {shown,total,source}, stops: StopRow[], proj: {lat0,lon0} }` — the `Report` carries `suggestedBorder` too | §05 and its stat rail |
 | 4 | `'geo'` | `{ geo: GeoData }` | stage 5 |
-| 5 | `'rules'` | `{ questions: QuestionAudit[], curses: CurseAudit[], questionOrder: string[], questionFunnel: number[] }` | §07, §08 |
+| 5 | `'rules'` | `{ questions: QuestionAudit[], curses: CurseAudit[], questionOrder: string[], questionFunnel: number[], questionCategories: QuestionCategory[] }` | §07, §08 |
 | 6 | `'score'` | `{ fitness: Fitness, caps: FitnessCap[], zoneScores: Object<string,ZoneScore>, rankedZoneIds: string[], dossierZoneIds: string[], findings: Finding[], recommendations: Recommendation[], questions: QuestionAudit[] }` | §01, §02, §03 |
-| 7 | `'provenance'` | `{ provenance: Provenance, degradations: string[] }` | §09 |
+| 7 | `'provenance'` | `{ provenance: Provenance, degradations: string[], degradationCodes: Object<string, DegradeCode> }` | §09 |
 
 Notes on the stage payloads:
 
@@ -1341,7 +1409,7 @@ options object. Python's `class_` becomes `className`. Python's `void()` is rena
 * `esc()` is the only way text becomes markup. There is no "I know this is safe" exception
   — feed data contains apostrophes, ampersands and, in the wild, angle brackets.
 * Attribute values always go through `attrs()`, which escapes them.
-* Only WebAwesome 3.11 components with a helper below are sanctioned. If there is no helper
+* Only WebAwesome 3.12 components with a helper below are sanctioned. If there is no helper
   for it, do not invent one.
 
 ```js
@@ -1382,9 +1450,20 @@ budgetBar(segments, total, { ariaLabel, remainderTip='', variants=[], height='1.
 searchInput(inputId, { placeholder, label })
 pullQuote(text)
 section(sectionId, number, title, bodyHtml,
-        { kicker='', lede='', answerHtml='', answerVariant='neutral', answerIcon='circle-info' })
-subhead(text, { anchorId='' })
-kpi(value, label, noteHtml = '', { chipHtml='' })
+        { kicker='', lede='', ledeHtml='', answerHtml='', answerVariant='neutral', answerIcon='circle-info' })
+subhead(text, { anchorId='', badgeHtml='' })
+kpi(value, label, noteHtml = '', { chipHtml='', subHtml='', size='2xl' })
+swatch(style) → string                                  // <span class="sw" aria-hidden="true">
+basisChip(source) → string                              // 'rulebook'|'feed'|'interp' → From the rules | Measured | Our call
+degradeChip(code, { suffix='' }) → string               // DEGRADE_KIND word + icon + variant
+factChips(facts, { className='' }) → string             // Fact[] → wa-cluster; '' when empty
+miniMeter(fill, textHtml, { label }) → string           // fill from fillPct; label required
+linkChip(href, text, iconName='', opts={}) → string     // <a class="wa-link-plain"> around chip()
+iconLabel(iconName, text, { quiet=true }) → string
+iconLabelHtml(iconName, contentHtml, { quiet=true }) → string
+legendRow(items, { label='', leadHtml='' }) → string    // items: Array<[markHtml, text, liId?]>
+leadDetail(leadHtml, detailHtml, { summary='Why', inline=false, chipsHtml='', afterHtml='', id='', dataBasis='', foldBelow=false, className='' }) → string
+cardHeader(title, { caption='', captionHtml='', chipsHtml='', titleHtml='' }) → string
 setProvNames(pairs)                                     // Iterable<[id, name]>; replaces the whole table
 provChip(...ids)                                        // variadic, like the Python
 dataTable(headers, rows, { className='', ...attrs })   // always wrapped in a scroller
@@ -1402,7 +1481,7 @@ Behavioural notes that are load-bearing, not style:
   finding severity or a metric source. Icon **and** word, never colour alone: against the
   off-white surface `--warn` and `--q-edge` are 2.38:1 and `--gold` 1.44:1, all under
   the 3:1 non-text floor.
-* `meter()`'s `valuePct` is 0–100 and is computed by the caller, never inside the helper.
+* `meter()`'s `valuePct` and `waProgressBar`'s `value` are 0–100 and always come from `lib/core.js` `fillPct()`; no caller multiplies or divides.
 * `budgetBar` is a `<wa-chart stacked index-axis="y">`, one dataset per segment
   (`wa-progress-bar` is a single-fill track). Pass `height`, never `style` — `style`
   replaces the whole style string and drops `aspect-ratio:auto`, letting the component's
@@ -1413,9 +1492,15 @@ Behavioural notes that are load-bearing, not style:
   `display:none` subtree measures 0.
 * `pullQuote` — exactly one per page.
 * `section()`'s `number` renders through `h2[data-n]::before`, so it exists only as an
-  attribute, never as text a screen reader has to read twice. `answerHtml` is ONE
-  plain-English sentence carrying the two or three numbers that matter; every number in it
-  must already come from a formatter or a `Report` field.
+  attribute, never as text a screen reader has to read twice. `answerHtml` is ONE line:
+  either one plain sentence of at most 20 words, or one `wa-cluster` of chips and inline
+  `<b>` figures; never two sentences, never a paragraph. Every number in it already comes
+  from a formatter or a `Report` field. A section with nothing to add omits it.
+* **Row detail is native `<details>`**, built by `leadDetail`, never `wa-details`: it opens
+  for find-in-page, costs no component upgrade per row, and `app.js` opens it for print
+  (`bindPrintDisclosures`) and for a fragment (`openTargeted`). Section- and card-level
+  disclosures keep `waDetails`. The summary is an explanation's handle; a label, a basis chip
+  or a `degradeChip` never sits only inside the fold.
 * `provChip()` links to `#prov-{id}`; this is how "every point traces to a named metric"
   reaches the UI. The visible text is the bare code, so each link is named
   `Source: <metric or source name>` from the table `setProvNames` holds —
@@ -1446,11 +1531,11 @@ Its markup is fixed in three places. The day marker on a day-sensitive tile is a
 `<span class="tile-tag">` — icon plus word, never a `chip()` or a `wa-button`: it is a
 label beside a 2xl number, and the helper-notes list above is about statuses, actions,
 severities and sources, which this is not. A tile's note keeps **one clause** under the
-value, with the remainder in `<wa-details class="tile-more" appearance="plain"
-summary="More">`, so a group of tiles reads as numbers and not as prose. `s4Tiles`
+value; a sub-figure goes in `kpi`'s `subHtml`; any remainder stays in `<wa-details
+class="tile-more" appearance="plain" summary="More">`, so a group of tiles reads as numbers and not as prose. `s4Tiles`
 returns the two as separate fields (`n` and `more`); the boundary is never inferred
-from the prose, because a note interpolates stop names. The hover/pin sentence is its
-own `<p id="glance-hover-note">`, which `app.js` removes when MapLibre does not load —
+from the prose, because a note interpolates stop names. The hover/pin hint is its
+own element, `id="glance-hover-note"`, inside the glance legend row, which `app.js` removes when MapLibre does not load —
 `buildMap`'s `sayBlocked` alone, re-run by every `injectRuntime()` pass, so a re-mount
 at `rules` or at `score` brings the fresh sentence back and loses it again. `bindRail`
 never removes it: `buildMap` is async, so "not ready yet" is the state of every
@@ -1518,9 +1603,8 @@ The rule from `build_report`:
 
 ```
 try   geo = await collectGeodata(...)
-catch geo = emptyGeoData(border.bbox,
-            'The map files could not be read; OSM-backed scores are excluded.')
-      degradations.push(`OpenStreetMap layer unavailable (${err.name})`)
+catch geo = emptyGeoData(border.bbox)
+      degrade(`The OpenStreetMap files could not be read (${err.name}), …`, 'osm_unavailable')
 ```
 
 **There is no `else`.** The geo phase is unconditional. An unavailable OSM layer costs 37
@@ -1533,7 +1617,8 @@ keeps its 19 golden numbers offline.
 Rules that follow from it, and that every module must obey:
 
 1. **A failed map-file read is not fatal.** The run continues with
-   `geo.available === false`, empty containers, and a degradation string. The trigger is
+   `geo.available === false`, empty containers, and a degradation string with code
+   `osm_unavailable`. The trigger is
    `collectGeodata` finding that *not one* world-file layer could be read. One unreadable
    layer degrades that category alone — throwing on the first failure would turn a single
    missing layer into a dead OSM section.
@@ -1584,6 +1669,14 @@ Rules that follow from it, and that every module must obey:
    timetable. §09 prints a `Timetable` row (`render/deck.js`) only when the flag is true,
    and each assumption is a standing `osm_synth_*` INTERPRETATIONS row quoting the
    `SYNTH_*` constants.
+8. **One vocabulary for degraded states.** Every degraded or limited state that reaches the
+   page is named by a `DegradeCode` from `lib/core.js` `DEGRADE_KIND` and drawn by
+   `render/html.js` `degradeChip`: the toast, §07 and §08 rows, §02's trace, §09's limits
+   card, the guide's axes and dossier, and the landing picker. `osm_unavailable` (the layer
+   failed) and `path_join_not_evaluated` (the join is never attempted) never share a word,
+   an icon or a variant. A degradation chip is always visible; only its explanation folds.
+   §09's "What this data does not know" prints every `Report.degradations` sentence in full
+   and folds only `limit`-family note text.
 
 ---
 
@@ -1611,8 +1704,8 @@ link back.
 | Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the CLI's simulator never consumed it either — it recomputes answers client-side by haversine (`answerFor`). `report.geo.pois` crosses `postMessage` whole and is richer than the CLI's `[lon, lat, name]` triples. |
 | Re-runs and the URL | "Re-run with this border" (§05) hands the next document load its inputs through the sessionStorage key `jltg.rerun` (§(d)), **never through the URL** — nothing a reader could bookmark into a run they did not ask for. `resetToLanding()` remains a plain reload of a fragment-less, query-less URL; `boot()` has already removed the key, so Reset from run 2 is the ordinary landing and never a replay. |
 | Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. The CLI's bare ids collide in a single document (`#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion). The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
-| Controls | The three mutually-exclusive rows — `#s-modes`, `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same pair `s4ChipGroup` (`render/deck.js`) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` cannot be reused because it cannot disable an option. A dead option is a `disabled` radio **and** a printed reason, since a disabled control is not focusable and its `title` is reachable only by hovering. Never express the selection by rewriting `appearance`. |
-| Seeker placement | Pointer **and** keyboard. The map click and the marker drag are the CLI's; the port adds a "Place the seekers at …" `wa-button` in `#s-opts` (a leg from the hub to the selected zone, in thermometer mode) and makes the marker element itself a focusable control that the arrow keys nudge. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user. |
+| Controls | The three mutually-exclusive rows — `#s-modes`, `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same pair `s4ChipGroup` (`render/deck.js`) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` cannot be reused because it cannot disable an option. A dead option is a `disabled` radio **and** a printed reason; options sharing one reason are named together beside that reason, printed once, since a disabled control is not focusable and its `title` is reachable only by hovering. Never express the selection by rewriting `appearance`. |
+| Seeker placement | Pointer **and** keyboard. The map click and the marker drag are the CLI's; the port adds a "Place seekers at …" `wa-button` in `#s-opts` (thermometer: "Leg: … → selected zone", accessible name "Run the leg from … to the selected zone") and makes the marker element itself a focusable control that the arrow keys nudge. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user. |
 | Module boundary | `app.js` → `renderStrategy(report) → string` (one root element, or `''`) and `initStrategy(root, report) → void`. `initStrategy` is called **only after** `body[data-view]` is set, because MapLibre reads its container size at construction. It is idempotent: a second call resizes the map and returns, so mode, selection, sort, filter and page survive re-entry. `simulator.js` imports `strategy.js`, never the reverse. The one shape that crosses is `modeChips`' `CatChip` (typedef in `render/strategy.js`), whose `reachMi` — the tentacle question's own reach in miles, `null` on matching and measuring chips — is what `answerFor` measures against. Never `size.tentacleReachMi`: a LARGE deck holds two reaches at once. |
 | What `answerFor` answers | `rules/audit.js` is the specification; the CLI's simulator disagreed on three answers and both sides now agree. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
 
@@ -1623,8 +1716,9 @@ link back.
 2. **The rail's six-segment axis micro-bar is dropped** in favour of one
    `wa-progress-bar` for the overall score. The breakdown is one click away in the
    dossier.
-3. **The six `wa-tooltip for="th-{axis}"` header tooltips are replaced** by an axis
-   legend above the table whose `<code>` entries link to `#s-axis-{AXIS}`. `html.js` has
+3. **The six `wa-tooltip for="th-{axis}"` header tooltips are replaced** by the 'Best
+   on each axis' block above the table, whose six rows' `<code>` letters link to
+   `#s-axis-{AXIS}`, one row per axis including unmeasured ones. `html.js` has
    no `waTooltip` and is not gaining one for this.
 4. **All ids are namespaced `s-`**, as above.
 5. **The guide's map follows the theme button.** One document has one theme control, so

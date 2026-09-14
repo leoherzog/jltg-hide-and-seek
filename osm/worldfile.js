@@ -860,6 +860,30 @@ export function worldProvenance(world, key) {
     + `sha256 ${String(info.sha256).slice(0, 16)}`;
 }
 
+/**
+ * The file a layer's count came from, as data, or null when no file shipped.
+ * @returns {{url: string, features: number, bytes: number, sha256: string}|null}
+ */
+export function worldLayerRecord(world, key) {
+  const info = worldLayerInfo(world, key);
+  if (info === null || layerEmpty(info)) return null;
+  return {
+    url: `${world.baseUrl}/${info.path}`,
+    features: Number(info.features) || 0,
+    bytes: Number(info.bytes) || 0,
+    sha256: String(info.sha256 || ''),
+  };
+}
+
+/**
+ * The manifest's planet snapshot date as 'YYYYMMDD', or null when absent or unparseable.
+ * @returns {string|null}
+ */
+export function worldSnapshot(world) {
+  const m = /^(\d{4})-?(\d{2})-?(\d{2})/.exec(String(world.manifest.planet_timestamp || ''));
+  return m ? `${m[1]}${m[2]}${m[3]}` : null;
+}
+
 /** A one-line summary of what the run actually cost, for the log. */
 export function worldStatsLine(world) {
   const { requests, bytes } = world.stats();

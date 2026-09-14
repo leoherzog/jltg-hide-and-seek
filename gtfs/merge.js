@@ -23,7 +23,7 @@
  *   * No clock, no randomness; every `Map`/object is sorted before it reaches output.
  */
 
-import { cmpStr, sha256Text } from '../lib/core.js';
+import { cmpStr, prettyDate, sha256Text } from '../lib/core.js';
 import { StopTimes, attachStopTimes, stopTimesOf } from './feed.js';
 
 /** `String(x).trim()`, tolerating null/undefined the way the loader does. */
@@ -90,7 +90,7 @@ export function mergeOrder(feeds) {
  * §09 prints these so a merged report names every file it read.
  *
  * @param {Array<{feed: Object, index: number, tag: string}>} order from `mergeOrder`
- * @param {Array<{label?: string, mdbId?: string|null}>|null} [srcs]
+ * @param {Array<{label?: string, mdbId?: string|null, ring?: Array|null}>|null} [srcs]
  *        the main thread's own metadata, indexed as the `feeds` array was
  * @returns {Object[]} `FeedSourceRow[]`
  */
@@ -115,6 +115,7 @@ export function feedSourceRows(order, srcs = null) {
       stops: Object.keys(feed.stops || {}).length,
       routes: Object.keys(feed.routes || {}).length,
       trips: ((feed.tables && feed.tables.trips) || []).length,
+      synthesized: Boolean(meta && meta.ring),
     };
   });
 }
@@ -189,8 +190,8 @@ function nsRow(row, cols, pfx, blankAgency) {
  * already-namespaced trip ids.
  *
  * @param {Object[]} feeds one or more `Feed`s from `loadFeed`
- * @param {{onNote?: (message: string) => void}} [opts]
- *        `onNote` receives degradation text (CONTRACT.md §(f)); never an error path.
+ * @param {{onNote?: (message: string, code: string) => void}} [opts]
+ *        `onNote` receives degradation text and its `DEGRADE_KIND` code (CONTRACT.md §(f)); never an error path.
  * @returns {Promise<Object>} a `Feed` (CONTRACT.md §(b))
  */
 export async function mergeFeeds(feeds, opts = {}) {
@@ -261,22 +262,21 @@ export async function mergeFeeds(feeds, opts = {}) {
   const minEnd = ends.slice().sort(cmpStr)[0];
   const minStart = starts.slice().sort(cmpStr)[0];
   const maxEnd = ends.slice().sort(cmpStr)[n - 1];
-  const windows = ordered
-    .map(({ feed, tag }) => `${tag} ${feed.agencyName} ${feed.feedStart}–${feed.feedEnd}`)
-    .join('; ');
+  const day = (d) => (/^\d{8}$/.test(d) ? prettyDate(d) : d);
 
   let mergedStart = maxStart;
   let mergedEnd = minEnd;
   if (maxStart > minEnd) {
     mergedStart = minStart;
     mergedEnd = maxEnd;
-    onNote(`These feeds cover no dates in common (${windows}), so the analysis runs `
-      + `over ${minStart}–${maxEnd} instead. On any single date at least one of them `
-      + 'contributes no service, which makes the busier system look like the whole map.');
+    onNote(`These feeds cover no dates in common, so the analysis runs over `
+      + `${day(minStart)} to ${day(maxEnd)} instead. On any single date at least one of them `
+      + 'contributes no service, which makes the busier system look like the whole map.',
+    'merge_no_overlap');
   } else if (dayCount(mergedStart, mergedEnd) < 7) {
-    onNote(`These feeds overlap for fewer than seven days (${mergedStart}–${mergedEnd}, `
-      + `from ${windows}), so the representative days are chosen from a very short `
-      + 'window and may not describe an ordinary week.');
+    onNote(`These feeds overlap for fewer than seven days (${day(mergedStart)} to `
+      + `${day(mergedEnd)}), so the representative days are chosen from a very short `
+      + 'window and may not describe an ordinary week.', 'merge_short_overlap');
   }
 
   // ── timezones ─────────────────────────────────────────────────────────────
@@ -285,10 +285,9 @@ export async function mergeFeeds(feeds, opts = {}) {
   const zones = Array.from(new Set(ordered.map(({ feed }) => String(feed.timezone || ''))))
     .filter((z) => z).sort(cmpStr);
   if (zones.length > 1) {
-    onNote(`These feeds are in different time zones (${zones.join(', ')} — ${windows}). `
-      + 'Every departure below is in its own feed\'s local time, so a journey that '
-      + 'changes system assumes the two clocks agree, and any ride time crossing that '
-      + 'boundary is out by the offset between them.');
+    onNote(`These feeds are in different time zones (${zones.join(', ')}). Every departure `
+      + 'is in its own feed\'s local time, so a ride time that crosses systems is out by the '
+      + 'offset between them.', 'merge_mixed_tz');
   }
 
   // ── one synthesised feed_info row ─────────────────────────────────────────

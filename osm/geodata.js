@@ -27,14 +27,15 @@
  * never be conflated:
  *
  *   1. The whole OSM layer failed. `collectGeodata` throws only when NOT ONE layer
- *      could be read (`layersRead === 0`); the caller answers with `emptyGeoData(bbox, note)`
- *      (`available: false`, empty containers, one honesty note) and the run continues
- *      with every OSM-backed score dropped from the denominator. See CONTRACT.md §(f).
+ *      could be read (`layersRead === 0`); the caller answers with `emptyGeoData(bbox)`
+ *      (`available: false`, empty containers, no notes: the worker's `osm_unavailable`
+ *      degradation is the record) and the run continues with every OSM-backed score
+ *      dropped from the denominator. See CONTRACT.md §(f).
  *
  *   2. The "within 10 ft of a routable path" join is not evaluated at all — `pathIds`
  *      is unconditionally null (see the note above `legalEndgameSpots`). Every count is
- *      real; every candidate hiding spot comes back `verify: true` at half weight. No
- *      provenance row is emitted; the printed E1 definition tells the reader.
+ *      real; every candidate hiding spot comes back `verify: true` at half weight.
+ *      `pathJoinEvaluated` is false and a `path_join_not_evaluated` note says so.
  *      `available` stays `true`; this is NOT case 1.
  *
  * Everything in between — a category missing from the manifest, an unreadable layer,
@@ -43,7 +44,7 @@
  */
 
 import {
-  cmpStr, num, pct, quantile,
+  cmpStr, num, quantile,
 } from '../lib/core.js';
 import {
   Projection, GridIndex, haversineM, bboxExpand, bboxContains,
@@ -51,7 +52,7 @@ import {
 } from '../lib/geo.js';
 import {
   worldPois, worldCount, worldDensity, worldAdminAreas, adminAreasAt,
-  worldLayerInfo, worldProvenance,
+  worldLayerInfo, worldProvenance, worldLayerRecord, worldSnapshot,
 } from './worldfile.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -208,19 +209,12 @@ export const LOW_STREETVIEW_COUNTRIES = Object.freeze(
 );
 
 // ── tuning constants (S2-local) ───────────────────────────────────────────────
-//
-// Every constant here still decides something, except `LEGAL_PATH_JOIN_WAY_BUDGET`,
-// which only names the size the legal-path join would have had to fit into (see the
-// note above `legalEndgameSpots`).
 
 export const CATEGORY_FEATURE_BUDGET = 40000;  // above this, a category is counted but not fetched
 export const LEGAL_SPOTS_PER_ZONE = 40;        // cap on the per-zone shortlist (page size guard)
 export const TOILET_WIDE_FACTOR = 1.5;         // A1's "just outside the circle" fallback ring
 export const REDUNDANT_PAIR_FRACTION = 0.05;   // 1/20 of the map diagonal (specs/osm.md §7.4)
 export const REDUNDANT_PAIR_MAX_M = 5000.0;    // …and never further than this — see `redundantPairs`
-// Buffering every walkable way by 5 m timed out on every Overpass mirror for the
-// reference bbox (84,466 ways); above this budget every spot is marked verify-on-the-ground.
-export const LEGAL_PATH_JOIN_WAY_BUDGET = 40000;
 export const SPOT_VERIFY_WEIGHT = 0.5;         // restrictive opening_hours ⇒ half weight
 
 // ── the world-file layer map ─────────────────────────────────────────────────
@@ -1737,11 +1731,10 @@ function synthCoastline(pois, bbox, proj, log) {
 
 /**
  * The `available: false` form of `GeoData` (mirrors `build_report`). The run
- * continues with empty containers; `note` is the single honesty note on the page.
+ * continues with empty containers; the worker's `osm_unavailable` degradation is the record.
  * @param {[number, number, number, number]} bbox
- * @param {string} note
  */
-export function emptyGeoData(bbox, note) {
+export function emptyGeoData(bbox) {
   return {
     available: false,
     bbox: Array.from(bbox),
@@ -1763,8 +1756,29 @@ export function emptyGeoData(bbox, note) {
     cuisines: {},
     legalSpots: {},
     queries: [],
-    notes: [note],
+    notes: [],
+    noteCodes: {},
+    pathJoinEvaluated: false,
+    snapshot: null,
+    densityCellM: null,
+    osmCoverage: { strong: [], weak: [] },
+    cuisineStats: null,
+    cuisineRejected: [],
+    iconOffsetP90M: null,
+    derivedShore: null,
+    redundantPairs: [],
   };
+}
+
+/** Where OpenStreetMap is strong and where it is materially incomplete; templated into a note. */
+const OSM_COVERAGE = Object.freeze({
+  strong: Object.freeze(['parks', 'schools', 'places of worship', 'hospitals', 'libraries']),
+  weak: Object.freeze(['retail', 'restaurants', 'chains']),
+});
+
+/** 'a, b and c'. */
+function andList(items) {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
 /**
@@ -1794,6 +1808,12 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   const queries = [];
   /** @type {Array<string>} */
   const notes = [];
+  /** @type {Object<string, string>} */
+  const noteCodes = {};
+  const note = (code, text) => {
+    notes.push(text);
+    noteCodes[text] = code;
+  };
 
   // Estimated round-trips: one per feature category plus three phases (curses, admin,
   // density). The density-grid tallies are columns on one grid read and take no turn
@@ -1922,36 +1942,34 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     // Partial either way: exact map-wide, never a measured per-zone figure.
     partialCategories.add(key);
   }
+  let densityCellM = null;
   if (density) {
-    const cellM = Math.round(density.cellDeg * 111000);
-    notes.push(
+    densityCellM = Math.round(density.cellDeg * 111000);
+    note('density_grid',
       `Counts for ${GEO_DENSITY_GRID_CATEGORIES.join(', ')} come from a precomputed `
-      + `${num(cellM)} m density grid rather than from individual features — their `
-      + 'geometry is tens of gigabytes worldwide and every question asked of them is a '
-      + 'tally. The map-wide totals are exact. The per-zone figures are approximate: a '
-      + 'grid cell counts wholly inside or wholly outside a zone circle depending on '
-      + 'where its centre falls.',
-    );
+      + `${num(densityCellM)} m density grid, not individual features. The map-wide totals `
+      + 'are exact. Per-zone figures are approximate: a grid cell counts wholly inside or '
+      + 'wholly outside a zone circle depending on where its centre falls.');
   } else {
-    notes.push(
-      'The precomputed density grid could not be read, so counts of buildings, streets, '
-      + 'footpaths, bridges and trees are missing rather than zero. Every score that '
-      + 'needs them is excluded rather than guessed at.',
-    );
+    note('density_grid_unavailable',
+      `The density grid could not be read, so counts for ${GEO_DENSITY_GRID_CATEGORIES.join(', ')} `
+      + 'are missing rather than zero. Every score that needs them is excluded rather than '
+      + 'guessed at.');
   }
   // ── 2b. great-lake and inland-sea shores count as coastline ──────────────
+  let derivedShore = null;
   if (pois.water && pois.water.length) {
     const [shore, shoreNames] = synthCoastline(pois, bbox, proj, log);
     if (shore.length) {
       pois.coastline = (pois.coastline || []).concat(shore).sort(cmpTypeId);
       counts.coastline = (counts.coastline || 0) + shore.length;
-      const joined = Array.from(new Set(shoreNames)).sort(cmpStr).slice(0, 4).join(', ');
-      notes.push(
-        'OpenStreetMap tags `natural=coastline` on ocean and sea shorelines only, so a '
-        + `great lake carries none. ${num(shore.length)} shore segments were derived from `
-        + `${joined} — water bodies larger than the game map, whose shore bounds the map the `
-        + 'way a coast does. Distances are measured to those segments.',
-      );
+      const names = Array.from(new Set(shoreNames)).sort(cmpStr);
+      derivedShore = { segments: shore.length, names };
+      const joined = names.slice(0, 4).join(', ');
+      note('coastline_derived',
+        `${num(shore.length)} shore segments were derived from ${joined}: water bodies larger `
+        + 'than the game map, whose shore bounds the map the way a coast does. Distances are '
+        + 'measured to those segments.');
       log('info', `coastline: derived ${shore.length} shore segments from ${joined}`);
     }
   }
@@ -1960,7 +1978,7 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   //
   // `selector` carries the Overpass QL (the category's definition, which a player
   // can paste into overpass-turbo); `endpoint` names the file the number actually
-  // came from and its planet snapshot.
+  // came from and its planet snapshot, and `layer` is that file as data.
   for (const category of GEO_CATEGORIES) {
     const key = category.key;
     const counted = counts[key];
@@ -1974,6 +1992,8 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
       cacheKey: '',
       endpoint: worldProvenance(world, onGrid ? 'density' : key),
       partial: partialCategories.has(key),
+      source: onGrid ? 'density' : 'feature',
+      layer: worldLayerRecord(world, onGrid ? 'density' : key),
     });
   }
 
@@ -1996,6 +2016,8 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
       cacheKey: '',
       endpoint: worldProvenance(world, 'admin'),
       partial: Object.keys(admin.perZone).length === 0,
+      source: 'feature',
+      layer: worldLayerRecord(world, 'admin'),
     });
   }
 
@@ -2030,6 +2052,8 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     cacheKey: '',
     endpoint: worldProvenance(world, 'curse_water'),
     partial: Object.keys(geo.curseCounts).length === 0,
+    source: 'feature',
+    layer: worldLayerRecord(world, 'curse_water'),
   });
 
   // ── 7. candidate legal endgame spots ─────────────────────────────────────
@@ -2039,69 +2063,39 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   // candidate spot comes back `verify: true` at `SPOT_VERIFY_WEIGHT`, and the note
   // says so. This is CONTRACT.md §(f)2's degradation-in-place, made permanent.
   const pathIds = null;
-  notes.push(
-    'The rulebook\'s “within 10 ft of a routable path” test is not evaluated. It '
-    + 'required a server-side spatial join against every walkable way in the map, which '
-    + 'the precomputed map files cannot answer — a global footpath network is the one '
-    + 'layer too dense to ship. Every candidate spot below is therefore marked '
-    + 'verify-on-the-ground, which is what the previous pipeline did on any map larger '
-    + `than ${num(LEGAL_PATH_JOIN_WAY_BUDGET)} walkable ways in any case.`,
-  );
+  note('path_join_not_evaluated',
+    'The rulebook\'s “within 10 ft of a routable path” test is not evaluated: it needs a '
+    + 'spatial join against every walkable way, and a global footpath network is the one '
+    + 'layer too dense to ship. Every candidate spot is marked verify-on-the-ground.');
   // Read by legalEndgameSpots only, and never emitted: a Set is not clone-safe.
   geo.legalSpots = legalEndgameSpots(zones, geo, proj, radiusM, pathIds);
 
   // ── 8. the honesty notes that must reach the page ────────────────────────
-  notes.push(
-    'OSM has no review count, so the rulebook\'s “5 or more Google Reviews” '
-    + 'legitimacy test is approximated by requiring a `name` tag. Measured effect on this kind '
-    + 'of feed: a 5–10% trim, in the right direction, but not the same function.',
-  );
-  notes.push(
+  note('osm_lower_bound',
     'Every OpenStreetMap count here is a lower bound on what the seekers\' map app will '
-    + 'show. OSM is strong on parks, schools, places of worship, hospitals and libraries and '
-    + 'materially incomplete on retail, restaurants and chains.',
-  );
+    + `show. OSM is strong on ${andList(OSM_COVERAGE.strong)} and materially incomplete on `
+    + `${andList(OSM_COVERAGE.weak)}. OSM has no review count, so the rulebook's “5 or more `
+    + 'Google Reviews” test is approximated by requiring a `name` tag: a 5–10% trim, in the '
+    + 'right direction, but not the same function.');
   const offset = iconOffsetP90(pois.park || [], proj);
   if (offset !== null) {
-    notes.push(
+    note('centroid_offset',
       'Distances are measured to a computed area centroid, not to a map app\'s label '
-      + `anchor. On this map\'s park polygons the two differ by up to ${num(offset)} m at `
-      + `the 90th percentile, which is a real fraction of the ${num(radiusM)} m zone radius.`,
-    );
-  }
-  notes.push(
-    'Candidate hiding spots are a shortlist for a human, never a verdict: OpenStreetMap does '
-    + 'not know whether a plaza is locked at night, so the rulebook\'s “publicly '
-    + 'accessible during all game hours” test cannot be automated.',
-  );
-  if (total) {
-    notes.push(
-      `${pct(tagged / total)} of restaurants carry a \`cuisine\` tag (${num(tagged)} of `
-      + `${num(total)}), so the ${num(qualifying)} restaurants qualifying for Curse of the `
-      + 'Distant Cuisine are a floor, not a total.',
-    );
+      + `anchor. On this map's park polygons the two differ by up to ${num(offset)} m at `
+      + `the 90th percentile, against a ${num(radiusM)} m zone radius.`);
   }
   if (rejected.length) {
-    const shown = rejected.slice(0, 12).join(', ');
-    notes.push(
-      'Cuisine tokens rejected as dishes or super-national regions rather than countries: '
-      + `${shown}${rejected.length > 12 ? '…' : ''}. Adjective tokens only — promoting a `
-      + 'dish to a country would change the count.',
-    );
+    note('cuisine_rejected',
+      `Cuisine tokens rejected as dishes or regions rather than countries: ${rejected.join(', ')}. `
+      + 'Counting them would change the Distant Cuisine count.');
   }
-  if ((counts.coastline || 0) === 0 && (counts.water || 0) > 0) {
-    notes.push(
-      'OpenStreetMap tags `natural=coastline` on ocean and sea shorelines only, so a great '
-      + 'lake or inland sea carries none. A zero here means “no ocean coast in the '
-      + 'border”, not “no large water”.',
-    );
+  if (counts.coastline === 0 && (counts.water || 0) > 0) {
+    note('coastline_zero',
+      'The coastline count is zero: no ocean coast in the border, which is not the same as '
+      + 'no large water.');
   }
-  if ((counts.mountain || 0) === 0) {
-    notes.push(
-      'No named peak or volcano is mapped inside the border. A map app may still label a hill '
-      + 'from its own gazetteer, so treat the mountain questions as dead-with-a-caveat.',
-    );
-  }
+  /** @type {Array<{a: string, b: string, aLabel: string, bLabel: string, distanceM: number}>} */
+  const pairs = [];
   if (zones.length > 1) {
     const pts = Array.from(zones)
       .sort((a, b) => cmpStr(a.zoneId, b.zoneId)).map((z) => [z.lat, z.lon]);
@@ -2109,29 +2103,27 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
     const lons = pts.map((p) => p[1]);
     const diagonal = haversineM(minOf(lats), minOf(lons), maxOf(lats), maxOf(lons));
     for (const [a, b, d] of redundantPairs(pois, proj, diagonal)) {
-      notes.push(
-        `${catalogue.get(a).label} and ${catalogue.get(b).label} each have exactly one instance `
-        + `on this map and their icons are ${num(d)} m apart, so the two matching questions are `
-        + 'the same bit of information bought twice.',
-      );
+      const aLabel = catalogue.get(a).label;
+      const bLabel = catalogue.get(b).label;
+      pairs.push({ a, b, aLabel, bLabel, distanceM: d });
+      note('redundant_pair',
+        `${aLabel} and ${bLabel} each have exactly one instance on this map and their icons `
+        + `are ${num(d)} m apart, so the two matching questions are the same bit of `
+        + 'information bought twice.');
     }
   }
-  const partialKeys = queries.filter((q) => q.partial).map((q) => q.key).sort(cmpStr);
-  if (partialKeys.length) {
-    notes.push(
-      'These counts were not confirmed by reading the features and are marked partial — '
-      + 'either the category was too large to fetch, leaving an upper bound, or the layer '
-      + 'could not be read: '
-      + `${partialKeys.join(', ')}.`,
-    );
-  }
-  notes.push(
-    'Counts reflect one OpenStreetMap snapshot, taken when the map files were built rather '
-    + 'than when this page was generated — the snapshot date is on the provenance table. '
-    + 'The files are immutable, so two runs against the same build agree exactly.',
-  );
 
   geo.notes = notes;
+  geo.noteCodes = noteCodes;
+  geo.pathJoinEvaluated = false;
+  geo.snapshot = worldSnapshot(world);
+  geo.densityCellM = densityCellM;
+  geo.osmCoverage = { strong: OSM_COVERAGE.strong.slice(), weak: OSM_COVERAGE.weak.slice() };
+  geo.cuisineStats = total ? { tagged, total, qualifying } : null;
+  geo.cuisineRejected = rejected.slice();
+  geo.iconOffsetP90M = offset;
+  geo.derivedShore = derivedShore;
+  geo.redundantPairs = pairs;
   geo.queries = Array.from(queries)
     .sort((a, b) => cmpStr(a.key, b.key) || cmpStr(a.cacheKey, b.cacheKey));
   progress.settle('Finished reading the map files');

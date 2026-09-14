@@ -45,17 +45,22 @@ function Q(id, category, label, text, sizes, draw, keep, geodataRef, extra = {})
  * @param {string} name
  * @param {1|2|3|4} tier              1 rulebook-explicit … 4 not map-contingent
  * @param {string|null} predicateKey  curse-predicate key, or null
- * @param {string} removalRule        plain words, printed on the page
+ * @param {string} removalRule        plain words, printed folded under the row
+ * @param {string} [test]             at most 8 words, tier 1–2; '' otherwise
  */
-function C(id, name, tier, predicateKey, removalRule) {
+function C(id, name, tier, predicateKey, removalRule, test = '') {
   return Object.freeze({
     id,
     name,
     tier,
     predicateKey,
     removalRule,
+    test,
   });
 }
+
+/** Share of the map diameter above which a thermometer leg is degenerate. */
+export const THERMO_DEGENERATE_SHARE = 0.7;
 
 /**
  * Catalogue size per game size, kept here for the shape assertions below. The
@@ -311,91 +316,90 @@ export const QUESTIONS = Object.freeze([
     ['large'], 4, 2, 'amusement_park', { param: 15.0 }),
 ]);
 
-// `removalRule` is plain words for the page; on tier 1 it paraphrases the
-// rulebook's own instruction. Card text lives only on the faces (www.lifack.ch/img/cards).
+// `removalRule` and `test` are our page wording; on tier 1 they paraphrase the rulebook's
+// instruction. Card text lives only on the faces (www.lifack.ch/img/cards).
 export const CURSES = Object.freeze([
   // ── tier 1 · the rulebook says to remove it ───────────────────────────────
   C('bridge_troll', 'Curse of the Bridge Troll', 1, 'bridge',
-    'Remove when the map contains no bridges.'),
+    'Remove when the map contains no bridges.',
+    'removed if bridges = 0'),
   C('egg_partner', 'Curse of the Egg Partner', 1, 'grocery',
-    'A player preference, not a measurement: the rulebook removes it when you do not want ' +
-    'to buy things during the game. The grocery count only tells you whether an egg is ' +
-    'obtainable at all.'),
+    'The grocery count only says whether an egg is obtainable.',
+    'removed if no spending, or groceries = 0'),
   C('impressionable_consumer', 'Curse of the Impressionable Consumer', 1, 'shop',
-    'A player preference, not a measurement. The shop count is the secondary check: an ' +
-    'advertisement 100 ft from the thing it advertises needs commercial density.'),
+    'The shop count is the secondary check: an ad 100 ft from its subject needs ' +
+    'commercial density.',
+    'removed if no spending, or shops = 0'),
   C('unguided_tourist', 'Curse of the Unguided Tourist', 1, null,
     'Decided by a static Street View coverage table keyed on the map\'s country, not by ' +
-    "OpenStreetMap. Removed in the countries the rulebook's own example (Germany) belongs to."),
+    "OpenStreetMap. Removed in the countries the rulebook's own example (Germany) belongs to.",
+    'removed if Street View coverage is low'),
 
   // ── tier 2 · map-contingent by derivation, hard enough to auto-remove ─────
   C('distant_cuisine', 'Curse of the Distant Cuisine', 2, 'cuisine',
     'Remove when no restaurant on the map is tagged with a single foreign country\'s ' +
     'cuisine. Warn when there are fewer than five, or when only one distinct country is ' +
     'represented — then every qualifying restaurant is the same distance away and the ' +
-    'curse is a formality.'),
+    'curse is a formality.',
+    'removed if foreign-cuisine restaurants = 0'),
   C('lemon_phylactery', 'Curse of the Lemon Phylactery', 2, 'grocery',
-    'Every seeker has to buy a lemon. The rulebook flags Egg Partner and Impressionable ' +
-    'Consumer for the spending objection and is silent about this one, which is an ' +
-    'inconsistency — group all three under one no-spending house rule.'),
+    'Every seeker has to buy a lemon.',
+    'removed if no spending, or groceries = 0'),
   C('luxury_car', 'Curse of the Luxury Car', 2, 'car_street',
     'Remove only when the map has no motor-vehicle street at all. Car-free transit maps ' +
-    'are real: Venice, Zermatt, Mackinac Island, Hydra, Giethoorn.'),
+    'are real: Venice, Zermatt, Mackinac Island, Hydra, Giethoorn.',
+    'removed if motor-vehicle streets = 0'),
   C('right_turn', 'Curse of the Right Turn', 2, 'car_street',
     'The rulebook says outright that the curse has no effect where there are no streets, ' +
-    'so remove it when the motor-vehicle street count is zero.'),
+    'so remove it when the motor-vehicle street count is zero.',
+    'removed if motor-vehicle streets = 0'),
   C('water_weight', 'Curse of the Water Weight', 2, 'water',
     'The casting cost is a geographic gate: with no non-pool body of water on the map the ' +
-    'curse can never be cast.'),
+    'curse can never be cast.',
+    'removed if non-pool water bodies = 0'),
 
   // ── tier 3 · map-contingent, warn only, never auto-removed ────────────────
   C('bird_guide', 'Curse of the Bird Guide', 3, 'animal_habitat',
-    'Never removed. Green cover is the signal for how quickly either side finds a bird ' +
-    'worth filming.'),
+    'Green cover is the signal for how quickly either side finds a bird worth filming.'),
   C('cairn', 'Curse of the Cairn', 3, 'cairn_terrain',
-    'Never removed. Loose rock is not reliably mapped, so the terrain count is a hint ' +
-    'rather than a verdict; the rulebook only calls this curse useless at global scale.'),
+    'Loose rock is not reliably mapped, so the terrain count is a hint rather than a ' +
+    'verdict; the rulebook only calls this curse useless at global scale.'),
   C('endless_tumble', 'Curse of the Endless Tumble', 3, 'tumble_ground',
-    'Never removed. It needs 100 ft of open, ideally sloped, publicly accessible ground; ' +
-    'the open-ground count says how grim that will be here.'),
+    'It needs 100 ft of open, ideally sloped, publicly accessible ground; the open-ground ' +
+    'count says how grim that will be here.'),
   C('jammed_door', 'Curse of the Jammed Door', 3, 'building',
-    'Never removed — it is always satisfiable. Its bite scales with how much of the ' +
-    "seekers' route is boardings: punishing on a bus-heavy map, weak on a walking one."),
+    "Always satisfiable. Its bite scales with how much of the seekers' route is boardings: " +
+    'punishing on a bus-heavy map, weak on a walking one.'),
   C('labyrinth', 'Curse of the Labyrinth', 3, null,
-    'Never removed and not a geography question: it needs pen and paper, which belongs in ' +
-    'the what-to-pack list.'),
+    'Needs pen and paper, which belongs in the what-to-pack list. Not a geography question.'),
   C('mediocre_travel_agent', 'Curse of the Mediocre Travel Agent', 3, 'travel_agent_stop',
-    'Never removed. It fails only where the seekers are somewhere with nothing around, so ' +
-    'the signal is the share of stations with a public destination in range.'),
+    'It fails only where the seekers are somewhere with nothing around, so the signal is ' +
+    'the share of stations with a public destination in range.'),
   C('ransom_note', 'Curse of the Ransom Note', 3, 'print_source',
-    'Never removed. Both sides need printed material found in the wild plus something to ' +
-    'cut with, which is genuinely hard in a zone with no newsstand or flyer board.'),
+    'Both sides need printed material found in the wild plus something to cut with, which ' +
+    'is genuinely hard in a zone with no newsstand or flyer board.'),
   C('u_turn', 'Curse of the U-Turn', 3, 'u_turn',
     'Decided by GTFS, not OSM: the card only bites when another route serves the next ' +
-    'station inside 0.5/0.5/1 hours. Never removed — the escape hatch is printed on the ' +
-    'card, not a flaw in the map.'),
+    'station inside 0.5/0.5/1 hours. The escape hatch is printed on the card, not a flaw ' +
+    'in the map.'),
   C('urban_explorer', 'Curse of the Urban Explorer', 3, null,
-    'Never removed, but it permanently kills the Transit Line matching question, which ' +
-    'requires the seekers to be on moving transit. On a map where Transit Line is one of ' +
-    'the few live matching questions this costs the seekers far more than two cards.'),
+    'It permanently kills the Transit Line matching question, which requires the seekers ' +
+    'to be on moving transit.'),
   C('zoologist', 'Curse of the Zoologist', 3, 'animal_habitat',
-    'Never removed. The hider picks the category, so they will pick bird or bug; zoos and ' +
-    'aquariums explicitly do not count.'),
+    'The hider picks the category, so they will pick bird or bug; zoos and aquariums ' +
+    'explicitly do not count.'),
 
   // ── tier 4 · not map-contingent at all ───────────────────────────────────
   C('drained_brain', 'Curse of the Drained Brain', 4, null,
-    'Not map-contingent. It cannot break on any map, because the radar category is never ' +
-    'fully dead — the Choose radar guarantees at least one live category.'),
-  C('gamblers_feet', "Curse of the Gambler's Feet", 4, null,
-    'Not map-contingent.'),
-  C('hidden_hangman', 'Curse of the Hidden Hangman', 4, null,
-    'Not map-contingent.'),
+    'It cannot break on any map, because the radar category is never fully dead — the ' +
+    'Choose radar guarantees at least one live category.'),
+  C('gamblers_feet', "Curse of the Gambler's Feet", 4, null, ''),
+  C('hidden_hangman', 'Curse of the Hidden Hangman', 4, null, ''),
   C('overflowing_chalice', 'Curse of the Overflowing Chalice', 4, null,
-    'Not map-contingent. Its note is the only place the rulebook independently restates ' +
-    'the base draw/keep numbers, and they agree with SEEKING.md exactly.'),
+    'Its note is the only place the rulebook independently restates the base draw/keep ' +
+    'numbers, and they agree with SEEKING.md exactly.'),
   C('spotty_memory', 'Curse of the Spotty Memory', 4, null,
-    'Not map-contingent. A SMALL game has only five categories, so a six is a reroll, and ' +
-    'the curse hurts most on a map where only two categories are any good.'),
+    'A SMALL game has only five question categories.'),
 ]);
 
 // ── shape assertions, run at import; they have caught real transcription errors ──
@@ -442,20 +446,27 @@ assert(
 // S3 · INTERPRETATIONS — where the rulebook is silent and this code decides
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Printed verbatim in §Provenance. A judgement call in the engine without a row
-// here is a bug.
+// Printed folded under each row's `lead` in §Provenance. A judgement call in the
+// engine without a row here is a bug. `lead` is at most 6 words with no trailing period.
 
-/** @type {ReadonlyArray<{id: string, affects: string[], text: string}>} */
+/**
+ * @type {ReadonlyArray<{id: string, lead: string, affects: string[], text: string,
+ *   byDerivation?: Object<string, string>, byDerivationLead?: Object<string, string>,
+ *   groups?: Array<{label: string, basis: 'rulebook'|'feed'|'interp', ids: string[]}>,
+ *   data?: Object}>}
+ */
 export const INTERPRETATIONS = Object.freeze([
-  { id: 'in_border_rule', affects: Object.freeze(['every count on this page']),
-    text: "The rulebook says that locations outside the map's boundaries must be treated as " +
-          'not existing, so every instance count here is measured inside the drawn border. ' +
-          'The border therefore decides most of this audit, which is why questions that would ' +
-          'change status under a slightly larger border are flagged as borderline.' },
-  // The one run-dependent row: `text` is the inferred derivation, `byDerivation`
-  // the reader's-own-box alternatives. `buildProvenance` picks; the row stays
-  // plain data so the main thread can read it without a border in hand.
-  { id: 'map_border_derivation', affects: Object.freeze(['border', 'every instance count']),
+  { id: 'in_border_rule', lead: 'Outside the border does not exist',
+    affects: Object.freeze(['every count on this page']),
+    text: 'The rulebook treats locations outside the map as not existing, so every instance ' +
+          'count is measured inside the drawn border. The border therefore decides most of ' +
+          'this audit; a question that would change status under a slightly larger border is ' +
+          'flagged borderline.' },
+  // The one run-dependent row: `text` and `lead` describe the inferred derivation,
+  // `byDerivation` and `byDerivationLead` the reader's-own-box alternatives.
+  // `buildProvenance` picks; the row stays plain data for main-thread readers.
+  { id: 'map_border_derivation', lead: "Stops' box plus one zone radius",
+    affects: Object.freeze(['border', 'every instance count']),
     text: 'The border is the bounding box of the in-map stops padded by one hiding-zone ' +
           'radius, so that every legal zone lies wholly inside the map. The rulebook leaves ' +
           'borders entirely to the players; this is a default, not a rule.',
@@ -465,67 +476,74 @@ export const INTERPRETATIONS = Object.freeze([
               'rulebook leaves borders entirely to the players; this one is yours.',
       // Box drawn but not applied: it kept under `IN_PLAY_MIN_SHARE` of served
       // stops, so worker.js fell back to the whole network and degraded.
-      option_fallback: 'The border is the box you set on the landing map, with no padding — ' +
-              'but it kept fewer than half the stops this network serves, so it was not ' +
-              'used to filter anything: every stop, zone and instance count on this page ' +
-              'is measured over the WHOLE network, inside the box and out. Draw a box ' +
-              'that keeps more of the system to play the game it describes.',
+      option_fallback: 'The border is the box you drew, unpadded. It kept under half the ' +
+              'served stops, so it was not applied; this is yours, not a rule.',
+    }),
+    byDerivationLead: Object.freeze({
+      option: 'Your box, unpadded',
+      option_fallback: 'Your box, not applied',
     }) },
-  { id: 'osm_is_not_google_maps', affects: Object.freeze(['all OSM counts', 'B', 'E', 'A']),
-    text: 'Every matching, measuring and tentacle question is defined by what a mapping app ' +
-          'categorises, with a five-Google-Reviews legitimacy test. This generator reads ' +
-          'OpenStreetMap, which has no reviews, tags things the apps do not surface and misses ' +
-          'chains the apps have. Counts here are a lower bound and the exact selector is ' +
-          'printed beside each one so a player can check it.' },
-  { id: 'matching_quality_is_binary', affects: Object.freeze(["every matching question's quality"]),
-    text: "A matching question's answer is yes or no, so its quality is scored as the balance " +
-          'of that binary split — the chance that a random pair of zones answers the same way ' +
-          '— rather than as the entropy of the underlying nearest-feature partition. A ' +
-          'question whose feature set is so fine that every zone has its own nearest instance ' +
-          'almost always answers no, and eliminates one zone; the binary form says so and the ' +
-          'entropy form does not.' },
-  { id: 'measuring_ties_are_their_own_answer', affects: Object.freeze(['every measuring question']),
-    text: 'The rulebook offers closer and further and nothing else, so it does not say what a ' +
-          'hider sitting exactly as far from the feature as the seeker should answer. Here ' +
-          'that zone is treated as answering neither, agreeing only with the other zones at ' +
-          'the same distance — which keeps the survival numbers and the concrete answers ' +
-          'printed in the dossiers describing the same game.' },
-  { id: 'measuring_quality_is_narrowing', affects: Object.freeze(["every measuring question's quality"]),
-    text: 'A measuring question always splits the map close to evenly, so scoring the balance ' +
-          'of its split would rate every one of them perfect. Its quality is scored as how ' +
-          'much of the map the answer removes on average — one minus the mean survival, ' +
-          'renormalised so a clean halving is 1.0.' },
-  { id: 'thermometer_beyond_map',
+  { id: 'osm_is_not_google_maps', lead: 'OpenStreetMap stands in for map apps',
+    affects: Object.freeze(['all OSM counts', 'B', 'E', 'A']),
+    text: 'Matching, measuring and tentacle questions are defined by what a mapping app ' +
+          'categorises, with a five-Google-Reviews legitimacy test. OpenStreetMap has no ' +
+          'reviews, tags things the apps do not surface and misses chains they have. Counts ' +
+          'are a lower bound, with the exact selector printed beside each so a player can ' +
+          'check it.' },
+  { id: 'matching_quality_is_binary', lead: 'Matching scored as a yes/no split',
+    affects: Object.freeze(["every matching question's quality"]),
+    text: 'A matching answer is yes or no, so its quality is the balance of that split (the ' +
+          'chance two random zones answer alike), not the entropy of the nearest-feature ' +
+          'partition. When every zone has its own nearest instance the answer is almost ' +
+          'always no and removes one zone; the binary form shows that and entropy does not.' },
+  { id: 'measuring_ties_are_their_own_answer', lead: 'Equal distance answers neither',
+    affects: Object.freeze(['every measuring question']),
+    text: 'The rulebook offers only closer and further, so it does not say how a hider exactly ' +
+          'as far from the feature as the seeker answers. That zone answers neither and agrees ' +
+          'only with zones at the same distance, so survival numbers and the dossiers\' ' +
+          'concrete answers describe the same game.' },
+  { id: 'measuring_quality_is_narrowing', lead: 'Measuring scored by area removed',
+    affects: Object.freeze(["every measuring question's quality"]),
+    text: 'A measuring question always splits the map close to evenly, so a balance score ' +
+          'would rate every one perfect. Its quality is how much of the map the answer removes ' +
+          'on average: one minus the mean survival, renormalised so a clean halving is 1.0.' },
+  { id: 'thermometer_beyond_map', lead: 'Long legs leave the map',
     affects: Object.freeze(['thermometer.3mi', 'thermometer.10mi', 'thermometer.50mi']),
     text: 'The rulebook does not say what happens when the thermometer distance exceeds the ' +
           "map. This generator calls a thermometer dead above the map's straight-line " +
           'diameter and degenerate above 0.7 of it, because beyond that the seekers cannot ' +
-          'travel the leg without leaving the map.' },
-  { id: 'thermometer_bearings', affects: Object.freeze(['every thermometer question']),
+          'travel the leg without leaving the map.',
+    data: Object.freeze({ degenerateShare: THERMO_DEGENERATE_SHARE }) },
+  { id: 'thermometer_bearings', lead: 'Averaged over eight bearings',
+    affects: Object.freeze(['every thermometer question']),
     text: "Nothing constrains which direction the seekers travel, so the thermometer's " +
           'decision boundary is averaged over eight fixed bearings from each sampled seeker ' +
           'position.' },
-  { id: 'choose_radar_radius', affects: Object.freeze(['radar.choose']),
+  { id: 'choose_radar_radius', lead: 'Choose radar at the median distance',
+    affects: Object.freeze(['radar.choose']),
     text: 'The Choose radar lets the seekers name any distance, which is why the radar ' +
           'category can never be fully dead. It is modelled at the distance that splits this ' +
           'particular map most evenly — the median distance between two zones.' },
-  { id: 'transit_line_zone_set', affects: Object.freeze(['matching.transit_line']),
+  { id: 'transit_line_zone_set', lead: 'Same routes reach both zones',
+    affects: Object.freeze(['matching.transit_line']),
     text: 'Your nearest transit line is modelled as the set of routes reaching your zone ' +
           'circle, and two zones answer yes when those sets are identical.' },
-  { id: 'street_singleton_partition', affects: Object.freeze(['matching.street_or_path']),
+  { id: 'street_singleton_partition', lead: 'One nearest street per zone',
+    affects: Object.freeze(['matching.street_or_path']),
     text: 'Street geometry is counted map-wide but not downloaded, so the nearest-street ' +
           'partition is modelled as one class per zone. That is the honest worst case for the ' +
           'seekers: the answer is almost always no, and a no removes exactly one zone.' },
-  { id: 'admin_border_distance_proxy',
+  { id: 'admin_border_distance_proxy', lead: 'Border distance via neighbouring zones',
     affects: Object.freeze(['measuring.admin_1_border', 'measuring.admin_2_border']),
     text: 'Administrative boundary geometry is not downloaded. Distance to a division border ' +
           'is approximated by the distance to the nearest zone that sits in a different ' +
           'division, which is an upper bound on the true distance.' },
-  { id: 'sea_level_needs_dem', affects: Object.freeze(['measuring.sea_level']),
+  { id: 'sea_level_needs_dem', lead: 'Sea Level not evaluated',
+    affects: Object.freeze(['measuring.sea_level']),
     text: 'Elevation needs a digital elevation model, which this pipeline deliberately does ' +
           'not carry for one question. Sea Level is reported as not evaluated rather than ' +
           'guessed; on a map with real terrain it is probably functional.' },
-  { id: 'coastline_definition',
+  { id: 'coastline_definition', lead: 'Big lake shores count as coast',
     affects: Object.freeze(['measuring.coastline', 'matching.landmass']),
     text: 'OpenStreetMap tags natural=coastline on ocean and sea shorelines only, so a great ' +
           'lake carries none. This generator treats the shore of any water body larger than the ' +
@@ -533,18 +551,28 @@ export const INTERPRETATIONS = Object.freeze([
           'the map exactly the way an ocean coast does. A shore derived this way is counted for ' +
           'the coastline question but is not treated as splitting the map into separate ' +
           "landmasses. The rulebook's one-mile-estuary clause still has no OSM equivalent." },
-  { id: 'metro_line_definition', affects: Object.freeze(['tentacle.metro_line']),
+  { id: 'metro_line_definition', lead: 'Metro lines are rail routes',
+    affects: Object.freeze(['tentacle.metro_line']),
     text: 'Metro lines are the coloured lines a map app draws, so this question is restricted ' +
           'to rail route types. On a bus-only feed it is dead. Where rail exists, a line\'s ' +
           'position is approximated by the zones its route serves.' },
-  { id: 'photo_null_is_not_free', affects: Object.freeze(['every photo question']),
+  { id: 'photo_null_is_not_free', lead: 'Cannot answer still leaks a bit',
+    affects: Object.freeze(['every photo question']),
     text: '“I cannot answer the question” is a real answer: it pays the hider a card and it ' +
           'still leaks one bit. Low coverage is therefore scored as weak, never dead, and the ' +
           'coverage share is printed.' },
-  { id: 'photo_always_answerable',
+  { id: 'photo_always_answerable', lead: 'Six photos scored as answerable anywhere',
     affects: Object.freeze(['photo.you', 'photo.the_sky',
       'photo.tallest_structure_in_your_current_sightline', 'photo.widest_street',
       'photo.trace_nearest_street_path', 'photo.half_mile_of_streets_traced']),
+    groups: Object.freeze([
+      Object.freeze({ label: 'Answerable anywhere', basis: 'rulebook',
+        ids: Object.freeze(['photo.you', 'photo.the_sky',
+          'photo.tallest_structure_in_your_current_sightline', 'photo.widest_street']) }),
+      Object.freeze({ label: 'Assumed answerable', basis: 'interp',
+        ids: Object.freeze(['photo.trace_nearest_street_path',
+          'photo.half_mile_of_streets_traced']) }),
+    ]),
     text: 'Six photo questions are short-circuited to answerable everywhere, so as locational ' +
           'questions they are degenerate — but the image itself can still show the seekers a ' +
           'landmark, a shadow or a sky no model can score. They are scored as zero-information ' +
@@ -557,34 +585,62 @@ export const INTERPRETATIONS = Object.freeze([
           'neither condition can be checked here. They are assumed answerable rather than ' +
           'reported as unknown, which overstates them on a zone whose streets a mapping app ' +
           'does not draw.' },
-  { id: 'tentacle_double_radius', affects: Object.freeze(['every tentacle question']),
+  { id: 'tentacle_double_radius', lead: 'Both tentacle reaches from the seeker',
+    affects: Object.freeze(['every tentacle question']),
     text: 'The two distance blanks on a tentacle card are always the same number, and both ' +
           'reach tests are anchored on the seeker, not on the hider.' },
-  { id: 'seeker_positions_are_zones', affects: Object.freeze(['every survival number']),
+  { id: 'tentacle_weak_is_a_radar', lead: 'One-arm tentacle is a radar',
+    affects: Object.freeze(['every tentacle question']),
+    text: 'When the median zone has at most one instance in reach, the tentacle usually has at ' +
+          'most one arm and its answer mostly repeats a radar at twice the card cost. Such a ' +
+          'tentacle is graded weak, not functional.' },
+  { id: 'seeker_positions_are_zones', lead: 'Seekers stand at stations',
+    affects: Object.freeze(['every survival number']),
     text: 'Seekers stand at transit stations, so the seeker sample is drawn from the candidate ' +
           'zone set itself. Answers are computed from station icons, not from anywhere inside ' +
           "the zone circle, which is the rulebook's own measurement rule." },
-  { id: 'funnel_reference_seeker', affects: Object.freeze(['question_order', 'question_funnel']),
+  { id: 'funnel_reference_seeker', lead: 'Funnel seeker at the map centre',
+    affects: Object.freeze(['question_order', 'question_funnel']),
     text: 'The narrowing funnel is computed for a seeker standing at the zone closest to the ' +
           "map's centre of mass. A survival number averages over every seeker position; a " +
           'funnel has to pick one, and the centre is the least arbitrary choice.' },
-  { id: 'reachability_one_way', affects: Object.freeze(['R1', 'S2']),
+  { id: 'reachability_one_way', lead: 'Reachability binds the hider only',
+    affects: Object.freeze(['R1', 'S2']),
     text: "The rulebook's reachability constraint is one-way and applies to the hider only: " +
           'you must be able to get there inside the hiding period. Nothing requires you to be ' +
           'able to get back, so a zone that strands the seekers is reported as a tactical fact ' +
           'and never scored.' },
-  { id: 'one_route_cap_is_stop_share', affects: Object.freeze(['CAP_ONE_ROUTE']),
+  { id: 'one_route_cap_is_stop_share', lead: 'One-route cap by stop share',
+    affects: Object.freeze(['CAP_ONE_ROUTE']),
     text: 'The one-route cap is evaluated as the share of served stops a single route reaches, ' +
           'because per-route trip totals are not part of the metric table. A route touching ' +
           'nine stops in ten is a one-dimensional map either way.' },
-  { id: 'legal_spots_are_a_shortlist', affects: Object.freeze(['E1', 'E2', 'E3']),
+  { id: 'legal_spots_are_a_shortlist', lead: 'Endgame spots are a shortlist',
+    affects: Object.freeze(['E1', 'E2', 'E3']),
     text: 'OpenStreetMap does not know whether a plaza is locked at night, so the rulebook\'s ' +
           '“publicly accessible during all game hours” test cannot be automated. Endgame spot ' +
           'counts are a shortlist for a human to check, never a verdict.' },
+  // ── curse judgement calls ─────────────────────────────────────────────────
+  { id: 'spending_curses_grouped', lead: 'Three spending curses, one switch',
+    affects: Object.freeze(['egg_partner', 'impressionable_consumer', 'lemon_phylactery']),
+    text: 'Whether to spend money is a player preference, not a measurement. The rulebook ' +
+          'removes Egg Partner and Impressionable Consumer when you do not want to buy things ' +
+          'during the game and is silent about Lemon Phylactery, which also makes every seeker ' +
+          'buy something. That is an inconsistency, so one no-spending house rule groups all ' +
+          'three.' },
+  { id: 'urban_explorer_cost', lead: 'Urban Explorer can cost Transit Line',
+    affects: Object.freeze(['urban_explorer', 'matching.transit_line']),
+    text: 'Urban Explorer is never removed, but it permanently kills the Transit Line matching ' +
+          'question. On a map where Transit Line is one of the few live matching questions, ' +
+          'it costs the seekers far more than two cards.' },
+  { id: 'spotty_memory_small_game', lead: 'On SMALL, a six rerolls',
+    affects: Object.freeze(['spotty_memory']),
+    text: 'A SMALL game has only five question categories, so a six is read as a reroll. The ' +
+          'curse hurts most on a map where only two categories are any good.' },
   // ── the OSM fallback tier ─────────────────────────────────────────────────
   // Three rows for one decision: a source synthesized from OSM route relations
-  // (osm/synth.js). Each constant below is quoted from that module; keep them in step.
-  { id: 'osm_synth_feed',
+  // (osm/synth.js). Each constant is quoted from that module in `text` and `data`; keep both in step.
+  { id: 'osm_synth_feed', lead: 'Route geometry real; times assumed',
     affects: Object.freeze(['matching.transit_line', 'tentacle.metro_line',
       'photo.train_platform', 'u_turn', 'C2', 'X3']),
     text: 'Where a source is built from OpenStreetMap instead of a published feed, routes, ' +
@@ -594,8 +650,18 @@ export const INTERPRETATIONS = Object.freeze([
           'the assumed timetable are dropped and the score renormalised — never imputed — ' +
           'the two normally feed-measured metrics that survive on geometry (C2, X3) are ' +
           'relabelled as our call, and the U-Turn curse becomes a conversation rather than ' +
-          'a measurement.' },
-  { id: 'osm_synth_timetable',
+          'a measurement.',
+    groups: Object.freeze([
+      Object.freeze({ label: 'Read from OSM route relations', basis: 'feed',
+        ids: Object.freeze(['matching.transit_line', 'tentacle.metro_line',
+          'photo.train_platform']) }),
+      Object.freeze({ label: 'Dropped · renormalised, never imputed', basis: 'interp',
+        ids: Object.freeze(['C1', 'C3', 'D1', 'D2', 'D3', 'E1', 'E2', 'S3']) }),
+      Object.freeze({ label: 'Relabelled as our call', basis: 'interp',
+        ids: Object.freeze(['C2', 'X3']) }),
+      Object.freeze({ label: 'Player choice', basis: 'interp', ids: Object.freeze(['u_turn']) }),
+    ]) },
+  { id: 'osm_synth_timetable', lead: 'Timetable assumed from mode defaults',
     affects: Object.freeze(['C1', 'C3', 'D1', 'D2', 'D3', 'E1', 'E2', 'S3']),
     text: 'A synthesized timetable assumes service 06:00–22:00 on every day of a 14-day ' +
           'calendar; a headway from the relation\'s interval tag when it parses to a sane ' +
@@ -604,14 +670,44 @@ export const INTERPRETATIONS = Object.freeze([
           'along the relation\'s own line at a per-mode commercial speed (subway 32 km/h, ' +
           'light rail and tram 22, train 45, monorail 30, funicular 10) plus 30 seconds of ' +
           'dwell per stop. Every metric that is a pure function of these constants is ' +
-          'dropped on such a run, because it would grade the assumption, not the city.' },
-  { id: 'osm_synth_stations',
+          'dropped on such a run, because it would grade the assumption, not the city.',
+    data: Object.freeze({
+      serviceStartS: 6 * 3600,
+      serviceEndS: 22 * 3600,
+      calendarDays: 14,
+      headwayMinMin: 2,
+      headwayMaxMin: 120,
+      dwellS: 30,
+      modes: Object.freeze([
+        Object.freeze({ mode: 'subway', headwayMin: 6, speedKmh: 32 }),
+        Object.freeze({ mode: 'monorail', headwayMin: 6, speedKmh: 30 }),
+        Object.freeze({ mode: 'light rail', headwayMin: 8, speedKmh: 22 }),
+        Object.freeze({ mode: 'tram', headwayMin: 8, speedKmh: 22 }),
+        Object.freeze({ mode: 'train', headwayMin: 12, speedKmh: 45 }),
+        Object.freeze({ mode: 'funicular', headwayMin: 15, speedKmh: 10 }),
+      ]),
+    }) },
+  { id: 'osm_synth_stations', lead: 'Stations are clustered OSM stop nodes',
     affects: Object.freeze(['A1', 'every stop and zone count on a synthesized source']),
     text: 'OpenStreetMap maps one stop_position node per line per platform, so a synthesized ' +
           'station is a cluster of those nodes: nodes sharing a normalised name merge within ' +
           '500 m, and any two nodes merge within 100 m regardless of name. Stop and zone ' +
-          'counts on a synthesized source count those clusters, not the raw nodes.' },
+          'counts on a synthesized source count those clusters, not the raw nodes.',
+    data: Object.freeze({ clusterNameM: 500, clusterAnyM: 100 }) },
 ].map(Object.freeze));
+
+/** @param {string} s @returns {number} */
+const wordCount = (s) => s.split(/\s+/).filter(Boolean).length;
+for (const row of INTERPRETATIONS) {
+  for (const lead of [row.lead, ...Object.values(row.byDerivationLead || {})]) {
+    assert(typeof lead === 'string' && lead !== '' && wordCount(lead) <= 6 && !lead.endsWith('.'),
+      `interpretation ${row.id} lead must be 1–6 words with no trailing period`);
+  }
+}
+for (const c of CURSES) {
+  assert(c.tier <= 2 ? c.test !== '' && wordCount(c.test) <= 8 : c.test === '',
+    `curse ${c.id} test must be 1–8 words on tier 1–2 and empty otherwise`);
+}
 
 /**
  * The question catalogue for one game size: 58 / 71 / 80 questions. SMALL drops
