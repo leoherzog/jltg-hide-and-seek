@@ -40,7 +40,7 @@ const ID_PROPERTY = 'osm_id';
 /** Property keys that are identity or bookkeeping, never OSM tags. */
 const NON_TAG_PROPERTIES = Object.freeze([TYPE_PROPERTY, ID_PROPERTY]);
 
-/** Python tuple comparison for `(osmType, osmId)` — string then NUMBER. */
+/** Sort key for `(osmType, osmId)`: `osmType` string-compared, then `osmId` numerically. */
 function cmpTypeId(a, b) {
   return cmpStr(a.osmType, b.osmType) || (a.osmId - b.osmId);
 }
@@ -97,7 +97,7 @@ export function representativeFromGeometry(proj, outers, inners, lines, points) 
       accY -= area * cy;
       accA -= area;
     }
-    // Python's `max(key=…)` keeps the FIRST maximum; `>` (not `>=`) does too.
+    // Using `>` rather than `>=` keeps the first ring on ties, so the answer cannot depend on iteration order.
     let biggest = planarOuters[0];
     let biggestArea = polygonArea(biggest);
     for (let i = 1; i < planarOuters.length; i++) {
@@ -190,7 +190,7 @@ export async function openWorld(baseUrl = DEFAULT_WORLD_BASE_URL, opts = {}) {
   } catch (exc) {
     if (exc && exc.name === 'AbortError') {
       throw new Error(
-        `world files: ${base}/manifest.json did not answer within ${MANIFEST_TIMEOUT_S}s`,
+        `The map files at ${base} did not answer within ${num(MANIFEST_TIMEOUT_S)} s.`,
       );
     }
     throw exc;
@@ -198,11 +198,11 @@ export async function openWorld(baseUrl = DEFAULT_WORLD_BASE_URL, opts = {}) {
     clearTimeout(timer);
   }
   if (!response.ok) {
-    throw new Error(`world files: manifest.json returned ${response.status} from ${base}`);
+    throw new Error(`The map files at ${base} answered ${response.status} for manifest.json.`);
   }
   const manifest = await response.json();
   if (!manifest || typeof manifest !== 'object' || !manifest.layers) {
-    throw new Error('world files: manifest.json carried no `layers`');
+    throw new Error('The map files’ manifest.json lists no layers.');
   }
 
   /** @type {Map<string, FlatGeobufReader>} */

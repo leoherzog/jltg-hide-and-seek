@@ -1,11 +1,6 @@
 /**
  * S1 · hiding zones and network metrics.
  *
- * Port of `generate.py`: `zone_cover`, `_s1_zone_members`,
- * `build_zones`, `_s1_hull_and_shape`, `_s1_route_km`, `radar_liveness`,
- * `_s1_percentiles`, `_s1_day_metrics`, `_s1_axis_scores`, `_s1_provisional_size`,
- * `network_metrics` and `route_headways`.
- *
  * `routeSpokes` is not a port: it draws the network's shape on the map. It and
  * `s1RouteKm` read one `s1Shapes(feed)`, so the drawn network and the published
  * kilometres are the same set of lines. `cluster_stations` lives in `./service.js`
@@ -20,8 +15,8 @@
  *   * `_s1DayMetrics` emits the metric table that `rules/score.js` and every renderer
  *     look up by name. Renaming a key silently deletes a scoring metric.
  *
- * Field names follow CONTRACT.md §(b): camelCase, with the snake_case Python
- * original in the trailing comment. No DOM, no clock, no RNG; every `Map`/`Set`/
+ * Field names follow CONTRACT.md §(b): camelCase, with a snake_case alias
+ * in the trailing comment. No DOM, no clock, no RNG; every `Map`/`Set`/
  * object is sorted before it is iterated for anything that reaches the output.
  *
  * @module gtfs/network.js
@@ -76,12 +71,12 @@ import {
 } from './service.js';
 import { raptor } from './raptor.js';
 
-// ── private constants (generate.py) ──────────────────────────
+// ── private constants ──────────────────────────
 
 /**
  * Tuple keys are joined with U+0000, which is below every character a GTFS id can
- * legally hold, so sorting the joined strings reproduces Python's element-wise
- * tuple ordering exactly.
+ * legally hold, so sorting the joined strings reproduces element-wise tuple
+ * ordering exactly.
  */
 const SEP = '\u0000';
 
@@ -105,7 +100,6 @@ function maxOf(values) {
 /**
  * Radar / thermometer probe distances, in miles. Every rulebook radar and
  * thermometer tier appears here so `radarLiveness` answers all of them at once.
- * `_S1_RADAR_MILES`, generate.py.
  */
 export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.0,
   25.0, 50.0, 100.0]);
@@ -113,7 +107,7 @@ export const S1_RADAR_MILES = Object.freeze([0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 15.
 /**
  * The rulebook's own size parameters (GUIDE.md "Choosing Game Size", SEEKING.md
  * question tiers). Every field is a transcription except `requiredHours`, which is
- * inferred and marked on each entry. `_S1_SIZE_PARAMS`, generate.py.
+ * inferred and marked on each entry.
  *
  * `requiredHours` is a playing DAY, not the whole game. The rulebook gives a size's
  * length only as prose (SMALL "lasts 4–8 hours", MEDIUM "about 1 day", LARGE "2 to
@@ -142,7 +136,7 @@ export const S1_SIZE_PARAMS = Object.freeze({
   }),
 });
 
-/** `_S1_SIZE_ORDER`, generate.py. */
+/** Canonical size ordering (small → large), used for verdict clamping/rounding. */
 export const S1_SIZE_ORDER = Object.freeze(['small', 'medium', 'large']);
 
 /** `sorted(_S1_SIZE_PARAMS)` — alphabetical, which is NOT `S1_SIZE_ORDER`. */
@@ -151,7 +145,7 @@ const SIZE_NAMES_SORTED = Object.freeze(Object.keys(S1_SIZE_PARAMS).sort(cmpStr)
 // ── the lazy greedy heap ─────────────────────────────────────────────────────
 
 /**
- * Python tuple order over `(-degree, -events, stopId)`. `stopId` is unique, so the
+ * Order over the tuple `(-degree, -events, stopId)`. `stopId` is unique, so the
  * order is total and the pop sequence fully determined.
  */
 function heapLess(a, b) {
@@ -276,7 +270,6 @@ export function zoneCover(stopIds, radiusM, stopEvents, pos) {
 
 /**
  * `centre → every stop of `stopIds` inside its circle`, sorted.
- * `_s1_zone_members`, generate.py.
  *
  * @param {string[]} centres @param {string[]} stopIds @param {number} radiusM
  * @param {Object<string, [number, number]>} pos
@@ -343,7 +336,6 @@ export function buildZones(feed, day, centres, radiusM, projLike, inPlay = null)
 
 /**
  * `[hull, areaM2, diameterM]` for planar points. Diameter is the max hull pair.
- * `_s1_hull_and_shape`, generate.py.
  *
  * @param {Array<[number, number]>} points
  * @returns {[Array<[number, number]>, number, number]}
@@ -691,7 +683,7 @@ export function radarLiveness(stopIds, pos, radiiM) {
 
 /**
  * `{p05, p25, p50, …}` — the key is the probability × 100, zero-padded to two
- * digits, exactly as `_s1_percentiles` (generate.py) writes it.
+ * digits.
  * @param {number[]} values @param {number[]} probs
  * @returns {Object<string, number>}
  */
@@ -726,7 +718,6 @@ function inPlayForDay(day, inPlay) {
 
 /**
  * Everything that is a property of one service day. Called once per day type.
- * `_s1_day_metrics`, generate.py.
  *
  * The keys are read by name — by `rules/score.js`, the renderers and
  * `networkMetrics`. Do not rename one without grepping.
@@ -943,7 +934,6 @@ export function s1DayMetrics(feed, day, projLike, hubStopId, radiusM, inPlay = n
 
 /**
  * The four game-size axes, each scored 0=small / 1=medium / 2=large.
- * `_s1_axis_scores`, generate.py.
  * @param {number} hullSqMi @param {number} nZones @param {number} t90Min
  * @param {number} diameterMi
  * @returns {[number, number, number, number]}
@@ -959,7 +949,6 @@ export function s1AxisScores(hullSqMi, nZones, t90Min, diameterMi) {
 /**
  * The size the four axes imply, used only to pick which size-keyed default a
  * metric exposes. `inferGameSize` is the authority and re-derives it.
- * `_s1_provisional_size`, generate.py.
  * @param {object} metrics @returns {'small'|'medium'|'large'}
  */
 export function s1ProvisionalSize(metrics) {
@@ -1024,8 +1013,8 @@ export function networkMetrics(feed, days, projLike, hub, radiusM, inPlay = null
     perDay[day.dayType.key] = s1DayMetrics(feed, day, proj, hubStop, radiusM, inPlay);
   }
 
-  // A shallow copy, exactly like the Python `dict(...)`: the nested objects stay
-  // shared with `perDay[bestKey]`, only the top level is independent.
+  // A shallow copy: the nested objects stay shared with perDay[bestKey], only the
+  // top level is independent.
   const head = Object.assign(Object.create(null), perDay[best.dayType.key]);
 
   const stations = s1Cache(feed, `stations:${proj.lat0.toFixed(9)}`,

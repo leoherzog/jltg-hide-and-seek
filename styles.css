@@ -1,8 +1,7 @@
-/* styles.css — the browser port's one stylesheet.
-   Sections 1-6 are generate.py's SHARED_CSS (line 1454), ported with the row-helper
-   additions in §4–§6, followed by INDEX_CSS (line 10527), ported verbatim. The CLI inlines both in
-   a <style> block; a static app links them instead. Section 7 at the end is
-   new and exists only because this page ships before its data does. */
+/* styles.css — the browser port's one stylesheet. Sections 1-6 hold the shared
+   theme tokens and base styles, with row-helper additions in §4-§6; the rest of
+   the original index page styles follow. Section 7 at the end is new and exists
+   only because this page ships before its data does. */
 
 /* ══ 1. THEME TOKENS — LIGHT ═════════════════════════════════════════════ */
 :where(:root), .wa-light, .wa-dark .wa-invert {
@@ -61,7 +60,7 @@
   --wa-color-danger-on-quiet:   #c73837;   /* brand red darkened to 4.55:1 on the paper */
 
   /* ── legacy aliases: READ BY SVG CHART + MAP JS. Do not rename in JS. ── */
-  /* Four of generate.py's tokens are deliberately not ported, here and in §2: nothing
+  /* Four tokens are deliberately not carried, here and in §2: nothing
      on this page reads --warn-text, --serif, --serious or --serious-text. */
   --paper:      var(--wa-color-surface-default);
   --surface:    var(--wa-color-surface-raised);
@@ -372,11 +371,10 @@ nav[slot='navigation'] a[aria-current] {
   #tt b { display: block; margin-bottom: 2px; }
 
   /* MapLibre's own controls live outside WA and outside shadow DOM; every map skins
-     them identically, so the block is written once. `generate.py:1666` reads
-     `:is(#netmap, #zmap)` because the CLI has two files and one map per file; here the
-     map ids are dropped entirely and the class carries it. `.dark-map` is set by the
-     map builders and by nothing else, so the selector is exact — and this way the
-     shared sheet names no map the report does not have. */
+     them identically, so the block is written once. The map ids are dropped entirely
+     and the class carries it instead, since this page can have more than one map.
+     `.dark-map` is set by the map builders and by nothing else, so the selector is
+     exact — and this way the shared sheet names no map the report does not have. */
   .dark-map .maplibregl-ctrl-group { background: #2f3f50; box-shadow: 0 0 0 1.5px rgba(240,240,240,.12); }
   .dark-map .maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(.9) hue-rotate(180deg); }
   .dark-map .maplibregl-ctrl-attrib { background: rgba(32,47,64,.75); }
@@ -516,13 +514,12 @@ table.hw td:first-child b { color: var(--ink); font-family: var(--mono); font-si
 #cites li:target { background: color-mix(in srgb, var(--gold) 22%, transparent); border-radius: 4px; padding: 2px 4px; }
 
 /* ══ 7. NEW — BROWSER PORT ONLY ═══════════════════════════════════════════
-   Everything above this line is `SHARED_CSS` (generate.py 1454) and
-   `INDEX_CSS` (generate.py 10527), ported verbatim. Nothing above is
-   restyled here.
+   Section 7 is the only part of this file that exists purely for the browser
+   port's pre-data states (landing form, skeleton, header progress); sections
+   1-6 style the report itself.
 
-   The CLI writes a finished page: by the time any CSS runs, every number
-   exists. The browser port ships a shell first and fills it in from a
-   worker, so it needs three states the Python never had — the landing
+   This page ships a shell first and fills it in from a worker, so it needs
+   three states a finished, server-rendered page would not: the landing
    form, the skeleton, and the header progress readout. All of it is
    additive; no selector below overrides one above.
    ══════════════════════════════════════════════════════════════════════ */
@@ -1009,8 +1006,8 @@ wa-skeleton { --color: var(--wa-color-surface-lowered); }
    which neither spelling matches. */
 .sk-body { pointer-events: none; user-select: none; }
 
-/* The map frame is a separate element from `#netmap`, which INDEX_CSS pins
-   at `height: 0` until the map script gives it one. Removing this is how
+/* The map frame is a separate element from `#netmap`, which sets `height: 0`
+   (line 499) until the map script gives it one. Removing this is how
    the real map appears. */
 #netmap-frame { inline-size: 100%; }
 
@@ -1133,22 +1130,20 @@ wa-details #cites { margin-block: 0; }
 }
 
 /* == STRATEGY CSS ===========================================================
-   EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S. It mirrors `generate.py`'s own
-   partition (`INDEX_CSS` 10527 vs `STRATEGY_CSS` 1674, and the note at 1449): the
-   CLI writes two files and hands each its own text, and one document expresses the
-   same split as one delimited span. Nothing reads these markers programmatically —
-   they are a boundary for readers. Put nothing here that the report view needs.
+   EVERYTHING BELOW THIS MARKER IS THE SECRET VIEW'S. Nothing reads these markers
+   programmatically — they are a boundary for readers. Put nothing here that the
+   report view needs.
 
    Zero new classes below. Every rule is scoped to an id or to a data attribute the
    view already carries for behaviour — the same precedent as `#qcontrols`,
    `#dayscores [data-day]` and `[data-hb]` above — and every value that has a token
-   uses it. Five classes the CLI's S5 CSS carried (`.zrow`, `.abar`, `.ab`, `.mk*`,
+   uses it. Five now-unused classes (`.zrow`, `.abar`, `.ab`, `.mk*`,
    `#ztable td[data-bar]`) are retired here into `wa-card` / `wa-flank` /
    `wa-card.wa-brand` and attribute selectors.
    ========================================================================== */
 
 /* ---- the second view: an axis orthogonal to data-state ----
-   The CLI writes two files; this is one document, so its second page is a view.
+   The strategy view is a second page of this same document, addressed by `data-view`.
    `data-state` keeps its meaning — the run lifecycle — and is deliberately NOT
    changed when the view is up, so the report is hidden rather than torn down and
    coming back costs nothing. app.js owns `document.body.dataset.view`.
@@ -1188,8 +1183,7 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 
 /* a filter is never scrolled away from the rows it filters; the offset is the guide's
    own sticky stack, set above — NOT the report's `--sticky-top`, which counts a
-   subheader this view hides. This is `#zcontrols` from generate.py:1625, which the
-   port had lost. */
+   subheader this view hides. */
 #s-controls { position: sticky; top: var(--s-sticky); z-index: 1;
               background: var(--wa-color-surface-default);
               padding-block: var(--wa-space-2xs); }
@@ -1219,9 +1213,8 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
    its body at 30rem and scrolls inside itself. `[part~='table']` is `overflow: auto`,
    so it is still the sideways scroller `wa-scroller` was.
 
-   The selected row: `#s-table tr[data-sel] td` here, `#ztable tr[data-sel] td` in the
-   CLI (generate.py:15810) — without it the click had no visible answer at all, the
-   dossier being a sticky column away. The row now lives in a shadow root and
+   The selected row: `#s-table tr[data-sel] td` — without it the click had no visible
+   answer at all, the dossier being a sticky column away. The row now lives in a shadow root and
    `::part(row)[data-selected]` is not a legal selector, so the colour is handed over
    as the component's own custom property and the component paints it;
    render/simulator.js drives it with `selectedKeys`.
@@ -1244,12 +1237,12 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 }
 #s-table::part(footer) { display: none; }
 
-/* The rail's no-service cards. render/simulator.js:1090 writes `data-off` on every
+/* The rail's no-service cards. render/simulator.js writes `data-off` on every
    card for a zone no trip serves that day; the state was otherwise carried only by the
    ' · no service' words appended to the route line, which is the one channel a reader
-   scanning forty cards does not read. `.zrow[data-off]` in the CLI (generate.py:1722).
-   Fading the whole card is deliberate — the rank, the score and the bar are all
-   meaningless for an unserved zone, so none of them should read as live. */
+   scanning forty cards does not read. Fading the whole card is deliberate — the rank,
+   the score and the bar are all meaningless for an unserved zone, so none of them
+   should read as live. */
 #s-list [data-off] { opacity: .55; }
 
 /* render/simulator.js writes data-mode: score key in explore, answer key otherwise */
@@ -1280,7 +1273,7 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
    mutually exclusive — the simulator sets one and removes the other. Neither is ever
    the only channel: the readout prints the word and the chip carries the icon. */
 #s-map [data-band='top']  [data-zdot] { background: var(--gold-mark); }
-/* `fair` is its own step, as it is in the CLI (generate.py:15526 gives it `--warn`).
+/* `fair` is its own step, not folded into `good` or `weak`.
    `good` keeps the inherited `--accent` above. Collapsing the two made a five-band
    scale render in three colours, which is not a scale. */
 #s-map [data-band='fair'] [data-zdot] { background: var(--warn); }
@@ -1304,7 +1297,7 @@ html:has(body[data-view='strategy']) { --s-sticky: 4.5rem; scroll-padding-top: v
 /* The seeker reuses `[data-zlbl]` for its word so the pill is styled once, but its
    sibling `[data-zcross]` already owns the centre of the same box — so the label hangs
    below the crosshair instead of covering it. Same geometry as `.mk-central .clbl`
-   above, and the CLI's `.mk-seeker .slbl` (generate.py:1713). */
+   above. */
 #s-map [data-zmark='seeker'] [data-zlbl] { top: 100%; left: 50%;
                                            transform: translateX(-50%);
                                            margin-block-start: var(--wa-space-3xs);

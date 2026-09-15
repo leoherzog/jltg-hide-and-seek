@@ -1,20 +1,15 @@
 // render/simulator.js — the secret hider's guide, after it is on the page.
 //
-// Ported from generate.py S5's page script (`_S5_STRATEGY_JS`): hav / band /
-// nearestIn, answerFor, drawMap / ring / addBorder, placeSeeker / paint, readout,
-// renderList, select / renderDossier, tableRows / renderTable (now `COLUMNS` +
-// `wireGrid` on a `wa-data-grid`), optionChips and the bindings.
-//
 // `render/strategy.js` prints the guide; this file makes it move. The simulator runs
 // the same arithmetic as `rules/audit.js`'s `survivalFractions` for exactly one
 // seeker, the one the reader dropped on the map, so the colour partition is the score's
 // own computation with the sample size set to one. The maths is a transcription.
 //
-// Three places are marked DIVERGENCE where the CLI's page script disagreed with
+// Three places are marked DIVERGENCE where this file's arithmetic differs from
 // `rules/audit.js` and the rulebook (anchored BOTH distances on one feature; never
 // returned the tentacle "not within reach"; one tentacle reach per game size). They
-// are corrections, not regressions, for AGENTS.md's "a JS/Python disagreement is a JS
-// bug" rule.
+// are deliberate corrections, not regressions — see the DIVERGENCE comments at each
+// site for the reasoning.
 //
 // Answers are recomputed rather than read from an answer matrix: the worker never
 // posts `signatures` / `surv`, and a seeker placed a second ago is in no precomputed
@@ -32,7 +27,7 @@
 // @module render/simulator
 
 import {
-  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, M_PER_MILE, num, pct, mins, coord, fillPct,
+  MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, M_PER_MILE, num, pct, mins, coord, fillPct, capWord,
 } from '../lib/core.js';
 import { haversineM } from '../lib/geo.js';
 import {
@@ -41,7 +36,7 @@ import {
 } from './html.js';
 import {
   s4Imperial, s4Dist, s4Val, s4Plural, s4MetricValue, s4Points, s4SourceTag, s4RampText,
-  s4JoinWords,
+  s4RampShort, s4JoinWords,
 } from './verdict.js';
 import {
   zoneViews, modeChips, poiCategories,
@@ -53,13 +48,15 @@ import {
 // Presentation constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** The prompt each seeker mode prints until it has what it needs. `explore` needs nothing. */
+/**
+ * The prompt each seeker mode prints until it has what it needs. `explore` needs nothing,
+ * and `thermo` prints its own two-step prompt; a missing key also means no seed button.
+ */
 const MODE_NEED = Object.freeze({
   radar: 'Click the map or use the button',
   match: 'Click the map or use the button',
   measure: 'Click the map or use the button',
   tentacle: 'Click the map or use the button',
-  thermo: 'or use the button',
 });
 
 /** Zone inventory key → [label, icon]. `toilets_wide` counts a ring 1.5× the circle. */
@@ -104,6 +101,19 @@ const INVENTORY_LABEL = Object.freeze({
   zoo: Object.freeze(['zoos', 'hippo']),
 });
 
+/** Endgame spot type → its singular word; the icon comes from `INVENTORY_LABEL`. */
+const SPOT_TYPE_WORD = Object.freeze({
+  bench: 'bench',
+  green: 'green space',
+  library: 'library',
+  park: 'park',
+  pitch: 'pitch',
+  place_of_worship: 'place of worship',
+  platform: 'platform',
+  shelter: 'shelter',
+  toilets: 'toilets',
+});
+
 /**
  * Arrow key → [Δlatitude, Δlongitude] in degrees, before the cosine correction.
  * ~55 m a press, ~550 m with shift: a fraction of the smallest rulebook radius, and a
@@ -142,12 +152,12 @@ const ANSWER_TEXT = Object.freeze({
  * @type {Object<string, [string, string, string]>}
  */
 const TENTACLE_TEXT = Object.freeze({
-  yes: Object.freeze(['a name in reach', 'success', 'circle-check']),
+  yes: Object.freeze(['in reach', 'success', 'circle-check']),
   no: Object.freeze(['not within reach', 'danger', 'circle-xmark']),
   edge: Object.freeze(['on the edge', 'warning', 'scale-balanced']),
   /* not "no answer yet": here `un` is the engine's class `-2`, the seekers named a
      category with nothing inside their own circle. See `majorityGroup`. */
-  un: Object.freeze(['nothing in reach to name', 'neutral', 'circle-question']),
+  un: Object.freeze(['nothing to name', 'neutral', 'circle-question']),
 });
 
 /**
@@ -158,7 +168,7 @@ const TENTACLE_TEXT = Object.freeze({
 const DOT_COLOUR = Object.freeze([
   Object.freeze(['b:top', '--gold-mark']),
   Object.freeze(['b:good', '--accent']),
-  /* `fair` is its own step (generate.py); collapsing it onto `good` left five bands in three colours */
+  /* `fair` is its own step; collapsing it onto `good` left five bands in three colours */
   Object.freeze(['b:fair', '--warn']),
   Object.freeze(['b:weak', '--off']),
   Object.freeze(['b:un', '--off']),
@@ -178,7 +188,7 @@ function cssVar(name) {
 }
 
 /**
- * A closed ring of `[lon, lat]` pairs approximating a circle. Ports `ring`, generate.py.
+ * A closed ring of `[lon, lat]` pairs approximating a circle.
  * 111320 m/degree on both axes is S5's own figure; app.js's 111132 differs by 0.17 %.
  *
  * @param {number} lat @param {number} lon @param {number} metres @param {number} [steps=64]
@@ -235,7 +245,7 @@ function cmp(a, b) {
   return a > b ? 1 : 0;
 }
 
-/** `rank` sorts nulls last, in the table and in every tie-break (generate.py). */
+/** `rank` sorts nulls last, in the table and in every tie-break. */
 function rankKey(view) {
   return view.rank === null || view.rank === undefined ? Infinity : view.rank;
 }
@@ -314,8 +324,8 @@ export function initStrategy(root, report) {
 }
 
 /**
- * Everything above, once. One long closure rather than a class, as the CLI's script
- * is: every piece reads the same handful of variables.
+ * Everything above, once. One long closure rather than a class: every piece reads
+ * the same handful of variables.
  *
  * @param {HTMLElement} root @param {Object} report
  * @returns {{root: HTMLElement, resize: () => void, destroy: () => void}}
@@ -342,7 +352,7 @@ function buildInstance(root, report) {
   const mapLabels = views.length <= MAX_MAP_ZONES;
   const paged = views.length > TABLE_PAGE_ABOVE;
 
-  // ── reader state (generate.py) ─────────────────────────────────
+  // ── reader state ─────────────────────────────────────────────────
   let mode = 'explore';
   /* the first dossier zone, but only one `byId` can actually show */
   const opening = (report.dossierZoneIds || []).find((id) => byId.has(id));
@@ -476,8 +486,7 @@ function buildInstance(root, report) {
   /**
    * The three-valued answer for a signed distance past a boundary, in metres. The
    * tolerance is one zone radius: `edge` means the boundary passes through the zone's
-   * rulebook circle, so the honest answer depends on where inside it the hider stands
-   * (generate.py).
+   * rulebook circle, so the honest answer depends on where inside it the hider stands.
    *
    * @param {number} delta @returns {'yes'|'no'|'edge'}
    */
@@ -508,7 +517,7 @@ function buildInstance(root, report) {
   }
 
   /**
-   * The same scan over a whole category. Ports `nearestIn`, generate.py.
+   * The same scan over a whole category.
    *
    * @param {string} cat @param {number} lat @param {number} lon
    * @returns {{feature: Array, d: number, margin: number}|null}
@@ -520,9 +529,9 @@ function buildInstance(root, report) {
 
   /**
    * What this zone's hider would answer, for the loaded question and the placed seeker.
-   * Ports `answerFor`, generate.py. `explore` returns a score band; every other mode
-   * returns `yes` / `no` / `edge` / `un`, where `un` means "cannot be asked yet" and,
-   * in tentacle mode, `no` is the rulebook's "not within reach".
+   * `explore` returns a score band; every other mode returns `yes` / `no` / `edge` / `un`,
+   * where `un` means "cannot be asked yet" and, in tentacle mode, `no` is the rulebook's
+   * "not within reach".
    *
    * @param {Object} view @returns {string}
    */
@@ -620,7 +629,7 @@ function buildInstance(root, report) {
     /* `un` is a real third group here, the engine's class `-2` (`survTentacle`): every
        in-reach zone answers "there is nothing to name". Only tentacle mode can hold a
        partial `un`; leaving it out reported 0% survival where every zone agreed. */
-    if (tally.un > best.size) best = { size: tally.un, word: 'nothing in reach to name' };
+    if (tally.un > best.size) best = { size: tally.un, word: 'nothing to name' };
     /* keyed by feature identity, not name — see `tentacleFeatures` */
     const byFeature = new Map();
     for (const v of views) {
@@ -740,7 +749,7 @@ function buildInstance(root, report) {
     });
 
     /* Above MAX_MAP_ZONES label pills are unreadable and slow, so the partition is
-       drawn as plain dots. The CLI drew nothing at that size (generate.py). */
+       drawn as plain dots. */
     if (!mapLabels) {
       map.addSource('s-zonedots', { type: 'geojson', data: zonePointData() });
       map.addLayer({
@@ -786,8 +795,8 @@ function buildInstance(root, report) {
   }
 
   /**
-   * Build one marker per zone, once, and repaint in place. The CLI recreates all of
-   * them on every paint (generate.py), which at MAX_MAP_ZONES is 1,200 `Marker`s a click.
+   * Build one marker per zone, once, and repaint in place, rather than recreating all
+   * of them on every paint, which at MAX_MAP_ZONES is 1,200 `Marker`s a click.
    */
   function buildMarkers() {
     if (!map || !mapLabels || markers.length) return;
@@ -892,7 +901,7 @@ function buildInstance(root, report) {
     return node;
   }
 
-  /** Where a click on the map goes, per mode (generate.py). */
+  /** Where a click on the map goes, per mode. */
   function onMapClick(e) {
     if (mode === 'radar' || mode === 'match' || mode === 'measure' || mode === 'tentacle') {
       seeker = { lat: e.lngLat.lat, lon: e.lngLat.lng };
@@ -911,7 +920,7 @@ function buildInstance(root, report) {
     }
   }
 
-  /** Follow the page's theme button. The CLI's map reads dark once and never again. */
+  /** Follow the page's theme button. */
   function retheme() {
     if (!map) return;
     const d = document.documentElement.classList.contains('wa-dark');
@@ -993,17 +1002,17 @@ function buildInstance(root, report) {
   // The readout
   // ═════════════════════════════════════════════════════════════════════════
 
-  /** The lead phrase for the current question (generate.py). */
+  /** The current question, as the seekers would ask it. */
   function readoutLead() {
     const label = (poi.categories && poi.categories[opt.cat] && poi.categories[opt.cat].label)
       || opt.cat || 'feature';
-    if (mode === 'radar') return `Within ${s4Val(opt.radar)} mi`;
-    if (mode === 'thermo') return 'Hotter: closer to the end of your leg';
-    if (mode === 'match') return `Same nearest ${label}`;
+    if (mode === 'radar') return `Within ${s4Val(opt.radar)} mi of the seekers?`;
+    if (mode === 'thermo') return 'Hotter toward the end of the leg?';
+    if (mode === 'match') return `Same nearest ${label} as the seekers?`;
     /* not "that ${label}": each side measures to the instance nearest itself */
-    if (mode === 'measure') return `Nearer their own ${label} than you to yours`;
+    if (mode === 'measure') return `Nearer a ${label} than the seekers are?`;
     /* counts the zones that must name something; the rest answer "not within reach" */
-    if (mode === 'tentacle') return `Within reach of a ${label}`;
+    if (mode === 'tentacle') return `A ${label} within reach?`;
     return '';
   }
 
@@ -1034,9 +1043,9 @@ function buildInstance(root, report) {
           step(Boolean(thermoA), 'Start', 'location-dot'),
           waIcon('arrow-right'),
           step(false, 'End', 'flag-checkered'),
-          el('span', esc(MODE_NEED.thermo), { className: 'wa-caption-s wa-color-text-quiet' }),
-          el('span', esc(thermoA ? 'Start placed; click the end of the leg'
-            : 'Click the start of the leg'), { className: 'wa-visually-hidden' }),
+          el('span', esc(thermoA ? 'Now click the end' : 'Click the start'), {
+            className: 'wa-caption-s wa-color-text-quiet',
+          }),
         );
       return;
     }
@@ -1059,10 +1068,10 @@ function buildInstance(root, report) {
       const [word, variant, icon] = words[k];
       return chip(`${num(counts[k])} ${word}`, icon, { variant, size: 's' });
     }).join('');
-    const survival = `${total ? pct(majority.size / total, 0) : pct(0, 0)} survival`
+    const survival = `${total ? pct(majority.size / total, 0) : pct(0, 0)} of zones agree`
       + (majority.word ? ` · ${majority.word}` : '');
     host.innerHTML = el('div', join(
-      row(noMap, el('span', esc(`${readoutLead()} · ${num(total)} zones`), {
+      row(noMap, el('span', esc(readoutLead()), {
         className: 'wa-caption-s wa-color-text-quiet',
       })),
       partition ? el('div', partition, { className: 'wa-cluster wa-gap-2xs' }) : '',
@@ -1090,6 +1099,7 @@ function buildInstance(root, report) {
       const off = !served(v);
       const extra = v.routeNames.length - 3;
       const routes = join(
+        v.routeNames.length ? waIcon('bus', { label: 'Routes' }) : '',
         v.routeNames.slice(0, 3).map((r) => waTag(r, { pill: false })).join(''),
         extra > 0 ? waBadge(`+${num(extra)}`, { variant: 'neutral', appearance: 'outlined' }) : '',
         off ? chip('No service', 'circle-exclamation', { variant: 'danger', size: 's' }) : '',
@@ -1103,7 +1113,7 @@ function buildInstance(root, report) {
             }),
             el('span', esc(v.name), { className: 'wa-heading-xs' }),
             routes ? el('div', routes, {
-              className: 'wa-cluster wa-gap-3xs',
+              className: 'wa-cluster wa-gap-3xs wa-align-items-center',
               title: v.routeNames.join(', ') || null,
             }) : '',
             waProgressBar(fillPct(v.overall, v.max), { label: v.name }),
@@ -1153,7 +1163,7 @@ function buildInstance(root, report) {
   // The dossier
   // ═════════════════════════════════════════════════════════════════════════
 
-  /** Block 1 — stops and ride time, DERIVED from metric R1 and never re-measured (generate.py). */
+  /** Block 1 — stops and ride time, DERIVED from metric R1 and never re-measured. */
   function leadBlock(view) {
     const stops = view.stopIds.length;
     let ride = '';
@@ -1170,8 +1180,10 @@ function buildInstance(root, report) {
       view.travelShare === null || view.travelShare === undefined ? '' : meter(
         el('span', esc('Hiding period used'), { className: 'wa-caption-s' }),
         fillPct(view.travelShare),
-        el('span', pct(view.travelShare, 0), { className: 'wa-caption-s' }),
-        { flank: '3rem', label: 'Share of the hiding period spent riding here' },
+        el('span', esc(`${mins(view.travelMin, 0)} of ${mins(Number(size.hidingPeriodMin) || 0)}`), {
+          className: 'wa-caption-s',
+        }),
+        { flank: '7rem', label: 'Share of the hiding period spent riding here' },
       ),
     );
   }
@@ -1199,7 +1211,7 @@ function buildInstance(root, report) {
     return AXIS_IDS.map((a) => {
       const label = el(
         'a',
-        esc((AXIS_PLAIN[a] || [a])[0]) + el('code', esc(a), { className: 'wa-caption-2xs' }),
+        esc((AXIS_PLAIN[a] || [a])[0]),
         {
           href: `#s-axis-${a}`,
           className: 'wa-link wa-caption-s wa-cluster wa-gap-2xs wa-align-items-center',
@@ -1235,11 +1247,12 @@ function buildInstance(root, report) {
     const unjoined = (report.geo || {}).pathJoinEvaluated === false;
     const list = el('ul', view.spots.map((s) => el('li', join(
       el('span', esc(s.name), { className: 'wa-body-s' }),
-      el('span', esc([s.type, s4Dist(report, s.distanceM, 2)]
-        .concat(s.enclosed ? ['enclosed'] : []).join(' · ')), {
+      chip(SPOT_TYPE_WORD[s.type] || String(s.type || '').split('_').join(' '),
+        (INVENTORY_LABEL[s.type] || ['', 'circle-info'])[1], { size: 's' }),
+      el('span', esc(s4Dist(report, s.distanceM, 2) + (s.enclosed ? ' · enclosed' : '')), {
         className: 'wa-caption-s wa-color-text-quiet',
       }),
-      s.verify && !unjoined ? chip('verify on site', 'eye', { variant: 'warning', size: 's' }) : '',
+      s.verify && !unjoined ? chip('Verify on site', 'eye', { variant: 'warning', size: 's' }) : '',
     ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })).join(''), {
       className: 'wa-stack wa-gap-3xs wa-list-plain', role: 'list',
     });
@@ -1252,15 +1265,14 @@ function buildInstance(root, report) {
   }
 
   /**
-   * Block 6 — service. Scope-reduced against the CLI's per-zone × per-day block, which
-   * reads `ServiceDay.stopDays`; `daySummary` strips that before `postMessage`. What is
-   * left is what was scored (S1, S2, S3 and the frequent-stop count), and the block
-   * names the day it was measured on.
+   * Block 6 — service, reduced from `ServiceDay.stopDays`, which `daySummary` strips
+   * before `postMessage`. What is left is what was scored (S1, S2, S3 and the
+   * frequent-stop count), and the block names the day it was measured on.
    */
   function serviceBlock(view) {
     const svc = view.service || {};
     if (!svc.served) {
-      const caption = iconLabel('ban', 'Can’t reach it, can’t leave it');
+      const caption = iconLabel('ban', `No departures on ${svc.dayLabel}`);
       if (view.flags.includes('no_service')) return caption;
       return el('div', join(
         chip('No service', 'circle-exclamation', { variant: 'danger' }), caption,
@@ -1277,10 +1289,11 @@ function buildInstance(root, report) {
     );
     const names = view.routeNames;
     const tags = names.length ? el('div', join(
+      waIcon('bus', { label: 'Routes' }),
       names.slice(0, 6).map((n) => waTag(n, { pill: false })).join(''),
       names.length > 6
         ? waBadge(`+${num(names.length - 6)}`, { variant: 'neutral', appearance: 'outlined' }) : '',
-    ), { className: 'wa-cluster wa-gap-3xs', title: names.join(', ') }) : '';
+    ), { className: 'wa-cluster wa-gap-3xs wa-align-items-center', title: names.join(', ') }) : '';
     return join(
       el('div', tiles, { className: 'wa-grid wa-gap-s', style: '--min-column-size:7rem' }),
       tags,
@@ -1303,11 +1316,13 @@ function buildInstance(root, report) {
   function evidenceBlock(view) {
     const rows = view.metrics.map((m) => {
       const axis = (String(m.id).match(/^[A-Z]+/) || [''])[0];
-      const code = el('code', esc(m.id));
+      const name = AXIS_IDS.includes(axis)
+        ? el('a', esc(m.name), { href: `#s-axis-${axis}`, className: 'wa-link' })
+        : esc(m.name);
       return [
-        `${AXIS_IDS.includes(axis) ? el('a', code, { href: `#s-axis-${axis}`, className: 'wa-link' }) : code} ${esc(m.name)}`,
+        name + el('sup', esc(m.id), { dataCite: true }),
         m.available === false ? degradeChip(m.degrade || 'not_evaluated') : esc(s4MetricValue(m)),
-        esc(s4RampText(m.ramp)),
+        el('span', esc(s4RampShort(m.ramp, m.unit)), { ariaLabel: s4RampText(m.ramp, m.unit) }),
         esc(s4Points(m.pointsTenths, m.maxTenths)),
         s4SourceTag(m.source),
       ];
@@ -1334,14 +1349,14 @@ function buildInstance(root, report) {
     const flag = FLAG_TEXT[view.cappedBy];
     const metric = view.metrics.find((m) => m.id === view.cappedBy);
     const words = (flag && (flag[3] || flag[0])) || (metric && metric.name) || view.cappedBy;
-    return join(line, chip(`capped: ${words}`, flag ? flag[2] : 'arrow-down', {
+    return join(line, chip(`Capped · ${String(words).toLowerCase()}`, flag ? flag[2] : 'arrow-down', {
       variant: flag ? flag[1] : 'neutral', size: 's',
     }));
   }
 
   /**
    * The eight blocks in scouting-report order: what the zone is, what betrays it, what
-   * it scored, then the evidence (generate.py). Pure in `view`, so the print block
+   * it scored, then the evidence. Pure in `view`, so the print block
    * renders the same write-up. `evidence` is dropped from the printed copies: a closed
    * disclosure prints as its summary line, and its id would collide with the live one.
    *
@@ -1483,9 +1498,7 @@ function buildInstance(root, report) {
    * that branch, and filtering and paging never renumber. So a rank-ascending `data`
    * array is the tie-break in both directions.
    *
-   * DIVERGENCE, recorded in CONTRACT.md §(g): generate.py's sign is inverted and opens
-   * the table ascending while writing `aria-sort="descending"`. The port corrected the
-   * sign; row order, `aria-sort` and the arrow now derive from one `desc` boolean.
+   * Row order, `aria-sort` and the arrow all derive from one `desc` boolean.
    *
    * `zoneViews` already returns this order, so the sort is a no-op today; it is written
    * out so a change to `zoneViews` cannot silently take the tie-break away. `cmp`, not
@@ -1671,9 +1684,12 @@ function buildInstance(root, report) {
       if (!groups.has(key)) groups.set(key, { text, degrade: it.degrade, names: [] });
       groups.get(key).names.push(it.text);
     }
+    /* a degradation chip is the whole reason; otherwise the question's own lead */
     const why = Array.from(groups.values(), (g) => el(
       'p',
-      join(el('b', esc(s4JoinWords(g.names))), degradeChip(g.degrade), esc(g.text)),
+      g.degrade
+        ? join(el('b', esc(s4JoinWords(g.names))), degradeChip(g.degrade))
+        : join(el('b', esc(s4JoinWords(g.names))), esc(` · ${capWord(g.text)}`)),
       { className: 'wa-caption-xs wa-color-text-quiet wa-cluster wa-gap-2xs wa-align-items-center' },
     )).join('');
     optionBind = { groupId, onPick };
@@ -1706,7 +1722,7 @@ function buildInstance(root, report) {
     const seedButtonHtml = mode === 'thermo'
       ? el('wa-button', join(
         waIcon('route', { slot: 'start' }),
-        el('span', esc(`Leg: ${hubName} → selected zone`), { ariaHidden: 'true' }),
+        el('span', esc(`${hubName} → selected zone`), { ariaHidden: 'true' }),
         el('span', esc(`Run the leg from ${hubName} to the selected zone`), {
           className: 'wa-visually-hidden',
         }),
@@ -1735,7 +1751,7 @@ function buildInstance(root, report) {
         's-category',
         'Category',
         (chips[mode] || []).map((c) => ({
-          value: c.key, text: `${c.label} (${num(c.count)})`, usable: c.usable, why: c.why,
+          value: c.key, text: `${c.label} · ${num(c.count)}`, usable: c.usable, why: c.why,
           lead: c.lead, degrade: c.degrade,
         })),
         opt.cat || '',
@@ -1909,7 +1925,7 @@ function buildInstance(root, report) {
     if (zones) zones.scrollIntoView();
   }));
 
-  // ── boot, in the CLI's order (generate.py) ─────────────────────
+  // ── boot ─────────────────────────────────────────────────────────
   optionChips();
   renderList();
   renderDossier();

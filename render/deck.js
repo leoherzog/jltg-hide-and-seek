@@ -1,9 +1,7 @@
 // render/deck.js — §07 The Questions, §08 The Curse Deck, §09 The Receipts, the page
 // footer, and the sort/filter/search/paging behaviour of the two deck tables.
 //
-// Ported from generate.py S4: index_questions, index_curses, index_provenance,
-// _s4_footer, _S4_INDEX_JS (bindFilter/bindSearch/bindSpending), plus `_s4_table` and
-// `_s4_chip_group`. Unit and value formatting comes from `./verdict.js`.
+// Unit and value formatting comes from `./verdict.js`.
 //
 // Invariants:
 // 1. §07 prints every question. The table pages 25 at a time with "All" one click
@@ -29,9 +27,9 @@ import {
 
 import {
   esc, el, voidEl, join, waIcon, waCard, waCallout, waTag, waBadge, waButton, waDetails,
-  waScroller, waProgressBar, waSwitch, waCopyButton, chip, budgetBar, searchInput, section,
+  waScroller, waSwitch, waCopyButton, chip, budgetBar, searchInput, section,
   subhead, provChip, basisChip, degradeChip, factChips, miniMeter, linkChip, iconLabel,
-  leadDetail, cardHeader, dataTable,
+  leadDetail, cardHeader, dataTable, legendRow,
 } from './html.js';
 
 import {
@@ -95,7 +93,7 @@ const S4_ACTION_DEF = Object.freeze([
   Object.freeze(['keep', 'The curse works exactly as printed on this map.']),
   Object.freeze(['warn', 'It still works, but it is weaker or stranger here than the rulebook '
     + 'assumes.']),
-  Object.freeze(['remove', 'Nothing on this map can satisfy it, so it is a dead card in the '
+  Object.freeze(['remove', 'Nothing on this map can satisfy it, so it is a wasted card in the '
     + "hider's hand."]),
   Object.freeze(['player-choice', 'Whether it belongs in the deck is a conversation, not a '
     + 'measurement.']),
@@ -135,7 +133,7 @@ const S4_ADMIN_TWIN = Object.freeze({
 // list instead of on every row: (category, status, sentence).
 const S4_CATEGORY_CAVEATS = Object.freeze([
   Object.freeze(['matching', 'weak', 'The cells are so fine that a random seeker almost never '
-    + "shares yours, so the answer is nearly always no — and a no eliminates only that seeker's "
+    + "shares yours, so the answer is nearly always no. A no eliminates only that seeker's "
     + 'own cell.']),
   Object.freeze(['radar', 'weak',
     'One branch is rare enough that the expected narrowing is small.']),
@@ -188,14 +186,14 @@ function counter(items, keyFn) {
   return out;
 }
 
-/** `Counter[k]` — 0 for an absent key, exactly as Python's Counter reads. */
+/** Returns 0 for an absent key instead of undefined. */
 function count(c, k) {
   const v = c[k];
   return typeof v === 'number' ? v : 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Shared markup helpers (generate.py)
+// Shared markup helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -204,8 +202,6 @@ function count(c, k) {
  * Option VALUES are always the one-word terms — `bindFilter` and every row's
  * `data-status` / `data-action` key on them; only the labels are plain English. An
  * option may carry a third element, its icon name.
- *
- * (generate.py `_s4_chip_group`.)
  *
  * @param {string} groupId @param {string} name
  * @param {ReadonlyArray<[string,string]|[string,string,string]>} options
@@ -243,8 +239,6 @@ function s4ChipGroup(groupId, name, options, opts) {
  * Every `<td>` carries `data-label="<header text>"`, which is what lets the stylesheet
  * turn a row into a card on a narrow screen without a second copy of the markup.
  * `opts.cols` is a `<colgroup>` of CSS widths, one per header.
- *
- * (generate.py `_s4_table`.)
  *
  * @param {ReadonlyArray<string|[string,string,string]|[string,string,string,string]>} headers
  * @param {ReadonlyArray<[Object, ReadonlyArray<string>]>} rows
@@ -288,16 +282,15 @@ function s4Table(headers, rows, opts = {}) {
 }
 
 /**
- * A `<dl>` of `(mark markup, the precise term, what it means)`: a list on the page, not a
- * tooltip, because this reader is on a phone. An empty term prints no `<code>`.
- * (generate.py `_s4_definition_list`.)
+ * A `<dl>` of `(mark markup, what it means)`: a list on the page, not a tooltip, because
+ * this reader is on a phone. The one-word term rides in the mark's chip `title`.
  *
- * @param {ReadonlyArray<[string,string,string]>} rows
+ * @param {ReadonlyArray<[string,string]>} rows
  * @returns {string}
  */
 function s4DefinitionList(rows) {
-  const out = rows.map(([markHtml, term, meaning]) => el('div', join(
-    el('dt', join(markHtml, term ? el('code', esc(term), { className: 'wa-caption-xs' }) : ''), {
+  const out = rows.map(([markHtml, meaning]) => el('div', join(
+    el('dt', markHtml, {
       className: 'wa-cluster wa-gap-2xs wa-align-items-center',
     }),
     el('dd', esc(meaning), { className: 'wa-body-s wa-color-text-quiet', style: 'margin:0' }),
@@ -366,8 +359,6 @@ function s4Pager(pagerId, tableId, total, noun, groupLabel) {
  * the chip's `title` and the row's `data-status`; the `title` says whose word it is,
  * because calling these the rulebook's turned judgement calls into rules.
  *
- * (generate.py `_s4_status_tag`.)
- *
  * @param {string} status @returns {string}
  */
 function s4StatusTag(status) {
@@ -395,13 +386,17 @@ function s4CategoryCards(report) {
     const statusChips = S4_STATUS_ORDER.filter((k) => count(counts, k)).map((k) => chip(
       `${num(count(counts, k))} ${S4_STATUS_COUNT[k]}`,
       S4_STATUS_TAG[k][1],
-      { variant: S4_STATUS_TAG[k][2], appearance: S4_STATUS_TAG[k][3], title: `status ${k}` },
+      { variant: S4_STATUS_TAG[k][2], appearance: S4_STATUS_TAG[k][3] },
     )).join('');
-    const gone = (c.gone || []).map((g) => {
-      const [, icon, variant, appearance] = S4_STATUS_TAG[g.status]
+    // Four name chips, then `+N more`: N is the length of the sliced remainder, never a
+    // subtraction of two counts.
+    const goneAll = c.gone || [];
+    const hidden = goneAll.slice(4);
+    const gone = goneAll.slice(0, 4).map((g) => {
+      const [word, icon, variant, appearance] = S4_STATUS_TAG[g.status]
         || ['', 'circle-xmark', 'danger', 'accent'];
-      return chip(String(g.label || ''), icon, { variant, appearance, title: `status ${g.status}` });
-    }).join('');
+      return chip(String(g.label || ''), icon, { variant, appearance, title: word || null });
+    }).join('') + (hidden.length ? linkChip('#qtable', `+${num(hidden.length)} more`) : '');
     const head = el('div', join(
       el('div', join(
         el('b', esc(label), { className: 'wa-heading-s' }),
@@ -413,14 +408,12 @@ function s4CategoryCards(report) {
           appearance: 'outlined',
           title: 'chance a Randomize redraw inside this category lands on a wasted draw',
         }) + provChip('B4') : '',
-        health !== null ? el('span', esc(`${pct(health, 0)} health`), { className: 'wa-caption-s' }) : '',
       ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
     ), { className: 'wa-split wa-flex-wrap wa-gap-xs' });
     return waCard(el('div', join(
       head,
-      health !== null ? waProgressBar(fillPct(health), {
+      health !== null ? miniMeter(fillPct(health), esc(`${pct(health)} healthy`), {
         label: `${label} health: ${pct(health)}`,
-        style: '--indicator-color:var(--accent);--track-color:var(--surface-2);--track-height:9px',
       }) : '',
       el('div', statusChips + provChip('B1'), {
         className: 'wa-cluster wa-gap-2xs wa-align-items-center',
@@ -441,8 +434,6 @@ function s4CategoryCards(report) {
 /**
  * "The questions that break this map" — the greedy map-wide narrowing order.
  *
- * (generate.py `_s4_funnel`.)
- *
  * @param {Object} report @returns {string}
  */
 function s4Funnel(report) {
@@ -460,7 +451,6 @@ function s4Funnel(report) {
   for (let i = 0; i < order.length; i += 1) {
     const qid = order[i];
     const remaining = i + 1 < funnel.length ? funnel[i + 1] : end;
-    const before = i < funnel.length ? funnel[i] : end;
     const a = audits[qid];
     const label = a ? a.label : qid;
     const cat = S4_CATEGORY_LABEL[a ? a.category : ''] || '';
@@ -476,10 +466,7 @@ function s4Funnel(report) {
       el('b', esc(label)),
       el('div', tags, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
     ), { className: 'wa-stack wa-gap-3xs' });
-    const left = el('span', esc(`${num(before)} → ${num(remaining)}`), {
-      className: 'wa-text-nowrap wa-heading-xs',
-    });
-    items.push(el('li', mid + left, { className: 'wa-split wa-gap-m' }));
+    items.push(el('li', mid));
   }
 
   const method = 'Greedy order: at each step, the question that leaves the smallest average '
@@ -506,7 +493,7 @@ function s4Funnel(report) {
 /**
  * The deck by status in one bar, with "fully functional" and "work at all" as two
  * labelled chips: they differ by the weak pile, and a single "N of M work" headline
- * would hide it. Unchecked questions are the bar's remainder. No CLI counterpart.
+ * would hide it. Unchecked questions are the bar's remainder.
  *
  * @param {Object} report @returns {string}
  */
@@ -518,7 +505,6 @@ function s4LiveCounts(report) {
   const functional = count(counts, 'functional');
   const weak = count(counts, 'weak');
   const unknown = count(counts, 'unknown');
-  const live = s4LiveQuestions(report);
   const wasted = count(counts, 'dead') + count(counts, 'degenerate');
 
   const parts = [
@@ -531,22 +517,22 @@ function s4LiveCounts(report) {
     total,
     {
       ariaLabel: `${num(total)} questions: ${parts.map(([n, word]) => `${word} ${num(n)}`).join('; ')}`,
-      remainderTip: 'not checked',
+      remainderTip: `not checked ${num(unknown)}`,
       variants: parts.map(([, , variant]) => variant),
     },
   );
 
   const chips = el('div', join(
-    chip(`${num(functional)} fully functional`, 'circle-check', {
+    chip(`${num(functional)} work`, 'circle-check', {
       variant: 'success',
       appearance: 'accent',
       title: 'status functional: the answer splits the map',
     }),
-    chip(`${num(live)} work at all`, 'list-check', {
-      variant: 'brand',
-      appearance: 'outlined',
-      title: 'status functional or weak',
-    }),
+    weak ? chip(`${num(weak)} barely help`, 'circle-half-stroke', {
+      variant: 'warning',
+      appearance: 'accent',
+      title: 'status weak: the answer barely splits the map',
+    }) : '',
     chip(`${num(wasted)} wasted ${s4Plural(wasted, 'draw')}`, 'circle-xmark', {
       variant: 'danger',
       appearance: 'outlined',
@@ -566,8 +552,6 @@ function s4LiveCounts(report) {
  * §07 — the narrowing funnel, category health, the filterable question table, and
  * every question's exact test collected into one appendix at the foot, each one click
  * and one permalink from the row it belongs to.
- *
- * (generate.py `index_questions`.)
  *
  * @param {Object} payload — the partial `Report` app.js has accumulated
  * @returns {string}
@@ -617,23 +601,24 @@ export function renderQuestions(payload) {
     className: 'wa-split wa-flex-wrap wa-gap-s', id: 'qcontrols',
   });
 
-  const words = waDetails("What these words mean — this report's words, not the rulebook's",
-    s4DefinitionList([
-      ...S4_STATUS_DEF.map(([key, meaning]) => [s4StatusTag(key), key, meaning]),
+  const words = waDetails('What these words mean',
+    el('p', esc("This report's words, not the rulebook's."), { className: 'wa-caption-s wa-color-text-quiet' })
+    + s4DefinitionList([
+      ...S4_STATUS_DEF.map(([key, meaning]) => [s4StatusTag(key), meaning]),
       ...S4_CATEGORY_CAVEATS.map(([cat, key, meaning]) => [
         join(el('span', esc(S4_CATEGORY_LABEL[cat] || cat), { className: 'cat-tag' }),
           s4StatusTag(key)),
-        '', meaning]),
-      [el('b', esc('Found on the map')), 'instances',
+        meaning]),
+      [el('b', esc('Found on the map')),
         'Qualifying things inside the border; for photo questions, the share of zones that '
         + 'contain the subject.'],
-      [el('b', esc('Narrows by')), 'quality',
+      [el('b', esc('Narrows by')),
         'The information a question carries, normalised inside its own category, '
         + 'so a clean 50/50 split scores 100%.'],
-      [el('b', esc('Blends in')), 'anonymity',
+      [el('b', esc('Blends in')),
         'The share of zones that answer this question exactly the way yours does — the '
         + 'higher it is, the more company you have.'],
-      [chip('Randomize risk', 'dice', { variant: 'danger', appearance: 'outlined' }), 'risk',
+      [chip('Randomize risk', 'dice', { variant: 'danger', appearance: 'outlined' }),
         'A Randomize redraw stays inside the category; this is the chance it lands on a '
         + "question that can't be answered or always answers the same."],
     ]), { appearance: 'plain' });
@@ -671,7 +656,7 @@ export function renderQuestions(payload) {
     }
     if ((q.status === 'dead' || q.status === 'degenerate')
       && fnum(q.draw) !== null && fnum(q.keep) !== null) {
-      extras.push(chip(`hider draws ${num(q.draw)}, keeps ${num(q.keep)}`, 'hand-holding-dollar', {
+      extras.push(chip(`draw ${num(q.draw)} · keep ${num(q.keep)}`, 'hand-holding-dollar', {
         variant: 'danger',
       }));
     }
@@ -685,13 +670,13 @@ export function renderQuestions(payload) {
     }
     const twin = S4_ADMIN_TWIN[q.id] ? byId[S4_ADMIN_TWIN[q.id]] : null;
     if (twin && S4_STATUS_TAG[twin.status]) {
-      extras.push(chip(`matching twin: ${S4_STATUS_TAG[twin.status][0]}`, 'clone'));
+      extras.push(chip(`matching twin · ${S4_STATUS_TAG[twin.status][0]}`, 'clone'));
     }
-    extras.push(el('a', el('code', esc('test')), {
-      href: `#sel-${q.id}`,
-      className: 'wa-caption-xs wa-link',
-      title: 'The exact thing this question was tested against',
-    }));
+    if (!String(q.selector || '').startsWith('no data needed')) {
+      extras.push(linkChip(`#sel-${q.id}`, 'exact test', 'magnifying-glass', {
+        appearance: 'outlined', title: 'The exact thing this question was tested against',
+      }));
+    }
     const why = leadDetail(esc(lead), esc(detail), { chipsHtml: extras.join(''), summary: 'Why' });
 
     // Sort keys ride on the row so the click handler never re-parses a cell. `found`
@@ -723,11 +708,13 @@ export function renderQuestions(payload) {
         : el('span', esc(quality), { className: 'wa-text-nowrap' }),
       why,
     ]]);
-    selectorRows.push(el('tr', el('td', el('b', esc(q.label)) + el(
-      'span',
-      esc(S4_CATEGORY_LABEL[q.category] || q.category),
-      { className: 'wa-caption-xs wa-color-text-quiet', style: 'display:block' },
-    )) + el('td', el('pre', esc(q.selector))), { id: `sel-${q.id}` }));
+    selectorRows.push(el('tr', join(
+      el('td', esc(S4_CATEGORY_LABEL[q.category] || q.category), {
+        className: 'wa-caption-xs wa-color-text-quiet',
+      }),
+      el('td', el('b', esc(q.label))),
+      el('td', el('pre', esc(q.selector))),
+    ), { id: `sel-${q.id}` }));
   }
 
   // Widths are hints, not a layout: the category is a tag and needs almost nothing,
@@ -750,7 +737,8 @@ export function renderQuestions(payload) {
 
   let tests = '';
   if (selectorRows.length) {
-    const head = el('thead', el('tr', el('th', esc('Question'), { scope: 'col' })
+    const head = el('thead', el('tr', el('th', esc('Category'), { scope: 'col' })
+      + el('th', esc('Question'), { scope: 'col' })
       + el('th', esc('What was searched for'), { scope: 'col' })));
     tests = waDetails("Every question's exact test (verbatim)",
       waScroller(el('table', head + el('tbody', selectorRows.join('')), {
@@ -760,7 +748,7 @@ export function renderQuestions(payload) {
 
   const counts = counter(questions, (q) => q.status);
   const live = s4LiveQuestions(report);
-  const title = `${num(live)} of the ${num(questions.length)} questions work here`;
+  const title = `${num(live)} of ${num(questions.length)} questions work`;
   const lede = 'Every question in the deck, checked against this map.';
   const wasted = count(counts, 'dead') + count(counts, 'degenerate');
   const answer = el('p', esc(wasted
@@ -787,8 +775,6 @@ export function renderQuestions(payload) {
  * The four actions are this report's vocabulary, not the rulebook's; what the rulebook
  * prescribes is which curses to take out, and tier 1 records that (`S4_TIER_DEF`).
  *
- * (generate.py `_s4_action_tag`.)
- *
  * @param {string} action @returns {string}
  */
 function s4ActionTag(action) {
@@ -801,8 +787,6 @@ function s4ActionTag(action) {
 
 /**
  * The `(rowAttrs, cells)` pairs for one block of curses.
- *
- * (generate.py `_s4_curse_rows`.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses
  * @param {{compact?: boolean}} [opts] `compact` prints only the name and Why cells
@@ -845,11 +829,8 @@ function s4CurseRows(report, curses, opts = {}) {
       c.interpId ? linkChip(`#interp-${c.interpId}`, 'Our call', 'scale-balanced', {
         variant: 'warning',
       }) : '',
-      el('a', el('code', esc('test')), {
-        href: `#pred-${c.id}`,
-        className: 'wa-caption-xs wa-link',
-        title: 'The exact test that decided this',
-      }),
+      c.predicate === 'not map-contingent' ? '' : linkChip(`#pred-${c.id}`, 'deciding test',
+        'magnifying-glass', { appearance: 'outlined', title: 'The exact test that decided this' }),
     );
     const why = leadDetail(esc(lead), esc(detail), { chipsHtml: chips, summary: 'Why' });
     if (compact) {
@@ -869,14 +850,14 @@ function s4CurseRows(report, curses, opts = {}) {
 }
 
 /**
- * A curse tier as its chip, plus the standing rule of tiers 3 and 4.
+ * A curse tier as its chip, plus tier 4's standing rule. Tier 3's "never removed" rides
+ * in the chip's `title` ("warning only").
  * @param {number} tier @returns {string}
  */
 function s4TierChips(tier) {
   const def = S4_TIER_DEF.find(([term]) => term === `tier ${tier}`);
   return join(
     chip(`tier ${num(tier)}`, def ? def[3] : 'circle-question', { title: def ? def[1] : null }),
-    tier === 3 ? chip('never removed', 'ban') : '',
     tier === 4 ? chip('not map-contingent', 'shuffle') : '',
   );
 }
@@ -887,8 +868,6 @@ function s4TierChips(tier) {
  * four counts never disagree. Labelled "as printed": it is static and does not follow
  * `#nospend`, because the rows beside that switch already name what it moves. Each
  * segment carries its action's variant so the chips below read as its legend.
- *
- * (generate.py `_s4_deck_strip`.)
  *
  * @param {Object} report @param {ReadonlyArray<Object>} curses @returns {string}
  */
@@ -926,8 +905,6 @@ function s4DeckStrip(report, curses) {
  * rulebook flags the first two and is silent on the third). The deciding predicates
  * are collected into one appendix at the foot; every row links to its own.
  *
- * (generate.py `index_curses`.)
- *
  * @param {Object} payload @returns {string}
  */
 export function renderCurses(payload) {
@@ -947,10 +924,10 @@ export function renderCurses(payload) {
   }
 
   const words = waDetails('What these words mean', el('div', join(
-    s4DefinitionList(S4_ACTION_DEF.map(([key, meaning]) => [s4ActionTag(key), key, meaning])),
+    s4DefinitionList(S4_ACTION_DEF.map(([key, meaning]) => [s4ActionTag(key), meaning])),
     s4DefinitionList(S4_TIER_DEF.map(([term, plain, meaning, icon]) => [
       join(chip(term, icon), term === 'tier 1' ? basisChip('rulebook') : '', el('b', esc(plain))),
-      '', meaning])),
+      meaning])),
   ), { className: 'wa-grid wa-gap-m', style: '--min-column-size:300px' }), { appearance: 'plain' });
 
   // `words` sits outside #ccontrols, which is `position: sticky`: an open definition
@@ -964,19 +941,21 @@ export function renderCurses(payload) {
     (c) => [String(c.name || '')]);
   let toggle = '';
   if (spending.length) {
-    const names = (list) => list.map((c) => waTag(String(c.name || ''))).join('');
-    const caption = (text) => el('span', esc(text), { className: 'wa-caption-xs wa-color-text-quiet' });
+    // A name without its "Curse of the" prefix, joined into one sentence per basis.
+    const names = (list) => s4JoinWords(list.map((c) => String(c.name || '').replace(/^Curse of the /, '')));
     const byRule = spending.filter((c) => c.tier === 1);
     const byCall = spending.filter((c) => c.tier !== 1);
-    const row = (html) => el('div', html, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
+    const legend = [];
+    if (byRule.length) {
+      legend.push([basisChip('rulebook'),
+        `${names(byRule)} ${byRule.length === 1 ? 'leaves' : 'leave'} the deck when nobody spends.`]);
+    }
+    if (byCall.length) {
+      legend.push([linkChip('#interp-spending_curses_grouped', 'Our call', 'scale-balanced', { variant: 'warning' }),
+        `${names(byCall)} also ${byCall.length === 1 ? 'needs' : 'need'} a purchase. The rulebook does not say so.`]);
+    }
     toggle = waCallout(el('div', join(
-      byRule.length ? row(join(basisChip('rulebook'), names(byRule),
-        caption('removed when nobody spends'))) : '',
-      byCall.length ? row(join(
-        linkChip('#interp-spending_curses_grouped', 'Our call', 'scale-balanced', {
-          variant: 'warning',
-        }),
-        names(byCall), caption('needs a purchase too; rulebook silent'))) : '',
+      legendRow(legend, { label: 'Curses that need a purchase' }),
       waSwitch('Nobody spends money during this game', { checked: false, id: 'nospend' }),
     ), { className: 'wa-stack wa-gap-xs' }), { variant: 'neutral', appearance: 'outlined', icon: null });
   }
@@ -998,9 +977,8 @@ export function renderCurses(payload) {
     const constant = tier4.every((c) => c.action === 'keep' && fnum(c.count) === null);
     const strip = el('div', join(
       chip('tier 4', 'clock'),
-      chip('about the deck, clock or players', 'shuffle'),
+      chip(S4_TIER_DEF[3][1], 'shuffle'),
       constant ? chip('leave it in', 'circle-check', { variant: 'success', appearance: 'accent' }) : '',
-      chip('never removed here', 'ban'),
     ), { className: 'wa-cluster wa-gap-2xs' });
     details = waDetails(`${num(tier4.length)} curses that no map can affect`, join(
       strip,
@@ -1032,13 +1010,17 @@ export function renderCurses(payload) {
     chip(`${num(main.length)} map-dependent`, 'map'),
     tier4.length ? linkChip('#curses-tier4', `${num(tier4.length)} not about the map`, 'clock') : '',
     chip(`${num(curses.length)} in the deck`, 'layer-group'),
-    linkChip('#interp-in_border_rule', 'Our call · counts inside the border only',
+    linkChip('#interp-in_border_rule', 'Inside the border only',
       'scale-balanced', { variant: 'warning' }),
   );
-  const answer = el('p', esc(
-    `Take ${num(count(shown, 'remove'))} ${s4Plural(count(shown, 'remove'), 'curse')} out of `
-    + `the deck before you start, flag ${num(count(shown, 'warn'))} more, and talk about `
-    + `${num(count(shown, 'player-choice'))}.`,
+  const nRemove = count(shown, 'remove');
+  const nWarn = count(shown, 'warn');
+  const nTalk = count(shown, 'player-choice');
+  const answer = el('p', esc(nRemove
+    ? `Take ${num(nRemove)} ${s4Plural(nRemove, 'curse')} out of the deck before you start, `
+      + `flag ${num(nWarn)} more, and talk about ${num(nTalk)}.`
+    : `Nothing to take out. Flag ${num(nWarn)} ${s4Plural(nWarn, 'curse')} and talk about `
+      + `${num(nTalk)}.`,
   ), { className: 'wa-body-s' });
 
   const body = el('div', join(
@@ -1053,7 +1035,7 @@ export function renderCurses(payload) {
 // S4 · §09 WHERE THESE NUMBERS COME FROM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Curses the audit says to physically remove. (generate.py `_s4_removed_curses`.) */
+/** Curses the audit says to physically remove. */
 function s4RemovedCurses(report) {
   return (report.curses || []).filter((c) => c.action === 'remove');
 }
@@ -1063,8 +1045,6 @@ function s4RemovedCurses(report) {
  * `value` suppresses the row, and `s4SourcesIndex` is handed the same list so an index
  * entry can never point at a row that never rendered. `valueHtml` is printed instead of
  * `value` when given.
- *
- * (generate.py `_s4_fact_rows`.)
  *
  * @param {ReadonlyArray<[string,string,string,string?]>} rows @returns {string}
  */
@@ -1088,7 +1068,23 @@ function s4FactRows(rows) {
 }
 
 // The static metric-id pattern `Provenance.interpretations[].affectLinks` classifies by.
-const S4_METRIC_ID = /^(CAP_[A-Z_]+|[A-F]\d|IR\d|[RSEAX]\d)$/;
+const S4_METRIC_ID = /^([A-F]\d|IR\d|[RSEAX]\d)$/;
+
+/**
+ * The curse-audit query's `key: selector; key: selector` string as one fold, a
+ * captioned `<pre>` per predicate, instead of one ~1,600-character line.
+ * @param {string} selector @returns {string}
+ */
+function s4PredicateFold(selector) {
+  const parts = selector.split('; ').map((p) => {
+    const i = p.indexOf(': ');
+    return i < 0 ? [p, ''] : [p.slice(0, i), p.slice(i + 2)];
+  });
+  return waDetails(`${num(parts.length)} predicates`, parts.map(([k, sel]) => el('div', join(
+    el('b', esc(k.split('_').join(' ')), { className: 'wa-caption-xs' }),
+    el('pre', esc(sel), { className: 'prov-sel' }),
+  ), { className: 'wa-stack wa-gap-3xs' })).join(''), { appearance: 'plain' });
+}
 
 /**
  * One interpretation: its lead is the handle for the folded text, and what it affects
@@ -1097,38 +1093,48 @@ const S4_METRIC_ID = /^(CAP_[A-Z_]+|[A-F]\d|IR\d|[RSEAX]\d)$/;
  * @param {Object} i a `Provenance.interpretations` row @param {Object<string,string>} labels
  * @returns {string}
  */
-function s4InterpRow(i, labels) {
+function s4InterpRow(i, labels, traceIds = new Set()) {
   const explain = i.explain || null;
   const lead = explain ? String(explain.lead || '') : String(i.text || '');
   const text = explain ? String(explain.detail || '') : '';
   const links = Array.isArray(i.affectLinks)
     ? i.affectLinks
     : (i.affects || []).map((a) => ({ kind: 'text', id: String(a), label: String(a) }));
+  // Never a provChip for an id with no `#prov-` target on this page.
+  const guideLink = linkChip('#strategy', 'Hider’s guide scoring', 'user-secret');
   const linkHtml = (l) => {
     const name = String(l.label || l.id || '');
-    if (l.kind === 'metric') return provChip(String(l.id));
+    // A hider's-guide metric shares its id with a report metric, so it links to that view.
+    if (l.kind === 'guide') return guideLink;
+    if (l.kind === 'metric') return traceIds.has(String(l.id)) ? provChip(String(l.id)) : guideLink;
     if (l.kind === 'question') return linkChip('#questions', name, 'circle-question');
     if (l.kind === 'curse') return linkChip('#curses', name, 'wand-magic-sparkles');
+    if (l.kind === 'cap') return linkChip('#trace', name, 'lock', { variant: 'warning' });
+    if (l.kind === 'text' && name === 'How fast this map narrows') {
+      return linkChip('#questions', name, 'filter');
+    }
     return waTag(name);
   };
-  const affects = links.map(linkHtml).join('');
+  const affects = Array.from(new Set(links.map(linkHtml))).join('');
   const linkById = new Map(links.map((l) => [String(l.id), l]));
   const groupId = (raw) => {
     const id = String(raw);
     if (linkById.has(id)) return linkHtml(linkById.get(id));
-    if (S4_METRIC_ID.test(id)) return provChip(id);
+    if (S4_METRIC_ID.test(id)) {
+      return traceIds.has(id) ? provChip(id) : guideLink;
+    }
     return waTag(labels[id] || id);
   };
   const groups = (i.groups || []).map((g) => el('div', join(
     basisChip(g.basis),
     el('span', esc(String(g.label || '')), { className: 'wa-caption-xs' }),
-    (g.ids || []).map(groupId).join(''),
+    Array.from(new Set((g.ids || []).map(groupId))).join(''),
   ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })).join('');
   const d = i.data || {};
   const has = (k) => Object.hasOwn(d, k);
   const dataChips = join(
     has('degenerateShare')
-      ? chip(`degenerate above ${pct(d.degenerateShare, 0)} of the diameter`, 'ruler-horizontal') : '',
+      ? chip(`same answer past ${pct(d.degenerateShare, 0)} of diameter`, 'ruler-horizontal') : '',
     has('clusterNameM') ? chip(`same name within ${num(d.clusterNameM)} m`, 'object-group') : '',
     has('clusterAnyM') ? chip(`any name within ${num(d.clusterAnyM)} m`, 'object-group') : '',
     has('serviceStartS') ? chip(`service ${hhmm(d.serviceStartS)}–${hhmm(d.serviceEndS)}`, 'clock') : '',
@@ -1160,8 +1166,6 @@ function s4InterpRow(i, labels) {
  * is called. Order is the score trace's, then the provenance card's rows, then the
  * Overpass keys as already sorted.
  *
- * (generate.py `_s4_sources_index`.)
- *
  * @param {Object} report @param {ReadonlyArray<[string,string,string]>} factRows
  * @returns {string}
  */
@@ -1181,13 +1185,11 @@ function s4SourcesIndex(report, factRows) {
   const overpass = sortedBy((report.provenance && report.provenance.overpass) || [],
     (x) => [String(x.key), String(x.cacheKey)]);
   for (const q of overpass) {
-    entries.push([`prov-osm-${q.key}`, `OpenStreetMap query — ${q.key}`]);
+    entries.push([`prov-osm-${q.key}`, `OpenStreetMap query · ${String(q.key).split(/[_-]/).join(' ')}`]);
   }
   if (entries.length === 0) return '';
-  const lis = entries.map(([anchor, label]) => el('li', join(
-    el('code', esc(anchor.startsWith('prov-') ? anchor.slice('prov-'.length) : anchor)),
-    el('a', esc(label), { href: `#${anchor}`, className: 'wa-link' }),
-  ))).join('');
+  const lis = entries.map(([anchor, label]) => el('li',
+    el('a', esc(label), { href: `#${anchor}`, className: 'wa-link' }))).join('');
   // Collapsed: it is a lookup table for a reader who arrived from a superscript, and
   // app.js's `openTargeted()` opens an ancestor `wa-details` before it scrolls.
   return waDetails(
@@ -1202,8 +1204,6 @@ function s4SourcesIndex(report, factRows) {
  * the generator version and arguments, and every interpretation. Nothing is elided or
  * paginated; explanations, machine identifiers and the citation index fold, and app.js's
  * `openTargeted()` opens any disclosure a citation points inside.
- *
- * (generate.py `index_provenance`.)
  *
  * @param {Object} payload @returns {string}
  */
@@ -1245,7 +1245,11 @@ export function renderProvenance(payload) {
   const questions = report.questions || [];
   const curses = report.curses || [];
   let borderline = 0;
-  for (const q of questions) if (q.borderline) borderline += 1;
+  let checked = 0;
+  for (const q of questions) {
+    if (q.borderline) borderline += 1;
+    if (q.status !== 'unknown') checked += 1;
+  }
   const codes = Object.values(report.degradationCodes || {});
   const mergeHtml = join(
     ...['merge_no_overlap', 'merge_short_overlap', 'merge_mixed_tz']
@@ -1255,12 +1259,26 @@ export function renderProvenance(payload) {
         .sort(cmpStr).map((z) => waTag(z, { icon: 'clock' }))
       : []),
   );
+  // A single feed is named by what the page calls it; the URL or file name it was read
+  // from is provenance, so it rides in a copy button rather than standing as the name.
+  // A dropped file's label IS its file name, so the agency stands in for it.
+  const feedSource = String(p.feedUrl || feed.source || '');
+  const feedRow = feeds[0] || {};
+  const feedName = String((feedRow.label && feedRow.label !== feedRow.source ? feedRow.label : '')
+    || feed.agencyName || feedRow.label || feedSource);
   const feedValue = merged
     ? `${num(feeds.length)} feeds merged, ids namespaced ${feeds.map((f) => `${f.tag}:`).join(' ')}`
-    : String(p.feedUrl || feed.source || '');
-  const actionCounts = counter(curses, (c) => c.action);
+    : feedName;
+  const feedHtml = merged
+    ? (mergeHtml ? join(mergeHtml, el('span', esc(feedValue))) : '')
+    : join(el('span', esc(feedName)), feedSource
+      ? waCopyButton(feedSource, { label: `Copy ${/^https?:/i.test(feedSource) ? 'feed URL' : 'file name'}` })
+      : '');
+  // §06 counts the map-dependent curses only (tiers 1–3), so §08 counts the same set.
+  const mapCurses = curses.filter((c) => c.tier <= 3);
+  const actionCounts = counter(mapCurses, (c) => c.action);
   const bboxText = border
-    ? `${border.kind} · S ${num(border.bbox[0], 6, { comma: false })}, `
+    ? `S ${num(border.bbox[0], 6, { comma: false })}, `
       + `W ${num(border.bbox[1], 6, { comma: false })}, `
       + `N ${num(border.bbox[2], 6, { comma: false })}, `
       + `E ${num(border.bbox[3], 6, { comma: false })}`
@@ -1279,10 +1297,14 @@ export function renderProvenance(payload) {
     }
   }
 
+  const sampled = `${num(p.seekerSampleCap || SEEKER_SAMPLE_CAP)} seekers sampled`;
+  const funnelK = `${num(p.greedyK || (report.questionOrder || []).length)}-question funnel`;
+  const radius = `${s4Dist(report, Number(p.zoneRadiusM || size.zoneRadiusM || 0), 2)} zone radius`;
+
   /** @type {Array<[string,string,string,string?]>} */
   const factRows = [
     ['feed', merged ? 'The published timetable files' : "The agency's published timetable file",
-      feedValue, mergeHtml ? join(mergeHtml, el('span', esc(feedValue))) : ''],
+      feedValue, feedHtml],
     ...(merged ? feeds.map((f) => {
       const value = [String(f.agencyName || ''), String(f.timezone || ''),
         (f.feedStart && f.feedEnd)
@@ -1317,37 +1339,40 @@ export function renderProvenance(payload) {
       waTag(size.inferred ? 'inferred' : 'set by hand', {
         icon: size.inferred ? 'wand-magic-sparkles' : 'hand',
       }),
-      waTag(`${num(size.hidingPeriodMin)} min hiding`, { icon: 'hourglass-half' }),
+      waTag(`${num(size.hidingPeriodMin)} min hiding period`, { icon: 'hourglass-half' }),
       waTag(`${s4Dist(report, size.zoneRadiusM, 2)} zones`),
-      waTag(`${num(size.catalogueSize)} questions`),
-      waTag(`${num(curses.length)} curses`),
     ) : ''],
     ['border', 'Border', border ? bboxText : '',
       border ? join(borderChip, el('span', esc(bboxText))) : ''],
     ['questions', 'Question audit', questions.length
-      ? `${num(questions.length)} questions evaluated inside the border` : '',
+      ? `${num(questions.length)} questions in the deck, ${num(checked)} checked inside the border` : '',
     questions.length ? join(
-      chip(`${num(questions.length)} evaluated`, 'list'),
-      chip(`${num(s4LiveQuestions(report))} work at all`, 'list-check', { variant: 'brand' }),
+      chip(`${num(s4LiveQuestions(report))} of ${num(questions.length)} questions work`, 'list-check',
+        { variant: 'brand' }),
+      chip(`${num(checked)} checked`, 'list'),
       borderline ? chip(`${num(borderline)} borderline`, 'circle-half-stroke', { variant: 'warning' }) : '',
     ) : ''],
     ['curses', 'Curse audit', curses.length ? `${num(curses.length)} curses checked` : '',
       curses.length ? join(
-        chip(`${num(curses.length)} checked`, 'list'),
+        chip(`${num(mapCurses.length)} map-dependent`, 'map'),
         ...S4_ACTION_ORDER.filter((a) => count(actionCounts, a)).map((a) => chip(
           `${num(count(actionCounts, a))} ${S4_ACTION_TAG[a][0]}`, S4_ACTION_TAG[a][1],
-          { variant: S4_ACTION_TAG[a][2], appearance: 'outlined', title: `action ${a}` },
+          { variant: S4_ACTION_TAG[a][2], appearance: 'outlined' },
         )),
       ) : ''],
     ['start', 'Round-start location and departure', hub
-      ? `${hub.name} (${opts.startStopId || hub.stopId}) at ${opts.departure}` : ''],
+      ? `${hub.name} · stop ${opts.startStopId || hub.stopId} · ${String(opts.departure || '').slice(0, 5)}`
+      : '', hub ? join(
+      el('span', esc(hub.name)),
+      waTag(`stop ID ${opts.startStopId || hub.stopId}`, { icon: 'location-dot' }),
+      waTag(String(opts.departure || '').slice(0, 5), { icon: 'clock' }),
+    ) : ''],
     ['days', 'Representative days', (report.days || [])
       .filter((d) => d && d.dayType && d.dayType.date)
       .map((d) => `${d.dayType.label} ${prettyDate(d.dayType.date)}`).join(' · ')],
-    ['scoring', 'Scoring parameters',
-      `seeker sample ${num(p.seekerSampleCap || SEEKER_SAMPLE_CAP)} · `
-      + `greedy k ${num(p.greedyK || (report.questionOrder || []).length)} · `
-      + `zone radius ${s4Dist(report, Number(p.zoneRadiusM || size.zoneRadiusM || 0), 2)}`],
+    ['scoring', 'Scoring parameters', `${sampled} · ${funnelK} · ${radius}`,
+      join(waTag(sampled, { icon: 'users' }), waTag(funnelK, { icon: 'filter' }),
+        waTag(radius, { icon: 'circle-dot' }))],
   ];
 
   const blocks = [waCard(join(
@@ -1366,6 +1391,9 @@ export function renderProvenance(payload) {
     const rows = [];
     for (const q of overpass) {
       const c = fnum(q.count);
+      // The curse audit is one query of many predicates: no single count, and its
+      // selector folds as one labelled block per predicate (a string split, not a parse).
+      const curseAudit = q.key === 'curse-audit';
       if (q.partial) partialN += 1;
       const layer = q.layer || null;
       const url = layer ? String(layer.url || '') : '';
@@ -1387,12 +1415,13 @@ export function renderProvenance(payload) {
         }) : '',
       );
       rows.push([{ id: `prov-osm-${q.key}` }, [
-        el('b', esc(String(q.key || ''))),
-        el('span', esc(c === null ? '—' : num(c))
+        el('b', esc(String(q.key || '').split(/[_-]/).join(' '))),
+        el('span', esc(c === null || curseAudit ? '—' : num(c))
           + (q.partial ? ` ${el('abbr', '+', { title: partialTip })}` : ''), {
           className: 'wa-text-nowrap',
         }),
-        el('pre', esc(String(q.selector || '')), { className: 'prov-sel' }),
+        curseAudit ? s4PredicateFold(String(q.selector || ''))
+          : el('pre', esc(String(q.selector || '')), { className: 'prov-sel' }),
         el('div', readFrom, { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }),
       ]]);
     }
@@ -1430,7 +1459,7 @@ export function renderProvenance(payload) {
       const level = ladder[key];
       const tag = level === null || level === undefined
         ? chip('none', 'circle-minus')
-        : waTag(overture ? `Overture level ${num(level)}` : `admin_level ${num(level)}`);
+        : waTag(overture ? `Overture level ${num(level)}` : `OpenStreetMap level ${num(level)}`);
       return el('div', join(
         el('span', esc(word), { className: 'wa-caption-xs wa-text-uppercase' }),
         el('div', tag),
@@ -1466,7 +1495,11 @@ export function renderProvenance(payload) {
   if (interps.length) {
     const applying = interps.filter((i) => i.applies !== false);
     const unused = interps.filter((i) => i.applies === false);
-    const list = (rows) => el('div', rows.map((i) => s4InterpRow(i, idLabels)).join(''), {
+    const traceIds = new Set();
+    for (const s of (report.fitness && report.fitness.subscores) || []) {
+      for (const m of s.metrics || []) traceIds.add(String(m.id));
+    }
+    const list = (rows) => el('div', rows.map((i) => s4InterpRow(i, idLabels, traceIds)).join(''), {
       className: 'wa-stack wa-gap-s',
     });
     blocks.push(waCard(el('div', join(
@@ -1478,7 +1511,7 @@ export function renderProvenance(payload) {
     ), { className: 'wa-stack wa-gap-s' }), {
       headerHtml: cardHeader(`${num(applying.length)} interpretations`, {
         chipsHtml: basisChip('interp'),
-        caption: 'Not rules — your group may overrule any.',
+        caption: 'Not rules. Your group may overrule any.',
       }),
     }));
   }
@@ -1546,7 +1579,7 @@ export function renderProvenance(payload) {
       legend ? el('div', legend, { className: 'wa-stack wa-gap-2xs' }) : '',
     ), { className: 'wa-stack wa-gap-s' }), {
       headerHtml: cardHeader('What this data does not know', {
-        caption: 'Carried through from the layers that produced them.',
+        caption: 'Limits inherited from the map and feed layers.',
       }),
     }));
   }
@@ -1574,8 +1607,6 @@ export function renderProvenance(payload) {
  * match the shell's skeleton (`#footer-figures`, `#footer-credit`); app.js replaces the
  * whole `<footer>`.
  *
- * (generate.py `_s4_footer`.)
- *
  * @param {Object} payload @returns {string}
  */
 export function renderFooter(payload) {
@@ -1589,7 +1620,7 @@ export function renderFooter(payload) {
   const questions = report.questions || [];
   const stats = [
     [num((report.zones || []).length), 'hiding zones scored'],
-    [`${num(s4LiveQuestions(report))} / ${num(questions.length)}`, 'questions live'],
+    [`${num(s4LiveQuestions(report))} of ${num(questions.length)}`, 'questions work'],
     [num(s4RemovedCurses(report).length), 'curses removed'],
     [num((p.overpass || []).length), 'OpenStreetMap queries'],
     [num((p.interpretations || []).filter((i) => i.applies !== false).length), 'documented interpretations'],
@@ -1611,9 +1642,9 @@ export function renderFooter(payload) {
       ? 'Admin divisions: Overture Maps Foundation'
       : 'Admin divisions © OpenStreetMap contributors, ODbL'],
     ['map-location-dot', 'Basemap: OpenFreeMap, OpenMapTiles data'],
-    ['book', "Rules: Jet Lag: The Game's Hide+Seek rulebook"],
+    ['book', "Rules from Jet Lag: The Game's Hide+Seek rulebook"],
     dateText ? ['calendar-check', `Analysis date ${dateText}, from the feed's calendar`] : null,
-    ['circle-info', 'Scheduled times are planning estimates — check live tracking on the day'],
+    ['circle-info', 'Scheduled times are estimates. Check live tracking on the day.'],
   ].filter((x) => x);
 
   const top = el('a', join(waIcon('arrow-up'), esc('Back to top')), {
@@ -1635,12 +1666,11 @@ export function renderFooter(payload) {
 // THE DECK TABLES — sort, filter, search, paging
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// The CLI binds a chip filter, a search box and the no-spending switch to one static
-// document (`_S4_INDEX_JS`). The browser build adds column sorting and an opt-in page
-// size, and app.js re-renders a whole section when a later stage lands or the reader
-// switches service day, which discards every element these listeners were on. So the
-// state lives in `DECK_STATE`, keyed by table id, and `initDeckTables` writes it back
-// into the fresh controls before binding anything.
+// Each table's chip filter, search box, no-spending switch, column sorting and page
+// size are all live DOM state, but app.js re-renders a whole section whenever a later
+// stage lands or the reader switches service day, which discards every element these
+// listeners were on. So the state lives in `DECK_STATE`, keyed by table id, and
+// `initDeckTables` writes it back into the fresh controls before binding anything.
 //
 // app.js carries its own copy of `bindFilter` / `bindSearch` / `bindSpending`
 // (`PAGE_RUNTIME_JS`), bound to the same elements. Both agree on one rule:
@@ -1857,8 +1887,6 @@ function applyRows(spec) {
 /**
  * The no-spending switch: Egg Partner, Impressionable Consumer and Lemon Phylactery
  * become `remove` together, and the action filter follows the switch.
- *
- * (generate.py `bindSpending`.)
  */
 function applySpending() {
   const sw = document.getElementById('nospend');

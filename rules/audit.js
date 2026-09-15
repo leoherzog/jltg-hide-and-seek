@@ -2,7 +2,7 @@
 // S3 · QUESTION AND CURSE AUDIT
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Ported from generate.py. Three things live here:
+// Three things live here:
 //
 //   1. THE VERDICTS. Every question gets one of `functional`, `weak`, `degenerate`
 //      (exactly one instance, so the answer never varies), `dead` (none) or
@@ -20,7 +20,7 @@
 
 import {
   M_PER_MILE, QUARTER_MILE_M, SEEKER_SAMPLE_CAP, SURV_FULL_UNIVERSE_MAX,
-  cmpStr, rhu, num, pct, mins, miles, quantile, fillPct, explainText,
+  cmpStr, rhu, num, pct, mins, miles, milesRange, quantile, fillPct, explainText,
 } from '../lib/core.js';
 import { Projection, bboxContains, bboxExpand } from '../lib/geo.js';
 import { GEO_CATEGORIES, LOW_STREETVIEW_COUNTRIES } from '../osm/geodata.js';
@@ -117,7 +117,6 @@ function projFromZones(zones) {
  * The seeker index sample `S`, identical to the worker's: every zone at or below
  * `SURV_FULL_UNIVERSE_MAX`, else a strided sample capped at `SEEKER_SAMPLE_CAP`.
  * An off-by-one in the stride changes published numbers.
- * (generate.py `_s3_seeker_sample`)
  * @param {Array<Object>} zones
  * @returns {number[]}
  */
@@ -136,7 +135,6 @@ export function seekerSample(zones) {
 /**
  * `d[zoneIndex * m + seekerPosition]` in metres, computed once per run. A flat
  * `Float64Array`: every radar question shares it and it is the audit's CPU peak.
- * (generate.py `_s3_zone_seeker_dists`)
  * @returns {{n: number, m: number, d: Float64Array}}
  */
 function zoneSeekerDists(zones, seekers) {
@@ -163,14 +161,13 @@ function zoneSeekerDists(zones, seekers) {
 /**
  * The radius the Choose radar is modelled at: the median distance between zones,
  * which splits this map most evenly averaged over seeker positions.
- * (generate.py `_s3_choose_radius_m`)
  */
 function chooseRadiusM(zones) {
   const key = `choose\u0000${universeKey(zones)}`;
   const hit = S3_MEMO.get(key);
   if (hit !== undefined) return hit;
   const n = zones.length;
-  if (n < 2) return QUARTER_MILE_M;          // deliberately not memoised, as in the Python
+  if (n < 2) return QUARTER_MILE_M;          // deliberately not memoised: n<2 is cheap and rare
   const stride = n <= 400 ? 1 : Math.ceil(n / 400);
   const sample = [];
   for (let i = 0; i < n; i += stride) sample.push(zones[i]);
@@ -187,7 +184,6 @@ function chooseRadiusM(zones) {
 
 /**
  * `"A"`, `"A and B"`, `"A, B and C"` — for lists short enough to print in full.
- * (generate.py `_s3_join`)
  * @param {string[]} items
  * @returns {string}
  */
@@ -198,7 +194,7 @@ export function s3Join(items) {
   return `${rows.slice(0, -1).join(', ')} and ${rows[rows.length - 1]}`;
 }
 
-/** The human label for a GEO_CATEGORIES key. (generate.py `_s3_geo_label`) */
+/** The human label for a GEO_CATEGORIES key. */
 function geoLabel(category) {
   for (const c of GEO_CATEGORIES) if (c.key === category) return c.label;
   return String(category).split('_').join(' ');
@@ -226,7 +222,6 @@ function s3Noun(category, count) {
  * The exact Overpass selector behind a question, or a plain-words GTFS note.
  * Every kind `subjectOf` returns is answered here; the photo tables partition all
  * 18 photo ids (6 always-answerable, 7 counted, 2 polygon, 3 named below).
- * (generate.py `_s3_selector_for`)
  */
 function selectorFor(question) {
   const [kind, arg] = subjectOf(question);
@@ -249,8 +244,7 @@ function selectorFor(question) {
     return `relation["boundary"="administrative"] containing each zone centre, ${arg} ordinal`;
   }
   if (kind === 'border_line') {
-    return 'relation["boundary"="administrative"]["admin_level"=N](BBOX); way(r); out count; '
-      + '— does a boundary line cross the map';
+    return 'relation["boundary"="administrative"]["admin_level"=N](BBOX); way(r); out count;';
   }
   if (kind === 'dem') {
     return 'elevation — needs a digital elevation model, which this pipeline does not carry';
@@ -286,7 +280,6 @@ function selectorFor(question) {
  * `[kind, argument]` naming the data that answers this question. The six
  * categories are closed (catalogue.js asserts their counts), so every question
  * resolves to a kind.
- * (generate.py `_s3_subject`)
  */
 function subjectOf(question) {
   const special = Object.prototype.hasOwnProperty.call(S3_SPECIAL_SUBJECT, question.id)
@@ -303,7 +296,6 @@ function subjectOf(question) {
  * `[features whose icon is inside the border, was this category queried]`.
  * The in-border test is on the representative point, not the raw Overpass
  * result: a polygon straddling the edge can have its icon outside the map.
- * (generate.py `_s3_in_border_pois`)
  */
 function inBorderPois(geo, category, bbox) {
   if (!geo.available || !category) return [[], false];
@@ -315,7 +307,6 @@ function inBorderPois(geo, category, bbox) {
 /**
  * How many features of a category sit inside a modestly larger border: two zone
  * radii or 250 m, whichever is larger.
- * (generate.py `_s3_margin_count`)
  */
 function marginCount(geo, category, bbox, radiusM) {
   if (!geo.available || !category) return 0;
@@ -330,10 +321,8 @@ function marginCount(geo, category, bbox, radiusM) {
 
 /**
  * Total order over heterogeneous signature values, and their hash key: a type
- * tag then the value, strings JSON-quoted so no separator can be forged. Its
- * order differs from Python's `repr` order, which only affects float summation
- * order, never a published class or count.
- * (generate.py `_s3_sort_key`)
+ * tag then the value, strings JSON-quoted so no separator can be forged.
+ * Iteration order is deterministic regardless of insertion order.
  */
 function sigKey(v) {
   if (v === null || v === undefined) return 'null';
@@ -347,7 +336,7 @@ function sigKey(v) {
 
 /**
  * Signature value → number of zones carrying it, keyed by `sigKey`.
- * Sorted-stable by construction. (generate.py `_s3_blocks`)
+ * Sorted-stable by construction.
  * @returns {Map<string, number>}
  */
 function s3Blocks(values) {
@@ -408,7 +397,6 @@ function bisectRight(arr, x) {
  * Distance from each zone to the nearest zone with a different label, by x-sweep.
  * The proxy behind the administrative-border measuring questions; an upper bound
  * on the true distance to the boundary line.
- * (generate.py `_s3_nearest_other_label_m`)
  */
 function nearestOtherLabelM(zones, labels) {
   const n = zones.length;
@@ -447,7 +435,6 @@ function nearestOtherLabelM(zones, labels) {
  * The candidate set a tentacle question names, as `{label, xs, ys}` records. A
  * point feature carries one point; a metro line carries the positions of the
  * zones its route serves, capped at 64 by a fixed stride.
- * (generate.py `_s3_tentacle_features`)
  */
 function tentacleFeatures(question, zones, geo, gtfsFacts, proj) {
   const [kind] = subjectOf(question);
@@ -517,7 +504,6 @@ function featureWithinSq(f, x, y, reachSq) {
 /**
  * Can the hider in this zone answer this photo question? `null` = not evaluable.
  * The tables and the three ids at the end partition all 18 photo questions.
- * (generate.py `_s3_photo_answer`)
  */
 function photoAnswer(questionId, zone, geo, gtfsFacts) {
   if (S3_ALWAYS_PHOTOS.includes(questionId)) return true;
@@ -566,7 +552,6 @@ function photoAnswer(questionId, zone, geo, gtfsFacts) {
  * instance, projected position, position plus candidate set) so
  * `survivalFractions` can use closed forms. `null` means the zone cannot answer.
  * Memoised on the zone universe.
- * (generate.py `answer_signature`)
  *
  * @param {Object} question   QuestionDef
  * @param {Array<Object>} zones
@@ -584,7 +569,7 @@ export function answerSignature(question, zones, geo, gtfsFacts, proj) {
   return sig;
 }
 
-/** (generate.py `_s3_build_signature`) */
+/** Builds the per-zone answer signature for one question, dispatching on its subject kind. */
 function buildSignature(question, zones, geo, gtfsFacts, proj) {
   const n = zones.length;
   const [kind, arg] = subjectOf(question);
@@ -603,7 +588,7 @@ function buildSignature(question, zones, geo, gtfsFacts, proj) {
     return zones.map((z) => {
       const raw = byZone[z.zoneId] || z.routeIds;
       const rows = Array.from(raw).sort(cmpStr);
-      return rows.length ? rows : null;      // Python's `tuple(...) or None`
+      return rows.length ? rows : null;      // empty list becomes null: "no routes" is its own signature
     });
   }
 
@@ -739,7 +724,6 @@ function radiusM(question, zones) {
  *   * tentacle    — `(in_reach, nearest candidate)`, both reach tests on the seeker.
  *   * photo       — seeker-independent: `surv = block_size / n`.
  *
- * (generate.py `survival_fractions`)
  * @param {Object} question @param {Array<*>} signature
  * @param {Array<Object>} zones @param {number[]} seekers
  * @returns {number[]}
@@ -764,7 +748,6 @@ export function survivalFractions(question, signature, zones, seekers) {
  * Closed form for a same-or-different question over equality classes. With class
  * sizes `c_j` and seeker counts `s_j`:
  * `surv_i = [T + s_i·(2c_i − n)] / (|S|·n)`, `T = Σ_j s_j·(n − c_j)`.
- * (generate.py `_s3_surv_matching`)
  */
 function survMatching(signature, n, seekers) {
   const blocks = s3Blocks(signature);
@@ -793,7 +776,6 @@ function survMatching(signature, n, seekers) {
  * seeker's distance is its own class (`measuring_ties_are_their_own_answer`),
  * which keeps this in step with the concrete answers the dossiers print.
  * Verified against an O(n²·|S|) brute force.
- * (generate.py `_s3_surv_measuring`)
  */
 function survMeasuring(signature, n, seekers) {
   const values = signature.filter((v) => v !== null && v !== undefined);
@@ -864,7 +846,6 @@ function survRadar(question, zones, n, seekers) {
  * Perpendicular-bisector half-planes, eight bearings, one sort per bearing.
  * "Hotter" is `z·u < s·u + L/2` for unit travel vector `u`, so projecting every
  * zone onto `u` turns the question into a prefix sum.
- * (generate.py `_s3_surv_thermometer`)
  */
 function survThermometer(question, zones, n, seekers) {
   const leg = (question.param || 0.0) * M_PER_MILE;
@@ -968,7 +949,6 @@ function survTentacle(question, signature, zones, n, seekers) {
 
 /**
  * `[class key, human wording]` of the answer zone `hider` gives seeker `seeker`.
- * (generate.py `_s3_answer`)
  * @param {Object} question @param {Array<*>} signature @param {Array<Object>} zones
  * @param {number} hider @param {number} seeker
  * @returns {[*, string]}
@@ -1027,7 +1007,6 @@ export function s3Answer(question, signature, zones, hider, seeker) {
 
 /**
  * The zone closest to the map's centre of mass — the funnel's standing seeker.
- * (generate.py `_s3_reference_seeker`)
  * @param {Array<Object>} zones
  * @returns {number}
  */
@@ -1053,8 +1032,7 @@ export function s3ReferenceSeeker(zones) {
 
 /**
  * Renumber a partition: `[groupId, classKey]` pairs → dense group ids plus class
- * sizes. Same block sizes as the Python's growing tuples, without O(k) string
- * concatenation per zone per candidate.
+ * sizes, without O(k) string concatenation per zone per candidate.
  */
 function refine(joint, classKeys, n) {
   /** @type {Map<string, number>} */
@@ -1084,7 +1062,6 @@ function refine(joint, classKeys, n) {
  *
  * Returns `[questionIds, funnel]`: `funnel[0]` is `n`, `funnel[i]` the surviving
  * block size after the i-th question.
- * (generate.py `global_question_order`)
  *
  * @param {Array<Object>} questions   QuestionAudit rows
  * @param {Object<string, Array<*>>} signatures  questionId → signature
@@ -1163,7 +1140,7 @@ export function globalQuestionOrder(questions, signatures, zones, k, opts = {}) 
   return [Array.from(picked), Array.from(funnel)];
 }
 
-/** Python tuple comparison over `(meanBlock, cost, qid)`. */
+/** Lexicographic comparison over `(meanBlock, cost, qid)`. */
 function cmpCandidate(a, b) {
   if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
   if (a[1] !== b[1]) return a[1] < b[1] ? -1 : 1;
@@ -1172,7 +1149,6 @@ function cmpCandidate(a, b) {
 
 /**
  * Share of zones sharing each zone's joint signature over `questionIds`.
- * (generate.py `_s3_joint_block_share`)
  * @param {string[]} questionIds
  * @param {Object<string, Array<*>>} signatures
  * @param {Array<Object>} zones
@@ -1211,7 +1187,6 @@ export function s3JointBlockShare(questionIds, signatures, zones) {
  * categories score the balance of the yes/no split. Measuring always splits near
  * evenly, so it scores narrowing instead, renormalised so a clean halving is 1.0.
  * Tentacles score Shannon entropy over the classes they realise.
- * (generate.py `_s3_quality`)
  */
 function s3Quality(question, signature, zones, seekers) {
   const n = zones.length;
@@ -1322,7 +1297,7 @@ function maxOf(values) {
   return m;
 }
 
-/** `sum(sorted(values))` — the Python's deterministic float summation order. */
+/** `sum(sorted(values))` — sums in a fixed order so float rounding doesn't drift with input order. */
 function sumSorted(values) {
   const s = Array.from(values).sort((a, b) => a - b);
   let total = 0.0;
@@ -1332,7 +1307,6 @@ function sumSorted(values) {
 
 /**
  * `[number of classes, smallest class, largest class]` for a partition signature.
- * (generate.py `_s3_block_span`)
  */
 function blockSpan(signature) {
   const blocks = s3Blocks(signature);
@@ -1447,7 +1421,6 @@ export function questionCategories(questions) {
  * consumer branches on it. Every count is measured inside the border on the
  * feature's own icon, and a status that would flip under a modestly larger
  * border is marked `borderline`.
- * (generate.py `audit_questions`)
  *
  * @param {Object} size @param {Object} geo @param {Object} gtfsFacts
  * @param {Array<Object>} zones @param {Object} metrics @param {Object} border
@@ -1500,7 +1473,7 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
           if (instances === 0) {
             status = 'dead';
             lead = `No ${s3Noun(q.geodataRef, 1)} inside the border`;
-            detail = 'Out-of-border features do not exist for this game, so the answer is always null.';
+            detail = 'Out-of-border features do not exist for this game, so this question can never be answered here.';
           } else if (instances === 1) {
             status = 'degenerate';
             lead = `One ${s3Noun(q.geodataRef, 1)} inside the border`;
@@ -1534,15 +1507,12 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         } else {
           // Scored like any matching question: the rulebook's only precondition is
           // timing (aboard and moving), and Curse of the Urban Explorer must be
-          // drawn and played, so it is scored, not `unaskable`. Deliberate
-          // divergence from generate.py, which hard-codes `unaskable` here.
+          // drawn and played, so it is scored, not `unaskable`.
           quality = s3Quality(q, sig, zones, seekers);
           status = quality < 0.12 ? 'weak' : 'functional';
-          lead = status === 'functional'
-            ? `${num(classes)} distinct route sets, so it cuts hard when it lands`
-            : `${num(classes)} distinct route sets, so it almost always answers no`;
-          facts = [fact('ask while aboard and moving', 'bus')];
-          detail = `${num(routes)} routes produce them across ${num(n)} zones.`
+          lead = status === 'functional' ? 'Cuts hard when it lands' : 'Almost always answers no';
+          facts = [fact(`${num(classes)} route sets`, 'route'), fact('from moving transit only', 'bus')];
+          detail = `${num(classes)} distinct route sets among ${num(routes)} routes.`
             + (status === 'weak' ? " A no eliminates only the seeker's own set." : '');
         }
       } else if (kind === 'gtfs_name_length') {
@@ -1630,7 +1600,7 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
           if (instances === 0) {
             status = 'dead';
             lead = `No ${s3Noun(q.geodataRef, 1)} inside the border`;
-            detail = 'This always returns null.';
+            detail = 'This question can never be answered here.';
             if (marginN !== null) detail = `${detail} ${marginSentence(marginN, zoneRadius)}`;
           } else {
             quality = s3Quality(q, sig, zones, seekers);
@@ -1639,8 +1609,8 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
             const hi = values.length ? maxOf(values) : 0.0;
             status = quality < 0.30 ? 'weak' : 'functional';
             lead = '';
-            facts = [fact(`${miles(lo)}–${miles(hi)} to nearest`, 'ruler-horizontal')];
-            detail = `The zones sit ${miles(lo)}–${miles(hi)} from the nearest one.`;
+            facts = [fact(`${milesRange(lo, hi)} to nearest`, 'ruler-horizontal')];
+            detail = `The zones sit ${milesRange(lo, hi)} from the nearest one.`;
             if (instances === 1 && status === 'functional') {
               facts.push(fact('one clean ring', 'bullseye', 'success'));
               detail += ' A single instance is not a weakness here: one clean ring is among the '
@@ -1682,7 +1652,7 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         if (q.param === null || q.param === undefined) {
           lead = `Sharpest choice here ≈ ${miles(radius)}`;
           facts = [fact('seekers pick the radius', 'sliders')];
-          detail = 'The seekers name the distance, so this radar can never be dead. On this map '
+          detail = 'The seekers name the distance, so this radar can always be answered. On this map '
             + `the sharpest choice is about ${miles(radius)}, which splits the zone set closest `
             + 'to evenly.';
         } else if (hit === null) {
@@ -1818,8 +1788,8 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
         || q.id === 'photo.tallest_mountain_visible_from_transit_station')) {
       facts.push(fact('a map app may label a hill', 'mountain'));
       detail = `${detail} No named peak or volcano is mapped inside the border. A map app may `
-        + 'still label a hill from its own gazetteer, so treat this question as '
-        + 'dead-with-a-caveat.';
+        + 'still label a hill from its own gazetteer, so check one before writing this '
+        + 'question off.';
     }
     if (q.category === 'matching' && q.geodataRef) {
       for (const p of redundant) {
@@ -1863,7 +1833,6 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
 
 /**
  * Explain an `unknown` from a missing map layer or key without pretending it is a zero.
- * (generate.py `_s3_not_queried_why`)
  * @returns {{lead: string, detail: string, degrade: string}}
  */
 function notQueried(geo, what) {
@@ -1901,7 +1870,6 @@ function countryUnresolved(geo, subject, target) {
 
 /**
  * Status for one of the four administrative-division matching questions.
- * (generate.py `_s3_admin_matching`)
  */
 function adminMatching(q, ordinal, sig, geo, zones, seekers) {
   const word = Object.prototype.hasOwnProperty.call(S3_ORDINAL_WORD, ordinal)
@@ -1917,9 +1885,9 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
       status: 'unknown',
       instances: null,
       quality: 0.0,
-      lead: `No ${word} administrative division`,
+      lead: '',
       detail: 'This country has none inside the map, so the question is not evaluated rather '
-        + 'than counted as dead.',
+        + 'than counted as a wasted draw.',
       facts: [],
       degrade: 'no_division',
     };
@@ -1931,7 +1899,7 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
       instances: 0,
       quality: 0.0,
       lead: `${capitalise(word)} division not read`,
-      detail: `admin_level=${level} exists for this country but no zone centre resolved to one.`,
+      detail: `Level ${num(level)} divisions exist in this country, but no zone centre fell inside one.`,
       facts: [],
       degrade: 'no_result',
     };
@@ -1959,9 +1927,8 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
     instances: names.length,
     quality,
     lead: '',
-    detail: `Divisions at admin_level=${level}: ${shown.join(', ')}`
-      + `${more > 0 ? ` and ${num(more)} more` : ''}; their zone counts run `
-      + `${num(smallest)}–${num(largest)}.`,
+    detail: `${shown.join(', ')}${more > 0 ? ` and ${num(more)} more` : ''}; the groups hold `
+      + `${zoneSpan(smallest, largest)} zones.`,
     facts,
     degrade: null,
   };
@@ -1969,7 +1936,6 @@ function adminMatching(q, ordinal, sig, geo, zones, seekers) {
 
 /**
  * Status for International / 1st / 2nd administrative division border questions.
- * (generate.py `_s3_border_measuring`)
  */
 function borderMeasuring(q, ordinal, sig, geo, zones, seekers) {
   const word = Object.prototype.hasOwnProperty.call(S3_ORDINAL_WORD, ordinal)
@@ -1987,7 +1953,7 @@ function borderMeasuring(q, ordinal, sig, geo, zones, seekers) {
       status: 'unknown',
       instances: null,
       quality: 0.0,
-      lead: `No ${word} administrative division`,
+      lead: '',
       detail: 'There is no such boundary to measure to.',
       degrade: 'no_division',
     };
@@ -2010,7 +1976,7 @@ function borderMeasuring(q, ordinal, sig, geo, zones, seekers) {
       instances: 0,
       quality: 0.0,
       lead: `No ${subject} crosses the map`,
-      detail: 'This always returns null. The matching twin of this question can still be alive: '
+      detail: 'This question can never be answered here. The matching twin of this question can still be alive: '
         + 'being inside one division is not the same as being near its edge.',
     };
   }
@@ -2039,15 +2005,14 @@ function borderMeasuring(q, ordinal, sig, geo, zones, seekers) {
     quality,
     lead: `${article} ${subject} crosses the map`,
     detail: 'Distance to it is approximated by the distance to the nearest zone in a different '
-      + `division, which runs ${miles(lo)}–${miles(hi)}: an upper bound on the true distance.`,
-    facts: [fact(`${miles(lo)}–${miles(hi)} to nearest`, 'ruler-horizontal')],
+      + `division, which runs ${milesRange(lo, hi)}: an upper bound on the true distance.`,
+    facts: [fact(`${milesRange(lo, hi)} to nearest`, 'ruler-horizontal')],
     interpId: 'admin_border_distance_proxy',
   };
 }
 
 /**
  * N≥2 tentacles: functional when the tentacle usually has more than one arm.
- * (generate.py `_s3_tentacle_verdict`)
  */
 function tentacleVerdict(q, sig, feats, zones, seekers, n, reach) {
   const reachSq = reach * reach;
@@ -2070,7 +2035,7 @@ function tentacleVerdict(q, sig, feats, zones, seekers, n, reach) {
       lead: '',
       detail: `The median zone has ${num(medianArms)} within ${miles(reach)}, so the `
         + 'answer names one of several.',
-      facts: [fact(`median zone: ${num(medianArms)} within ${miles(reach)}`,
+      facts: [fact(`${num(medianArms)} within ${miles(reach)} · median zone`,
         'arrows-split-up-and-left')],
       interpId: null,
     };
@@ -2081,15 +2046,12 @@ function tentacleVerdict(q, sig, feats, zones, seekers, n, reach) {
     instances: feats.length,
     quality,
     lead: '',
-    detail: `The median zone has ${arms} within ${miles(reach)}, so the tentacle usually has at `
-      + 'most one arm and the answer mostly repeats a radar at twice the cost. '
-      + `${pct(covered)} of zones have one in reach. In-reach counts here are measured from `
-      + 'the zone; in play both reach tests are anchored on the seeker.',
+    detail: `The median zone has ${arms} within ${miles(reach)} and only ${pct(covered)} of zones `
+      + 'have any, so the answer usually repeats a radar for twice the cards.',
     facts: [
-      fact(`median zone: ${arms} within ${miles(reach)}`, 'arrows-split-up-and-left'),
+      fact(`${arms} within ${miles(reach)} · median zone`, 'arrows-split-up-and-left'),
       fact(`${pct(covered)} of zones have one in reach`, 'arrows-split-up-and-left', 'neutral',
         fillPct(covered)),
-      fact('≈ a radar at twice the cost', 'clone', 'warning'),
     ],
     interpId: 'tentacle_weak_is_a_radar',
   };
@@ -2105,7 +2067,7 @@ const S3_CURSE_PREDICATE_WORDS = Object.freeze({
     + 'covered ones included (BBOX)',
   water: 'OSM: natural=water, landuse=reservoir|basin and waterway=river|canal, pools '
     + 'excluded, named or not (BBOX)',
-  car_street: 'OSM: motor-vehicle highway ways with motor_vehicle and access not no (BBOX)',
+  car_street: 'OSM: streets open to cars (BBOX)',
   grocery: 'OSM: shop=supermarket|greengrocer|convenience|grocery|farm (BBOX)',
   shop: 'OSM: shop=* (BBOX)',
   cuisine: "OSM: restaurants tagged with a single foreign country's cuisine (BBOX)",
@@ -2137,7 +2099,6 @@ const S3_CURSE_INTERP = Object.freeze({
  * predicates are not OSM: Unguided Tourist reads `LOW_STREETVIEW_COUNTRIES`,
  * U-Turn reads `gtfsFacts.u_turn`. `metrics` (optional) supplies
  * `assumedSchedule`, which only U-Turn's wait-based verdict depends on.
- * (generate.py `audit_curses`)
  *
  * @param {Object} size @param {Object} geo @param {Object} gtfsFacts
  * @param {string|null} countryCode
@@ -2164,8 +2125,7 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
     /** @type {string|null} */ let degrade = null;
 
     if (c.id === 'unguided_tourist') {
-      predicate = 'Static Street View coverage table for country '
-        + `\`${countryCode || 'unknown'}\``;
+      predicate = `Street View coverage table, country ${String(countryCode || 'unknown').toUpperCase()}`;
       count = null;
       if (countryCode === null || countryCode === undefined) {
         action = 'warn';
@@ -2177,11 +2137,11 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
         action = 'remove';
         facts.push(fact(String(countryCode).toUpperCase(), 'globe'),
           fact('Street View · low', 'street-view', 'danger'));
-        detail = `${c.removalRule} \`${countryCode}\` is on the low-Street-View list.`;
+        detail = `${c.removalRule} ${String(countryCode).toUpperCase()} is on the low-coverage list.`;
       } else {
         facts.push(fact(String(countryCode).toUpperCase(), 'globe'),
           fact('Street View · broad', 'street-view', 'success'));
-        detail = `${c.removalRule} \`${countryCode}\` has broad Street View coverage.`;
+        detail = `${c.removalRule} ${String(countryCode).toUpperCase()} has broad coverage.`;
       }
     } else if (c.id === 'u_turn') {
       const share = Number(uTurn.multi_route_stop_share || 0.0);
@@ -2197,29 +2157,28 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
         degrade = 'assumed_schedule';
         lead = 'check the real timetable before you count on it';
         detail = `${c.removalRule} ${pct(share)} of stops carry a second route, which is real `
-          + 'mapped geometry, but the wait for a departure on a different route comes from a '
-          + 'timetable synthesized from OpenStreetMap, so whether the escape hatch opens inside '
-          + `the card's ${num(windowMin)}-minute window is assumed, not measured.`;
+          + 'mapped geometry, but the wait for a different route comes from an assumed timetable, '
+          + `so whether the hatch opens inside the ${num(windowMin)}-minute window is not measured.`;
       } else {
         if (wait !== null) {
           facts.push(fact(`median wait ${mins(wait)} · window ${mins(windowMin)}`, 'clock'));
         }
         if (share < 0.20 || (wait !== null && wait > windowMin)) {
           action = 'warn';
-          facts.push(fact('expect it to fizzle', 'circle-minus', 'warning'));
-          detail = `${c.removalRule} Only ${pct(share)} of stops carry a second route`
+          facts.push(fact('Likely to fizzle', 'circle-minus', 'warning'));
+          detail = `${c.removalRule} Here only ${pct(share)} of stops carry a second route`
             + (wait !== null
-              ? ', and the median wait for a departure on a different route is '
-                + `${mins(wait)} against the card's ${num(windowMin)}-minute window`
-              : '')
-            + ". The card's escape hatch opens more often than the curse bites.";
-        } else {
-          detail = `${c.removalRule} ${pct(share)} of stops carry a second route`
-            + (wait !== null
-              ? ` and the median wait for a different route is ${mins(wait)} against the card's `
+              ? ` and the median wait for one is ${mins(wait)} against the card's `
                 + `${num(windowMin)}-minute window`
               : '')
-            + ', so the curse usually bites.';
+            + ', so the escape hatch opens more often than the curse bites.';
+        } else {
+          detail = `${c.removalRule} Here ${pct(share)} of stops carry a second route`
+            + (wait !== null
+              ? ` and the median wait for one is ${mins(wait)} against the card's `
+                + `${num(windowMin)}-minute window`
+              : '')
+            + ', so it usually bites.';
         }
       }
     } else if (c.id === 'egg_partner' || c.id === 'impressionable_consumer') {
@@ -2239,7 +2198,7 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
         action = 'remove';
         lead = 'no bridges on the game map';
       } else {
-        lead = 'check a seeker can stand under one';
+        lead = 'Check a seeker can stand under one.';
       }
     } else if (c.id === 'distant_cuisine') {
       const distinct = Object.keys(cuisines).length;
@@ -2266,15 +2225,15 @@ export function auditCurses(size, geo, gtfsFacts, countryCode, metrics = null) {
             + `${num(distinct)} countries.`;
         } else {
           facts.push(fact(`${num(distinct)} countries`, 'utensils'));
-          detail = `${c.removalRule} ${num(distinct)} distinct foreign cuisines.`;
+          detail = `${c.removalRule} ${num(distinct)} countries are represented.`;
         }
         if (stats && stats.total > 0) {
           const share = stats.tagged / stats.total;
-          facts.push(fact(`${pct(share)} cuisine-tagged · a floor`, 'utensils', 'neutral',
+          facts.push(fact(`${pct(share)} of restaurants tagged`, 'utensils', 'neutral',
             fillPct(stats.tagged, stats.total)));
-          detail = `${detail} This is a floor: ${pct(share)} of restaurants carry a cuisine tag.`;
+          detail = `${detail} ${pct(share)} of restaurants carry a cuisine tag, so the count is a floor.`;
         } else if (count > 0) {
-          detail = `${detail} This is a floor: many restaurants carry no cuisine tag at all.`;
+          detail = `${detail} Many restaurants carry no cuisine tag at all, so the count is a floor.`;
         }
       }
     } else if (c.tier === 2) {

@@ -2,8 +2,7 @@
 // worker.js — the pipeline orchestrator
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Ported from `build_report` (generate.py). The order below is the Python's
-// dependency order: nothing later may be needed by anything earlier. The one
+// The order below is a fixed dependency order: nothing later may be needed by anything earlier. The one
 // reordering is `travelTimeSamples`, which CONTRACT.md §(d) puts in the `'network'`
 // payload; every input it needs exists by then.
 //
@@ -52,7 +51,7 @@ import {
 let SCORE = null;
 let SCORE_ERROR = null;
 
-/** The greedy-question depth `k`, generate.py. */
+/** The greedy-question depth `k`. */
 const GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
@@ -194,8 +193,10 @@ function normaliseSources(source) {
     const kind = (typeof item === 'object' && !Array.isArray(item)
       && typeof item.kind === 'string') ? item.kind : '';
     if (kind && !SOURCE_KINDS.includes(kind)) {
-      throw new Error(`The run named a source of kind ${JSON.stringify(kind)}, which this `
-        + 'analysis does not know how to read. Reload the page and try again.');
+      // The kind is a diagnostic, not reader copy; `log` lives in `runPipeline`.
+      // eslint-disable-next-line no-console
+      console.warn(`[worker] unknown source kind ${JSON.stringify(kind)}`);
+      throw new Error('This page and its analysis are out of step. Reload the page and try again.');
     }
     const isRef = kind !== '';
     const ring = kind === 'osm' && Array.isArray(item.ring) ? item.ring : null;
@@ -255,11 +256,11 @@ async function synthesizeArea(src, world, asOf) {
   const { synthesizeFeedZip } = await import('./osm/synth.js');
   const routes = await worldTransitRoutes(world, bboxOf(src.ring));
   if (routes === null) {
-    throw new Error('these map files carry no OpenStreetMap route relations, so an area '
-      + 'cannot be built from them; the published build is the one to point at');
+    throw new Error('These map files carry no route relations, so an area cannot be built '
+      + 'from them. Point Map file base URL at the published files.');
   }
   if (!routes.length) {
-    throw new Error('OpenStreetMap maps no rail, metro or tram line inside that shape');
+    throw new Error('OpenStreetMap maps no rail, metro or tram line inside that shape.');
   }
   const { zip, notes } = synthesizeFeedZip({ routes, ring: src.ring, asOf });
   const name = `openstreetmap-${String(src.id || '').replace(/^osm:/, '') || 'area'}.zip`;
@@ -412,8 +413,8 @@ export async function runPipeline(options, source, emit) {
         if (srcs.length === 1) throw err;
         // Not `nonFatal` as well: the `degraded` sentence is the record; the diagnostic goes to the log.
         log('warn', `feed: ${(err && err.message) || err}`);
-        degrade(`${srcs[i].label} could not be read (${(err && err.name) || 'Error'}); `
-          + 'the report covers the other feeds only.', 'feed_skipped');
+        degrade(`${srcs[i].label} could not be read, so the report covers the other feeds only.`,
+          'feed_skipped');
       }
     }
     if (!loaded.length) {
@@ -480,7 +481,7 @@ export async function runPipeline(options, source, emit) {
     days = [];
     for (let i = 0; i < types.length; i++) {
       days.push(buildServiceDay(feed, types[i], proj, { boardSlackS: opts.boardSlackS }));
-      progress.report((i + 1) / types.length, `Building service days (${i + 1}/${types.length})`);
+      progress.report((i + 1) / types.length, `Building service days · ${i + 1} of ${types.length}`);
     }
     best = busiestDay(days);
     stations = clusterStations(orderedStops, proj);
@@ -549,8 +550,7 @@ export async function runPipeline(options, source, emit) {
     progress.finish();
 
     progress.begin(4);
-    // First pass at the rulebook's default radius: the size vote reads `nZones`,
-    // which depends on the radius. Re-measured at the resolved radius below, as the CLI does.
+    // First pass at the rulebook's default radius: the size vote reads `nZones`, which depends on the radius, so it is re-measured at the resolved radius below.
     metrics = networkMetrics(feed, days, proj, hub, QUARTER_MILE_M, inPlay);
     metrics.inPlayFallback = inPlayFallback;
     progress.finish();
@@ -592,13 +592,13 @@ export async function runPipeline(options, source, emit) {
     gtfsFacts = gtfsQuestionFacts(feed, days, zones, stations);
     progress.finish();
 
-    // generate.py resolves `--start` here, and its `or` chain lets '00:00:00' fall through to 09:00.
+    // opts.departure falls back to DEFAULT_DEPARTURE (09:00); the outer `||` also catches '00:00:00', since hmsToS parses it to 0 (falsy).
     origin = opts.startStopId || hub.stopId;
     depS = hmsToS(opts.departure || DEFAULT_DEPARTURE) || hmsToS(DEFAULT_DEPARTURE);
 
     progress.begin(6);
-    // The CLI computes this last; CONTRACT.md §(d) needs it in the `'network'`
-    // payload. One RAPTOR pass per day is shared by the chart and the reach layer.
+    // CONTRACT.md §(d) needs this in the `'network'` payload, so one RAPTOR pass per day
+    // is shared by the chart and the reach layer.
     const runs = dayRaptorRuns(days, origin, depS);
     travelSamples = travelTimeSamples(days, zones, origin, depS, 14, runs);
     zoneReach = zoneReachMinutes(days, zones, runs, origin, depS, size.hidingPeriodMin);
@@ -659,12 +659,10 @@ export async function runPipeline(options, source, emit) {
     });
     log('info', worldStatsLine(handle));
   } catch (err) {
-    const name = (err && err.name) ? err.name : 'Error';
     log('warn', `OSM layer unavailable: ${err && err.message ? err.message : err}`);
     nonFatal('geo', err);
-    degrade(`The OpenStreetMap files could not be read (${name}), so every question, `
-      + 'curse and score that needs map features is excluded rather than guessed at.',
-    'osm_unavailable');
+    degrade('The OpenStreetMap files could not be read, so every question, curse and score '
+      + 'that needs map features is left out rather than guessed at.', 'osm_unavailable');
     geo = emptyGeoData(border.bbox);
   }
   progress.finish();
@@ -719,8 +717,9 @@ export async function runPipeline(options, source, emit) {
     progress.finish();
   } catch (err) {
     nonFatal('rules', err);
-    degrade(`The question audit failed (${(err && err.name) || 'Error'}), so the questions `
-      + 'and curse-deck sections are incomplete.', 'audit_failed');
+    log('warn', `rules: ${(err && err.message) || err}`);
+    degrade('The question audit stopped part way, so the questions and curse-deck sections '
+      + 'are incomplete.', 'audit_failed');
   }
 
   post({
@@ -747,8 +746,9 @@ export async function runPipeline(options, source, emit) {
   const score = await loadScore();
   progress.begin(10);
   if (!score) {
-    degrade(`The scoring layer could not be loaded (${SCORE_ERROR}), so the verdict, `
-      + 'the score trace and the house rules are missing.', 'score_failed');
+    log('warn', `score: ${SCORE_ERROR}`);
+    degrade('The scoring code could not be loaded, so the verdict, the score trace and the '
+      + 'house rules are missing.', 'score_failed');
     post({
       type: 'error',
       stage: 'score',
@@ -767,7 +767,7 @@ export async function runPipeline(options, source, emit) {
       progress.report(0.7, 'Scoring the city');
       fitness = score.scoreFitness(metrics, questions, zones, zoneScores, size, days,
         best.dayType.key);
-      // The Python signature; it does not take `zoneScores`.
+      // fitnessCaps does not take zoneScores; it derives caps from raw metrics/questions only.
       caps = score.fitnessCaps(metrics, questions, zones, size, days);
       const zoneById = Object.create(null);
       for (const z of zones) zoneById[z.zoneId] = z;
@@ -778,8 +778,9 @@ export async function runPipeline(options, source, emit) {
       });
     } catch (err) {
       nonFatal('score', err);
-      degrade(`Scoring failed (${(err && err.name) || 'Error'}), so the verdict and the `
-        + 'score trace are incomplete.', 'score_failed');
+      log('warn', `score: ${(err && err.message) || err}`);
+      degrade('Scoring stopped part way, so the verdict and the score trace are incomplete.',
+        'score_failed');
     }
   }
   progress.finish();
@@ -809,8 +810,9 @@ export async function runPipeline(options, source, emit) {
       provenance = score.buildProvenance(opts, feed, geo, size, asOf, degradations, border);
     } catch (err) {
       nonFatal('provenance', err);
-      degrade(`The provenance record could not be assembled (${(err && err.name) || 'Error'}), `
-        + 'so the sources section is incomplete.', 'provenance_failed');
+      log('warn', `provenance: ${(err && err.message) || err}`);
+      degrade('The sources record could not be assembled, so the sources section is incomplete.',
+        'provenance_failed');
     }
   }
   progress.finish();
@@ -861,7 +863,7 @@ export async function runPipeline(options, source, emit) {
     provenance,
     degradations: degradations.slice(),
     degradationCodes: { ...degradationCodes },
-    // Not in the CLI's `Report`; the renderers read them off the report object (§(d)).
+    // Not part of CONTRACT.md's `Report` type; the renderers read `caps`/`stops` off the report object directly.
     caps,
     stops,
   };

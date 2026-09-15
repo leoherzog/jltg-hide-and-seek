@@ -1,8 +1,8 @@
 /**
  * S1 · the service day and the RAPTOR structures.
  *
- * Port of `generate.py` (derived caches, calendar, day-type grouping, the service
- * day, `cluster_stations`). Nothing here reads a clock, a locale or the DOM.
+ * Derived caches, calendar, day-type grouping, the service day, and station
+ * clustering. Nothing here reads a clock, a locale or the DOM.
  *
  * `ServiceDay.patterns / patternAtStop / footpaths / stopIndex` are S1-private
  * (contract.md §3.2). Shapes:
@@ -14,9 +14,9 @@
  *
  * `day.extras` carries the per-day analysis vectors shared by several callers.
  *
- * The CSR structures replace the Python's tuple-of-tuples: RAPTOR runs several
- * times per report over thousands of stops, and an `Int32Array` triple is ~40×
- * cheaper to walk than an array of pairs. Layout:
+ * CSR arrays are used because RAPTOR runs several times per report over
+ * thousands of stops, and an `Int32Array` triple is ~40× cheaper to walk than
+ * an array of pairs. Layout:
  *
  *   patternAtStop = {ptr: Int32Array(n+1), pat: Int32Array(m), off: Int32Array(m)}
  *   footpaths     = {ptr: Int32Array(n+1), to:  Int32Array(m), w:   Int32Array(m)}
@@ -44,7 +44,7 @@ import {
 import { GridIndex, Projection } from '../lib/geo.js';
 import { s1Cache, s1Int, s1Median, stopTimesOf, tripRows } from './feed.js';
 
-// ── private constants (generate.py) ──────────────────────────
+// ── private constants ──────────────────────────
 
 const S1_DOW_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday',
   'saturday', 'sunday'];
@@ -53,11 +53,12 @@ const S1_DOW_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
 
 /**
  * Tuple keys are joined with U+0000, below every legal GTFS id character, so sorting
- * the joined strings reproduces Python's tuple ordering, prefix case included.
+ * the joined strings gives the same order as comparing the tuples element-by-element,
+ * prefix case included.
  */
 const SEP = '\u0000';
 
-/** Lexicographic comparator over two arrays of strings (Python's `sorted(list_of_lists)`). */
+/** Lexicographic comparator over two arrays of strings. */
 function cmpStrList(a, b) {
   const k = Math.min(a.length, b.length);
   for (let i = 0; i < k; i++) {
@@ -72,7 +73,7 @@ function pushTo(map, key, value) {
   else bucket.push(value);
 }
 
-// ── small private helpers (generate.py) ──────────────────────
+// ── small private helpers ──────────────────────
 
 /**
  * Consecutive differences of an already-sorted, de-duplicated departure vector.
@@ -328,14 +329,14 @@ export function noServiceDates(feed, start, end) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {Object} S1StopIndex   // `_S1StopIndex`, generate.py.
+ * @typedef {Object} S1StopIndex
  * Bidirectional stop_id ↔ dense-index map over the whole feed's stops.
  * @property {Map<string, number>} byId
  * @property {string[]} ids        // sorted
  */
 
 /**
- * @typedef {Object} S1Pattern     // `_S1Pattern`, generate.py.
+ * @typedef {Object} S1Pattern
  * Trips sharing an identical stop sequence, stored column-major.
  *
  * `dep[offset]` and `arr[offset]` are per-trip vectors in trip order (sorted by
@@ -353,13 +354,13 @@ export function noServiceDates(feed, start, end) {
  */
 
 /**
- * @typedef {Object} S1DayExtras   // `_S1DayExtras`, generate.py.
+ * @typedef {Object} S1DayExtras
  * Per-day vectors shared by the metrics, headway and question layers.
  * @property {Object<string, [string, string]>} tripRoute   // trip_id → [route_id, direction_id]
  * @property {Object<string, number[]>} dedup               // stop_id → one departure per trip
  * @property {Array<[[string, string, string], number[]]>} routeDirStop
- *   Sorted array of `[[routeId, directionId, stopId], departures]` — the Python's
- *   3-tuple-keyed dict, iterated `sorted(...)`.
+ *   Sorted array of `[[routeId, directionId, stopId], departures]`, i.e. a
+ *   3-key-tuple map flattened to a sorted array.
  * @property {Object<string, string[]>} stopRoutes
  * @property {Object<string, string>} stopName              // stop_id → display name
  * @property {Object<string, string>} routeLabel            // route_id → Route.label
@@ -771,7 +772,7 @@ export function buildServiceDay(feed, day, projLike, opts = {}) {
       stopName,
       routeLabel,
     },
-    // `_s1_slack`, generate.py. Read back by raptor.js.
+    // Read back by raptor.js.
     _s1Slack: Math.trunc(boardSlackS),
   };
 }

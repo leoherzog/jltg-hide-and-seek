@@ -1,4 +1,4 @@
-// render/html.js — HTML string-builder helpers (generate.py).
+// render/html.js — HTML string-builder helpers.
 //
 // Template literals through a small set of pure helpers; nothing here touches the DOM.
 //
@@ -12,9 +12,6 @@
 // Only WebAwesome 3.12 components the drafts use (or pages.md sanctions) get a helper;
 // do not invent one.
 //
-// Python keyword arguments become a trailing options object; `class_` is `className`,
-// `void()` is `voidEl()`.
-
 import {
   DEGRADE_KIND, cmpStr, jdump, num,
 } from '../lib/core.js';
@@ -31,7 +28,6 @@ const ESCAPES = {
 
 /**
  * HTML-escape any value, including both quotes; `null` / `undefined` become ''.
- * Matches Python's `html.escape(s, quote=True)`, including `'` → `&#x27;`.
  *
  * @param {*} value
  * @returns {string}
@@ -94,7 +90,7 @@ export function el(tag, contentHtml = '', opts = {}) {
 }
 
 /**
- * A void element: `voidEl('img', { src: … })`. (Python's `void`.)
+ * A void element: `voidEl('img', { src: … })`.
  * @param {string} tag @param {Object} [opts]
  * @returns {string}
  */
@@ -809,7 +805,7 @@ export function setProvNames(pairs) {
 /**
  * A provenance chip: every printed number carries the id of the metric or map-data
  * category that produced it, linking to that row in the score trace or the provenance
- * section. Variadic, like the Python.
+ * section.
  *
  * The visible text is the bare code, which means nothing on its own, so the link is
  * named for the source it points at rather than for that code.

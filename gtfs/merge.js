@@ -23,7 +23,8 @@
  *   * No clock, no randomness; every `Map`/object is sorted before it reaches output.
  */
 
-import { cmpStr, prettyDate, sha256Text } from '../lib/core.js';
+import { MAX_FEED_GAP_M, cmpStr, num, prettyDate, sha256Text } from '../lib/core.js';
+import { bboxChains, bboxGapM } from '../lib/geo.js';
 import { StopTimes, attachStopTimes, stopTimesOf } from './feed.js';
 
 /** `String(x).trim()`, tolerating null/undefined the way the loader does. */
@@ -184,6 +185,24 @@ function nsRow(row, cols, pfx, blankAgency) {
 }
 
 /**
+ * The `[S, W, N, E]` box round a feed's stops, or null when none has a usable
+ * position. `0, 0` is skipped: it is how a blank coordinate reads once parsed.
+ */
+function stopsBox(feed) {
+  let box = null;
+  for (const id of Object.keys(feed.stops || {})) {
+    const { lat, lon } = feed.stops[id];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) continue;
+    if (box === null) { box = [lat, lon, lat, lon]; continue; }
+    if (lat < box[0]) box[0] = lat;
+    if (lon < box[1]) box[1] = lon;
+    if (lat > box[2]) box[2] = lat;
+    if (lon > box[3]) box[3] = lon;
+  }
+  return box;
+}
+
+/**
  * Merge a list of loaded feeds into one `Feed`.
  *
  * Called **before** `normaliseTimes`, so `frequencies.txt` expansion runs once over
@@ -285,9 +304,34 @@ export async function mergeFeeds(feeds, opts = {}) {
   const zones = Array.from(new Set(ordered.map(({ feed }) => String(feed.timezone || ''))))
     .filter((z) => z).sort(cmpStr);
   if (zones.length > 1) {
-    onNote(`These feeds are in different time zones (${zones.join(', ')}). Every departure `
-      + 'is in its own feed\'s local time, so a ride time that crosses systems is out by the '
-      + 'offset between them.', 'merge_mixed_tz');
+    onNote(`These feeds are in different time zones (${zones.join(', ')}). Each departure `
+      + 'is in its own feed’s local time, so a ride that crosses from one system to the '
+      + 'other is off by the offset between them.', 'merge_mixed_tz');
+  }
+
+  // ── distance ──────────────────────────────────────────────────────────────
+  // Warn, never refuse, for the same reason: the picker refuses a far catalogue pick,
+  // but a dropped zip or URL has no box until it is loaded here.
+  const boxes = [];
+  const boxed = [];
+  for (const { feed } of ordered) {
+    const box = stopsBox(feed);
+    if (box) { boxes.push(box); boxed.push(feed); }
+  }
+  const chains = bboxChains(boxes, MAX_FEED_GAP_M);
+  if (chains.length > 1) {
+    let gapM = Infinity;
+    for (let i = 0; i < chains.length; i++) {
+      for (let j = i + 1; j < chains.length; j++) {
+        for (const a of chains[i]) for (const b of chains[j]) gapM = Math.min(gapM, bboxGapM(boxes[a], boxes[b]));
+      }
+    }
+    const names = chains.map((c) => String(boxed[c[0]].agencyName || boxed[c[0]].source || 'a feed'));
+    const listed = names.length === 2
+      ? `${names[0]} and ${names[1]}`
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    onNote(`${listed} are at least ${num(gapM / 1000)} km apart, too far to be one game. No ride `
+      + 'links them, so every zone in one is out of reach from the other.', 'merge_far_apart');
   }
 
   // ── one synthesised feed_info row ─────────────────────────────────────────

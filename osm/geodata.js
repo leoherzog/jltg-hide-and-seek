@@ -1,7 +1,7 @@
 /**
  * osm/geodata.js — S2 · GEO, the OSM semantic layer.
  *
- * Port of generate.py's S2 (raw transport lives in ./overpass.js). WORKER SIDE ONLY —
+ * osm/geodata.js — the OSM semantic layer. WORKER SIDE ONLY —
  * no DOM, no window, no document.
  *
  * No network service is called from here. Every feature, count and administrative
@@ -44,7 +44,7 @@
  */
 
 import {
-  cmpStr, num, quantile,
+  cmpStr, num, quantile, capWord,
 } from '../lib/core.js';
 import {
   Projection, GridIndex, haversineM, bboxExpand, bboxContains,
@@ -231,6 +231,8 @@ export const SPOT_VERIFY_WEIGHT = 0.5;         // restrictive opening_hours ⇒ 
 export const GEO_DENSITY_GRID_CATEGORIES = Object.freeze(
   ['bridge', 'building', 'car_street', 'footpath', 'street', 'tree'],
 );
+// The grid categories as reader words, for the density notes; keep in step with the list above.
+const DENSITY_WORDS = 'bridges, buildings, car streets, footpaths, streets and trees';
 
 // `curse_animal_habitat` is not built; its count is reconstructed from a partition
 // identity (DESIGN.md §Phase 1 R2), exact because `landuse` is single-valued:
@@ -491,12 +493,12 @@ export const COAST_MIN_AREA_SQM = 25e6;   // 25 km²: floor, so a tiny map canno
 // Small deterministic helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Python tuple comparison for `(osmType, osmId)` — string then NUMBER. */
+/** Compare by (osmType, osmId): string order on osmType, then numeric order on osmId. */
 function cmpTypeId(a, b) {
   return cmpStr(a.osmType, b.osmType) || (a.osmId - b.osmId);
 }
 
-/** Python tuple comparison for `(category, osmType, osmId)`. */
+/** Compare by (category, osmType, osmId): string order, then string order, then numeric order. */
 function cmpCatTypeId(a, b) {
   return cmpStr(a.category, b.category) || cmpStr(a.osmType, b.osmType) || (a.osmId - b.osmId);
 }
@@ -677,7 +679,6 @@ function noopLog() {}
 
 /**
  * Index a POI set for radius queries at the zone radius. See `GridIndex`.
- * (generate.py `build_poi_index`)
  * @param {Array<Object>} pois @param {Projection} proj @param {number} radiusM
  * @returns {GridIndex}
  */
@@ -692,7 +693,6 @@ export function buildPoiIndex(pois, proj, radiusM) {
 
 /**
  * Grid of *area* features by bounding box, plus the linear-scan overflow list.
- * (generate.py `_area_index`)
  *
  * A feature is inserted into every cell its bbox touches; anything spanning more
  * than `GridIndex.addBbox`'s cap goes into the overflow list instead.
@@ -724,14 +724,13 @@ function areaIndex(pois, proj, radiusM) {
   return [index, overflow, lookup];
 }
 
-/** (generate.py `_rings_planar`) */
+/** Reprojects a POI's rings from lon/lat into the planar coordinate system used for point-in-polygon tests. */
 function ringsPlanar(poi, proj) {
   return (poi.rings || []).map((ring) => planarRing(ring, proj));
 }
 
 /**
  * Count, per zone, how many features of each category fall inside the circle.
- * (generate.py `zone_inventory`)
  *
  * Returns `[iconCounts, polygonHits]`. **Two different predicates**: icon counts ask
  * whether the representative point is inside the disc (matching/measuring questions);
@@ -804,10 +803,9 @@ export function zoneInventory(zones, pois, proj, radiusM) {
 
 
 
-/** (generate.py `_admin_level`) */
 function adminLevel(tags) {
   const value = tags.admin_level !== undefined ? tags.admin_level : '';
-  // Python's str.isdigit(): non-empty and every character a digit.
+  // Digit check: non-empty and every character a digit.
   if (value !== '' && /^\d+$/.test(value)) return parseInt(value, 10);
   return null;
 }
@@ -826,7 +824,7 @@ function normPlace(value) {
 
 /**
  * Resolve the 1st–4th administrative divisions for this map.
- * (generate.py `resolve_admin` — exported as `adminInfo` per CONTRACT.md)
+ * Exported as `adminInfo` per CONTRACT.md.
  *
  * Containment (which division is a zone in) answers the *matching* questions;
  * boundary crossing answers the *border measuring* questions. They are different
@@ -1264,7 +1262,6 @@ async function curseLayerCount(world, layer, terms, bbox, log, predicate) {
 
 /**
  * Evaluate every OSM-decided curse predicate in one `out count` request.
- * (generate.py `curse_predicates` — exported as `curseCounts`)
  *
  * Returns `curseId → count`. Removal is `count === 0` for the hard tier; the warn
  * tier is reported with its count and never auto-removed. Unguided Tourist and
@@ -1323,7 +1320,6 @@ export async function curseCounts(world, bbox, geo, hooks = {}) {
   return counts;
 }
 
-/** (generate.py `_cuisine_tokens`) */
 function cuisineTokens(poi) {
   const raw = (poi.tags && poi.tags.cuisine !== undefined) ? poi.tags.cuisine : '';
   return raw.split(';')
@@ -1332,8 +1328,8 @@ function cuisineTokens(poi) {
 }
 
 /**
- * (generate.py `_cuisine_detail`)
- * `{perCountry, qualifying, tagged, total, rejected}` — the Python 5-tuple.
+ * Returns `{perCountry, qualifying, tagged, total, rejected}` describing how a restaurant
+ * set was classified by cuisine relative to the host country.
  */
 function cuisineDetail(restaurants, hostCountry) {
   /** @type {Object<string, number>} */
@@ -1374,13 +1370,11 @@ function cuisineDetail(restaurants, hostCountry) {
 // Candidate legal endgame spots
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** (generate.py `_spot_open_all_hours`) */
 function spotOpenAllHours(tags) {
   const hours = ((tags && tags.opening_hours) || '').trim();
   return hours === '' || SPOT_ALL_HOURS_VALUES.includes(hours);
 }
 
-/** (generate.py `_spot_public`) */
 function spotPublic(tags) {
   for (const key of SPOT_ACCESS_TAG_KEYS) {
     const value = ((tags && tags[key]) || '').trim().toLowerCase();
@@ -1391,7 +1385,6 @@ function spotPublic(tags) {
 
 /**
  * Shortlist candidate legal hiding spots inside each zone circle.
- * (generate.py `legal_endgame_spots`)
  *
  * The rulebook's two hard tests are (a) publicly accessible during all game hours
  * and (b) within 10 ft of a routable path. (b) has an OSM analogue (within 5 m of a
@@ -1590,7 +1583,6 @@ function mergeDensityIntoInventory(inventory, zones, density, proj, radiusM) {
 
 /**
  * p90 of |representative point − bbox centre| over ring-carrying features.
- * (generate.py `_icon_offset_p90`)
  *
  * The honesty number specs/osm.md §3.3 demands: how far our computed icon can sit
  * from where a map app's label puts it.
@@ -1618,7 +1610,6 @@ function iconOffsetP90(pois, proj) {
 
 /**
  * Single-instance categories whose icons are close enough to be one question.
- * (generate.py `_redundant_pairs`)
  *
  * GR's zoo and aquarium are 81 m apart, so the two matching questions are the same
  * bit for six cards (specs/osm.md §7.4).
@@ -1647,7 +1638,6 @@ function redundantPairs(pois, proj, diagonalM) {
 
 /**
  * Shore segments for every water body that extends beyond the map border.
- * (generate.py `_synth_coastline`)
  *
  * Returns `[segments, names]`. A water body wholly inside the border is a lake you
  * can walk around, not a coast, and is left to the body-of-water questions.
@@ -1730,7 +1720,7 @@ function synthCoastline(pois, bbox, proj, log) {
 }
 
 /**
- * The `available: false` form of `GeoData` (mirrors `build_report`). The run
+ * The `available: false` form of `GeoData`, used when the OSM read fails entirely. The run
  * continues with empty containers; the worker's `osm_unavailable` degradation is the record.
  * @param {[number, number, number, number]} bbox
  */
@@ -1776,14 +1766,8 @@ const OSM_COVERAGE = Object.freeze({
   weak: Object.freeze(['retail', 'restaurants', 'chains']),
 });
 
-/** 'a, b and c'. */
-function andList(items) {
-  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-}
-
 /**
  * Run the whole S2 pipeline and return `GeoData`.
- * (generate.py `collect_geodata`)
  *
  * Order: one bbox query per category → the POI index → per-zone inventory → admin
  * resolution → curse predicates → cuisines → legal spots. If not one layer can be
@@ -1946,15 +1930,13 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   if (density) {
     densityCellM = Math.round(density.cellDeg * 111000);
     note('density_grid',
-      `Counts for ${GEO_DENSITY_GRID_CATEGORIES.join(', ')} come from a precomputed `
-      + `${num(densityCellM)} m density grid, not individual features. The map-wide totals `
-      + 'are exact. Per-zone figures are approximate: a grid cell counts wholly inside or '
-      + 'wholly outside a zone circle depending on where its centre falls.');
+      `${capWord(DENSITY_WORDS)} are counted on a ${num(densityCellM)} m grid, not feature by `
+      + 'feature. Map-wide totals are exact; per-zone counts are approximate, because a grid '
+      + 'cell is in or out of a zone by its centre.');
   } else {
     note('density_grid_unavailable',
-      `The density grid could not be read, so counts for ${GEO_DENSITY_GRID_CATEGORIES.join(', ')} `
-      + 'are missing rather than zero. Every score that needs them is excluded rather than '
-      + 'guessed at.');
+      `The density grid could not be read, so ${DENSITY_WORDS} are missing rather than zero. `
+      + 'Every score that needs them is left out rather than guessed at.');
   }
   // ── 2b. great-lake and inland-sea shores count as coastline ──────────────
   let derivedShore = null;
@@ -2066,17 +2048,16 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   note('path_join_not_evaluated',
     'The rulebook\'s “within 10 ft of a routable path” test is not evaluated: it needs a '
     + 'spatial join against every walkable way, and a global footpath network is the one '
-    + 'layer too dense to ship. Every candidate spot is marked verify-on-the-ground.');
+    + 'layer too dense to ship. Every candidate spot is marked Verify on site.');
   // Read by legalEndgameSpots only, and never emitted: a Set is not clone-safe.
   geo.legalSpots = legalEndgameSpots(zones, geo, proj, radiusM, pathIds);
 
   // ── 8. the honesty notes that must reach the page ────────────────────────
+  // The strong / incomplete category lists travel as `geo.osmCoverage` chips, not prose.
   note('osm_lower_bound',
-    'Every OpenStreetMap count here is a lower bound on what the seekers\' map app will '
-    + `show. OSM is strong on ${andList(OSM_COVERAGE.strong)} and materially incomplete on `
-    + `${andList(OSM_COVERAGE.weak)}. OSM has no review count, so the rulebook's “5 or more `
-    + 'Google Reviews” test is approximated by requiring a `name` tag: a 5–10% trim, in the '
-    + 'right direction, but not the same function.');
+    'Every OpenStreetMap count here is a floor on what a map app shows. OSM has no review '
+    + 'counts, so the rulebook’s “5 or more Google Reviews” test becomes “has a name”: a '
+    + '5–10% trim in the right direction, not the same test.');
   const offset = iconOffsetP90(pois.park || [], proj);
   if (offset !== null) {
     note('centroid_offset',
@@ -2085,14 +2066,15 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
       + `the 90th percentile, against a ${num(radiusM)} m zone radius.`);
   }
   if (rejected.length) {
+    // The tokens themselves go to the log and `geo.cuisineRejected`, not the note.
+    log('info', `cuisine: rejected ${rejected.join(', ')}`);
     note('cuisine_rejected',
-      `Cuisine tokens rejected as dishes or regions rather than countries: ${rejected.join(', ')}. `
-      + 'Counting them would change the Distant Cuisine count.');
+      `${num(rejected.length)} cuisine tags name a dish or a region rather than a country and `
+      + 'were skipped; counting them would change the Distant Cuisine count.');
   }
   if (counts.coastline === 0 && (counts.water || 0) > 0) {
     note('coastline_zero',
-      'The coastline count is zero: no ocean coast in the border, which is not the same as '
-      + 'no large water.');
+      'No ocean shoreline lies inside the border. Lakes and rivers are still counted under Water.');
   }
   /** @type {Array<{a: string, b: string, aLabel: string, bLabel: string, distanceM: number}>} */
   const pairs = [];

@@ -18,10 +18,6 @@ sits in a disclosure, and the two **add** rather than replace. Several picks are
 
 Everything is inferred from the feed. There is no per-city configuration.
 
-**Provenance comments:** this codebase is a port of a deleted Python CLI (`generate.py`). Comments
-saying "Ported from generate.py's `<symbol>`" record where an algorithm came from; do not "fix"
-them and do not go looking for the file. `CONTRACT.md`'s occasional "mirrors the Python" phrasing
-is the same: the browser code is the only implementation and the authority on its own behaviour.
 The design specs the code cites (`specs/*.md`, `scoring.md`) are kept outside the tree.
 
 ## Running
@@ -169,7 +165,7 @@ the network beyond the CSV. `.github/workflows/feed-catalogue.yml` runs it month
 and opens a PR; it never pushes to `main`, because the diff is the review. The catalogue rots
 silently, so refreshing it is a checklist item.
 
-Three things about the merge that are load-bearing and non-obvious:
+Four things about the merge that are load-bearing and non-obvious:
 
 - **`mergeFeeds([f]) === f`** — reference equality, no copy. That single-feed identity rule keeps
   the 19 golden numbers safe by construction: on a one-source run `gtfs/merge.js` does nothing.
@@ -178,6 +174,11 @@ Three things about the merge that are load-bearing and non-obvious:
   and every time in the pipeline is feed-local seconds since midnight, so a mixed-zone merge is
   wrong about exactly one thing — the clock alignment of a ride between the two systems — which the
   report says. Throwing would conflict with the contract.
+- **Far-apart feeds are refused in the picker and only warned about in the merge.** Feeds whose
+  boxes do not chain within `MAX_FEED_GAP_M` (75 km, `lib/core.js`) are two cities, not one map.
+  The picker refuses such a catalogue pick outright, but a dropped zip or URL has no box until it
+  loads, so `mergeFeeds` emits `merge_far_apart` rather than throwing. `tools/smoke.mjs` merges
+  Grand Rapids with Rochester (~630 km) and asserts the warning.
 - **The fare house rule quotes ONE operator, and says which.** `fare_attributes` carries the primary
   feed's rows (the feed with the most trips), or, when the primary ships no fares, the first feed in
   merge order that has them. Concatenating would misattribute a fare; taking an empty primary table
@@ -348,6 +349,6 @@ forward as a record of what was checked.
   row's `t` (stations, or stops where the feed models no stations) and `u` (routes) are MEASURED
   from the feed, not read from the catalogue; `searchCatalog` ranks on `t`, so a row that loses
   them silently sorts to the bottom of its own city.
-- Page prose is templated, not generated. The deleted CLI tried local LLMs for this and removed the
-  feature after they invented facts a validator couldn't catch; do not reintroduce model-written
+- Page prose is templated, not generated. An earlier version tried local LLMs for this and removed
+  the feature after they invented facts a validator couldn't catch; do not reintroduce model-written
   prose.

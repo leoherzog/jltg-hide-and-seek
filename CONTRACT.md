@@ -4,8 +4,8 @@ Authoritative for every shape that crosses a module boundary. If this file and t
 disagree, one of them is a bug: work out which, fix it, and say so. Never silently diverge.
 
 The rules on sorting, key order and number formatting are why two runs agree; they are
-live, not history. The snake_case name in a field's trailing comment is its original in the
-Python CLI this code was ported from. That file is deleted; the names are provenance only.
+live, not history. The snake_case name in a field's trailing comment is that field's
+canonical name; do not remove or rename it.
 
 **Scope.** `index.html`, plus `strategy.html` (S5) as a **fragment-only second view of the
 same document** — §(g). S5 adds no worker stage, no `Report` field and no embedded JSON
@@ -25,7 +25,7 @@ block; it is built from `state.report` in memory.
 | Still five | `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, like a pasted URL. The polygon draw tool and the landing border editor are hand-rolled on MapLibre's own events so this list stays exhaustive; do not replace either with a CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) is not in the list although every run fetches from it. Folding it in is a deliberate amendment, never a side effect of another change. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
-| Sorting strings | Python compares strings by code point, JS by UTF-16 code unit; identical below U+10000. The comparator is exactly `a < b ? -1 : a > b ? 1 : 0`, never `localeCompare` (locale-dependent = non-deterministic). It has **one** implementation, `cmpStr` in `lib/core.js`; do not add a local copy. Two deliberate hold-outs: `tools/mdb-snapshot.mjs` (a standalone Node tool importing nothing from the app) and `lib/geo.js`'s `GridIndex.nearKeys` (a local arrow on its hot path). |
+| Sorting strings | The comparator is exactly `a < b ? -1 : a > b ? 1 : 0` — code-point order, identical to UTF-16 code-unit order below U+10000 — never `localeCompare` (locale-dependent = non-deterministic). It has **one** implementation, `cmpStr` in `lib/core.js`; do not add a local copy. Two deliberate hold-outs: `tools/mdb-snapshot.mjs` (a standalone Node tool importing nothing from the app) and `lib/geo.js`'s `GridIndex.nearKeys` (a local arrow on its hot path). |
 | Sorting numbers | `Array.prototype.sort()` is lexicographic by default. Always pass `(a, b) => a - b`. |
 | Object key order | JS objects hoist integer-like keys (`'1','2','12'`) ahead of lexicographic order (`'1','12','2'`). Zone ids and stop ids are numeric strings on most feeds. **Never** rely on `Object.keys()` order — always `Object.keys(o).sort(cmp)`. `jdump()` already does this internally. |
 
@@ -36,20 +36,20 @@ block; it is built from `state.report` in memory.
 | File | Side | Exports |
 |---|---|---|
 | `index.html` | main | — (page shell, 9 skeleton sections, WebAwesome head). Three label hooks live here because the shell owns the markup a controller only rewrites: `<p data-role="analysereason">` in the panel foot, which `app.js`'s `syncAnalyse` fills and unhides for exactly as long as `#analyse` is disabled; `<span data-role="resetlabel">` inside the header Reset control, which `syncResetControl` swaps to `Cancel` (and the icon to `xmark`) while `body[data-state="running"]`; and `<span data-role="themelabel">` inside `#color-scheme-button`, which the inline colour-scheme script writes along with the icon and an `aria-label`. That script cycles light → dark → system, where **system is the ABSENCE of the localStorage key `wa-color-scheme`** — the state the `prefers-color-scheme` listener needs in order to take over again. |
-| `styles.css` | main | — (`SHARED_CSS` + `INDEX_CSS`, ported) |
+| `styles.css` | main | — (`SHARED_CSS` + `INDEX_CSS`) |
 | `app.js` | main | `boot()` — main-thread controller, worker protocol, hydration dispatch |
 | `render/html.js` | main | see §(e) |
-| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame`. Also the page's **single implementation** of the `s4*` day and unit helpers — `s4Imperial`, `s4Signed`, `s4JoinWords`, `s4DayView`, `s4DayOrder`, `s4DayLabel`, `s4BestDay`, `s4WorstDay` — imported by `app.js`, `render/map.js` and `render/strategy.js` (`app.js` aliases them to bare names); and the deterministic primitives `sortedBy(items, keyFn)` and `fnum(x)`, consumed by `render/deck.js` and `render/map.js`. `cmpKey` stays module-private, reached only through `sortedBy`. `s4SourceTag` and `s4Swatch` are aliases of `render/html.js`'s `basisChip` and `swatch`; `s4CardHeader(title, caption)` is a positional wrapper over `cardHeader`; `s4RampShort(spec)` is the terse threshold form of `s4RampText`. |
+| `render/verdict.js` | main | `renderHero`, `renderVerdict`, `renderScoreTrace`, `renderYourGame`. Also the page's **single implementation** of the `s4*` day and unit helpers — `s4Imperial`, `s4Signed`, `s4JoinWords`, `s4DayView`, `s4DayOrder`, `s4DayLabel`, `s4BestDay`, `s4WorstDay` — imported by `app.js`, `render/map.js` and `render/strategy.js` (`app.js` aliases them to bare names); and the deterministic primitives `sortedBy(items, keyFn)` and `fnum(x)`, consumed by `render/deck.js` and `render/map.js`. `cmpKey` stays module-private, reached only through `sortedBy`. `s4SourceTag` and `s4Swatch` are aliases of `render/html.js`'s `basisChip` and `swatch`; `s4CardHeader(title, caption)` is a positional wrapper over `cardHeader`; `s4RampShort(spec, unit = '')` is the terse threshold form of `s4RampText`. |
 | `render/map.js` | main | `renderGlanceRail`, `renderNetworkMap`, `renderTransitReality`, `s4TilesHtml`, `s4MapCaption`, `s4Legend`, `S4_HEADWAY_BINS`, `s4DayByKey` (`app.js` takes the last one for day switching). It **re-exports nothing**; consumers take the day helpers from `render/verdict.js` directly. `s4Legend` delegates to `render/html.js` `legendRow`. |
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance`, `S4_STATUS_TAG`, `S4_STATUS_COUNT`, `S4_ACTION_TAG` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `BAND_CUTS`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field: a tentacle question's own `param`, which `QuestionAudit` does not carry. `FLAG_TEXT[flag]` is `[label, variant, icon, shortLabel]`. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`, `renderBorderChips`, `renderDrawHint`, `renderPicksCount`, `renderMapNote`, `renderMarkerTip`, `NUDGE_DEG`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` paragraph INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderResults(rows, {more, …})` receives the overflow count from `render/picker.js`. `renderPickerNote` takes `{capped, blocked: Array<{label, href}>, ringEmpty, osmOffer, osmPicked, regionalOn}` and prints only the hard cap, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. That sentence fills the caption's visually hidden `[data-caption-text]`; `renderBorderChips` draws the visible, `aria-hidden` `[data-caption-chips]`, mode chip first. |
-| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. The picker writes `#picker-draw-hint` per mode — idle, drawing, and the refusal — and a `click` on Draw a shape whose `detail === 0` (a keyboard activation) refuses draw mode outright, writes that refusal and moves focus to the search box, because every vertex of the hand-rolled tool is a pointer event. `fitRows` pads `fitBounds` by the measured `.landing-panel` — the left column above 48rem, the bottom sheet below — and fires on the 0→1 pick as well as for the example chips, so the first feed taken is framed and no later one moves the view. |
+| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`, `renderBorderChips`, `renderDrawHint`, `renderPicksCount`, `renderMapNote`, `renderMarkerTip`, `NUDGE_DEG`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` `<div>` (it holds a `legendRow` `<ul>`, which a `<p>` cannot) INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderResults(rows, {more, farKm, …})` receives the overflow count and, per catalogue id, the km a too-far row sits from the nearest pick (its Add is disabled) from `render/picker.js`. `renderPickerNote` takes `{capped, blocked: Array<{label, href}>, ringEmpty, osmOffer, osmPicked, regionalOn, far: Array<{label, km}>, farMore, split}` and prints only the hard cap, feeds refused as too far away, picks that no longer chain into one map, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. That sentence fills the caption's visually hidden `[data-caption-text]`; `renderBorderChips` draws the visible, `aria-hidden` `[data-caption-chips]`, mode chip first. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. The picker writes `#picker-draw-hint` per mode — idle, drawing, and the refusal — and a `click` on Draw a shape whose `detail === 0` (a keyboard activation) refuses draw mode outright, writes that refusal and moves focus to the search box, because every vertex of the hand-rolled tool is a pointer event. `fitRows` pads `fitBounds` by the measured `.landing-panel` — the left column above 48rem, the bottom sheet below — and fires on the 0→1 pick as well as for the example chips, so the first feed taken is framed and no later one moves the view. A catalogue pick past `MAX_FEED_GAP_M` from every current pick is refused inside `addRow`, the one door the results, Enter, a marker click and a shape's sweep all use, and the results list marks such rows with their distance and a disabled Add. Picks that stop chaining without an add (a middle one removed; an example chip beside a far drawn area) get a note, never a silent removal. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
-| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `labelOf`, `placeOf`, `sourceRefFor`, `osmSourceRef`, `CATALOG_VERSION`; `EXAMPLE_MAPS` and `exampleMapsFor(doc) → {examples, missing}` — the hand-curated example-map chips, catalogue ids only, validated by `tools/mdb-snapshot.mjs --check` (every id present, none behind a key or inactive, each list within `MAX_FEEDS_PER_RUN`). Reads `data/feeds.json`, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff. No DOM, no MapLibre; importable from Node. |
+| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `gapKmOf(row, boxes)`, `tooFarFrom(row, boxes)` (past `MAX_FEED_GAP_M` from every box), `labelOf`, `placeOf`, `sourceRefFor`, `osmSourceRef`, `CATALOG_VERSION`; `EXAMPLE_MAPS` and `exampleMapsFor(doc) → {examples, missing}` — the hand-curated example-map chips, catalogue ids only, validated by `tools/mdb-snapshot.mjs --check` (every id present, none behind a key or inactive, each list within `MAX_FEEDS_PER_RUN`). Reads `data/feeds.json`, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff. No DOM, no MapLibre; importable from Node. |
 | `lib/cache.js` | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
 | `lib/http.js` | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
 | `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow`, `StopTimes`, `attachStopTimes`, `stopTimesOf` (`StopTimes.appendFrom` is how `gtfs/merge.js` copies a columnar store; `stopTimesOf` serves the merge and `buildServiceDay`), `tripRows(feed)` (trip_id → `Int32Array` of stop_time row indices, sorted by `int(stop_sequence)`), and `s1Cache` / `s1Invalidate` — the **one** per-feed memo worker-side (a non-enumerable own property on the `Feed`, keyed by name; one store, one meaning per key). `normaliseTimes` calls `s1Invalidate` whenever the columnar store is rebuilt; nothing else invalidates. The shared numeric helpers `s1Median`, `s1Share`, `s1Int`, `s1Float` live here too. |
@@ -64,7 +64,7 @@ block; it is built from `state.report` in memory.
 | `osm/synth.js` | worker | `synthesizeFeedZip` plus the frozen `SYNTH_*` assumption constants (`SYNTH_MODE_ROUTE_TYPE`, `SYNTH_MODE_SPEED_KMH`, `SYNTH_MODE_HEADWAY_S`, `SYNTH_DWELL_S`, `SYNTH_SERVICE_WINDOW_S`, `SYNTH_TEMPLATE_ANCHOR_S`, `SYNTH_CALENDAR_DAYS`, `SYNTH_FALLBACK_ASOF`, `SYNTH_CLUSTER_NAME_M`, `SYNTH_CLUSTER_ANY_M`, `SYNTH_HEADWAY_MIN_S`, `SYNTH_HEADWAY_MAX_S`), quoted by `rules/catalogue.js`'s three `osm_synth_*` INTERPRETATIONS rows in both `text` and `data` — move a constant and re-sync both. Pure and synchronous: `worldTransitRoutes` output + the drawn ring + `asOf` → a byte-deterministic GTFS zip (`Uint8Array`) the **untouched** `loadFeed` accepts, plus prose notes. Imported DYNAMICALLY by `worker.js` only for a `kind:'osm'` source. Harness: `node tools/test-synth.mjs`, network-free. |
 | `rules/catalogue.js` | worker+main | `QUESTIONS`, `CURSES`, `INTERPRETATIONS`, `catalogueFor`. Frozen data importing nothing but `lib/core.js`, so `render/deck.js` and `render/strategy.js` read it on the main thread. The size table lives in `gtfs/network.js` as `S1_SIZE_PARAMS`, the radar radii as `S1_RADAR_MILES`. `INTERPRETATIONS`' `map_border_derivation` row is plain data: `text` is the `'reach'` sentence and `byDerivation` holds `{option: '…the box you set on the landing map, with no padding…'}`; `buildProvenance` picks between them. A `text` that became a callback would break every main-thread reader that treats this file as data. Also `THERMO_DEGENERATE_SHARE`. `INTERPRETATIONS` rows may carry `lead`, `byDerivationLead`, `groups` and `data`; `CURSES` rows carry `test`. All plain data. |
 | `rules/audit.js` | worker | `answerSignature`, `survivalFractions`, `globalQuestionOrder`, `auditQuestions`, `auditCurses`, `questionCategories` |
-| `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance(opts, feed, geo, size, asOf, degradations, border = null)`. The trailing `Border` is optional; a caller that omits it gets the `'reach'` interpretation text. The provenance shape gains only `borderSource`; `argv` is untouched because it echoes the CLI's own flags and there is no flag for where a box came from. |
+| `rules/score.js` | worker | `ramp`, `rramp`, `plateau`, `tenths`, `scoreFitness`, `fitnessCaps`, `scoreZones`, `rankZones`, `selectDossiers`, `deriveFindings`, `deriveRecommendations`, `buildProvenance(opts, feed, geo, size, asOf, degradations, border = null)`. The trailing `Border` is optional; a caller that omits it gets the `'reach'` interpretation text. The provenance shape gains only `borderSource`; `argv` is untouched because it already echoes each `Options` field as a flag string, and there is no `Options` field for where a box came from. |
 
 **Import edges added deliberately.** `rules/score.js` imports `busiestDay` from
 `gtfs/service.js` — the only `rules/` → `gtfs/` edge. Both are worker-side, `worker.js`
@@ -76,30 +76,35 @@ already loads both, and the graph stays acyclic: `gtfs/` imports nothing from `r
 Constants: `GENERATOR VERSION M_PER_MILE M_PER_KM QUARTER_MILE_M HALF_MILE_M
 SQM_PER_SQMI EARTH_R_M WALK_SPEED_MPS WALK_RADIUS_M WALK_CIRCUITY BOARD_SLACK_S
 MAX_TRANSFERS DEFAULT_DEPARTURE SERVICE_DAY_SECONDS HEADWAY_WINDOW MIDDAY_WINDOW
-EVENING_WINDOW FREQUENT_HEADWAY_MIN STATION_CLUSTER_M HUB_SNAP_M T90_ORIGIN_STRIDE
+FREQUENT_HEADWAY_MIN STATION_CLUSTER_M HUB_SNAP_M T90_ORIGIN_STRIDE
 RADAR_SAMPLE_PAIRS RADAR_DEAD_HIGH RADAR_DEAD_LOW SEEKER_SAMPLE_CAP
 SURV_FULL_UNIVERSE_MAX HUB_RADIAL_MIN HUB_SEMI_RADIAL_MIN IN_PLAY_MIN_SHARE
 SUGGEST_MIN_TRIM_SHARE SUGGEST_MIN_EVENT_SHARE SUGGEST_MIN_CORE_STOPS
 SUGGEST_MIN_CORE_SHARE
 MAPLIBRE_JS TILES_LIGHT TILES_DARK MAX_FEEDS_PER_RUN IMPERIAL_COUNTRIES
-DEGRADE_KIND FINDING_MINUS_BELOW FINDING_PLUS_ABOVE FITNESS_MIN_AVAILABLE_POINTS`
+DEGRADE_KIND FINDING_MINUS_BELOW FINDING_PLUS_ABOVE FITNESS_MIN_AVAILABLE_POINTS
+NETWORK_SHAPE_LABEL DIRECTION_WORD`
 
-Functions: `rhu num pct mins miles km sqmi coord hhmm hhmmss hmsToS prettyDate
+Functions: `rhu num pct mins miles milesRange km sqmi coord hhmm hhmmss hmsToS prettyDate
 dowOf dateRange lowerMedian quantile cmpStr jdump sha256Bytes sha256Text stableHash
-fillPct explainText fare`
+fillPct explainText fare capWord shapeWord directionWord`
 
 Notes:
-* `num(x, dp = 0, {comma = true})`. Python keyword args are a trailing options object.
+* `num(x, dp = 0, {comma = true})` takes a trailing options object for its non-required parameters.
+* `miles(metres, dp = 2)` trims trailing zeros (`10 mi`, `0.5 mi`, `18.99 mi`). Formatting only; the value is unchanged. `milesRange(lo, hi, dp = 2)` prints a range with the unit once (`2.72–9.37 mi`), each end as `miles()` prints it.
+* `directionWord(id)` is the one place a GTFS `direction_id` becomes a word, through `DIRECTION_WORD` (0 → outbound, 1 → inbound).
+* `capWord(s)` capitalises the first letter and leaves the rest alone (the worker cannot import a renderer's `cap`). `shapeWord(shape)` is the one place `Metrics.networkShape` becomes a word, through `NETWORK_SHAPE_LABEL` (`radial-hub` → hub-and-spoke, `semi-radial` → partly hub-and-spoke, `polycentric` → multi-centred).
 * `jdump(obj, {floatDp = 6})` is the **only** deterministic-serialisation entry point. Its private `emit()` holds every rule: non-finite → null, `rhu` quantise, sorted `Set`/`Map`/object keys, `TypeError` on anything else.
-* `HEADWAY_WINDOW`/`MIDDAY_WINDOW`/`EVENING_WINDOW` are frozen 2-element arrays of `'HH:MM:SS'`.
+* `HEADWAY_WINDOW`/`MIDDAY_WINDOW` are frozen 2-element arrays of `'HH:MM:SS'`.
 * `MAX_FEEDS_PER_RUN` is the run's feed cap (10). It lives in `lib/core.js` because three modules must agree on it: the picker refuses the eleventh pick, `readSources` refuses an eleventh that arrived by the other door (ten map picks plus a dropped zip), and `normaliseSources` refuses one the worker was handed anyway.
+* `MAX_FEED_GAP_M` (75 000) is how far apart, edge to edge, two feeds' boxes may sit and still chain into one map. The picker's `addRow` refuses a catalogue pick past it from every current pick; `mergeFeeds` measures each loaded feed's stop box and emits `merge_far_apart` when the feeds do not chain, warning and never refusing, because a dropped zip or URL has no box before it loads. `tools/mdb-snapshot.mjs --check` fails an example map whose feeds do not chain.
 * `cmpStr(a, b)` is the shared code-point string comparator (§0 *Sorting strings*). `byString` and `jdump` use it too.
 * `IN_PLAY_MIN_SHARE` (0.5) is the floor under `inPlayStopIds`; `SUGGEST_MIN_TRIM_SHARE` (0.05), `SUGGEST_MIN_EVENT_SHARE` (0.5), `SUGGEST_MIN_CORE_STOPS` (100) and `SUGGEST_MIN_CORE_SHARE` (0.10) are `suggestBorder`'s four gates. Each carries its one-line rationale at the declaration; move one and the rationale moves with it.
 * `IMPERIAL_COUNTRIES` is a frozen **sorted Array** (`['gb','lr','mm','us']`), not a Set, so it is clone-safe. Use `.includes()`.
-* **`sha256Text` and `sha256Bytes` are `async`** — `crypto.subtle.digest` returns a Promise. Every caller must `await`. This is the one signature that differs from the Python.
+* **`sha256Text` and `sha256Bytes` are `async`** — `crypto.subtle.digest` returns a Promise. Every caller must `await`.
 * `stableHash(text)` is **synchronous** and returns 16 hex characters, for a click handler building a `SourceRef` id that cannot await `crypto.subtle` (and must not require a secure context). It is a **stable identity, never a content address**. `sha256` fields stay `sha256Text`/`sha256Bytes`; do not unify the two.
 * `rhu` is round-**half-up** on the shortest round-trip decimal string, verified equal to `Decimal(repr(x)).quantize(…, ROUND_HALF_UP)` on the boundary cases (`2.675→2.68`, `1.005→1.01`, `0.145→0.15`, `-0.5→-1`). Do not simplify it to `toFixed`.
-* `num(-0.4)` returns `'-0'`. Python does too. Kept deliberately.
+* `num(-0.4)` returns `'-0'`. Kept deliberately.
 * `hhmm`/`hhmmss` never modulo 86400. `hhmm(87360) === '24:16'`.
 * `dowOf`/`dateRange`/`prettyDate` are pure calendar arithmetic on `'YYYYMMDD'`. **Never** `new Date(string)` — that reads the host timezone. `prettyDate` hard-codes English abbreviations so it cannot follow the browser locale.
 * `fillPct(part, whole = 1)` is the one channel from a measured fraction to a bar's 0–100 value; a renderer never multiplies or divides for a fill. `explainText(lead, detail)` builds the legacy `why` from an `Explain`. `fare(price, currency)` formats a `fare_attributes` price without `Intl`.
@@ -108,17 +113,18 @@ Notes:
 ### `lib/geo.js` — exported symbols
 
 `haversineM Projection bboxOf bboxExpand bboxContains bboxUnion bboxIntersection
-bboxAreaSqM bboxScale segIntersects bboxIntersectsRing
+bboxAreaSqM bboxScale bboxGapM bboxChains segIntersects bboxIntersectsRing
 convexHull polygonArea ringCentroid pointInRing representativePoint polylineMidpoint
 segPointDist ringWithin minEnclosingCircle GridIndex`
 
 Conventions:
 * Geographic point = `[lat, lon]` degrees. Planar point = `[x, y]` metres. Bbox = `[S, W, N, E]` (**Overpass order, not GeoJSON**). Ring = array of planar points, first point NOT repeated.
-* `Projection` is a class: `new Projection(lat0, lon0)`, `Projection.about(points)`, `Projection.from({lat0, lon0})`. Methods `xy(lat, lon) → [x, y]`, `lonlat(x, y) → [lon, lat]` (note the order — mirrors Python; the sole planar→geographic method), getters `mPerDegLat` / `mPerDegLon`, `toJSON() → {lat0, lon0}`. **Projection instances cannot cross `postMessage`** — send `{lat0, lon0}` and rebuild with `Projection.from()`.
+* `Projection` is a class: `new Projection(lat0, lon0)`, `Projection.about(points)`, `Projection.from({lat0, lon0})`. Methods `xy(lat, lon) → [x, y]`, `lonlat(x, y) → [lon, lat]` (note the order; the sole planar→geographic method), getters `mPerDegLat` / `mPerDegLon`, `toJSON() → {lat0, lon0}`. **Projection instances cannot cross `postMessage`** — send `{lat0, lon0}` and rebuild with `Projection.from()`.
 * `segIntersects(a, b, c, d) → boolean` is the planar orientation test, collinear overlap included. `bboxIntersectsRing(bbox, ring) → boolean` checks **all three** cases — a box corner inside the ring, a ring vertex inside the box, a box edge crossing a ring edge — because any one alone is quietly wrong. Both are used by the landing picker to decide which feeds a drawn shape sweeps up.
 * `GridIndex(cell)`: `.add(key, x, y)`, `.addBbox(key, minx, miny, maxx, maxy, {cap = 400}) → boolean`, `.near(x, y, radius) → [[key, x, y], …]` sorted by `String(key)`, `.nearKeys(x, y, radius) → [key, …]` deduped + sorted. `radius` may be `Infinity`; the 3×3 neighbourhood restriction still applies and is load-bearing for the area-index callers. Holds a `Map` — **not clone-safe**, build inside the worker.
 * `bboxUnion(bboxes) → bbox|null`, `bboxIntersection(a, b) → bbox|null`, `bboxAreaSqM(bbox)` and `bboxScale(bbox, factor)` (about the centre, clamped to ±90/±180) are the landing frame's arithmetic. `bboxAreaSqM` uses the same 111132 / 111320·cos(mid) constants as `Projection` and `bboxExpand`, so the caption's area and the border's area cannot drift apart.
-* `minEnclosingCircle` returns `[cx, cy, r]`. It uses a fixed-seed `mulberry32(0)` Fisher–Yates over the sorted+deduped point list. **This is the one intentional divergence from the CLI**, which uses `random.Random(0)`. Fixed permutation, not entropy; the circle is permutation-invariant up to fp noise inside the existing `1e-7` slack.
+* `bboxGapM(a, b) → metres` is the edge-to-edge distance between two boxes (0 when they touch), on the same constants. `bboxChains(bboxes, maxGapM) → number[][]` groups boxes by single linkage within `maxGapM`, each group ascending indices, groups ordered by first index; one group means one map (`MAX_FEED_GAP_M`).
+* `minEnclosingCircle` returns `[cx, cy, r]`. It uses a fixed-seed `mulberry32(0)` Fisher–Yates over the sorted+deduped point list rather than any source of entropy, so the circle is permutation-invariant up to fp noise inside the existing `1e-7` slack.
 
 ### Constants NOT in `core.js` — owned by `lib/http.js`
 
@@ -139,12 +145,13 @@ The LLM constants (`LLM_URL`, `LLM_MODEL`) and everything under `--llm` are **dr
 
 ## (b) Data shapes
 
-All shapes are plain JS objects. Field names are camelCase; the trailing comment gives the
-snake_case Python original — provenance only.
+All shapes are plain JS objects. Field names are camelCase; the trailing comment on a field
+gives the underlying GTFS column name where one exists (used verbatim as CSV headers and
+merge-table keys elsewhere in the codebase), or the field's short snake_case alias otherwise.
 
-Python `frozenset` → JS **Array, sorted** unless stated otherwise (a `Set` is not
-clone-safe). Python `tuple` → JS **Array**. Python `dict[str, X]` → JS plain object keyed
-by string; **iteration order is never significant** — sort the keys.
+A set-like collection is a sorted JS **Array** unless stated otherwise (a `Set` is not
+clone-safe). An ordered tuple is a JS **Array**. A string-keyed map is a plain object;
+**iteration order is never significant** — sort the keys.
 
 ### Shared row shapes
 
@@ -895,7 +902,7 @@ the worker's ordinary per-source catch.
  */
 ```
 
-### Aggregates that are plain dicts in the Python
+### Flat aggregate objects
 
 ```js
 /**
@@ -1034,9 +1041,11 @@ the worker's ordinary per-source catch.
  * refuses to automate the polygon.
  * @property {string} id @property {number} priority @property {boolean} required
  * @property {string} text // the full chat-ready rule; the copied checklist reads only this
- * @property {string} evidence @property {Explain} explain @property {string} icon
+ * @property {string} evidence // provenance string for report.json; never rendered
+ * @property {'rulebook'|'feed'|'interp'} basis // what the rule rests on; rendered as a basisChip in the status row
+ * @property {Explain} explain @property {string} icon
  * @property {Fact[]} facts @property {Array<{id:string,label:string}>} items
- * @property {number} itemsMore // items beyond the eight the page shows as tags
+ * @property {number} itemsMore // items beyond the five the page shows as tags
  * @property {string[]} metricIds @property {DegradeCode|null} degrade
  */
 
@@ -1061,7 +1070,11 @@ the worker's ordinary per-source catch.
  * @property {string[]} excludedStops @property {string[]} excludedRoutes
  * @property {'landing'|'suggestion'|null} borderSource // echoed from `Options.borderSource`; `argv` is unchanged
  * @property {boolean} llmUsed                     // always false in the browser port
- * @property {Array<{id, text, affects:string[], explain:Explain, applies:boolean, affectLinks:Array<{kind:'metric'|'question'|'curse'|'text', id, label}>, groups?:Array<{label, basis, ids}>, data?:Object}>} interpretations // sorted by id
+ * @property {Array<{id, text, affects:string[], explain:Explain, applies:boolean, affectLinks:Array<{kind:'metric'|'guide'|'cap'|'question'|'curse'|'text', id, label}>, groups?:Array<{label, basis, ids}>, data?:Object}>} interpretations // sorted by id
+ *   // A `guide` link is a hider's-guide metric named by the row's `guideMetrics` (its id
+ *   // collides with a report metric, so it never renders as a provenance superscript).
+ *   // A `cap` link carries its CAP_LABEL text, never its id. Radar and Thermometer question
+ *   // labels are prefixed 'Radar · ' / 'Thermometer · ' because the two share labels.
  *   // `applies` is false only for an `osm_synth_*` row on a run with no synthesized
  *   // source; such rows still print, grouped.
  * @property {string[]} degradations
@@ -1110,14 +1123,14 @@ the worker's ordinary per-source catch.
 
 ## (c) The Options object
 
-Ported from `class Options`. Dropped as meaningless in a browser: `out_dir`,
+Fields dropped as meaningless in a browser: `out_dir`,
 `cache_dir`, `llm`, `llm_url`, `llm_model`, `selftest`, `-v/--verbose`, `argv`.
 
 ```js
 /**
  * @typedef {Object} Options
  * @property {File|string} source        // source — a File picked from disk, or a GTFS URL string
- * @property {string|null} worldBaseUrl  // where the prebuilt world files are served from; null = `DEFAULT_WORLD_BASE_URL` (osm/worldfile.js). No CLI equivalent.
+ * @property {string|null} worldBaseUrl  // where the prebuilt world files are served from; null = `DEFAULT_WORLD_BASE_URL` (osm/worldfile.js).
  * @property {string|null} asOf          // as_of — 'YYYYMMDD', clamped into the feed window
  * @property {'small'|'medium'|'large'|null} sizeOverride // size
  * @property {number|null} zoneRadiusM   // zone_radius_m — metres
@@ -1154,7 +1167,7 @@ export const DEFAULT_OPTIONS = {
 };
 ```
 
-Normalisation the main thread performs before posting (mirrors `parse_args`):
+Normalisation the main thread performs before posting:
 `departure` gains `':00'` when it has only one colon; `excludeStops` / `excludeRoutes` are
 sorted and deduped; `borderBbox` must be exactly four numbers or it is an error;
 `worldBaseUrl` must parse as an http(s) URL or it is an error, and loses any trailing
@@ -1397,9 +1410,9 @@ Notes on the stage payloads:
 
 ## (e) `render/html.js` — pinned API
 
-All functions return **HTML strings**. Python keyword arguments become a single trailing
-options object. Python's `class_` becomes `className`. Python's `void()` is renamed
-`voidEl()` (`void` is a JS operator).
+All functions return **HTML strings**, taking a single trailing options object for their
+optional parameters, with `className` for the `class` attribute. The element helper is named
+`voidEl()`, not `void()`, because `void` is a JS operator.
 
 ### The escaping contract — both renderers follow it exactly
 
@@ -1424,7 +1437,7 @@ attrs(obj) → string
 // `dataTip`/`data_tip` → `data-tip`. Returns '' or a LEADING-SPACE-PREFIXED string.
 
 el(tag, contentHtml = '', opts = {}) → string          // <tag …>contentHtml</tag>
-voidEl(tag, opts = {}) → string                        // <tag …>   (Python `void`)
+voidEl(tag, opts = {}) → string                        // <tag …>
 join(...chunks) → string                               // newline-join, dropping null/''
 
 waIcon(name, { label = '', ...attrs }) → string
@@ -1465,7 +1478,7 @@ legendRow(items, { label='', leadHtml='' }) → string    // items: Array<[markH
 leadDetail(leadHtml, detailHtml, { summary='Why', inline=false, chipsHtml='', afterHtml='', id='', dataBasis='', foldBelow=false, className='' }) → string
 cardHeader(title, { caption='', captionHtml='', chipsHtml='', titleHtml='' }) → string
 setProvNames(pairs)                                     // Iterable<[id, name]>; replaces the whole table
-provChip(...ids)                                        // variadic, like the Python
+provChip(...ids)                                        // variadic
 dataTable(headers, rows, { className='', ...attrs })   // always wrapped in a scroller
                                                         // headers: plain text; rows: PRE-ESCAPED markup cells
 jsonBlock(blockId, payload)                             // floatDp is fixed at 6; escapes EVERY '<'
@@ -1509,7 +1522,7 @@ Behavioural notes that are load-bearing, not style:
 * A section with no data emits **nothing at all** — not an empty card — and its nav entry
   disappears with it.
 
-### Section ids (from `render_index`) — the shell must use exactly these
+### Section ids — the shell must use exactly these
 
 | # | `id` | Nav group | Nav label | Icon | Renderer |
 |---|---|---|---|---|---|
@@ -1535,7 +1548,7 @@ value; a sub-figure goes in `kpi`'s `subHtml`; any remainder stays in `<wa-detai
 class="tile-more" appearance="plain" summary="More">`, so a group of tiles reads as numbers and not as prose. `s4Tiles`
 returns the two as separate fields (`n` and `more`); the boundary is never inferred
 from the prose, because a note interpolates stop names. The hover/pin hint is its
-own element, `id="glance-hover-note"`, inside the glance legend row, which `app.js` removes when MapLibre does not load —
+own `<p id="glance-hover-note">`, right after the glance legend row, which `app.js` removes when MapLibre does not load —
 `buildMap`'s `sayBlocked` alone, re-run by every `injectRuntime()` pass, so a re-mount
 at `rules` or at `score` brings the fresh sentence back and loses it again. `bindRail`
 never removes it: `buildMap` is async, so "not ready yet" is the state of every
@@ -1573,13 +1586,13 @@ out ordinals), `app.js`'s `SECTIONS`, and the nav rail. `bindSpy` takes the **la
 whose section is above the fold in document order, so a rail out of page order highlights
 the wrong entry; every nav group is a **contiguous run** of this table.
 
-The `§NN` labels in code comments are nicknames from the CLI's numbering (§01 verdict …
+The `§NN` labels in code comments are nicknames from the report's own numbering (§01 verdict …
 §09 sources), **not** the printed ordinal. `render/strategy.js` and `render/simulator.js`
 number the strategy view's own five sections.
 
 Ordinals (`data-n`) are assigned **after** empty sections are dropped, so the printed
-sequence never has a hole. The embedded `<script type="application/json">` blocks keep the
-CLI's ids with `-data` suffixes: `#data`, `#questions-data`, `#curses-data`, `#stops`,
+sequence never has a hole. The embedded `<script type="application/json">` blocks keep ids
+with `-data` suffixes: `#data`, `#questions-data`, `#curses-data`, `#stops`,
 `#provenance`. `#data` also carries `feed_key`, the feed's `sha256` (its `place` until the
 feed lands): it keys the per-viewer state the page runtime stores, so a day chosen for one
 city cannot override another city's best day.
@@ -1604,7 +1617,8 @@ The rule from `build_report`:
 ```
 try   geo = await collectGeodata(...)
 catch geo = emptyGeoData(border.bbox)
-      degrade(`The OpenStreetMap files could not be read (${err.name}), …`, 'osm_unavailable')
+      log('warn', `OSM layer unavailable: ${err.message}`)
+      degrade('The OpenStreetMap files could not be read, so every question, curse and score …', 'osm_unavailable')
 ```
 
 **There is no `else`.** The geo phase is unconditional. An unavailable OSM layer costs 37
@@ -1682,10 +1696,8 @@ Rules that follow from it, and that every module must obey:
 
 ## (g) The second view — `#strategy`
 
-The CLI emitted `strategy.html` (S5, `render_strategy`), the hider's guide, which nothing
-linked to because the seekers read `index.html`. With **one document** the invariant
-becomes: nothing in the report view mentions, links to or hints at the guide. The guide may
-link back.
+Nothing in the report view mentions, links to or hints at the guide; the guide may link
+back.
 
 | Contract | Detail |
 |---|---|
@@ -1700,16 +1712,16 @@ link back.
 | Landmark and focus | The guide root carries `role="main"`: the report's `<main>` is `display: none` while the guide is up and `wa-page` supplies no landmark; a hidden element is not in the accessibility tree, so there is no collision. `applyRoute` moves focus to the root (`tabindex="-1"`, `preventScroll`) and `leaveStrategy` mirrors it onto `#top`, because a view swap with a new `document.title` otherwise drops focus to `<body>`. Both scrolls are queued **two** frames out, after `PAGE_RUNTIME_JS`'s `openTargeted` on the same `hashchange`, which would otherwise re-scroll the root to `block: 'center'`. |
 | Not a section | The root is not an entry in `SECTIONS`, so `hydrate`, `mountSection`, `dropSection`, `renumberSections` and `pruneNav` never see it. Its five sections pass the **literal** ordinals `'01'`…`'05'`, never `'--'` — `renumberSections` strips the attribute from every remaining `[data-n='--']` in the document. It carries no `data-state`, so `fatalError`'s `[data-state='skeleton']` sweep cannot take it either. |
 | Mount point | Inside `<wa-page>`, as a sibling of `<main>`, in the default slot. **The root is a `<section>`**: `wa-page` pads only `main` and `section` in its default slot, and `wa-page > section` is in the one measure rule in `styles.css` (`:where(main, wa-page > section, …)`) that gives the `--content-width` cap, centring and gutter. A `<div>` root renders flush and full-bleed. Not `main`, because `body[data-view='strategy']` hides `wa-page > main`. |
-| Kept out of the ported runtime | Nothing about this view is added to `PAGE_RUNTIME_JS` (the CLI's page JS, now owned here) and the view ships no JSON block, so nothing is added to the blocks written by `writeDataBlocks` either. Its wiring lives in module code (`render/simulator.js`, `initStrategy`). |
-| Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the CLI's simulator never consumed it either — it recomputes answers client-side by haversine (`answerFor`). `report.geo.pois` crosses `postMessage` whole and is richer than the CLI's `[lon, lat, name]` triples. |
+| Kept out of `PAGE_RUNTIME_JS` | Nothing about this view is added to `PAGE_RUNTIME_JS` and the view ships no JSON block, so nothing is added to the blocks written by `writeDataBlocks` either. Its wiring lives in module code (`render/simulator.js`, `initStrategy`). |
+| Data source | `state.report` in memory. The answer matrix (`answerSignature` / `survivalFractions`) is worker-local and is **not** needed: the guide recomputes answers client-side by haversine (`answerFor`). `report.geo.pois` crosses `postMessage` whole, as rich `{lon, lat, name, …}` POIs. |
 | Re-runs and the URL | "Re-run with this border" (§05) hands the next document load its inputs through the sessionStorage key `jltg.rerun` (§(d)), **never through the URL** — nothing a reader could bookmark into a run they did not ask for. `resetToLanding()` remains a plain reload of a fragment-less, query-less URL; `boot()` has already removed the key, so Reset from run 2 is the ordinary landing and never a replay. |
-| Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. The CLI's bare ids collide in a single document (`#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion). The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
+| Id namespace | **Every id inside the view is prefixed `s-`**, the root `#strategy` excepted. Without the prefix, bare ids collide in a single document (`#sources` with §09, `#top` with the report hero, `#axis-*` with §04's accordion). The `s-` prefix is also what keeps `PAGE_RUNTIME_JS`'s `openTargeted` from opening a report disclosure on a guide fragment. |
 | Controls | The three mutually-exclusive rows — `#s-modes`, `#s-radius`, `#s-category` — are `wa-radio-group`s of `appearance="button"` radios, the same pair `s4ChipGroup` (`render/deck.js`) builds for the report's filter rows, read through the group's `value` on `change`. `s4ChipGroup` cannot be reused because it cannot disable an option. A dead option is a `disabled` radio **and** a printed reason; options sharing one reason are named together beside that reason, printed once, since a disabled control is not focusable and its `title` is reachable only by hovering. Never express the selection by rewriting `appearance`. |
-| Seeker placement | Pointer **and** keyboard. The map click and the marker drag are the CLI's; the port adds a "Place seekers at …" `wa-button` in `#s-opts` (thermometer: "Leg: … → selected zone", accessible name "Run the leg from … to the selected zone") and makes the marker element itself a focusable control that the arrow keys nudge. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user. |
+| Seeker placement | Pointer **and** keyboard. The map click and marker drag are pointer-only, so a "Place seekers at …" `wa-button` in `#s-opts` (thermometer: "Leg: … → selected zone", accessible name "Run the leg from … to the selected zone") and a focusable marker element that the arrow keys nudge cover the keyboard path. Without one of these every question mode is stuck on its "click the map" prompt for a keyboard user. |
 | Module boundary | `app.js` → `renderStrategy(report) → string` (one root element, or `''`) and `initStrategy(root, report) → void`. `initStrategy` is called **only after** `body[data-view]` is set, because MapLibre reads its container size at construction. It is idempotent: a second call resizes the map and returns, so mode, selection, sort, filter and page survive re-entry. `simulator.js` imports `strategy.js`, never the reverse. The one shape that crosses is `modeChips`' `CatChip` (typedef in `render/strategy.js`), whose `reachMi` — the tentacle question's own reach in miles, `null` on matching and measuring chips — is what `answerFor` measures against. Never `size.tentacleReachMi`: a LARGE deck holds two reaches at once. |
-| What `answerFor` answers | `rules/audit.js` is the specification; the CLI's simulator disagreed on three answers and both sides now agree. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
+| What `answerFor` answers | `rules/audit.js` is the specification. Measuring compares each side's own nearest feature (`osm_distance` / `survMeasuring`), not both sides against the seeker's. Tentacles have a third answer, "not within reach" (`survTentacle`'s class `-1`), plus a fourth when the seekers' own circle holds nothing to name (class `-2`). Tentacle reach is per question, not per game size. The majority group a readout reports is keyed on the winning **feature**, never on its name: two features sharing a name are two answers, and unnamed features are not one group. |
 
-### Deliberate divergences from `generate.py` in this view
+### Design decisions in this view
 
 1. **Per-zone × per-day service is scope-reduced** to metrics `S1` / `S2` / `S3` plus
    frequent-stop counts on the scored day. Reasoning in §(d).
@@ -1723,12 +1735,11 @@ link back.
 4. **All ids are namespaced `s-`**, as above.
 5. **The guide's map follows the theme button.** One document has one theme control, so
    this map follows `buildMap`'s `matchMedia` + `MutationObserver` pattern.
-6. **Playbook tip 9 reads `metrics.hubDominance`.** The CLI reads
-   `metrics["hub_route_share"]`, a key `network_metrics` never emits, so the tip never
-   fired there. A key that does not exist is a bug, not a shape. **File it.**
-7. **§02's table sorts the direction it claims to.** The CLI's comparator sorts every
-   column *ascending* while its comment, its `sortDir` reset and its
-   `aria-sort="descending"` say descending. Here `wa-data-grid` derives the row order,
+6. **Playbook tip 9 reads `metrics.hubDominance`**, which `network_metrics` emits
+   (`gtfs/network.js`).
+7. **§02's table sorts the direction it claims to.** An earlier implementation's
+   comparator sorted every column *ascending* while its comment, its `sortDir` reset and
+   its `aria-sort="descending"` said descending. Here `wa-data-grid` derives the row order,
    `aria-sort` and the indicator arrow from the one `desc` boolean of `grid.sort`.
    Reasoning in `simulator.js`'s `tableData` comment. **File it.**
 9. **§02's table is a `wa-data-grid`; its column contract is string ids.** The component
@@ -1748,10 +1759,9 @@ link back.
    *position* stays active and a re-sort changes which zone that is.
 
 8. **The overall score is printed over 100, not over Σ `axisMax`.** `overallTenths` is
-   already renormalised (`rules/score.js`, `1000 × earned ÷ max`), but the CLI prints it
-   against the raw axis maxima; on a run whose map files could not be read the E and A
-   axes have `axisMax === 0` and the CLI would print `97.6 / 70.0` with a 139%-full bar.
-   `ZoneView.max` is fixed at 100 here. **File it.**
+   already renormalised (`rules/score.js`, `1000 × earned ÷ max`); `ZoneView.max` is fixed
+   at 100 here, so a run whose map files could not be read (leaving the E and A axes'
+   `axisMax === 0`) never shows an over-full bar.
 
 `render/simulator.js`'s local `cmp` is **not** a stale `cmpStr` copy: it is the body of
 `cmpNum` and of every column `comparator` in the zone table, and every one of those keys
@@ -1761,16 +1771,15 @@ is a **number** except Name. Same body, different contract — do not fold it in
 Four other divergences are repaired in `styles.css`: §6's `.dark-map` selector is keyed on
 the class alone (set by the map builders and nothing else; the shared sheet must not name
 a map the report does not have); the sticky control-bar rule covers `#s-controls`;
-`[data-band='fair']` gets `--warn`, as the CLI gives it; and four of `SHARED_CSS`'s custom
-properties are **deliberately not ported** — `--warn-text`, `--serif`, `--serious`,
-`--serious-text` — because nothing reads them. The port's JS reads tokens by literal name
+`[data-band='fair']` gets `--warn`; and four of `SHARED_CSS`'s custom
+properties are **deliberately unused here** — `--warn-text`, `--serif`, `--serious`,
+`--serious-text` — because nothing reads them. This view's JS reads tokens by literal name
 only; the sole concatenated name, `render/html.js`'s
 `var(--wa-color-${variants[i]}-fill-loud)`, stays inside `--wa-color-*`. `styles.css`
 notes this under its `legacy aliases` header.
 
 ### The stylesheet is partitioned
 
-The CLI's two stylesheets (`INDEX_CSS`, `STRATEGY_CSS`) become one file, so `styles.css`
-carries the guide's rules in a span delimited by the `/* == STRATEGY CSS` and
+`styles.css` carries the guide's rules in a span delimited by the `/* == STRATEGY CSS` and
 `/* == END STRATEGY CSS` markers. Nothing parses the markers, but the partition holds: new
 guide CSS goes inside them, and nothing the report needs goes there.

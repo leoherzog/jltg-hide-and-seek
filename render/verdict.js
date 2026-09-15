@@ -1,7 +1,7 @@
-// render/verdict.js — the hero and §01–§03 (generate.py S4: `index_hero`,
-// `index_verdict`, `index_score_trace`, `index_your_game` and their `_s4_*` helpers).
+// render/verdict.js — the hero and §01–§03: the verdict summary, the score
+// trace, and the your-game section.
 //
-// Also owns the shared S4 formatting helpers, the per-day view helpers and the
+// Also owns the shared formatting helpers, the per-day view helpers and the
 // deterministic primitives (`sortedBy` over `cmpKey`, `fnum`); `render/map.js` and
 // `render/deck.js` import them from here rather than duplicating them.
 //
@@ -13,7 +13,7 @@
 // `toFixed`, no arithmetic inside a template literal.
 
 import {
-  IMPERIAL_COUNTRIES, cmpStr, num, pct, mins, miles, km, sqmi, rhu, prettyDate, fillPct,
+  IMPERIAL_COUNTRIES, cmpStr, num, pct, mins, miles, km, sqmi, rhu, prettyDate, fillPct, shapeWord,
   FINDING_MINUS_BELOW, FINDING_PLUS_ABOVE, FITNESS_MIN_AVAILABLE_POINTS,
 } from '../lib/core.js';
 import {
@@ -48,9 +48,9 @@ const S4_BAND_PHRASE = Object.freeze({
 // here: a "high" plus is a strong point, not an alarm. The icons are magnitude, not
 // alarm, for the same reason.
 const S4_SEVERITY = Object.freeze({
-  high: Object.freeze(['major', 'circle-up']),
-  medium: Object.freeze(['moderate', 'circle-dot']),
-  low: Object.freeze(['minor', 'circle-down']),
+  high: Object.freeze(['major impact', 'circle-up']),
+  medium: Object.freeze(['moderate impact', 'circle-dot']),
+  low: Object.freeze(['minor impact', 'circle-down']),
 });
 
 // The findings quadrants: swatch colour, the WebAwesome colour utility that tints the
@@ -61,13 +61,12 @@ const S4_QUADRANTS = Object.freeze([
   Object.freeze(['concern', 'Risks needing a house rule', 'var(--warn)', 'wa-warning', 'triangle-exclamation']),
 ]);
 
-// The four size axes: short label, icon, and whether the technical name adds a term
-// the reader meets elsewhere on the page.
+// The four size axes: short label, icon, and the plain gloss printed under it, '' for none.
 const S4_AXIS_SHORT = Object.freeze({
-  A: Object.freeze(['Area covered', 'draw-polygon', true]),
-  B: Object.freeze(['Hiding zones', 'location-dot', false]),
-  C: Object.freeze(['Time to cross', 'stopwatch', true]),
-  D: Object.freeze(['Corner to corner', 'arrows-left-right', false]),
+  A: Object.freeze(['Area covered', 'draw-polygon', 'outline around every served stop']),
+  B: Object.freeze(['Hiding zones', 'location-dot', '']),
+  C: Object.freeze(['Time to cross', 'stopwatch', '90th-percentile crossing time']),
+  D: Object.freeze(['Corner to corner', 'arrows-left-right', '']),
 });
 
 const S4_AXIS_WORDS = Object.freeze(['small', 'medium', 'large']);
@@ -89,7 +88,7 @@ export const S4_ORDINAL = '--';
 
 // ── tiny deterministic primitives ────────────────────────────────────────────
 
-/** Compare two Python-style sort keys element by element; a shorter prefix sorts first. */
+/** Compare two tuple-style sort keys element by element; a shorter prefix sorts first. */
 function cmpKey(a, b) {
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i += 1) {
@@ -109,12 +108,12 @@ function cmpKey(a, b) {
   return a.length - b.length;
 }
 
-/** `sorted(items, key=…)` — a stable sort on a Python-style tuple key. */
+/** A stable sort on a tuple-style key. */
 export function sortedBy(items, keyFn) {
   return Array.from(items).sort((a, b) => cmpKey(keyFn(a), keyFn(b)));
 }
 
-/** `max(items, key=…)`, with Python's full tie-break semantics (the key decides). */
+/** The maximum item by a tuple-style key; ties keep the first item encountered. */
 function maxBy(items, keyFn) {
   let best = null;
   let bestKey = null;
@@ -142,7 +141,7 @@ function minBy(items, keyFn) {
   return best;
 }
 
-/** Python's `str.capitalize()`: first character upper, the rest lower. */
+/** First character upper, the rest lower. */
 function cap(text) {
   const s = String(text || '');
   return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
@@ -153,7 +152,7 @@ export function fnum(x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : null;
 }
 
-// ── unit and value formatting (generate.py) ──────────────────────
+// ── unit and value formatting ──────────────────────
 
 /**
  * Does this map's country read distances in miles? Metric when unknown.
@@ -231,23 +230,36 @@ export function s4MetricValue(m) {
   if (raw === null || raw === undefined) return '—';
   const unit = String((m && m.unit) || '').trim();
   if (unit === 'share') return pct(raw);
-  if (unit === 'min') return mins(raw, 1);
+  if (unit === 'min') return mins(raw);
   if (unit === 'ratio' || unit === '0–1' || unit === '0-1') return num(raw, 2, { comma: false });
   if (!unit) return s4Val(raw);
   return `${s4Val(raw)} ${unit}`;
 }
 
 /**
+ * One threshold in the metric's own unit, so it reads like the value beside it:
+ * a share as a percentage (as `s4MetricValue` prints it), minutes with their unit.
+ * @param {number} a @param {string} unit @returns {string}
+ */
+function s4RampArg(a, unit) {
+  const u = String(unit || '').trim();
+  if (u === 'share') return pct(a);
+  if (u === 'min') return `${s4Val(a)} min`;
+  return s4Val(a);
+}
+
+/**
  * The threshold column of the score trace, in words: the shaping function that
  * turned a raw value into points, which is what makes "17 of 25" checkable.
  *
- * @param {{kind?: string, args?: number[]}|null} spec @returns {string}
+ * @param {{kind?: string, args?: number[]}|null} spec @param {string} [unit] the metric's unit
+ * @returns {string}
  */
-export function s4RampText(spec) {
+export function s4RampText(spec, unit = '') {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return '—';
   const kind = String(spec.kind || '');
   const args = Array.from(spec.args || [], (a) => Number(a));
-  const v = args.map((a) => s4Val(a));
+  const v = args.map((a) => s4RampArg(a, unit));
   if (kind === 'ramp' && v.length >= 2) return `none at ${v[0]}, full at ${v[1]}`;
   if (kind === 'rramp' && v.length >= 2) return `full at ${v[0]}, none at ${v[1]}`;
   if (kind === 'plateau' && v.length >= 4) {
@@ -259,12 +271,13 @@ export function s4RampText(spec) {
 
 /**
  * The terse threshold form of `s4RampText`: ○ marks no points, ● full points.
- * @param {{kind?: string, args?: number[]}|null} spec @returns {string}
+ * @param {{kind?: string, args?: number[]}|null} spec @param {string} [unit] the metric's unit
+ * @returns {string}
  */
-export function s4RampShort(spec) {
+export function s4RampShort(spec, unit = '') {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return '—';
   const kind = String(spec.kind || '');
-  const v = Array.from(spec.args || [], (a) => s4Val(Number(a)));
+  const v = Array.from(spec.args || [], (a) => s4RampArg(Number(a), unit));
   if (kind === 'ramp' && v.length >= 2) return `○ ${v[0]} → ● ${v[1]}`;
   if (kind === 'rramp' && v.length >= 2) return `● ${v[0]} → ○ ${v[1]}`;
   if (kind === 'plateau' && v.length >= 4) return `○ ${v[0]} · ● ${v[1]}–${v[2]} · ○ ${v[3]}`;
@@ -276,7 +289,7 @@ export function s4RampShort(spec) {
  * @param {number} pointsTenths @param {number} maxTenths @returns {string}
  */
 export function s4Points(pointsTenths, maxTenths) {
-  return `${num(pointsTenths / 10.0, 1)} / ${num(maxTenths / 10.0, 1)}`;
+  return `${num(pointsTenths / 10.0, 1)} / ${num(maxTenths / 10.0, 0)}`;
 }
 
 /**
@@ -301,7 +314,7 @@ export function s4JoinWords(items, conjunction = 'and') {
   return `${kept.slice(0, -1).join(', ')} ${conjunction} ${kept[kept.length - 1]}`;
 }
 
-// ── per-day views (generate.py) ──────────────────────────────────
+// ── per-day views ──────────────────────────────────
 
 /**
  * The metric table as it reads on one service day: the top level merged with
@@ -787,7 +800,7 @@ export function renderHero(payload) {
     const t90 = fnum(v.t90Min);
     if (t90 !== null) {
       const c2raw = metrics.C2 ? fnum(metrics.C2.raw) : null;
-      tiles.push(kpi(mins(t90), 'to cross', '', {
+      tiles.push(kpi(mins(t90, 1), 'to cross', '', {
         size: 'l',
         subHtml: (c2raw ? esc(`${num(c2raw, 2, { comma: false })} hiding periods`) : '') + provChip('C2'),
       }));
@@ -801,13 +814,13 @@ export function renderHero(payload) {
   if (size) {
     chips.push(size.inferred === false
       ? chip(`${cap(size.name)} · fixed`, 'lock', { variant: 'warning' })
-      : chip(`${cap(size.name)} map`, 'ruler-combined'));
-    chips.push(chip(`${num(size.hidingPeriodMin)} min hide`, 'hourglass-half'));
+      : chip(`${cap(size.name)} game`, 'ruler-combined'));
+    chips.push(chip(`${num(size.hidingPeriodMin)} min hiding period`, 'hourglass-half'));
     chips.push(chip(`${s4Dist(report, size.zoneRadiusM, 2)} zone radius`, 'circle-dot'));
   }
-  if (report.hub && report.hub.name) chips.push(chip(`Start: ${report.hub.name}`, 'star'));
+  if (report.hub && report.hub.name) chips.push(chip(`Start · ${report.hub.name}`, 'star'));
   if (report.days && report.days.length) {
-    chips.push(chip(`Best day: ${s4DayLabel(report, s4BestDay(report))}`, 'calendar-day', {
+    chips.push(chip(`Best day · ${s4DayLabel(report, s4BestDay(report))}`, 'calendar-day', {
       variant: 'brand',
     }));
   }
@@ -869,21 +882,23 @@ function s4AxisCard(report) {
     const shown = typeof value === 'number' ? s4Val(value) : String(value);
     const thresholds = Array.from(a.thresholds || [], (t) => s4Val(Number(t)));
     const word = s4AxisWord(a.score === undefined ? 1 : a.score);
-    const [short, icon, showTerm] = S4_AXIS_SHORT[String(a.id)] || [String(a.name || ''), 'ruler', false];
+    const [short, icon, gloss] = S4_AXIS_SHORT[String(a.id)] || [String(a.name || ''), 'ruler', ''];
     const tag = (w) => (w === word
       ? waTag(w, { variant: 'brand', appearance: 'filled', ariaCurrent: 'true' })
         + el('span', esc(`votes ${w}`), { className: 'wa-visually-hidden' })
       : waTag(w));
     const cut = (t) => el('span', esc(t), { className: 'wa-caption-2xs wa-color-text-quiet' });
     const ladder = thresholds.length >= 2
-      ? join(tag(S4_AXIS_WORDS[0]), cut(thresholds[0]), tag(S4_AXIS_WORDS[1]), cut(thresholds[1]),
+      // Each cut in the value column's own form, unit included: `100 sq mi`, `45 min`.
+      ? join(tag(S4_AXIS_WORDS[0]), cut(`${thresholds[0]} ${unit}`.trim()), tag(S4_AXIS_WORDS[1]),
+        cut(`${thresholds[1]} ${unit}`.trim()),
         tag(S4_AXIS_WORDS[2]))
       : tag(word);
     rows.push([
       el('span', waIcon(icon) + el('b', esc(short)), {
         className: 'wa-cluster wa-gap-2xs wa-align-items-center wa-text-nowrap',
-      }) + (showTerm && a.name
-        ? el('span', esc(String(a.name)), { className: 'wa-caption-2xs wa-color-text-quiet', style: 'display:block' })
+      }) + (gloss
+        ? el('span', esc(gloss), { className: 'wa-caption-2xs wa-color-text-quiet', style: 'display:block' })
         : ''),
       el('span', esc(`${shown} ${unit}`.trim()), { className: 'wa-text-nowrap' }),
       // An arguable band still moves the median vote, so every row says whose band it is.
@@ -932,12 +947,12 @@ function s4AxisCard(report) {
 
 /** The section's own headline: the band, the size and the network shape. */
 export function s4VerdictTitle(report) {
-  const shape = String(((report.metrics || {}).networkShape) || '').split('-').join(' ');
+  const shape = shapeWord((report.metrics || {}).networkShape);
   const size = cap((report.size || {}).name || '');
   const f = report.fitness || {};
   const band = (f.score !== null && f.score !== undefined) ? f.band : 'Partly measurable';
-  if (shape) return `${band}: a ${shape} ${size} map`;
-  return `${band}: a ${size} map`;
+  const parts = [shape, size ? `${size} size` : ''].filter((x) => x);
+  return parts.length ? `${band}: ${parts.join(', ')}` : band;
 }
 
 /** Distinct `DegradeCode`s of the unavailable metrics, in trace order. */
@@ -979,7 +994,7 @@ function s4SuitCards(report) {
       { label: m.name, flank: '5.5rem' },
     ));
     const fix = !strongest && top.some((m) => fixable[m.id])
-      ? el('div', linkChip('#findings', 'what to do', 'wrench', { variant: 'success' }))
+      ? el('div', linkChip('#findings', 'see the house rules', 'wrench', { variant: 'success' }))
       : '';
     return waCard(el('div', meters.join('') + fix, { className: 'wa-stack wa-gap-s' }), {
       headerHtml: cardHeader('', {
@@ -1005,9 +1020,11 @@ function s4WatchOuts(report) {
   const f = report.fitness;
   const chips = [];
   if (f.cappedBy) {
-    chips.push(linkChip('#trace', `capped: ${s4CapLabel(report, f.cappedBy)}`, 'lock', { variant: 'danger' }));
-    chips.push(el('span', esc(`raw ${num(f.rawScore, 1)} → `
-      + `${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'}`), { className: 'wa-caption-s' }));
+    chips.push(
+      linkChip('#trace', `capped at ${(f.score !== null && f.score !== undefined) ? num(f.score, 1) : '—'}`,
+        'lock', { variant: 'danger' }),
+      chip(`raw score ${num(f.rawScore, 1)}`, 'gauge'),
+    );
   } else if (f.availablePoints < 100) {
     for (const s of f.subscores || []) {
       if (!s.partial && !(s.missing && s.missing.length)) continue;
@@ -1071,7 +1088,7 @@ export const s4SourceTag = basisChip;
  */
 export function s4TraceTable(metrics, opts = {}) {
   const { singleDayType = false } = opts;
-  const head = el('thead', el('tr', ['Metric', 'Value', 'Threshold', 'Points', 'Source']
+  const head = el('thead', el('tr', ['Metric', 'Value', 'Threshold', 'Points', 'Basis']
     .map((h) => el('th', esc(h))).join('')));
   const rows = [];
   for (const m of metrics || []) {
@@ -1087,12 +1104,12 @@ export function s4TraceTable(metrics, opts = {}) {
       el('td', el('b', esc(m.name))
         + (flags ? el('div', flags, { className: 'wa-cluster wa-gap-2xs' }) : '') + note),
       el('td', m.available ? esc(s4MetricValue(m)) : '—'),
-      el('td', esc(s4RampShort(m.ramp)), { ariaLabel: s4RampText(m.ramp) }),
+      el('td', esc(s4RampShort(m.ramp, m.unit)), { ariaLabel: s4RampText(m.ramp, m.unit) }),
       el('td', m.available
         ? miniMeter(fillPct(m.pointsTenths, m.maxTenths), esc(s4Points(m.pointsTenths, m.maxTenths)), {
           label: `${m.name} points`,
         })
-        : esc(`— / ${num(m.maxTenths / 10.0, 1)}`)),
+        : esc(`— / ${num(m.maxTenths / 10.0, 0)}`)),
       el('td', basisChip(m.source)),
     ];
     rows.push(el('tr', cells.join(''), {
@@ -1197,13 +1214,10 @@ export function renderScoreTrace(payload) {
   const legendItems = [
     [basisChip('rulebook'), ''],
     [basisChip('feed'), ''],
-    [basisChip('interp'), ''],
-    [swatch('background:var(--gold);inline-size:3px;block-size:1em;border-radius:0'), 'our interpretation'],
-    [swatch('background:var(--ink-3);opacity:.45'), 'not evaluated'],
-    ['', '○ none · ● full · linear between'],
+    [join(swatch('background:var(--gold)'), basisChip('interp')), 'Gold edge on the row'],
+    [join(swatch('background:var(--ink-3);opacity:.55'), degradeChip('not_evaluated')), 'Faded row, not scored'],
+    ['', 'Threshold ○ no points → ● full points, linear between'],
   ];
-  // A pointer to the hero's one 100-point bar, not a second chart.
-  if (hasScore) legendItems.push([linkChip('#points-budget', '100-point bar', 'chart-simple'), '']);
   const legend = legendRow(legendItems, { label: 'How to read the score trace' });
 
   let answer = '';
@@ -1213,8 +1227,8 @@ export function renderScoreTrace(payload) {
     const worst = sortedBy(lossy, (s) => [-s.lostTenths, s.id])[0];
     const parts = [];
     if (worst.lostTenths > 0) {
-      parts.push(el('span', esc('Biggest loss: ') + el('b', esc(String(worst.name).toLowerCase()))
-        + esc(`, −${num(worst.lostTenths / 10.0, 1)} points`)));
+      parts.push(el('span', el('b', esc(`−${num(worst.lostTenths / 10.0, 1)} points`))
+        + esc(` on ${String(worst.name).toLowerCase()}, the biggest loss`)));
     }
     for (const s of f.subscores) {
       const all = s.metrics || [];
@@ -1230,6 +1244,10 @@ export function renderScoreTrace(payload) {
     callouts.join(''),
     capRow,
     waAccordion(items, { mode: 'single-collapsible', headingLevel: '3' }),
+    // A pointer back to the hero's one 100-point bar, on its own line, not in the key.
+    hasScore ? el('p', linkChip('#points-budget', 'Back to the 100-point bar', 'chart-simple'), {
+      className: 'wa-caption-s',
+    }) : '',
   ), { className: 'wa-stack wa-gap-m', id: 'prov-trace' });
   return section('trace', S4_ORDINAL, 'Where the points came from', body, {
     kicker: 'Every point, traced', answerHtml: answer,
@@ -1276,8 +1294,8 @@ function s4FindingsHalf(report) {
       if (dayKey) {
         const dayLabel = s4DayLabel(report, dayKey);
         badge = join(
-          chip(`only on ${dayLabel}`, 'calendar-day', { dataTodayCue: 'off' }),
-          chip('applies to your day', 'calendar-day', {
+          chip(`Measured on ${dayLabel}`, 'calendar-day', { dataTodayCue: 'off' }),
+          chip('Your day', 'calendar-day', {
             variant: 'danger', appearance: 'filled', dataTodayCue: 'on',
           }),
           badge,
@@ -1360,44 +1378,55 @@ function s4BorderDegrees(report) {
 
 /**
  * §03's first half — the fired house rules as an `ol.recs`, in priority order. Each
- * card is an imperative lead, its figures as chips, and the rationale and source
- * folded; the whole checklist is one `wa-copy-button` away as plain `text`.
+ * card is an imperative lead, a status row (must agree · basis · degrade · figures), an
+ * items row (at most five names, then `+N more`), and the rationale folded. `evidence`
+ * is report.json provenance and is never rendered; the whole checklist is one
+ * `wa-copy-button` away as plain `text`.
  */
 function s4HouseRulesHalf(report) {
   const recs = report.recommendations || [];
   if (!recs.length) return '';
   const items = [];
+  const row = (parts) => {
+    const kept = parts.filter(Boolean);
+    return kept.length
+      ? el('div', kept.join(''), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })
+      : '';
+  };
   for (const rec of recs) {
     const ex = rec.explain || null;
     const lead = ex && ex.lead ? String(ex.lead) : String(rec.text || '');
     const detail = ex ? String(ex.detail || '') : '';
-    const source = rec.evidence ? `Source: ${rec.evidence}` : '';
-    const tags = [];
-    if (rec.required) {
+    const status = row([
       // amber, not red: red on this page already means "out of the deck" / "dead".
-      tags.push(chip('everyone must agree', 'circle-exclamation', { variant: 'warning' }));
-    }
-    tags.push(degradeChip(rec.degrade));
-    tags.push(factChips(rec.facts));
-    for (const it of (rec.items || []).slice(0, 8)) tags.push(chip(String(it.label || it.id || '')));
-    if (rec.itemsMore > 0) {
-      tags.push(linkChip(rec.id === 'remove_curses' ? '#curses' : '#questions', `+${num(rec.itemsMore)} more`));
-    }
-    // The map is the degrees' one home, so the border rule links there.
-    if (rec.id === 'use_borders') tags.push(linkChip('#network', 'go to the map', 'map-location-dot'));
-    const kept = tags.filter((t) => t);
+      rec.required ? chip('Everyone must agree', 'circle-exclamation', { variant: 'warning' }) : '',
+      rec.basis ? basisChip(rec.basis) : '',
+      degradeChip(rec.degrade),
+      factChips(rec.facts),
+    ]);
+    const more = (rec.id === 'remove_curses' || rec.id === 'no_spending_toggle') ? '#curses' : '#questions';
+    const names = row([
+      ...(rec.items || []).slice(0, 5).map((it) => chip(String(it.label || it.id || ''))),
+      rec.itemsMore > 0 ? linkChip(more, `+${num(rec.itemsMore)} more`) : '',
+      // The map is the degrees' one home, so the border rule links there.
+      rec.id === 'use_borders' ? linkChip('#network', 'go to the map', 'map-location-dot') : '',
+    ]);
     // The safety rule's body is the judgement itself, so it is never folded.
-    const body = rec.id === 'safety_exclusions'
-      ? join(
-        detail ? el('p', esc(detail), { className: 'wa-body-s' }) : '',
-        leadDetail('', esc(source), { summary: 'Source' }),
-      )
-      : leadDetail('', esc([detail, source].filter((t) => t).join(' ')), { summary: 'Details' });
+    let body = '';
+    if (detail) {
+      body = rec.id === 'safety_exclusions'
+        ? el('p', esc(detail), { className: 'wa-body-s' })
+        : leadDetail('', esc(detail), { summary: 'Details' });
+    }
     const card = waCard(el('div', join(
-      el('p', join(rec.icon ? waIcon(rec.icon) : '', el('b', esc(lead))), {
+      el('p', join(
+        rec.icon ? waIcon(rec.icon) : '',
+        el('span', el('b', esc(lead)) + provChip(...(rec.metricIds || []))),
+      ), {
         className: 'wa-body-m wa-cluster wa-gap-xs wa-align-items-center', style: 'flex-wrap:nowrap',
       }),
-      kept.length ? el('div', kept.join(''), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' }) : '',
+      status,
+      names,
       body,
     ), { className: 'wa-stack wa-gap-2xs' }));
     items.push(el('li', card, { id: `rec-${rec.id}` }));

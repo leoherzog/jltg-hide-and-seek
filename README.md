@@ -392,7 +392,7 @@ The design specs the code occasionally cites (`specs/*.md`, `scoring.md`) live o
 > [!WARNING]
 > **The "within 10 ft of a routable path" test is not evaluated.** Checking it needs a buffer around
 > every walkable way on the map, which the prebuilt files don't carry. Candidate hiding spots are
-> still found and listed, but every one is marked verify-on-the-ground. Stand somewhere legal.
+> still found and listed, but every one is marked Verify on site. Stand somewhere legal.
 
 | Caveat | What it means | Check with |
 |---|---|---|

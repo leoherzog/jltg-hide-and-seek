@@ -25,11 +25,15 @@
  * @module render/picker
  */
 
-import { MAPLIBRE_JS, TILES_LIGHT, TILES_DARK, cmpStr, coord } from '../lib/core.js';
-import { bboxOf, bboxUnion, bboxIntersection, bboxAreaSqM, bboxScale } from '../lib/geo.js';
+import {
+  MAPLIBRE_JS, MAX_FEED_GAP_M, TILES_LIGHT, TILES_DARK, cmpStr, coord,
+} from '../lib/core.js';
+import {
+  bboxOf, bboxUnion, bboxIntersection, bboxAreaSqM, bboxScale, bboxChains,
+} from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
-  labelOf, placeOf, sourceRefFor, osmSourceRef, exampleMapsFor,
+  labelOf, placeOf, sourceRefFor, osmSourceRef, exampleMapsFor, gapKmOf, tooFarFrom,
 } from '../lib/catalog.js';
 import {
   renderResults, renderResultsSummary, renderPicks, renderPickerNote, renderExampleMaps,
@@ -175,6 +179,8 @@ export function initPicker(root, handlers = {}) {
      */
     ringVacant: false,
     blocked: [],
+    /** `[{label, km}]` catalogue picks refused as a second city; the last action only, like `blocked` */
+    far: [],
     /**
      * The game-border frame, or null while nothing is picked. `'auto'` = fitted to
      * the picks and sent as null; `'custom'` = the reader's box, sent as-is.
@@ -275,6 +281,7 @@ export function initPicker(root, handlers = {}) {
     const ex = examples.find((e) => e.key === key);
     if (!ex) return;
     st.blocked = [];
+    st.far = [];
     for (const [id, ref] of Array.from(st.selected)) {
       if (ref.kind !== 'osm') st.selected.delete(id);
     }
@@ -351,6 +358,15 @@ export function initPicker(root, handlers = {}) {
     const ref = sourceRefFor(st.doc, row);
     if (st.selected.has(ref.id)) return true;
     if (slotsUsed() >= PICK_CAP) { renderPicksAndNote(); return false; }
+    // A second city is not a bigger map. Every door (results, Enter, a marker, a
+    // shape's sweep) comes through here, so this one refusal covers them all.
+    const boxes = selectedBoxes();
+    if (tooFarFrom(row, boxes)) {
+      const label = labelOf(row);
+      if (!st.far.some((f) => f.label === label)) st.far.push({ label, km: gapKmOf(row, boxes) });
+      renderPicksAndNote();
+      return false;
+    }
     const first = st.selected.size === 0;
     st.selected.set(ref.id, ref);
     commit();
@@ -428,7 +444,7 @@ export function initPicker(root, handlers = {}) {
 
   // ── rendering ─────────────────────────────────────────────────────────────
 
-  /** `[{id, label, where, badge, icon}]` — map picks first, then bring-your-own. */
+  /** `[{id, label, where, badge, icon, degrade?}]` — map picks first, then bring-your-own. */
   function pickViews() {
     const out = [];
     const ids = Array.from(st.selected.keys()).sort(cmpStr);
@@ -436,13 +452,15 @@ export function initPicker(root, handlers = {}) {
       const ref = st.selected.get(id);
       const row = ref.mdbId === null ? null : rowById.get(ref.mdbId);
       if (ref.kind === 'osm') {
-        // Its own badge and icon: the only row that is not a published timetable.
+        // The only row that is not a published timetable, so it carries the
+        // degradation chip instead of a badge.
         out.push({
           id,
           label: ref.label,
           where: '',
-          badge: 'OSM lines · timetable assumed',
-          icon: 'map-location-dot',
+          badge: '',
+          icon: '',
+          degrade: 'assumed_schedule',
         });
         continue;
       }
@@ -482,6 +500,10 @@ export function initPicker(root, handlers = {}) {
       osmOffer: Boolean(st.ring) && st.ringVacant && !osm && !capped,
       osmPicked: Boolean(osm),
       regionalOn: Boolean(swRegional && swRegional.checked),
+      far: st.far.slice(0, 3),
+      farMore: Math.max(0, st.far.length - 3),
+      // Picks can still split: a middle one removed, or an example chip beside a far shape.
+      split: bboxChains(selectedBoxes(), MAX_FEED_GAP_M).length > 1,
     });
   }
 
@@ -493,8 +515,12 @@ export function initPicker(root, handlers = {}) {
       return;
     }
     resultsBox.hidden = false;
+    const boxes = selectedBoxes();
+    const farKm = new Map();
+    for (const row of st.results) if (tooFarFrom(row, boxes)) farKm.set(String(row.id), gapKmOf(row, boxes));
     resultsBox.innerHTML = renderResults(st.results, {
       selectedIds: new Set(st.selected.keys()),
+      farKm,
       full: slotsUsed() >= PICK_CAP,
       more: Math.max(0, st.resultsTotal - st.results.length),
     });
@@ -549,6 +575,7 @@ export function initPicker(root, handlers = {}) {
 
   function runSearch() {
     st.blocked = [];
+    st.far = [];
     const q = search && search.value ? String(search.value) : '';
     // Searches every row, not `st.rows`: a typed name overrides the switches (PLAN D15).
     st.searching = q.trim() !== '';
@@ -569,7 +596,9 @@ export function initPicker(root, handlers = {}) {
       if (event.key === 'Enter') {
         // Enter in a <form> input would submit it and start the analysis.
         event.preventDefault();
-        const first = st.results.find((row) => !row.a && !st.selected.has(`mdb:${row.id}`));
+        const boxes = selectedBoxes();
+        const first = st.results.find((row) => !row.a && !st.selected.has(`mdb:${row.id}`)
+          && !tooFarFrom(row, boxes));
         if (first) addRow(first);
         return;
       }
@@ -674,6 +703,7 @@ export function initPicker(root, handlers = {}) {
     st.ringEmpty = false;
     st.ringVacant = false;
     st.blocked = [];
+    st.far = [];
     // The OpenStreetMap source IS the ring, so it goes with it; catalogue picks
     // outlive the shape because they name real operators.
     const osm = osmPick();
@@ -722,6 +752,7 @@ export function initPicker(root, handlers = {}) {
   /** Every visible feed the shape touches, up to the cap. */
   function applyRing() {
     st.blocked = [];
+    st.far = [];
     const hits = rowsIntersectingRing(st.rows, st.ring);
     st.ringEmpty = hits.length === 0;
     st.ringVacant = hits.length === 0;
@@ -779,7 +810,7 @@ export function initPicker(root, handlers = {}) {
   // ── the border frame ──────────────────────────────────────────────────────
 
   /** Clamp to the world and put the edges in order; a frame dragged past itself
-   *  turns inside out. Antimeridian frames are clamped, not supported (final spec §5). */
+   *  turns inside out. Antimeridian frames are clamped, not supported. */
   function normBbox(b) {
     let s0 = Math.max(-90, Math.min(90, b[0]));
     let n0 = Math.max(-90, Math.min(90, b[2]));

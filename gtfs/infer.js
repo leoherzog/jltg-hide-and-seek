@@ -2,7 +2,7 @@
  * gtfs/infer.js — S1 · inference: hub, border, game size, and the question-layer
  * inputs.
  *
- * Port of `generate.py`. Worker side: no DOM, no clock, no randomness; everything
+ * Worker side: no DOM, no clock, no randomness; everything
  * is pure over `(feed, days, zones, options)`.
  *
  * Public entry points, in the order `build_report` calls them:
@@ -76,7 +76,7 @@ export const S1_RAIL_TYPES = Object.freeze([0, 1, 2, 5, 7, 11, 12]);
 
 // ── small private helpers ─────────────────────────────────────────────────────
 
-/** Euclidean distance between two planar `[x, y]` points — Python's `math.dist`. */
+/** Euclidean distance between two planar `[x, y]` points. */
 function dist(a, b) {
   const dx = a[0] - b[0];
   const dy = a[1] - b[1];
@@ -84,8 +84,8 @@ function dist(a, b) {
 }
 
 /**
- * Python's `len(str)` counts code points; JS `.length` counts UTF-16 units. Station
- * name lengths reach the page, so count code points.
+ * JS `.length` counts UTF-16 units, not code points. Station
+ * name lengths reach the page, so count code points explicitly.
  */
 function nameLen(name) {
   return Array.from(String(name === null || name === undefined ? '' : name)).length;
@@ -115,7 +115,6 @@ function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); 
 
 /**
  * Distinct trips of the day that call at `stopId` (loops counted once).
- * `_s1_trips_touching`, generate.py.
  * @param {object} day a `ServiceDay`
  * @param {string} stopId
  * @returns {number}
@@ -366,7 +365,7 @@ export function inferBorder(feed, day, hub, size, projLike, options, inPlay = nu
   // Already applied inside an in-play set; kept so a null `inPlay` behaves as before.
   const excluded = excludedStopSet(feed, day, opts);
 
-  // Python's `or` chain: a midnight departure (0) falls through to the default. Kept.
+  // A midnight departure (00:00:00, i.e. 0) is falsy, so it falls through to the default.
   const depart = hmsToS(opts.departure) || hmsToS(DEFAULT_DEPARTURE) || 32400;
   const budget = 3 * size.hidingPeriodMin * 60;
   const forward = hubRun(feed, day, hub.stopId, depart);
@@ -731,7 +730,6 @@ export function suggestBorder(feed, days, best, hub, proj, opts, size, inPlay, e
  * is a lower bound, snapped up to the rulebook radius that contains it.
  * `travelTimeSamples` is handed zones, not a radius.
  *
- * `_s1_zone_radius`, generate.py.
  * @param {object[]} zones `Zone` records
  * @returns {number} metres
  */
@@ -741,8 +739,8 @@ function s1ZoneRadius(zones) {
   for (const z of zones) byId.set(z.zoneId, z);
   for (const zone of zones) {
     for (const sid of zone.stopIds) {
-      // Kept from the Python: this looks a member *stop* id up in a map of *zone*
-      // ids, so only members that are themselves centres widen the bound. Still valid.
+      // This looks a member *stop* id up in a map of *zone* ids, so only members
+      // that are themselves centres widen the bound.
       const other = byId.get(sid);
       if (other !== undefined) {
         widest = Math.max(widest, dist([zone.x, zone.y], [other.x, other.y]));
@@ -770,7 +768,7 @@ function s1ZoneRadius(zones) {
         const bucket = grid.get(`${gx + dx},${gy + dy}`);
         if (bucket === undefined) continue;
         for (const other of bucket) {
-          // Python tuple compare: a coincident centre is skipped, not a zero pair.
+          // A coincident centre (same x, y) is skipped here so it isn't treated as a zero-distance pair.
           if (other[0] === x && other[1] === y) continue;
           const d = dist([x, y], other);
           if (d < closest) closest = d;
@@ -948,8 +946,7 @@ export function travelTimeSamples(days, zones, originStopId, departureS, count, 
  * `metro_route_ids`, and `u_turn` (share of stops with ≥2 routes and the median wait
  * for a *different* route inside the U-Turn card's 0.5/0.5/1-hour window).
  *
- * Key names are **snake_case, exactly as in the Python**: the question audit looks
- * them up by name.
+ * Key names are **snake_case**: the question audit looks them up by name.
  *
  * @param {object} feed @param {object[]} days @param {object[]} zones @param {object[]} stations
  * @returns {Object<string, *>}

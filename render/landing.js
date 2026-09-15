@@ -37,8 +37,15 @@ export function renderPickerCard() {
   // The label is real but visually hidden, so a screen reader still announces it.
   const search = el('wa-input', join(
     waIcon('magnifying-glass', { slot: 'start' }),
+    // A plain `<a>` round the chip, not `linkChip`, which cannot set `target`. The
+    // `~km` span on each result row already says marker positions are rough.
     el('span', join(esc('Or tap a marker.'),
-      chip('Mobility Database · approx. locations', 'location-dot')),
+      el('a', chip('Mobility Database', 'location-dot'), {
+        className: 'wa-link-plain',
+        href: 'https://mobilitydatabase.org',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      })),
     { slot: 'hint', className: 'wa-caption-xs wa-color-text-quiet' }),
   ), {
     id: 'catalog-search',
@@ -69,7 +76,8 @@ export function renderPickerCard() {
   // What the draw tool does right now; `render/picker.js` writes `renderDrawHint` per mode.
   // It sits INSIDE `#picker-draw` because styles.css §7 keeps only that row on
   // screen while a shape is drawn on a phone.
-  const drawHint = el('p', '', {
+  // A `<div>`, not a `<p>`: the hint holds a `legendRow` `<ul>`.
+  const drawHint = el('div', '', {
     id: 'picker-draw-hint',
     className: 'wa-caption-s wa-color-text-quiet',
     ariaLive: 'polite',
@@ -108,13 +116,13 @@ export function renderPickerCard() {
     el('wa-switch', join(
       'Regional and long-distance feeds',
       el('span', join(chip('regional', 'route', { variant: 'warning' }),
-        esc('Intercity rail, coaches, statewide; overlaps most shapes.')),
+        esc('Intercity rail and coaches. Overlaps most shapes.')),
       { slot: 'hint', className: 'wa-caption-xs wa-color-text-quiet' }),
     ), { id: 'include-regional', size: 's' }),
     el('wa-switch', join(
       'Feeds no longer updated',
       el('span', join(chip('no longer updated', 'clock-rotate-left', { variant: 'warning' }),
-        esc('Operator stopped publishing; the city is real.')),
+        esc('The operator stopped publishing, so the timetable is old.')),
       { slot: 'hint', className: 'wa-caption-xs wa-color-text-quiet' }),
     ), { id: 'include-inactive', size: 's' }),
   ), { id: 'picker-switches', className: 'wa-stack wa-gap-2xs' });
@@ -162,7 +170,8 @@ export function renderPickerCard() {
 
 /**
  * `#picker-draw-hint` for one draw-tool mode. Pointer-specific wording is split into
- * `.hint-fine` / `.hint-coarse` spans that styles.css shows per pointer.
+ * `.hint-fine` (a key legend) / `.hint-coarse` (a sentence) that styles.css shows
+ * per pointer.
  *
  * @param {'idle'|'drawing'|'keyboard'} mode
  * @returns {string} markup
@@ -170,15 +179,22 @@ export function renderPickerCard() {
 export function renderDrawHint(mode) {
   if (mode === 'idle') {
     return join(
-      el('span', 'Click: add a corner · <kbd>Shift</kbd>+drag: box', { className: 'hint-fine' }),
+      el('div', legendRow([
+        ['<kbd>Click</kbd>', 'adds a corner'],
+        ['<kbd>Shift</kbd>+drag', 'draws a box'],
+      ], { label: 'Drawing keys' }), { className: 'hint-fine' }),
       el('span', 'Tap to add corners', { className: 'hint-coarse' }),
     );
   }
   if (mode === 'drawing') {
     return join(
-      el('span', 'Click: add · <kbd>Enter</kbd> close · <kbd>Backspace</kbd> undo · '
-        + '<kbd>Esc</kbd> cancel', { className: 'hint-fine' }),
-      el('span', 'Tap to add · Finish shape closes', { className: 'hint-coarse' }),
+      el('div', legendRow([
+        ['<kbd>Click</kbd>', 'adds'],
+        ['<kbd>Enter</kbd>', 'closes'],
+        ['<kbd>⌫</kbd>', 'undoes'],
+        ['<kbd>Esc</kbd>', 'cancels'],
+      ], { label: 'Drawing keys' }), { className: 'hint-fine' }),
+      el('span', 'Tap to add corners, then Finish shape.', { className: 'hint-coarse' }),
     );
   }
   if (mode === 'keyboard') {
@@ -223,23 +239,22 @@ export function renderBorderCaption(s) {
   const area = `about ${km2(s.areaSqM)} km²`;
   if (s.border.mode === 'custom') {
     if (s.osmPicked && s.osmFrame) {
-      return 'Game border: the box around your shape (the OpenStreetMap read is clipped '
-        + `to the shape itself, ${area}). Drag a corner or edge, or edit `
-        + 'the numbers, to play a different box.';
+      return `Game border, ${area}, is the box around your shape. Map lines are read `
+        + 'inside the shape only. Drag a corner or edge, or edit the numbers, to play a '
+        + 'different box.';
     }
-    return `Game border: the box you set (${area}). Fit to feeds resets it.`;
+    return `Game border, ${area}, the box you set. Fit to feeds resets it.`;
   }
   if (s.osmPicked) {
     // 'auto' with a shape picked is still sent as null: the border is inferred from
     // the network the shape produces, not from the shape's extent.
-    return `Game border: fitted to your shape (${area}) but left to be `
-      + 'inferred from what the start stop can reach. Drag a corner or edge to play the '
-      + 'box instead.';
+    return `Game border, ${area}, fitted to your shape. Left alone, it is inferred from `
+      + 'what the start stop can reach. Drag a corner or edge to play the box instead.';
   }
   const feeds = s.count === 1 ? 'the feed' : `the ${num(s.count)} feeds`;
-  return `Game border: fitted to ${feeds} you picked (${area}). Leave it `
-    + 'and the border is inferred from what the start stop can reach; drag a corner or '
-    + 'edge, or edit the numbers, to set it yourself.';
+  return `Game border, ${area}, fitted to ${feeds} you picked. Left alone, it is inferred `
+    + 'from what the start stop can reach. Drag a corner or edge, or edit the numbers, '
+    + 'to set it.';
 }
 
 /**
@@ -255,7 +270,7 @@ export function renderBorderChips(s) {
   if (s.border.mode === 'custom') {
     if (s.osmPicked && s.osmFrame) {
       return join(chip('Box around your shape', 'draw-polygon', { variant: 'brand' }), area,
-        chip('OSM read clipped to shape', 'scissors'));
+        chip('Lines clipped to your shape', 'scissors'));
     }
     return join(chip('Your box', 'crop-simple', { variant: 'brand' }), area);
   }
@@ -341,12 +356,12 @@ export function renderBorderRow(s) {
       id: 'border-grow', type: 'button', icon: 'expand', dataBorderAction: 'grow',
     }),
   ), { className: 'wa-cluster wa-gap-2xs', role: 'group', ariaLabel: 'Game border tools' });
-  const nudge = `<kbd>Shift</kbd>+<kbd>↑</kbd><kbd>↓</kbd> in a field: ±${esc(num(NUDGE_DEG, 2))}°`;
+  const nudge = `<kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> in a field nudges that edge ${esc(num(NUDGE_DEG, 2))}°`;
   const help = legendRow([
-    [swatch('background:var(--gold)'), 'same box on the map'],
-    [waIcon('circle-dot'), 'handle: resize'],
-    [waIcon('grip-lines'), 'outline: move'],
-    [waIcon('hand'), 'inside: pan'],
+    [swatch('background:var(--gold)'), 'Game border on the map'],
+    [waIcon('circle-dot'), 'Handles resize'],
+    [waIcon('grip-lines'), 'Outline moves'],
+    [waIcon('hand'), 'Inside pans'],
   ], { label: 'The border on the map' });
   const keys = el('p', nudge, { className: 'kbd-only wa-caption-xs wa-color-text-quiet' });
   return el('div', join(caption, fields, buttons, help, keys), { className: 'wa-stack wa-gap-xs' });
@@ -365,7 +380,7 @@ export function renderExampleMaps(examples, opts = {}) {
   const { pressedKey = null } = opts;
   if (!examples.length) return '';
   return join(
-    el('p', 'Or try an example:', { className: 'wa-caption-s wa-color-text-quiet', id: 'example-maps-lede' }),
+    el('p', 'Or try an example', { className: 'wa-caption-s wa-color-text-quiet', id: 'example-maps-lede' }),
     el('div', join(...examples.map((ex) => waButton(ex.name, {
       type: 'button',
       pill: true,
@@ -428,12 +443,15 @@ function pickRow(textHtml, controlHtml, opts = {}) {
  * button (PLAN D15). A row needing an API key offers the operator's download link
  * instead. `more` is how many matches are not listed; a last row says so.
  *
+ * A row in `farKm` (catalogue id → km from the nearest pick) is a second city: it
+ * says how far and its Add is disabled, because `addRow` would refuse it.
+ *
  * @param {Object[]} rows
- * @param {{selectedIds?: Set<string>|string[], full?: boolean, more?: number}} [opts]
+ * @param {{selectedIds?: Set<string>|string[], farKm?: Map<string, number>, full?: boolean, more?: number}} [opts]
  * @returns {string}
  */
 export function renderResults(rows, opts = {}) {
-  const { selectedIds = [], full = false, more = 0 } = opts;
+  const { selectedIds = [], farKm = new Map(), full = false, more = 0 } = opts;
   const chosen = selectedIds instanceof Set ? selectedIds : new Set(selectedIds);
   if (!rows.length) {
     return el('p', iconLabel('lightbulb', 'Try the operator’s name, or bring your own feed below.'),
@@ -446,10 +464,13 @@ export function renderResults(rows, opts = {}) {
     : '';
   return join(...rows.map((row) => {
     const already = chosen.has(`mdb:${row.id}`);
+    const farAway = farKm.get(String(row.id));
+    const far = farAway !== undefined;
     const text = join(
       el('span', esc(labelOf(row)), { className: 'pick-row-name' }),
       el('span', rowWhereHtml(row), { className: 'wa-caption-xs wa-color-text-quiet' }),
       rowBadges(row),
+      far ? chip(`${num(farAway)} km from your picks`, 'arrows-left-right', { variant: 'danger' }) : '',
     );
     let control = '';
     if (row.a) {
@@ -472,7 +493,7 @@ export function renderResults(rows, opts = {}) {
         icon: 'plus',
         variant: 'brand',
         dataAdd: String(row.id),
-        disabled: full || null,
+        disabled: full || far || null,
         ariaLabel: `Add ${labelOf(row)}`,
       });
     }
@@ -487,7 +508,7 @@ export function renderResults(rows, opts = {}) {
  * @returns {string} plain text; the caller writes it with `textContent`
  */
 export function renderResultsSummary(shown, total) {
-  if (!total) return 'No catalogue match.';
+  if (!total) return 'No feed matches.';
   if (total === 1) return '1 feed matches.';
   if (shown < total) return `${num(total)} matches · closest ${num(shown)} shown`;
   return `${num(total)} feeds match.`;
@@ -512,7 +533,10 @@ export function renderPicksCount(used, cap) {
  * The selected-feeds list: one row per feed that will be read, map picks and
  * bring-your-own alike.
  *
- * @param {Array<{id: string, label: string, where: string, badge: string, icon: string}>} picks
+ * `degrade`, when set, is a `DEGRADE_KIND` code shown as its `degradeChip` in place of
+ * the badge (the drawn OpenStreetMap area: `assumed_schedule`).
+ *
+ * @param {Array<{id: string, label: string, where: string, badge: string, icon: string, degrade?: string}>} picks
  * @returns {string} '' with nothing picked; `#picks-count` says so
  */
 export function renderPicks(picks) {
@@ -521,7 +545,8 @@ export function renderPicks(picks) {
     join(
       el('span', esc(p.label), { className: 'pick-row-name' }),
       p.where ? el('span', esc(p.where), { className: 'wa-caption-xs wa-color-text-quiet' }) : '',
-      p.badge ? chip(p.badge, p.icon || '', { variant: 'neutral' }) : '',
+      p.degrade ? degradeChip(p.degrade)
+        : (p.badge ? chip(p.badge, p.icon || '', { variant: 'neutral' }) : ''),
     ),
     waButton('Remove', {
       type: 'button',
@@ -536,11 +561,10 @@ export function renderPicks(picks) {
 }
 
 /** Where OpenStreetMap lines run is measured; how often is assumed. */
-function osmBasisLegend(extra = []) {
+function osmBasisLegend() {
   return legendRow([
     [basisChip('feed'), 'where they run'],
     [degradeChip('assumed_schedule'), 'how often'],
-    ...extra,
   ], { label: 'What is measured and what is assumed' });
 }
 
@@ -564,14 +588,37 @@ function noteRow(html) {
  * @param {boolean} [s.osmOffer] the drawn area can still be built from OpenStreetMap
  * @param {boolean} [s.osmPicked] it already has been, and is in the list below
  * @param {boolean} [s.regionalOn] the regional switch is on, so it is not offered
+ * @param {Array<{label: string, km: number}>} [s.far] picks just refused as a second city
+ * @param {number} [s.farMore] how many more were refused than `far` lists
+ * @param {boolean} [s.split] the picks already there do not chain into one map
  * @returns {string}
  */
 export function renderPickerNote(s) {
   const lines = [];
+  for (const f of s.far || []) {
+    lines.push(noteRow(join(
+      el('b', esc(f.label)),
+      chip(`${num(f.km)} km away`, 'arrows-left-right', { variant: 'danger' }),
+      esc('Too far to share a game with your picks.'),
+    )));
+  }
+  if (s.farMore > 0) {
+    lines.push(noteRow(join(
+      waBadge(`+${num(s.farMore)}`, { variant: 'neutral', appearance: 'outlined' }),
+      esc('more feeds skipped as too far away.'),
+    )));
+  }
+  if (s.split) {
+    lines.push(noteRow(join(
+      chip('Picks far apart', 'arrows-left-right', { variant: 'warning' }),
+      esc('Keep one city’s feeds before you run.'),
+    )));
+  }
   if (s.capped) {
     lines.push(noteRow(join(
-      chip(`Full: ${num(PICK_CAP)} feeds per run`, 'ban', { variant: 'danger' }),
-      esc('Remove one to add.'),
+      // The pips in `#picks-count` already show the cap, so the chip is one word.
+      chip('Full', 'ban', { variant: 'danger' }),
+      esc('Remove a feed to add another.'),
     )));
   }
   // Not while the area is a source: "redraw" would be advice to redraw the thing
@@ -579,7 +626,7 @@ export function renderPickerNote(s) {
   const ringEmpty = s.ringEmpty && !s.osmPicked;
   if (ringEmpty) {
     lines.push(noteRow(join(
-      chip('No catalogue feed in shape', 'draw-polygon', { variant: 'warning' }),
+      chip('No published feed here', 'draw-polygon', { variant: 'warning' }),
       waButton('Redraw', {
         type: 'button', appearance: 'plain', icon: 'draw-polygon', dataNoteAction: 'redraw',
       }),
@@ -591,19 +638,8 @@ export function renderPickerNote(s) {
   if (s.osmOffer) {
     // Stands on its own: the line above is reset by the next search, this is not.
     lines.push(el('div', join(
-      el('p', esc(ringEmpty
-        ? 'OpenStreetMap has the rail, metro and tram lines here.'
-        : 'No catalogue feed in your shape. OpenStreetMap has its rail, metro and tram lines.'),
-      { className: 'wa-body-s' }),
+      el('p', esc('OpenStreetMap has rail, metro and tram lines here.'), { className: 'wa-body-s' }),
       osmBasisLegend(),
-      el('p', 'The report labels each number.', { className: 'wa-caption-xs wa-color-text-quiet' }),
-    ), { className: 'wa-stack wa-gap-2xs' }));
-  }
-  if (s.osmPicked) {
-    // `#border-caption` describes the frame live.
-    lines.push(el('div', join(
-      el('p', 'Building from OpenStreetMap lines.', { className: 'wa-body-s' }),
-      osmBasisLegend([[chip('Timetable scores dropped, not estimated', 'ban'), '']]),
     ), { className: 'wa-stack wa-gap-2xs' }));
   }
   for (const b of s.blocked || []) {

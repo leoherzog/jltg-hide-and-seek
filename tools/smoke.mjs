@@ -3,7 +3,7 @@
 //
 // Runs `runPipeline` from worker.js against the cached reference feed with the map
 // files pointed at an unresolvable host (`DEAD_WORLD_URL`), and asserts the golden
-// numbers from generate.py's `selftest()`. The OSM layer has no off switch, so the
+// golden numbers fixed by prior runs of this harness. The OSM layer has no off switch, so the
 // dead bucket is what keeps the run offline and deterministic (§(f)1's failure path
 // yields an empty `GeoData`). The numbers are measured, not guessed: a change means
 // an algorithm changed. Never adjust an assertion to make it pass.
@@ -182,7 +182,11 @@ async function mergePhases() {
 
     /** @type {string[]} */
     const notes = [];
-    const merged = await mergeFeeds([a, b], { onNote: (msg) => notes.push(msg) });
+    /** @type {string[]} */
+    const codes = [];
+    const merged = await mergeFeeds([a, b], {
+      onNote: (msg, code) => { notes.push(msg); codes.push(code); },
+    });
 
     is('merge.self.stops', Object.keys(merged.stops).length, 2986);
     is('merge.self.routes', Object.keys(merged.routes).length, 50);
@@ -211,6 +215,8 @@ async function mergePhases() {
 
     is('merge.self.window', `${merged.feedStart}/${merged.feedEnd}`, '20260724/20260830');
     is('merge.self.notz', notes.some((n) => /time ?zone/i.test(n)), false);
+    // The same stops twice sit 0 m apart.
+    is('merge.self.near', codes.includes('merge_far_apart'), false);
 
     const rows = feedSourceRows(mergeOrder([a, b]), null);
     is('merge.self.sources', rows.map((r) => r.tag).join(','), 'f0,f1');
@@ -228,7 +234,13 @@ async function mergePhases() {
     const b = await loadFeed(twoB, cache);
     /** @type {string[]} */
     const notes = [];
-    const m = await mergeFeeds([a, b], { onNote: (msg) => notes.push(msg) });
+    /** @type {string[]} */
+    const codes = [];
+    const m = await mergeFeeds([a, b], {
+      onNote: (msg, code) => { notes.push(msg); codes.push(code); },
+    });
+    // Grand Rapids and Rochester are ~630 km apart: warned about, never refused.
+    is('merge.two.farApart', codes.includes('merge_far_apart'), true);
 
     is('merge.two.stops', Object.keys(m.stops).length, 2291);
     is('merge.two.routes', Object.keys(m.routes).length, 53);
@@ -464,7 +476,7 @@ async function main() {
     return 1;
   }
 
-  // ── the golden numbers (generate.py selftest) ─────────────────
+  // ── the golden numbers ─────────────────
   const m = report.metrics || {};
   const exact = [
     ['served_stops', m.servedStops, 1490],
@@ -480,9 +492,9 @@ async function main() {
     ['hub_route_share', report.hub ? report.hub.routeShare : null, 0.750, 0.01],
   ];
 
-  // The scoring layer, measured against a `generate.py <reference feed> --no-osm`
-  // run, which the unreachable world bucket reproduces. Every value is exact
-  // integer tenths: a 0.1 drift is a bug in a ramp, `tenths()`, or renormalisation.
+  // The scoring layer, measured as a fixed baseline against the reference feed with
+  // the OSM layer unreachable (which the dead-world bucket above reproduces). Every
+  // value is exact integer tenths: a 0.1 drift is a bug in a ramp, `tenths()`, or renormalisation.
   const fit = report.fitness || {};
   exact.push(
     ['fitness.score', fit.score === undefined ? null : fit.score, 76.0],
@@ -515,7 +527,7 @@ async function main() {
     });
   }
 
-  line('Golden numbers (the CLI selftest baseline, plus a measured scoring set)');
+  line('Golden numbers (measured baseline, plus a measured scoring set)');
   for (const r of results) {
     const tag = r.pass ? colour(GREEN, 'PASS') : colour(RED, 'FAIL');
     line(`  ${tag}  ${r.name.padEnd(17)} expected ${r.expected.padEnd(14)} actual ${r.actual}`);

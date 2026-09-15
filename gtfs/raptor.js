@@ -1,25 +1,23 @@
 /**
  * S1 · RAPTOR.
  *
- * Port of `generate.py`: `_s1_slack`, `_s1_earliest_trip`,
- * `_s1_latest_trip`, `raptor`, `raptor_reverse` and `build_journey`.
- *
- * Round-based RAPTOR over the real timetable, ported exactly: the golden
- * t90 = 76.8 min on the reference feed depends on it. No target pruning — every
+ * Round-based RAPTOR over the real timetable: the golden
+ * t90 = 76.8 min on the reference feed depends on the round structure and
+ * marked-stop bookkeeping staying exact. No target pruning — every
  * query fans out to the whole network because callers want all arrival times.
  *
  * Labels, marked sets and parent pointers are typed arrays; `day.patternAtStop` /
  * `day.footpaths` are the CSR triples `gtfs/service.js` builds, and stop ids are
  * interned to dense integers by `day.stopIndex`. Marked stops and the pattern queue
- * are scanned in ascending index order, which reproduces the Python's `sorted(...)`
- * iteration with no priority queue and no tie-break nondeterminism.
+ * are scanned in ascending index order, giving a fixed total order with no
+ * priority queue and no tie-break nondeterminism.
  *
  * @module gtfs/raptor.js
  */
 
 import { MAX_TRANSFERS, cmpStr } from '../lib/core.js';
 
-/** `_S1_INF` / `_S1_NEG_INF`, generate.py. Both fit an Int32Array. */
+/** Both fit an Int32Array. */
 const S1_INF = 1000000000;
 const S1_NEG_INF = -1000000000;
 
@@ -47,7 +45,7 @@ function bisectRight(col, value) {
   return lo;
 }
 
-/** `sorted(set(ids))` — Python's normalisation of the origin/target list. */
+/** Deduplicates and sorts the origin/target stop ids. */
 function uniqueSorted(ids) {
   return Array.from(new Set(Array.from(ids, (s) => String(s)))).sort(cmpStr);
 }
@@ -134,9 +132,8 @@ export function raptor(day, originStopIds, departureS) {
   const best = new Int32Array(n);
   best.fill(S1_INF);
   const label = labelRounds(K + 1, n, S1_INF);
-  // parent[k][i] in the Python is None | ('walk', i) | ('ride', pi, trip, boardOff, off).
-  // Here: kind 0 = none, 1 = walk (a = from-stop), 2 = ride (a = pattern,
-  // b = trip, c = boardOff, d = alightOff).
+  // Encodes each parent pointer as kind 0 = none, 1 = walk (a = from-stop),
+  // 2 = ride (a = pattern, b = trip, c = boardOff, d = alightOff).
   const parentKind = new Array(K + 1);
   const parentA = new Array(K + 1);
   const parentB = new Array(K + 1);
@@ -173,7 +170,7 @@ export function raptor(day, originStopIds, departureS) {
    * the whole map, and it inflates the reference feed's ≤30-minute reach from 768
    * stops to 792. `seeds` is a snapshot and `touched` is unioned in by the caller,
    * so a stop reached by this pass is never a seed of the same pass; labels mutate
-   * live, exactly as in the Python.
+   * live.
    */
   function relaxFootpaths(k, seeds) {
     const touched = new Uint8Array(n);
@@ -276,8 +273,7 @@ export function raptor(day, originStopIds, departureS) {
     departureS: dep0,
     arrivalS,
     rounds,
-    // `_s1_parent` / `_s1_round`, generate.py. Consumed only by
-    // buildJourney; never crosses postMessage.
+    // Internal only: consumed by buildJourney; never crosses postMessage.
     _s1Parent: { kind: parentKind, a: parentA, b: parentB, c: parentC, d: parentD },
     _s1Round: roundOf,
   };

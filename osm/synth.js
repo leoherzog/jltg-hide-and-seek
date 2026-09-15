@@ -544,8 +544,8 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
     kept.push({ rel, clipped, wraps });
   }
   if (!kept.length) {
-    throw new Error('no OSM route relation keeps two stops inside the drawn border; '
-      + 'there is nothing to synthesize a feed from');
+    throw new Error('No OpenStreetMap route keeps two stops inside the drawn border, so '
+      + 'there is nothing to synthesize a timetable from.');
   }
 
   // ── 2 · cluster stop nodes into GTFS stops ──────────────────────────────────
@@ -669,8 +669,8 @@ export function synthesizeFeedZip({ routes, ring, asOf = null }) {
     });
   }
   if (!routeRows.length) {
-    throw new Error('every OSM route relation inside the border collapsed under stop '
-      + 'clustering or overran the service day; there is nothing to synthesize');
+    throw new Error('Every OpenStreetMap route inside the border collapsed under stop '
+      + 'clustering or overran the service day, so there is nothing to synthesize.');
   }
 
   // ── stops.txt: only clusters some trip actually serves ──────────────────────

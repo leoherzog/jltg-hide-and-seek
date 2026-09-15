@@ -46,7 +46,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { inflateRawSync } from 'node:zlib';
 import { EXAMPLE_MAPS } from '../lib/catalog.js';
-import { MAX_FEEDS_PER_RUN } from '../lib/core.js';
+import { MAX_FEEDS_PER_RUN, MAX_FEED_GAP_M } from '../lib/core.js';
+import { bboxChains } from '../lib/geo.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -531,6 +532,10 @@ export async function checkSnapshot(filePath) {
       say(!row.a, `${at}: ${id} (${row.p}) needs an API key`);
       say(!row.x, `${at}: ${id} (${row.p}) is no longer updated`);
     }
+    // The picker refuses a pick that does not chain to the others, so neither may a chip.
+    const boxes = ex.ids.map((id) => byId.get(id)).filter(Boolean).map((row) => row.b);
+    say(bboxChains(boxes, MAX_FEED_GAP_M).length <= 1,
+      `${at}: its feeds do not chain within ${MAX_FEED_GAP_M} m, so the picker would refuse one`);
   }
   return { ok: problems.length === 0, problems, doc };
 }

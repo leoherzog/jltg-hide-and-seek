@@ -1,9 +1,6 @@
 /**
  * app.js — the main-thread controller.
  *
- * Ported from generate.py's S4 page assembly (`render_index`), day-switched payload
- * and client runtime (`SHARED_PAGE_JS` + `_S4_INDEX_JS`).
- *
  * The document is assembled progressively: the shell ships skeleton sections, the
  * worker streams staged partial results, and each section is swapped for real markup
  * as its data lands. The stat rail hydrates through a nested `data-section="glance"`
@@ -20,15 +17,15 @@
 import {
   MAPLIBRE_JS, TILES_LIGHT, TILES_DARK,
   DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
-  cmpStr, num, mins, hhmm, prettyDate, rhu, quantile, coord,
+  cmpStr, num, mins, hhmm, prettyDate, rhu, quantile, coord, capWord,
 } from './lib/core.js';
 
 import {
   esc, el, join, waIcon, waCard, waBadge, waButton, jsonBlock, chip, waTag, degradeChip,
-  iconLabel,
+  iconLabel, leadDetail,
 } from './render/html.js';
 
-// The S4 formatting and day-view helpers are aliased back to their bare CLI names.
+// The S4-prefixed formatting and day-view helpers are aliased to the shorter names used throughout this file.
 import {
   renderHero, renderVerdict, renderScoreTrace, renderYourGame, bandVariant,
   s4Imperial as imperial, s4Signed as signed, s4JoinWords as joinWords,
@@ -43,7 +40,7 @@ import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
   setDeckPageSize,
 } from './render/deck.js';
-// S5 (`render_strategy`) — the hider's guide. Not a section and not in `SECTIONS`:
+// S5 — the hider's guide. Not a section and not in `SECTIONS`:
 // the fragment `#strategy` is the only door (see `applyRoute`).
 import { renderStrategy } from './render/strategy.js';
 import { initStrategy } from './render/simulator.js';
@@ -53,7 +50,7 @@ import { initStrategy } from './render/simulator.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The placeholder every section passes as its ordinal (`_S4_ORDINAL`). Replaced with
+ * The placeholder every section passes as its ordinal. Replaced with
  * the real number after empty sections are dropped, so the sequence has no gaps.
  */
 const ORDINAL_PLACEHOLDER = '--';
@@ -184,12 +181,24 @@ const STAGE_DOING = {
   provenance: 'collecting sources',
 };
 
+/** The fatal card's lead sentence, by stage; the raw worker message folds under Details. */
+const STAGE_LEAD = {
+  feed: 'This feed could not be read.',
+  days: 'The feed’s calendar could not be read.',
+  network: 'The network could not be built from this feed.',
+  geo: 'The map files could not be read.',
+  rules: 'The rules audit stopped.',
+  score: 'Scoring stopped.',
+  provenance: 'The sources record could not be assembled.',
+  worker: 'The analysis stopped.',
+};
+
 /** Fatal-error causes as [icon, words] rows plus one action, by stage; map-file failures never blame the feed. */
 const STAGE_ADVICE = {
   feed: {
     causes: [['file-zipper', 'Not a GTFS zip'], ['shield-halved', 'Server blocks cross-origin requests'],
       ['file-circle-xmark', 'No stop_times.txt']],
-    action: '',
+    action: 'Download the .zip yourself and drop it in “Or bring your own feed”.',
   },
   days: {
     causes: [['calendar-xmark', 'No calendar.txt or calendar_dates.txt'],
@@ -238,7 +247,7 @@ const DEGRADE_AFFECTS = {
 
 /** Reader-facing section names, for the “could not be rendered” notice. */
 const SECTION_NAME = {
-  hero: 'the headline',
+  hero: 'Headline',
   network: 'The map you’re playing on',
   glance: 'At a glance',
   yourgame: 'What this means for your game',
@@ -248,7 +257,7 @@ const SECTION_NAME = {
   curses: 'The curse deck',
   trace: 'Where the points came from',
   sources: 'Where these numbers come from',
-  footer: 'the footer',
+  footer: 'Footer',
 };
 
 /**
@@ -791,9 +800,9 @@ function optError(errors, opt, message) {
 }
 
 /**
- * Assemble `Options` from the Advanced panel. Mirrors `parse_args`: `departure`
- * gains `':00'` when it has only one colon, the exclusion lists are sorted and
- * deduped, and `borderBbox` is four numbers or an error.
+ * Assemble `Options` from the Advanced panel. `departure` gains `':00'`
+ * when it has only one colon, the exclusion lists are sorted and deduped,
+ * and `borderBbox` is four numbers or an error.
  *
  * @param {HTMLElement|null} form
  * @returns {{options: Object, errors: Array<{opt: string, message: string}>}}
@@ -823,7 +832,7 @@ function readOptions(form) {
 
   const asOf = orNull(readControl(form, 'asOf'));
   if (asOf !== null) {
-    // Accept both the CLI's 'YYYYMMDD' and an <input type="date">'s 'YYYY-MM-DD'.
+    // Accept both plain 'YYYYMMDD' and an <input type="date">'s 'YYYY-MM-DD'.
     const digits = asOf.replace(/-/g, '');
     if (!/^\d{8}$/.test(digits)) optError(errors, 'asOf', 'Analysis date must be YYYY-MM-DD.');
     else options.asOf = digits;
@@ -855,7 +864,7 @@ function readOptions(form) {
   const shape = orNull(readControl(form, 'borderShape'));
   if (shape !== null) {
     if (!['bbox', 'circle'].includes(shape)) {
-      optError(errors, 'borderShape', 'Border shape must be bbox or circle.');
+      optError(errors, 'borderShape', 'Border shape must be Rectangle or Circle.');
     } else options.borderShape = shape;
   }
 
@@ -901,7 +910,7 @@ function readOptions(form) {
 
   const departure = orNull(readControl(form, 'departure'));
   if (departure !== null) {
-    // `parse_args`: 'HH:MM' gains ':00'. Anything else has to be HH:MM:SS already.
+    // 'HH:MM' gains ':00'. Anything else has to be HH:MM:SS already.
     const value = departure.split(':').length === 2 ? `${departure}:00` : departure;
     if (!/^\d{1,2}:\d{2}:\d{2}$/.test(value)) {
       optError(errors, 'departure', 'Departure time must be HH:MM or HH:MM:SS.');
@@ -1185,8 +1194,10 @@ function startRun(sources, options, source) {
   try {
     worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   } catch (err) {
-    showFormError(`This browser could not start the analysis (${err && err.name}). `
-      + 'The page has to be served over http, not opened from disk.');
+    // eslint-disable-next-line no-console
+    console.warn('[app] worker failed to start', err);
+    showFormError('The analysis can’t start from a page opened as a file. Serve the folder '
+      + 'over http and reload.');
     return;
   }
   state.worker = worker;
@@ -1252,6 +1263,7 @@ function rerunWithSuggestion() {
       prevSize: state.report.size ? String(state.report.size.name) : null,
       prevBorderSource: run.options.borderSource || null,
       run: ((run.note && run.note.run) || 1) + 1,
+      prevRun: (run.note && run.note.run) || 1,
     },
   };
   try {
@@ -1262,8 +1274,8 @@ function rerunWithSuggestion() {
     const line = bbox.map((x) => num(x, 6, { comma: false })).join(', ');
     const note = $id('suggest-note');
     if (note) {
-      note.textContent = 'Couldn’t keep this run. Border copied — press Reset and paste it '
-        + 'into Border box under Advanced.';
+      note.textContent = 'This browser won’t carry the run across a reload. The border is on '
+        + 'your clipboard: press Reset, open Advanced and paste it into “Border box”.';
       // `#suggest-note` is `role="status"` and `tabindex="-1"`, so a keyboard reader
       // lands on the explanation instead of the inert button.
       try { note.focus({ preventScroll: true }); } catch { /* not focusable here */ }
@@ -1411,6 +1423,8 @@ function validateRerunHandoff(h) {
       prevBorderSource: ['landing', 'suggestion'].includes(note.prevBorderSource)
         ? note.prevBorderSource : null,
       run: Number.isInteger(run) && run >= 2 ? run : 2,
+      prevRun: Number.isInteger(Number(note.prevRun)) && Number(note.prevRun) >= 1
+        ? Number(note.prevRun) : (Number.isInteger(run) && run >= 2 ? run - 1 : 1),
     },
   };
 }
@@ -1536,8 +1550,8 @@ function runHistoryHtml(handoff) {
   return join(
     waBadge(`Run ${num(note.run || 2)}`),
     chip(from, 'draw-polygon', { variant: 'brand', title: line || null }),
-    chip(`Before: ${prevBorder}${note.prevSize ? ` · ${note.prevSize}` : ''}`, 'clock-rotate-left',
-      { dataBefore: true }),
+    chip([`Run ${num(note.prevRun || 1)}`, prevBorder, note.prevSize ? capWord(note.prevSize) : '']
+      .filter(Boolean).join(' · '), 'clock-rotate-left', { appearance: 'outlined', dataBefore: true }),
   );
 }
 
@@ -1546,8 +1560,10 @@ function armWatchdog() {
   clearWatchdog();
   state.watchdog = setTimeout(() => {
     state.watchdog = null;
-    fatalError('worker', `No reply for ${num(WORKER_SILENCE_S)} s`, {
-      messageHtml: chip(`No reply for ${num(WORKER_SILENCE_S)} s`, 'hourglass-end', { variant: 'danger' }),
+    fatalError('worker', `No reply for ${num(WORKER_SILENCE_S)} s.`, {
+      messageHtml: leadDetail(esc('The analysis went quiet.'), '', {
+        chipsHtml: chip(`${num(WORKER_SILENCE_S)} s without a reply`, 'hourglass-end', { variant: 'danger' }),
+      }),
     });
   }, WORKER_SILENCE_S * 1000);
 }
@@ -1974,8 +1990,9 @@ function hydrate(stage) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`[app] ${def.id} renderer failed`, err);
-      const text = `The ${SECTION_NAME[def.id] || def.id} section could not be rendered.`;
-      failedSections.set(text, SECTION_NAME[def.id] || def.id);
+      const name = SECTION_NAME[def.id] || def.id;
+      const text = `${name} could not be rendered.`;
+      failedSections.set(text, name);
       recordDegradation(text, { code: 'section_failed' });
       continue;
     }
@@ -2140,12 +2157,11 @@ async function fillChunked(parked) {
 /**
  * A section that rendered nothing disappears, and its nav entry goes with it.
  *
- * The CLI can make that call once, holding the whole report. Here the call is only
- * safe when no later stage could still fill the section — the map's stat rail renders
- * empty until the geo layer decides what units to print in — so an early empty result
- * merely hides the card, and only a stage with nothing left to wait for removes it
- * for good. A nested host (`glance`) is hidden and removed by exactly this path, and
- * its rail link goes with it.
+ * That call is only safe when no later stage could still fill the section — the map's
+ * stat rail renders empty until the geo layer decides what units to print in — so an
+ * early empty result merely hides the card, and only a stage with nothing left to wait
+ * for removes it for good. A nested host (`glance`) is hidden and removed by exactly
+ * this path, and its rail link goes with it.
  */
 function dropSection(def) {
   const host = sectionHost(def.id);
@@ -2240,7 +2256,7 @@ function recordDegradation(message, opts = {}) {
 }
 
 /**
- * `_s4_degradation_callout`, rendered live as a toast.
+ * Renders any pending degradations live, as a toast.
  *
  * Says what is missing — and only when something actually is: an empty warning is
  * worse than none.
@@ -2391,22 +2407,27 @@ function fatalError(stage, message, opts = {}) {
   }
   const landing = document.querySelector('#landing');
   if (landing) landing.hidden = true;
-  setProgress({ stage, label: `Stopped during ${stage}`, done: 0, total: 0 });
+  setProgress({ stage, label: STAGE_DOING[stage] ? `Stopped while ${STAGE_DOING[stage]}` : 'Stopped', done: 0, total: 0 });
 }
 
-/** The fatal card: stage, message, cause rows, action, reset. @param {string} stage @param {string} message @param {string} [messageHtml] replaces the message @returns {string} */
+/** The fatal card: a stage lead with the raw message folded, cause rows, action, reset. @param {string} stage @param {string} message @param {string} [messageHtml] replaces the lead and message @returns {string} */
 function fatalCardHtml(stage, message, messageHtml = '') {
   const advice = STAGE_ADVICE[stage] || { causes: [], action: 'Try another feed, or the same one again.' };
+  // The download-it-yourself advice fits only a feed that could not be downloaded; a zip the
+  // reader already chose that turned out broken gets no action beyond the reset button.
+  const action = stage === 'feed' && !/could not be downloaded/.test(String(message || '')) ? '' : advice.action;
   // Stack on an inner wrapper: a gap on the card host opens a seam under its shadow header.
   return waCard(el('div', join(
     messageHtml
       ? el('div', messageHtml)
-      : el('p', esc(String(message || 'The run stopped and did not say why.')), { className: 'wa-body-m' }),
+      : leadDetail(esc(STAGE_LEAD[stage] || 'The run stopped.'),
+        message ? el('p', esc(String(message)), { className: 'wa-body-s' }) : '',
+        { summary: 'Details' }),
     advice.causes.length ? el('div', join(
       el('p', esc('Likely causes'), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
       ...advice.causes.map(([icon, text]) => iconLabel(icon, text, { quiet: false })),
     ), { className: 'wa-stack wa-gap-2xs wa-body-s' }) : '',
-    advice.action ? el('p', esc(advice.action), { className: 'wa-body-s wa-color-text-quiet' }) : '',
+    action ? el('p', esc(action), { className: 'wa-body-s wa-color-text-quiet' }) : '',
     el('wa-button', join(waIcon('arrow-rotate-left', { slot: 'start' }), esc('Try another feed')),
       { dataRole: 'errorreset', variant: 'brand', appearance: 'filled', size: 'm' }),
   ), { className: 'wa-stack wa-gap-m' }), {
@@ -2420,7 +2441,7 @@ function fatalCardHtml(stage, message, messageHtml = '') {
 // S4 · per-day views
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** The day strip's figures, each already formatted. (`_s4_banner`.) */
+/** The day strip's figures, each already formatted. */
 function dayBanner(report, dayKey) {
   const v = dayView(report, dayKey);
   const label = dayLabel(report, dayKey);
@@ -2433,17 +2454,22 @@ function dayBanner(report, dayKey) {
 
   const headway = v.medianHeadwayMin;
   const midday = v.middayHeadwayP25P50P75;
+  // `cadenceNote` is the caption; `cadenceTitle` spells out the statistic on hover.
   let cadence;
   let cadenceNote;
+  let cadenceTitle;
   if (Array.isArray(midday) && midday.length === 3 && midday[0] !== null && midday[0] !== undefined) {
     cadence = `${num(midday[0])}–${num(midday[2])} min`;
-    cadenceNote = 'midday quartiles';
+    cadenceNote = 'typical wait · 10:00–14:00';
+    cadenceTitle = 'Middle half of stops’ midday headways, 25th to 75th percentile';
   } else if (headway !== null && headway !== undefined) {
     cadence = mins(headway);
-    cadenceNote = 'median per stop';
+    cadenceNote = 'typical wait · all day';
+    cadenceTitle = 'Median headway per stop, all routes, 06:00–22:00';
   } else {
     cadence = '—';
     cadenceNote = 'no service';
+    cadenceTitle = '';
   }
 
   const nDates = day ? day.dayType.dates.length : 0;
@@ -2460,6 +2486,7 @@ function dayBanner(report, dayKey) {
     variant,
     cadence,
     cadenceNote,
+    cadenceTitle,
     trips: num(v.trips || 0),
     lastBus: hhmm(Math.trunc(v.medianLastDepartureS || 0)),
     measuredOn: prettyDate(asOf),
@@ -2478,7 +2505,7 @@ function dayBannerHtml(b) {
     el('span', esc(caption), { className: 'wa-caption-xs wa-text-uppercase wa-color-text-quiet' }),
   ), { className: 'wa-stack wa-gap-3xs' });
   const figures = [
-    figure(esc(b.cadence), `How often · ${b.cadenceNote}`),
+    figure(el('span', esc(b.cadence), { title: b.cadenceTitle || null }), b.cadenceNote),
     figure(esc(b.trips), 'Trips'),
     figure(esc(b.lastBus), 'Last bus · median stop'),
   ];
@@ -2605,9 +2632,9 @@ function mapCaptionFor(report, dayKey) {
 // One block per concern, so a page that only wants the verdict never parses the stop
 // list. The map and the day switcher read them from the live DOM.
 
-/** Above this the map draws zone centres only. (`_S4_MAX_MAP_STOPS`.) */
+/** Above this the map draws zone centres only. */
 const MAX_MAP_STOPS = 5000;
-/** Above this the zone circles become dots only. (`_S4_MAX_MAP_ZONE_RINGS`.) */
+/** Above this the zone circles become dots only. */
 const MAX_MAP_ZONE_RINGS = 1200;
 // The spoke cap, `MAX_MAP_SPOKES`, lives in lib/core.js: it is applied worker-side
 // so the bytes never cross `postMessage`. `#stops.spoke_cap` reports what it did.
@@ -2981,7 +3008,7 @@ function mountDayChrome() {
   const radios = keys.map((key) => {
     const label = dayLabel(report, key);
     const title = key in per
-      ? `${label} — rated ${num(per[key], 1)} of 100 on ${label} service`
+      ? `Rated ${num(per[key], 1)} of 100 on ${label} service`
       : label;
     return el('wa-radio', esc(label), { value: key, appearance: 'button', size: 's', title });
   }).join('');
@@ -3002,7 +3029,7 @@ function mountDayChrome() {
 // The secret route
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// S5 (`render_strategy`) is a second *view* of the same document, reached only by
+// S5 (`renderStrategy`) is a second *view* of the same document, reached only by
 // `location.hash === '#strategy'`, linked from nothing.
 //
 //   * It is a view, not a tenth section: membership in `SECTIONS` would give it an
@@ -3330,8 +3357,9 @@ function bindPrintDisclosures() {
 // The page runtime
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// A port of generate.py's `SHARED_PAGE_JS` and `_S4_INDEX_JS`, kept as one source
-// string. Two changes, both forced by progressive hydration: every binding is
+// PAGE_RUNTIME_JS: the printed page's client-side runtime (shared page behavior plus
+// the S4 index-page logic), kept as one source string. Two changes, both forced by
+// progressive hydration: every binding is
 // idempotent (nodes stamped `data-bound`, one-shot observers flagged on
 // `window.__jltg`) because it runs again each time a stage lands new markup, and
 // every `D()` read tolerates a missing block.

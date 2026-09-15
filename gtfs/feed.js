@@ -1,8 +1,7 @@
 /**
  * gtfs/feed.js — GTFS feed loading and normalisation.
  *
- * Port of `generate.py` (the `_s1_*` helpers plus "S1 · feed loading and
- * normalisation"). Runs inside the Web Worker: no DOM. Carries its own minimal ZIP
+ * Runs inside the Web Worker: no DOM. Carries its own minimal ZIP
  * reader (stored + deflate) and streaming RFC-4180 CSV parser, both dependency-free.
  *
  * ── stop_times is stored COLUMNAR ───────────────────────────────────────────────
@@ -69,7 +68,7 @@ const _S1_RAIL_TYPES = [0, 1, 2, 5, 7, 11, 12];
 /** Sentinel for "this time field was blank". Outside any legal GTFS time. */
 const MISSING = -2147483648;
 
-// ── small private helpers (generate.py) ─────────────────────────────
+// ── small private helpers ─────────────────────────────
 
 /**
  * Median of a measured distribution — headways, gaps, travel times. The ordinary
@@ -125,7 +124,7 @@ export function s1Int(value, def = 0) {
 const _FLOAT_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 /**
- * Tolerant float(): returns null where Python's `float()` would raise.
+ * Tolerant float(): returns null for input that doesn't parse, instead of throwing.
  * @param {string|number|null|undefined} value @returns {number|null}
  */
 export function s1Float(value) {
@@ -141,7 +140,7 @@ export function s1Float(value) {
   return Number.isNaN(v) ? null : v;
 }
 
-/** Python's `round()` — round half to **even**, unlike core.js `rhu`. */
+/** Round half to **even** (banker's rounding), unlike core.js `rhu`. */
 function pyRound(x) {
   const f = Math.floor(x);
   const d = x - f;
@@ -225,8 +224,7 @@ async function* inflateStream(slice) {
 
 /**
  * Read a ZIP archive's central directory and return one descriptor per member, in
- * ascending name order (`generate.py` iterates `sorted(zf.namelist())`; later
- * duplicates of a basename win).
+ * ascending name order; later duplicates of a basename win.
  *
  * @param {Uint8Array|ArrayBuffer} bytes the whole archive
  * @param {{filter?: (basename: string, name: string) => boolean}} [opts]
@@ -239,7 +237,7 @@ async function* inflateStream(slice) {
 export async function unzip(bytes, opts = {}) {
   const { filter = null } = opts;
   const buf = toU8(bytes);
-  if (buf.byteLength < 22) throw new Error('not a zip file (too short)');
+  if (buf.byteLength < 22) throw new Error('Not a zip file: it is shorter than an empty archive.');
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
   // ── End Of Central Directory: scan backwards over the 65,535-byte comment ──
@@ -265,29 +263,28 @@ export async function unzip(bytes, opts = {}) {
   if (zip64Hint) {
     const loc = eocd - 20;
     if (loc < 0 || u32(dv, loc) !== SIG_LOC64) {
-      throw new Error('zip claims ZIP64 but carries no ZIP64 EOCD locator; refusing to '
-        + 'read it rather than return garbage');
+      throw new Error('The zip’s ZIP64 index is missing, so it cannot be read safely.');
     }
     const rec = u64(dv, loc + 8);
     if (rec + 56 > buf.byteLength || u32(dv, rec) !== SIG_EOCD64) {
-      throw new Error('ZIP64 EOCD record is missing or out of range');
+      throw new Error('The zip’s ZIP64 index is out of range.');
     }
     entries = u64(dv, rec + 32);
     cdSize = u64(dv, rec + 40);
     cdOffset = u64(dv, rec + 48);
   }
   if ((diskNo !== 0 && diskNo !== 0xffff) || (cdDisk !== 0 && cdDisk !== 0xffff)) {
-    throw new Error('split/spanned zip archives are not supported');
+    throw new Error('Split (multi-part) zip archives are not supported.');
   }
   if (cdOffset + cdSize > buf.byteLength) {
-    throw new Error('zip central directory runs past the end of the file (truncated download?)');
+    throw new Error('The zip is truncated; the download probably stopped early.');
   }
 
   const out = [];
   let p = cdOffset;
   for (let n = 0; n < entries; n++) {
     if (p + 46 > buf.byteLength || u32(dv, p) !== SIG_CDIR) {
-      throw new Error(`zip central directory entry ${n} is malformed`);
+      throw new Error(`Zip entry ${n} is malformed.`);
     }
     const flags = u16(dv, p + 8);
     const method = u16(dv, p + 10);
@@ -331,8 +328,8 @@ export async function unzip(bytes, opts = {}) {
       throw new Error(`zip member ${JSON.stringify(name)} is encrypted; cannot read it`);
     }
     if (method !== 0 && method !== 8) {
-      throw new Error(`zip member ${JSON.stringify(name)} uses compression method ${method}; `
-        + 'only 0 (stored) and 8 (deflate) are supported');
+      throw new Error(`${name} is compressed with a method this reader does not support `
+        + `(method ${method}).`);
     }
 
     const entry = {
@@ -370,12 +367,11 @@ function memberStream(buf, dv, entry) {
 // The CSV parser
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// Python's `csv.DictReader` under the default dialect (`line.split(',')` corrupts
-// real feeds). Handled:
+// RFC-4180-ish CSV (`line.split(',')` corrupts real feeds). Handled:
 //   * quoted fields, embedded commas and newlines, `""` as an escaped quote
 //   * CRLF, LF and lone CR line terminators
 //   * a quote mid-way through an unquoted field is literal, and text after a
-//     closing quote is appended (as CPython does)
+//     closing quote is appended
 //   * empty lines are skipped; short rows fill with '', long rows drop the surplus
 //   * the UTF-8 BOM is stripped and field names are trimmed
 
@@ -422,7 +418,7 @@ class CsvParser {
    * Uses only local state, so returning -1 is always safe to retry.
    */
   _record(s, start, n, final) {
-    // A blank line is `[]` to csv.reader and is skipped by DictReader entirely.
+    // A blank line is `[]` and is skipped by DictReader entirely.
     const c0 = s.charCodeAt(start);
     if (c0 === 10) return start + 1;
     if (c0 === 13) {
@@ -735,7 +731,6 @@ export function attachStopTimes(feed, st) {
 
 /**
  * Return `[zipBytes, sha256]` for a URL or a picked `File`/`Blob`/byte buffer.
- * The CLI's directory case has no browser analogue; a non-URL string is an error.
  *
  * @param {string|File|Blob|ArrayBuffer|Uint8Array} source
  * @param {Object} cache
@@ -906,7 +901,7 @@ function _s1WindowDates(tables) {
   }
   const dates = Array.from(seen).sort(cmpStr);
   if (dates.length) return [dates[0], dates[dates.length - 1]];
-  throw new Error('feed has no feed_info, calendar or calendar_dates dates to derive a window from');
+  throw new Error('The feed has no dates: no feed_info, calendar or calendar_dates rows.');
 }
 
 /**
@@ -985,7 +980,7 @@ export async function loadFeed(source, cache, opts = {}) {
   };
   for (const required of ['stops', 'routes', 'trips', 'stop_times']) {
     if (!count(required)) {
-      throw new Error(`GTFS feed ${JSON.stringify(label)} has no usable ${required}.txt`);
+      throw new Error(`The feed has no usable ${required}.txt.`);
     }
   }
 
@@ -1011,7 +1006,8 @@ export async function loadFeed(source, cache, opts = {}) {
     };
   }
   if (!stopCount) {
-    throw new Error(`GTFS feed ${JSON.stringify(label)} contains no boarding-capable stops`);
+    throw new Error('The feed has no boardable stops: every stops.txt row is a station, '
+      + 'entrance or node.');
   }
 
   const routes = {};
@@ -1117,7 +1113,7 @@ export function tripRows(feed) {
     for (let k = 0; k < buckets.length; k++) {
       const b = buckets[k];
       if (!b) continue;
-      // Stable sort on stop_sequence, matching CPython's `list.sort(key=…)`.
+      // Stable sort on stop_sequence (ties keep source order).
       const sorted = Array.prototype.slice.call(b).sort((x, y) => st.seqv[x] - st.seqv[y]);
       out.set(st.tripIds[k], Int32Array.from(sorted));
     }
@@ -1155,7 +1151,7 @@ export function normaliseTimes(feed) {
  *
  * The template trip's own `stop_times` rows are dropped, or the first headway slot
  * would be double-counted. `exact_times` makes no difference to an earliest-arrival
- * model. As in the CLI, a template whose frequency row is unusable still loses its
+ * model. A template whose frequency row is unusable still loses its
  * original stop_times and gets no replacements.
  */
 function _s1ExpandFrequencies(feed) {
@@ -1188,7 +1184,7 @@ function _s1ExpandFrequencies(feed) {
     const t1 = hmsToS(row.end_time);
     const headway = s1Int(row.headway_secs, 0);
     if (t0 === null || t1 === null || headway <= 0 || t1 <= t0) continue;
-    // `or` chain, exactly as the CLI: a departure of literally 0 falls through.
+    // `or` chain: a departure of literally 0 falls through to the arrival.
     const anchor = st.departure(rows[0]) || st.arrival(rows[0]) || 0;
     let k = 0;
     for (let dep0 = t0; dep0 < t1; dep0 += headway, k++) {
@@ -1200,7 +1196,7 @@ function _s1ExpandFrequencies(feed) {
     }
   }
 
-  // Surviving rows in file order, then the expansions — the CLI's concatenation order.
+  // Surviving rows in file order, then the expansions.
   for (let i = 0; i < st.length; i++) {
     if (templateSet.has(st.tripId(i))) continue;
     out.pushRaw(st.trip[i], st.stop[i], st.seqv[i], st.arrv[i], st.depv[i],
@@ -1244,8 +1240,8 @@ function _s1FillBlankTimes(feed, byTrip, tids) {
   for (const tid of tids) {
     const rows = byTrip.get(tid);
     const n = rows.length;
-    // `departure or arrival`: a departure of exactly 0 falls through to the arrival,
-    // as in Python. Load-bearing; keep it.
+    // `departure or arrival`: a departure of exactly 0 falls through to the arrival.
+    // Load-bearing; keep it.
     const times = new Array(n);
     let anyBlank = false;
     for (let i = 0; i < n; i++) {

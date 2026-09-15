@@ -1,7 +1,6 @@
 /**
  * rules/score.js — the scoring layer: ramps, the 100-point city fitness model,
  * the per-zone rating, findings, house rules and the provenance block.
- * Ported from generate.py's S3 scoring section.
  *
  * Worker side, no DOM. From `tenths()` onward every number is an integer number
  * of tenths of a point, so printed rows always add up to the printed total.
@@ -14,7 +13,7 @@
 import {
   GENERATOR, VERSION, M_PER_MILE, SEEKER_SAMPLE_CAP,
   FINDING_MINUS_BELOW, FINDING_PLUS_ABOVE, FITNESS_MIN_AVAILABLE_POINTS,
-  cmpStr, rhu, num, pct, mins, miles, hhmm, quantile, fillPct, fare,
+  cmpStr, rhu, num, pct, mins, miles, hhmm, quantile, fillPct, fare, capWord, shapeWord,
 } from '../lib/core.js';
 import { bboxOf, bboxContains, Projection } from '../lib/geo.js';
 import { cacheBackend } from '../lib/cache.js';
@@ -29,13 +28,13 @@ function sortedKeys(obj) {
   return obj ? Object.keys(obj).sort(cmpStr) : [];
 }
 
-/** Python's `d.get(k)`, without inheriting from `Object.prototype`. */
+/** A defaulting getter, without inheriting from `Object.prototype`. */
 function get(obj, key) {
   if (obj === null || obj === undefined) return undefined;
   return Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
 }
 
-/** Python's `d.get(k, 0)` for count-like tables. */
+/** A defaulting getter for count-like tables. */
 function getNum(obj, key, fallback = 0) {
   const v = get(obj, key);
   return (v === undefined || v === null) ? fallback : v;
@@ -45,7 +44,6 @@ function getNum(obj, key, fallback = 0) {
 
 /**
  * Monotone increasing, clamped: `lo`→0, `hi`→1.
- * (generate.py `ramp`)
  * @param {number} x @param {number} lo @param {number} hi @returns {number}
  */
 export function ramp(x, lo, hi) {
@@ -55,7 +53,6 @@ export function ramp(x, lo, hi) {
 
 /**
  * Monotone decreasing, clamped: `good`→1, `bad`→0.
- * (generate.py `rramp`)
  * @param {number} x @param {number} good @param {number} bad @returns {number}
  */
 export function rramp(x, good, bad) {
@@ -64,7 +61,6 @@ export function rramp(x, good, bad) {
 
 /**
  * 0 below `a`, ramp `a`→`b`, 1 across `[b, c]`, ramp down `c`→`d`, 0 above `d`.
- * (generate.py `plateau`)
  * @param {number} x
  * @param {number} a @param {number} b @param {number} c @param {number} d
  * @returns {number}
@@ -77,7 +73,6 @@ export function plateau(x, a, b, c, d) {
 
 /**
  * Convert a ramp output to integer tenths of a point: `floor(frac * max * 10 + 0.5)`.
- * (generate.py `tenths`)
  * @param {number} fraction @param {number} maxPoints @returns {number}
  */
 export function tenths(fraction, maxPoints) {
@@ -88,7 +83,7 @@ export function tenths(fraction, maxPoints) {
 // S3 · CITY FITNESS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** `_S3_BANDS`, generate.py. `[threshold, name, advice]`, descending. */
+/** `S3_BANDS`: `[threshold, name, advice]`, descending. */
 export const S3_BANDS = Object.freeze([
   Object.freeze([80.0, 'Excellent map', 'Play it as written; no house rules required.']),
   Object.freeze([65.0, 'Strong map', 'A few house rules and it plays well.']),
@@ -100,7 +95,7 @@ export const S3_BANDS = Object.freeze([
     "Consider the rulebook's cars or on-foot variant."]),
 ]);
 
-/** `_S3_GREEDY_K`, generate.py. */
+/** Greedy zone-selection count per size band (small/medium/large). */
 export const S3_GREEDY_K = Object.freeze({ small: 3, medium: 4, large: 5 });
 
 /**
@@ -123,7 +118,6 @@ const S3_ASSUMED_DROP_NOTE = 'Not measured on this run: the timetable behind thi
 
 /**
  * One scored row. `frac` is the ramp output; points are integer tenths from here on.
- * (generate.py `_s3_metric`)
  *
  * @param {string} mid @param {string} name @param {number|null} raw @param {string} unit
  * @param {number|null} frac @param {number} maxPoints
@@ -155,7 +149,6 @@ function s3Metric(mid, name, raw, unit, frac, maxPoints, kind, args, source, not
 /**
  * The four B-metric inputs, from the audit rows. `unknown` never enters a denominator,
  * and `unaskable` must not be folded into the functional pool: it cannot be asked.
- * (generate.py `_s3_question_stats`)
  * @param {Object[]} questions @param {Object} size @returns {Object}
  */
 function s3QuestionStats(questions, size) {
@@ -184,7 +177,7 @@ function s3QuestionStats(questions, size) {
   }
   const depth = size.categoryCount ? deep / size.categoryCount : null;
 
-  // Python sums a *sorted* list, so the float accumulation order is fixed.
+  // Sum a *sorted* copy of the list so the float accumulation order is fixed.
   const qualities = functional.map((q) => q.quality).sort((a, b) => a - b);
   let meanQuality = null;
   if (qualities.length) {
@@ -214,7 +207,6 @@ function s3QuestionStats(questions, size) {
 
 /**
  * The metric view for one service day: the head table, overlaid with that day's values.
- * (generate.py `_s3_view`)
  * @param {Object} metrics @param {string|null} dayKey @param {Object} size @returns {Object}
  */
 function s3View(metrics, dayKey, size) {
@@ -240,7 +232,6 @@ function s3View(metrics, dayKey, size) {
  * The largest share of served stops any single route reaches, on the best day.
  * Per-route trip totals are not on the metric table, so the one-route cap uses
  * stop reach (the `one_route_cap_is_stop_share` interpretation).
- * (generate.py `_s3_one_route_share`)
  * @param {Object[]} days @returns {number}
  */
 function s3OneRouteShare(days) {
@@ -264,7 +255,6 @@ function s3OneRouteShare(days) {
 
 /**
  * Build all six sub-scores from one metric view. Pure arithmetic; no I/O.
- * (generate.py `_s3_subscores`)
  *
  * @param {Object} view @param {Object} qstats @param {Object} size
  * @param {number|null} sharedSignatureShare
@@ -311,15 +301,15 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
     s3Metric('B1', 'Share of the catalogue that is live', qstats.liveShare, 'share',
       qstats.liveShare === null ? null : ramp(qstats.liveShare, 0.35, 0.80),
       10, 'ramp', [0.35, 0.80], 'interp',
-      `Functional plus half of weak, over the ${num(qstats.total)} questions that `
-      + `could be evaluated. Under a third live and the seekers are re-asking `
+      `Working questions plus half of the barely-helps ones, over the ${num(qstats.total)} that `
+      + `could be checked. Under a third live and the seekers are re-asking `
       + `questions at doubled cost while the hider farms cards.`,
       questionsAvailable && qstats.liveShare !== null, questionsDegrade),
     s3Metric('B2', 'Categories with two or more functional questions', qstats.categoryDepth,
       'share',
       qstats.categoryDepth === null ? null : ramp(qstats.categoryDepth, 0.50, 1.00),
       6, 'ramp', [0.50, 1.00], 'rulebook',
-      `Out of ${num(size.categoryCount)} categories in a ${size.name.toUpperCase()} game. `
+      `Out of ${num(size.categoryCount)} categories in a ${capWord(size.name)} game. `
       + `Two matters because Drained Brain bans three questions across different `
       + `categories and Spotty Memory forces a category on you.`,
       questionsAvailable && qstats.categoryDepth !== null, questionsDegrade),
@@ -332,9 +322,9 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
     s3Metric('B4', 'Randomize risk', qstats.randomizeRisk, 'share',
       qstats.randomizeRisk === null ? null : rramp(qstats.randomizeRisk, 0.10, 0.40),
       4, 'rramp', [0.10, 0.40], 'rulebook',
-      'Randomize redraws within the same category, so the category-weighted dead '
-      + 'share is exactly the chance the powerup hands the hider a free card. The '
-      + 'rulebook permits a randomize onto a null question outright.',
+      'Randomize redraws within the same category, so the category-weighted share of '
+      + 'wasted draws is exactly the chance the powerup hands the hider a free card. The '
+      + 'rulebook permits a randomize onto a question that can never be answered.',
       questionsAvailable && qstats.randomizeRisk !== null, questionsDegrade),
   ];
 
@@ -353,10 +343,10 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       nullish(headway) !== null),
     // On an assumed-schedule run T90 uses invented waits, so C2 is `interp`
     // ("Our call") rather than `feed`; the basis enum is not widened.
-    s3Metric('C2', 'Traverse ratio (T90 ÷ hiding period)', traverse, 'ratio',
+    s3Metric('C2', 'Crossing time (90th percentile) ÷ hiding period', traverse, 'ratio',
       traverse === null ? null : plateau(traverse, 0.40, 0.80, 2.50, 4.50), 7,
       'plateau', [0.40, 0.80, 2.50, 4.50], assumed ? 'interp' : 'feed',
-      `Below 0.40 the map collapses — every radar is yes and “far away” stops existing. `
+      `Below 0.40 the map collapses. Every radar is yes and “far away” stops existing. `
       + `Above 4.50 the map is bigger than the game.`,
       traverse !== null),
     s3Metric('C3', 'Share of stops on a frequent route-direction', nullish(frequent), 'share',
@@ -381,7 +371,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
     s3Metric('D1', 'Service span ÷ the size\'s playing hours', spanRatio, 'ratio',
       spanRatio === null ? null : ramp(spanRatio, 0.60, 1.00), 6,
       'ramp', [0.60, 1.00], 'interp',
-      `The rulebook says a ${size.name.toUpperCase()} game `
+      `The rulebook says a ${capWord(size.name)} game `
       + `${stated || 'runs to no stated number of hours'}; we read that as about `
       + `${num(required)} hours of play in a day. At 0.6 you end the round because the buses `
       + `stopped, not because someone was found.`,
@@ -390,7 +380,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
       nullish(evening) === null ? null : ramp(Number(evening), 0.30, 0.85), 5,
       'ramp', [0.30, 0.85], 'interp',
       'Zones with a departure after first departure plus the size\'s playing hours. '
-      + 'This asks whether the *map* survives to the end, not just the single latest bus.',
+      + 'This asks whether the whole map survives to the end, not just the single latest bus.',
       nullish(evening) !== null),
     s3Metric('D3', 'Dates running full service', nullish(fullDays), 'share',
       nullish(fullDays) === null ? null : ramp(Number(fullDays), 0.70, 1.00), 4,
@@ -496,7 +486,7 @@ function s3Subscores(view, qstats, size, sharedSignatureShare, weekendAvailable,
   return out;
 }
 
-/** `undefined` and `null` are both Python's `None` here. */
+/** Normalizes `undefined` to `null`. */
 function nullish(v) { return (v === undefined || v === null) ? null : v; }
 
 /**
@@ -509,7 +499,6 @@ function nullish(v) { return (v === undefined || v === null) ? null : v; }
  * there is no absolute size constant. Frequency is monotone and map collapse
  * lives entirely on the C2 plateau. Caps only lower the score. Above 40%
  * missing points no headline number is printed.
- * (generate.py `score_fitness`)
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
  * @param {Object<string, Object>} zoneScores @param {Object} size @param {Object[]} days
@@ -626,10 +615,21 @@ export function scoreFitness(metrics, questions, zones, zoneScores, size, days,
 }
 
 /**
+ * Each guard rail's short label. One table, so a §08 interpretation row that affects a
+ * cap names it with the same words as the trace's cap chips.
+ */
+const CAP_LABEL = Object.freeze({
+  CAP_ZONES: `at least ${num(30)} zones`,
+  CAP_CATEGORIES: `at least ${num(3)} live categories`,
+  CAP_SPAN: `at least ${num(4)} h of service`,
+  CAP_UNREACHABLE: `at least ${pct(0.15, 0)} reachable`,
+  CAP_ONE_ROUTE: `no route reaches ${pct(0.90, 0)} of stops`,
+});
+
+/**
  * All five guard rails, fired or not, each with its explaining sentence, sorted by id.
  * `scoreFitness` consumes the fired rows; the renderer prints the whole list so a
  * cap that was not evaluated is visible. A cap can only lower a score.
- * (generate.py `fitness_caps`)
  *
  * @param {Object} metrics @param {Object[]} questions @param {Object[]} zones
  * @param {Object} size @param {Object[]} days
@@ -652,7 +652,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 40.0,
       fired: Boolean(n && n < 30),
       evaluated: Boolean(n),
-      label: `at least ${num(30)} zones`,
+      label: CAP_LABEL.CAP_ZONES,
       why: n
         ? `${num(n)} distinct hiding zones, against the rulebook\'s own SMALL floor of 30 `
           + 'stations.'
@@ -663,7 +663,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 45.0,
       fired: evaluated && qstats.categoriesWithLive < 3,
       evaluated,
-      label: `at least ${num(3)} live categories`,
+      label: CAP_LABEL.CAP_CATEGORIES,
       why: evaluated
         ? `${num(qstats.categoriesWithLive)} of ${num(size.categoryCount)} question `
           + 'categories have at least one functional question.'
@@ -674,7 +674,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 25.0,
       fired: longest !== null && longest < 4.0,
       evaluated: longest !== null,
-      label: `at least ${num(4)} h of service`,
+      label: CAP_LABEL.CAP_SPAN,
       why: longest !== null
         ? `The longest service day spans ${num(longest || 0, 1)} hours, against the `
           + 'rulebook\'s shortest game of 4.'
@@ -685,7 +685,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 45.0,
       fired: reach !== null && Number(reach) < 0.15,
       evaluated: reach !== null,
-      label: `at least ${pct(0.15, 0)} reachable`,
+      label: CAP_LABEL.CAP_UNREACHABLE,
       why: reach !== null
         ? `${pct(Number(reach))} of zones are reachable inside the hiding period from the `
           + 'start location.'
@@ -696,7 +696,7 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
       cap: 50.0,
       fired: oneRoute >= 0.90,
       evaluated: Boolean(days && days.length),
-      label: `no route reaches ${pct(0.90, 0)} of stops`,
+      label: CAP_LABEL.CAP_ONE_ROUTE,
       why: (days && days.length)
         ? `The single most widespread route reaches ${pct(oneRoute)} of served stops. `
           + 'Above 90% the map is one-dimensional and every question degenerates to '
@@ -714,7 +714,6 @@ export function fitnessCaps(metrics, questions, zones, size, days) {
 /**
  * Equal-area polar sample of a disc: 8 rings × 16 spokes = 128 points, used for the
  * share of a zone circle that falls outside the map border.
- * (generate.py `_S3_DISC_SAMPLE`)
  */
 const S3_DISC_SAMPLE = (() => {
   const out = [];
@@ -729,7 +728,6 @@ const S3_DISC_SAMPLE = (() => {
 
 /**
  * Share of the zone circle's area that lies outside the map border.
- * (generate.py `_s3_edge_fraction`)
  */
 function s3EdgeFraction(zone, bbox, radiusM, proj) {
   let outside = 0;
@@ -742,7 +740,6 @@ function s3EdgeFraction(zone, bbox, radiusM, proj) {
 
 /**
  * Median gap between departures from anywhere inside the zone circle, 06:00–22:00.
- * (generate.py `_s3_zone_headway_min`)
  */
 function s3ZoneHeadwayMin(zone, day, lo, hi) {
   const times = [];
@@ -760,7 +757,6 @@ function s3ZoneHeadwayMin(zone, day, lo, hi) {
 
 /**
  * The latest departure from anywhere inside the zone circle.
- * (generate.py `_s3_zone_last_arrival_s`)
  */
 function s3ZoneLastArrivalS(zone, day) {
   let best = null;
@@ -774,7 +770,6 @@ function s3ZoneLastArrivalS(zone, day) {
 
 /**
  * Other zones within `radiusM` of each zone, by an x-sweep.
- * (generate.py `_s3_neighbour_count`)
  */
 function s3NeighbourCount(zones, radiusM) {
   const n = zones.length;
@@ -802,7 +797,6 @@ function s3NeighbourCount(zones, radiusM) {
 
 /**
  * Single-link clusters of candidate legal spots, at 100 m.
- * (generate.py `_s3_spot_clusters`)
  */
 function s3SpotClusters(spots, proj, linkM = 100.0) {
   const pts = spots.map((s) => proj.xy(Number(s.lat), Number(s.lon)));
@@ -850,7 +844,6 @@ const S3_AXIS_OF = Object.freeze({
  * and `no_service` zones are excluded from the ranking but never dropped.
  * Side effect by design: fills `QuestionAudit.survMean` in place, since only this
  * function sees both the audit rows and the survival table.
- * (generate.py `score_zones`)
  *
  * @param {Object[]} zones @param {Object[]} questions
  * @param {Object<string, Array<*>>} signatures @param {Object<string, number[]>} surv
@@ -879,7 +872,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
   for (const qid of liveIds) {
     const row = audits.get(qid);
     if (row !== undefined) {
-      // Python sums a *sorted* copy, so the float accumulation order is fixed.
+      // Summed as a sorted copy so the float accumulation order is fixed.
       const values = surv[qid].slice().sort((a, b) => a - b);
       let acc = 0.0;
       for (const v of values) acc += v;
@@ -906,7 +899,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
   const firstDep = Number(get(metrics, 'firstDepartureS') || 0.0);
   const gameEndS = firstDep + size.requiredHours * 3600.0;
 
-  // Computed once per zone; the Python recomputes it three times.
+  // Computed once per zone rather than once per metric, avoiding redundant recomputation.
   const lastArrivalOf = zones.map((z) => s3ZoneLastArrivalS(z, day));
   const lastArrivals = lastArrivalOf.filter((a) => a !== null);
   const medianLast = lastArrivals.length ? quantile(lastArrivals, 0.5) : null;
@@ -947,9 +940,8 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       'IR2', 'Worst single question, per card it costs', pinWorst, '0–1',
       haveIr ? rramp(pinWorst, 0.50, 0.95) : null, 10, 'rramp', [0.50, 0.95],
       'interp',
-      'At 0.95 one draw-3-keep-1 question leaves 5% of the map — the uniquely-identifiable '
-      + 'failure. Divided by the cards the question pays you, so an expensive question that '
-      + 'finds you is less of an indictment.',
+      'At 0.95 one cheap question leaves 5% of the map: you are named. Divided by the cards '
+      + 'the question pays you, so an expensive question that finds you counts for less.',
       haveIr,
     ));
     metricsRows.push(s3Metric(
@@ -1037,8 +1029,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       assumed
         ? S3_ASSUMED_DROP_NOTE
         : `The Move powerup grants ${num(size.moveGrantMin)} minutes to establish a brand-new `
-          + `zone; a 60-minute headway makes that unplayable from here. Scored out of 4 rather `
-          + `than 5 so the three service metrics sum to the axis\'s 15 points.`,
+          + `zone; a 60-minute headway makes that unplayable from here.`,
       !assumed && onward !== null,
       assumed ? 'assumed_schedule' : null,
     ));
@@ -1061,7 +1052,7 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
       osmReady ? ramp(spotWeight, 0, 12) : null, 8, 'ramp', [0, 12], 'interp',
       'Publicly accessible. The rulebook also requires a spot to be within 10 ft of a '
       + 'routable path; that test is not evaluated here, so every spot is marked '
-      + 'verify-on-the-ground and features with restrictive opening hours count half — '
+      + 'Verify on site and features with restrictive opening hours count half, because '
       + 'OpenStreetMap does not know whether a plaza is locked at night.',
       osmReady,
       osmDegrade,
@@ -1140,11 +1131,11 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
     const seekerFrac = (travelMin === null || t90 <= 0) ? null : travelMin / t90;
     // X3 is C2's zone-level twin; the same `interp` relabel applies on an assumed run.
     metricsRows.push(s3Metric(
-      'X3', 'Seeker travel cost to reach you, ÷ T90', seekerFrac, 'ratio',
+      'X3', 'Seeker travel cost to reach you, ÷ crossing time', seekerFrac, 'ratio',
       seekerFrac === null ? null : ramp(seekerFrac, 0.20, 0.80), 3, 'ramp', [0.20, 0.80],
       assumed ? 'interp' : 'feed',
-      'Measured on the same run as R1, from the round-start location. R1 and X3 pull in '
-      + 'opposite directions on purpose: you travel here with certainty on the first bus, the '
+      'Measured on the same run as your own travel time, from the round-start location. The '
+      + 'two pull in opposite directions on purpose: you travel here with certainty on the first bus, the '
       + 'seekers travel here later under uncertainty and often back through the hub.',
       seekerFrac !== null,
     ));
@@ -1233,7 +1224,6 @@ export function scoreZones(zones, questions, signatures, surv, geo, day, times, 
 /**
  * Rank key `(−overallTenths, −IR, −R, zoneId)`. Excluded zones are left out of the
  * ranking but stay in `zoneScores` so the page can list them separately.
- * (generate.py `rank_zones`)
  *
  * @param {Object<string, Object>} zoneScores @returns {string[]}
  */
@@ -1250,7 +1240,6 @@ export function rankZones(zoneScores) {
  * walk the ranked list, accept a zone at least `8 × zoneRadius` from every accepted
  * zone or ≥5 points better than the nearest one, target `min(12, max(6, round(n / 25)))`,
  * then append the top zone on each axis so an axis winner appears even if it ranks low overall.
- * (generate.py `select_dossiers`)
  *
  * @param {string[]} ranked @param {Object<string, Object>} zoneScores
  * @param {Object<string, Object>} zones zoneId → `Zone`
@@ -1299,15 +1288,14 @@ export function selectDossiers(ranked, zoneScores, zones, radiusM) {
 /**
  * Mitigations keyed by metric id. A minus with a mitigation becomes a `concern`
  * (something you can play around); a minus without one stays a `minus`.
- * (generate.py `_S3_MITIGATION`)
  */
 const S3_MITIGATION = Object.freeze({
   A2: 'Move the start location to a stop nearer the middle of the network, or play the next '
     + 'size down so the hiding period matches the map.',
-  B1: 'Pre-brief the dead question list before the round starts, so nobody spends a card '
+  B1: 'Brief everyone on the wasted draws before the round starts, so nobody spends a card '
     + 'buying a null.',
   B4: 'Consider removing Randomize from the deck, or agreeing that a randomize onto a '
-    + 'known-dead question is rerolled.',
+    + 'question that can\'t be answered here is rerolled.',
   C1: 'Agree that the seekers may check the live timetable at any time; on this map the wait '
     + 'is the game.',
   C2: 'Shrink the border, or step the game size up one so the hiding period matches how long '
@@ -1320,12 +1308,13 @@ const S3_MITIGATION = Object.freeze({
   E2: 'Fix the day of the week before anyone plans anything else.',
   F1: 'Ban camping the hub, or make the hub a neutral zone the seekers may not linger in.',
   F2: 'Consider trimming the outermost isolated zones out of the map.',
-  F3: 'Expect Curse of the U-Turn to fizzle and Transit Line to be strong; brief both.',
+  F3: 'Expect Curse of the U-Turn to fizzle and Transit Line to almost always answer no. Brief both.',
 });
 
 /**
- * One factual sentence about a metric, in that metric's own units.
- * (generate.py `_s3_finding_detail`)
+ * One factual sentence about a metric, in that metric's own units. Where the page
+ * already prints the metric's value right above the sentence (A3, B3, B4, C3, D2, F1,
+ * F2, F3), the sentence defines the metric instead of restating the figure.
  */
 function s3FindingDetail(metric, metrics, questions) {
   const mid = metric.id;
@@ -1341,24 +1330,18 @@ function s3FindingDetail(metric, metrics, questions) {
       + 'period from the start location.';
   }
   if (mid === 'A3') {
-    return `${pct(r)} of zones still share their answers with at least one other zone `
-      + 'after the map\'s best questions.';
+    return 'Zones whose answers to the map’s best questions match at least one other zone’s.';
   }
   if (mid === 'B1') {
     const dead = questions.filter((q) => q.status === 'dead' || q.status === 'degenerate');
-    return `${num(dead.length)} of ${num(questions.length)} questions in this size\'s catalogue are `
-      + 'dead or degenerate.';
+    return `${num(dead.length)} of ${num(questions.length)} questions in this size\'s catalogue `
+      + 'can\'t be answered here or always give the same answer.';
   }
   if (mid === 'B2') {
     return `${pct(r)} of the size\'s question categories have two or more functional questions.`;
   }
-  if (mid === 'B3') {
-    return `Mean quality across the functional questions is ${num(r * 100, 0)} out of 100.`;
-  }
-  if (mid === 'B4') {
-    return `A Randomize redraw lands on a dead or degenerate question about `
-      + `${pct(r)} of the time.`;
-  }
+  if (mid === 'B3') return 'Average quality of the functional questions, on a 0–1 scale.';
+  if (mid === 'B4') return 'How often a Randomize redraw lands on a wasted draw.';
   if (mid === 'C1') {
     return `The median served stop sees a bus every ${mins(r)} between 06:00 and 22:00, `
       + 'counting every route together.';
@@ -1367,15 +1350,13 @@ function s3FindingDetail(metric, metrics, questions) {
     return `Crossing the network takes ${mins(get(metrics, 't90Min') || 0, 1)} at the 90th `
       + `percentile, which is ${num(r, 2)} hiding periods.`;
   }
-  if (mid === 'C3') {
-    return `${pct(r)} of served stops have a single route-direction at 15 minutes or better.`;
-  }
+  if (mid === 'C3') return 'Served stops with at least one route-direction every 15 minutes or better.';
   if (mid === 'D1') {
     return `Service spans ${num(get(metrics, 'spanHours') || 0, 1)} hours, from `
       + `${hhmm(get(metrics, 'firstDepartureS') || 0)} to `
       + `${hhmm(get(metrics, 'lastDepartureS') || 0)}.`;
   }
-  if (mid === 'D2') return `${pct(r)} of zones still have a departure at the end of a full round.`;
+  if (mid === 'D2') return 'Zones with a departure left at the end of a full round.';
   if (mid === 'D3') {
     return `${pct(r)} of the dates in the feed\'s validity window run full service; `
       + `${num((get(metrics, 'noServiceDates') || []).length)} have no service at all.`;
@@ -1392,17 +1373,18 @@ function s3FindingDetail(metric, metrics, questions) {
     return `About ${num(r * 7, 1)} of the 7 calendar days are fully playable.`;
   }
   if (mid === 'F1') {
-    return `The busiest stop carries ${pct(r)} of all routes, and the network reads as `
-      + `${get(metrics, 'networkShape')}.`;
+    const shape = shapeWord(get(metrics, 'networkShape'));
+    return shape
+      ? `Share of all routes calling at the busiest stop; the network is ${shape}.`
+      : 'Share of all routes calling at the busiest stop.';
   }
-  if (mid === 'F2') return `${pct(r)} of zones have no other zone within two zone radii.`;
-  if (mid === 'F3') return `${pct(r)} of served stops carry a second route.`;
+  if (mid === 'F2') return 'Zones with no other zone within two zone radii.';
+  if (mid === 'F3') return 'Served stops where a second route calls.';
   return `${metric.name}: ${num(r, 3)} ${metric.unit}.`;
 }
 
 /**
  * The service day a finding is really about, or null.
- * (generate.py `_s3_day_sensitive`)
  */
 function s3DaySensitive(metricId, metrics) {
   if (!['E1', 'E2', 'C1', 'C3', 'D1', 'D2'].includes(metricId)) return null;
@@ -1418,7 +1400,6 @@ function s3DaySensitive(metricId, metrics) {
  * of its maximum is a *minus* (a *concern* if `S3_MITIGATION` has its id); `> 0.85`
  * is a *plus*. Sorted by `(quadrant, −severity, metricId)`. The *benefit* quadrant
  * has no computable source here and is dropped rather than invented.
- * (generate.py `derive_findings`)
  *
  * @param {Object} fitness @param {Object} metrics @param {Object[]} questions
  * @returns {Object[]} `Finding[]`
@@ -1483,7 +1464,6 @@ function fact(text, icon, variant = 'neutral', fill = null) {
 /**
  * Fire the house rules whose preconditions hold, in fixed priority order.
  * `safety_exclusions` always fires: the rulebook refuses to automate that polygon.
- * (generate.py `derive_recommendations`)
  *
  * @param {Object} reportParts `{metrics, fitness, size, hub, border, curses, questions, feed}`
  * @returns {Object[]} `Recommendation[]`
@@ -1518,8 +1498,9 @@ export function deriveRecommendations(reportParts) {
       explain: { lead: parts.lead || '', detail: parts.detail || '' },
       icon: parts.icon || '',
       facts: parts.facts || [],
+      basis: parts.basis || 'feed',
       items,
-      itemsMore: Math.max(0, items.length - 8),
+      itemsMore: Math.max(0, items.length - 5),
       metricIds: get(REC_METRIC_IDS, rid) || [],
       degrade: parts.degrade || null,
     });
@@ -1539,6 +1520,7 @@ export function deriveRecommendations(reportParts) {
         detail: 'Every question that depends on being able to move gets worse on the quieter '
           + 'weekend day.',
         icon: 'calendar-day',
+        basis: 'feed',
         facts: [fact(`weekend ${pct(Number(weekend))} of weekday trips`, 'calendar-minus',
           'warning')],
       });
@@ -1551,6 +1533,7 @@ export function deriveRecommendations(reportParts) {
         detail: 'It carries the most service and is the day every number on this page is '
           + 'computed for.',
         icon: 'calendar-day',
+        basis: 'feed',
       });
   }
 
@@ -1566,6 +1549,7 @@ export function deriveRecommendations(reportParts) {
         detail: 'It is the only place from which the whole map is reachable inside the hiding '
           + 'period, and it is where the seekers will start anyway.',
         icon: 'star',
+        basis: 'feed',
         facts: [fact(`${pct(hub.routeShare)} of routes`, 'star')],
       });
   } else if (hub !== null) {
@@ -1578,6 +1562,7 @@ export function deriveRecommendations(reportParts) {
         lead: 'Pick a start station together',
         detail: 'This network has no dominant hub; these are its busiest stations.',
         icon: 'star',
+        basis: 'feed',
         items: [{ id: String(hub.stopId), label: hub.name }]
           .concat(top.map(([sid, name]) => ({ id: String(sid), label: name }))),
       });
@@ -1597,9 +1582,11 @@ export function deriveRecommendations(reportParts) {
           + 'extend past it'
         : `border padded by ${num(border.padM)} m — one hiding-zone radius, so every legal `
           + 'zone lies wholly inside';
-    const derivedFact = derivation === 'option' || derivation === 'option_fallback'
+    // The padding itself is shown on the map card, in the reader's unit; the worker
+    // cannot pick that unit, so only a reader-supplied box gets a chip here.
+    const derivedFact = (derivation === 'option' || derivation === 'option_fallback')
       ? fact('your box, unpadded', 'draw-polygon')
-      : fact(`padded ${num(border.padM)} m`, 'draw-polygon');
+      : null;
     add('use_borders', 30,
       'Use exactly the border printed under the map, and copy the GeoJSON rather than '
       + 'redrawing it. The rulebook is emphatic that every player must be using the same '
@@ -1610,7 +1597,8 @@ export function deriveRecommendations(reportParts) {
           + 'player must be using the same set of borders, and on this map the border decides '
           + 'which questions work at all.',
         icon: 'draw-polygon',
-        facts: [derivedFact],
+        basis: 'interp',
+        facts: derivedFact ? [derivedFact] : [],
         degrade: derivation === 'option_fallback' ? 'border_not_applied' : null,
       });
   }
@@ -1625,6 +1613,7 @@ export function deriveRecommendations(reportParts) {
         lead: 'Read the cars or on-foot variant first',
         detail: 'A map that is just borders and street termini beats a broken transit game.',
         icon: 'person-running',
+        basis: 'interp',
       });
   }
 
@@ -1632,16 +1621,17 @@ export function deriveRecommendations(reportParts) {
   const implied = get(metrics, 'impliedSize');
   if (implied && implied !== size.name) {
     add('resize_map', 35,
-      `The map\'s own numbers point at a ${implied.toUpperCase()} game while the parameters in use `
-      + `are ${size.name.toUpperCase()}. Either shrink the border or switch size — the hiding period `
+      `The map\'s own numbers point at a ${capWord(implied)} game while the parameters in use `
+      + `are ${capWord(size.name)}. Either shrink the border or switch size — the hiding period `
       + 'and the zone radius are what make distance mean something.',
       `axes imply ${implied}, running as ${size.name}`, false, {
         lead: 'Shrink the border or switch size',
         detail: 'The hiding period and the zone radius are what make distance mean something.',
         icon: 'ruler-combined',
+        basis: 'interp',
         facts: [
-          fact(`map says ${implied.toUpperCase()}`, 'ruler-combined', 'warning'),
-          fact(`playing ${size.name.toUpperCase()}`, 'gamepad'),
+          fact(`map says ${capWord(implied)}`, 'ruler-combined', 'warning'),
+          fact(`playing ${capWord(size.name)}`, 'gamepad'),
         ],
       });
   }
@@ -1652,14 +1642,16 @@ export function deriveRecommendations(reportParts) {
     const deadSorted = dead.slice().sort((a, b) => cmpStr(a.id, b.id));
     const sample = deadSorted.slice(0, 5).map((q) => q.label).join(', ');
     add('brief_dead_questions', 40,
-      `Read the dead list out before the first round. ${num(dead.length)} questions here `
-      + `return null or a known answer — ${sample}${dead.length > 5 ? '…' : '.'}`,
-      `B1: ${num(dead.length)} dead or degenerate questions`,
+      `Read out the wasted draws before the first round. ${num(dead.length)} questions `
+      + `can't be answered here or always give the same answer: ${sample}${dead.length > 5 ? '…' : '.'}`,
+      `B1: ${num(dead.length)} wasted draws`,
       dead.length > questions.length / 3, {
-        lead: 'Read the dead list out',
-        detail: `Do it before the first round: ${num(dead.length)} questions here return null `
-          + 'or a known answer.',
+        lead: 'Read out the wasted draws',
+        detail: 'Read it out before the first round. Each of these either can’t be answered '
+          + 'here or always gives the same answer.',
         icon: 'list-check',
+        basis: 'feed',
+        facts: [fact(`${num(dead.length)} wasted draws`, 'circle-xmark', 'danger')],
         items: deadSorted.map((q) => ({ id: q.id, label: q.label })),
       });
   }
@@ -1676,6 +1668,7 @@ export function deriveRecommendations(reportParts) {
       'Curse deck audit, tiers 1 and 2', true, {
         lead: 'Remove before you shuffle',
         icon: 'ban',
+        basis: 'feed',
         items: removalsSorted.map((c) => ({ id: c.id, label: c.name })),
       });
   }
@@ -1690,10 +1683,16 @@ export function deriveRecommendations(reportParts) {
       + 'flags the first two and is silent about the third, which is an inconsistency. Treat '
       + 'them as one switch.',
       'rules.md ambiguity spending_curse_inconsistency', false, {
-        lead: 'Decide: does anyone spend money?',
-        detail: 'Egg Partner, Impressionable Consumer and Lemon Phylactery all require a '
-          + 'purchase. Treat them as one switch.',
+        lead: 'Agree whether anyone spends money',
+        detail: 'All three require a purchase; the rulebook flags the first two and is silent '
+          + 'about the third. Treat them as one switch.',
         icon: 'coins',
+        basis: 'interp',
+        items: [
+          { id: 'egg_partner', label: 'Egg Partner' },
+          { id: 'impressionable_consumer', label: 'Impressionable Consumer' },
+          { id: 'lemon_phylactery', label: 'Lemon Phylactery' },
+        ],
       });
   }
 
@@ -1711,12 +1710,14 @@ export function deriveRecommendations(reportParts) {
       + (assumed ? ` ${assumedCaveat}` : ''),
       `median last departure ${hhmm(Number(medianLast))}`, false, {
         lead: 'Set an end-of-game timer',
-        detail: 'After the median last departure a hider in an average zone can no longer get anywhere, '
-          + `including home.${assumed ? ` ${assumedCaveat}` : ''}`,
+        detail: 'The timer is 30 minutes before the median last departure. After that a hider in an '
+          + 'average zone can no longer get anywhere, including home.'
+          + (assumed ? ` ${assumedCaveat}` : ''),
         icon: 'stopwatch',
+        basis: 'feed',
         facts: [
-          fact(hhmm(Number(medianLast) - 1800), 'stopwatch', 'brand'),
-          fact(`last bus ${hhmm(Number(medianLast))} − ${mins(30)}`, 'bus'),
+          fact(`timer ${hhmm(Number(medianLast) - 1800)}`, 'stopwatch', 'brand'),
+          fact(`last bus ${hhmm(Number(medianLast))}`, 'bus'),
         ],
         degrade: assumed ? 'assumed_schedule' : null,
       });
@@ -1755,6 +1756,7 @@ export function deriveRecommendations(reportParts) {
           lead: 'Carry fare',
           detail: 'Both sides will board more often than they expect.',
           icon: 'ticket',
+          basis: 'feed',
           facts: fareFacts,
         });
     }
@@ -1762,30 +1764,33 @@ export function deriveRecommendations(reportParts) {
 
   // 10 · the size's own limits
   add('answer_limits', 60,
-    `A ${size.name.toUpperCase()} game gives ${num(size.photoLimitMin)} minutes to answer a photo `
+    `A ${capWord(size.name)} game gives ${num(size.photoLimitMin)} minutes to answer a photo `
     + `question and ${num(size.otherLimitMin)} minutes for everything else, and the Move `
-    + `powerup grants ${num(size.moveGrantMin)} minutes. Put a visible timer on it.`,
+    + `powerup grants ${num(size.moveGrantMin)} minutes. Time every answer out loud.`,
     `rulebook size table, ${size.name}`, false, {
-      lead: 'Put a visible timer on it',
-      detail: `These are a ${size.name.toUpperCase()} game's answer limits and the Move `
-        + 'powerup\'s grant.',
+      lead: 'Time every answer out loud',
+      detail: `Answer limits for a ${capWord(size.name)} game, plus what the Move powerup grants.`,
       icon: 'hourglass-half',
+      basis: 'rulebook',
       facts: [
         fact(`photo ${mins(size.photoLimitMin)}`, 'camera'),
-        fact(`other ${mins(size.otherLimitMin)}`, 'circle-question'),
+        fact(`any other question ${mins(size.otherLimitMin)}`, 'circle-question'),
         fact(`Move ${mins(size.moveGrantMin)}`, 'person-running'),
       ],
     });
   add('hand_limit', 61,
-    'Hand limit is 6, raised to 7 or 8 only by Draw 1 Expand 1. Going over forces an immediate '
+    'Hand limit is 6, raised to 7 or 8 only by the Draw 1, Expand 1 powerup. Going over forces an immediate '
     + 'play-or-discard, and time bonuses only count if you are still holding them at the end.',
     'rulebook, hider deck', false, {
-      lead: `Hand limit ${num(6)}`,
+      lead: `Cap the hand at ${num(6)} cards`,
+      detail: `Only the Draw 1, Expand 1 powerup raises the cap, one card per play, to ${num(8)} `
+        + 'at most. Going over the limit forces an immediate play-or-discard. Time bonuses count '
+        + 'only if you are still holding the card at the end.',
       icon: 'hand',
+      basis: 'rulebook',
       facts: [
-        fact(`${num(7)}–${num(8)} only via Draw 1 Expand 1`, 'up-right-from-square'),
-        fact('over → play or discard now', 'hand'),
-        fact('time bonuses count only if held', 'clock'),
+        fact('Draw 1, Expand 1 powerup', 'up-right-from-square'),
+        fact(`up to ${num(8)}`, 'hand'),
       ],
     });
 
@@ -1802,6 +1807,7 @@ export function deriveRecommendations(reportParts) {
         detail: `The median stop here sees a bus every ${mins(Number(headway))}; without the `
           + 'timetable the game becomes a coin flip about which bus somebody caught.',
         icon: 'calendar-check',
+        basis: 'feed',
       });
   }
   const reach = nullish(get(metrics, 'reachableZoneShare'));
@@ -1815,6 +1821,7 @@ export function deriveRecommendations(reportParts) {
         detail: 'Warn the hider; the share is measured from the start location. The rulebook\'s '
           + 'advice is to go somewhere you know you can get to.',
         icon: 'route',
+        basis: 'feed',
         facts: [fact(`${pct(Number(reach))} reachable in hiding period`, 'route', 'neutral',
           fillPct(Number(reach)))],
       });
@@ -1824,11 +1831,9 @@ export function deriveRecommendations(reportParts) {
   const borderline = questions.filter((q) => q.borderline);
   if (borderline.length) {
     const subjects = [];
-    const subjectItems = [];
     for (const q of borderline.slice().sort((a, b) => cmpStr(a.id, b.id))) {
       if (subjects.includes(q.label)) continue;
       subjects.push(q.label);
-      subjectItems.push({ id: q.id, label: q.label });
     }
     const sample = s3Join(subjects.slice(0, 3));
     const changes = `${num(borderline.length)} question${borderline.length !== 1 ? 's' : ''} `
@@ -1838,13 +1843,19 @@ export function deriveRecommendations(reportParts) {
       + `${subjects.length > 3 ? '…' : ''} ${subjects.length !== 1 ? 'sit' : 'sits'} just `
       + `outside the border, so ${changes} A player checking on their phone will see the `
       + 'feature and argue.',
-      `${num(borderline.length)} borderline questions across ${num(subjects.length)} subjects`,
+      `${num(borderline.length)} borderline question${borderline.length !== 1 ? 's' : ''} `
+      + `across ${num(subjects.length)} subject${subjects.length !== 1 ? 's' : ''}`,
       true, {
         lead: 'Settle the edge cases out loud',
-        detail: `These sit just outside the border: ${changes} A player checking on their phone `
-          + 'will see the feature and argue.',
+        detail: 'Each sits just outside the border and would change status if the line were '
+          + 'drawn slightly wider. A player checking on their phone will see the feature and argue.',
         icon: 'circle-half-stroke',
-        items: subjectItems,
+        basis: 'feed',
+        facts: [fact(`${num(borderline.length)} question${borderline.length !== 1 ? 's' : ''} `
+          + 'on the line', 'circle-half-stroke', 'warning')],
+        // One chip per question: the matching and measuring twins share a label.
+        items: borderline.slice().sort((a, b) => cmpStr(a.id, b.id))
+          .map((q) => ({ id: q.id, label: `${q.label} · ${capWord(q.category)}` })),
       });
   }
 
@@ -1853,9 +1864,10 @@ export function deriveRecommendations(reportParts) {
     'photo.train_platform'];
   const railDead = questions.filter((q) => railIds.includes(q.id) && q.status === 'dead');
   if (railDead.length >= 2) {
-    const names = s3Join(railDead.slice().sort((a, b) => cmpStr(a.id, b.id)).map((q) => q.label));
+    const railSorted = railDead.slice().sort((a, b) => cmpStr(a.id, b.id));
+    const names = s3Join(railSorted.map((q) => q.label));
     add('no_rail_note', 67,
-      `There is no rail mode in this feed, so ${names} are dead. Brief the seekers: that is `
+      `There is no rail mode in this feed, so ${names} can't be answered here. Brief the seekers: that is `
       + `${num(railDead.length)} question${railDead.length !== 1 ? 's' : ''}.`,
       // A merged real-plus-OSM run read part of the mode set off OSM route
       // relations, so the evidence names that source. A purely synthesized
@@ -1863,11 +1875,14 @@ export function deriveRecommendations(reportParts) {
       assumed
         ? 'Route types, partly synthesized from OSM route tags: none in the rail-like set'
         : 'GTFS route types: no route_type in the rail-like set', false, {
-        lead: 'No rail in this feed',
-        detail: `${names} ${railDead.length !== 1 ? 'are' : 'is'} dead. Brief the seekers.`,
+        lead: 'Brief the seekers on rail',
+        detail: 'There is no rail mode in this feed, so '
+          + `${railDead.length === 2 ? 'neither' : 'none'} of these can be answered here.`,
         icon: 'train',
+        basis: 'feed',
+        items: railSorted.map((q) => ({ id: q.id, label: q.label })),
         facts: [fact(`${num(railDead.length)} rail question${railDead.length !== 1 ? 's' : ''} `
-          + 'dead', 'train', 'danger')],
+          + 'unanswerable', 'train', 'danger')],
         degrade: assumed ? 'assumed_schedule' : null,
       });
   }
@@ -1884,6 +1899,7 @@ export function deriveRecommendations(reportParts) {
           + 'their exact position, and the publicly-accessible test for a hiding spot does not '
           + 'apply during a rest period.',
         icon: 'moon',
+        basis: 'rulebook',
       });
   }
 
@@ -1896,11 +1912,11 @@ export function deriveRecommendations(reportParts) {
     'rulebook, safety',
     true, {
       lead: 'Agree the safety exclusions first',
-      detail: 'Agree which areas are off the map because someone does not feel safe going '
-        + 'there. The rulebook requires this conversation and refuses to automate it. Exclude '
-        + 'those stops and routes so every number on these pages matches the map you are '
-        + 'playing.',
+      detail: 'Areas someone does not feel safe going to are off the map. The rulebook requires '
+        + 'this conversation and refuses to automate it. Exclude those stops and routes so '
+        + 'every number here matches the map you play.',
       icon: 'shield-heart',
+      basis: 'rulebook',
     });
 
   out.sort((a, b) => (a.priority - b.priority) || cmpStr(a.id, b.id));
@@ -1920,7 +1936,7 @@ function synthArgv(opts, feeds = []) {
     for (const f of feeds) argv.push('--feed', String(f.label || f.source || ''));
   } else if (typeof src === 'string' && src) argv.push(src);
   else if (src && typeof src === 'object' && src.name) argv.push(String(src.name));
-  // Not a real CLI flag, but §(b) asks what was requested; echoed only when set.
+  // Not an actual flag, but §(b) asks what was requested; echoed only when set.
   if (get(opts, 'worldBaseUrl')) argv.push('--world-base-url', String(opts.worldBaseUrl));
   if (get(opts, 'asOf')) argv.push('--as-of', String(opts.asOf));
   if (get(opts, 'sizeOverride')) argv.push('--size', String(opts.sizeOverride));
@@ -1945,15 +1961,29 @@ function synthArgv(opts, feeds = []) {
   return argv;
 }
 
-const AFFECT_METRIC_ID = /^(CAP_[A-Z_]+|[A-F]\d|IR\d|[RSEAX]\d)$/;
+const AFFECT_METRIC_ID = /^([A-F]\d|IR\d|[RSEAX]\d)$/;
 const QUESTION_LABEL = new Map(QUESTIONS.map((q) => [q.id, q.label]));
+const QUESTION_CATEGORY = new Map(QUESTIONS.map((q) => [q.id, q.category]));
 const CURSE_NAME = new Map(CURSES.map((c) => [c.id, c.name]));
 
-/** Classify one `INTERPRETATIONS[].affects` entry as a metric, question, curse or free text. */
-function affectLink(entry) {
+/**
+ * Classify one `INTERPRETATIONS[].affects` entry as a metric, hider's-guide metric, cap,
+ * question, curse or free text. A cap carries its short label, never its id. Radar and Thermometer share
+ * question labels ('3 Miles'), so theirs are prefixed with the category.
+ */
+function affectLink(entry, guideMetrics = []) {
   const id = String(entry);
+  if (id.startsWith('CAP_')) return { kind: 'cap', id, label: CAP_LABEL[id] || id };
+  // A hider's-guide metric: its id collides with a report metric, so it is never a `metric`.
+  if (guideMetrics.includes(id)) return { kind: 'guide', id, label: id };
   if (AFFECT_METRIC_ID.test(id)) return { kind: 'metric', id, label: id };
-  if (QUESTION_LABEL.has(id)) return { kind: 'question', id, label: QUESTION_LABEL.get(id) };
+  if (QUESTION_LABEL.has(id)) {
+    const cat = QUESTION_CATEGORY.get(id);
+    const label = (cat === 'radar' || cat === 'thermometer')
+      ? `${capWord(cat)} · ${QUESTION_LABEL.get(id)}`
+      : QUESTION_LABEL.get(id);
+    return { kind: 'question', id, label };
+  }
   if (CURSE_NAME.has(id)) return { kind: 'curse', id, label: CURSE_NAME.get(id) };
   return { kind: 'text', id, label: id };
 }
@@ -1962,7 +1992,6 @@ function affectLink(entry) {
  * Assemble the provenance block: what was fetched, what was assumed. Contains no
  * timestamp not derived from `feed_info` or `options.asOf`. `border` is read only
  * for its `derivation`, which picks the `map_border_derivation` wording.
- * (generate.py `build_provenance`)
  *
  * @param {Object} opts @param {Object} feed @param {Object} geo @param {Object} size
  * @param {string} asOf @param {string[]} degradations
@@ -2019,7 +2048,7 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
         affects: Array.from(row.affects),
         explain: { lead, detail: text },
         applies: row.id.startsWith('osm_synth_') ? synthesized : true,
-        affectLinks: row.affects.map(affectLink),
+        affectLinks: row.affects.map((a) => affectLink(a, row.guideMetrics || [])),
       };
       if (row.groups) {
         out.groups = row.groups.map((g) => ({ label: g.label, basis: g.basis, ids: Array.from(g.ids) }));
@@ -2066,8 +2095,8 @@ export function buildProvenance(opts, feed, geo, size, asOf, degradations, borde
     // 'landing', 'suggestion' or null. Echoed only; `argv` deliberately ignores it
     // so a hand-typed and a suggested box reproduce the same command line.
     borderSource: nullish(get(opts, 'borderSource')),
-    llmUsed: false,                             // llm_used — the LLM path is dropped in the port
-    // No Python counterpart. IndexedDB when it opens, else a per-run Map; `memory`
+    llmUsed: false,                             // llm_used — no LLM path exists in this tool
+    // IndexedDB when it opens, else a per-run Map; `memory`
     // here explains why the next run refetched. Read from the module because the
     // Cache never reaches the scoring layer.
     cacheBackend: cacheBackend(),
