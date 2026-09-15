@@ -72,12 +72,25 @@ is the pipeline orchestrator and emits stages (`feed`, `days`, `network`, `geo`,
 `provenance`) that `app.js` hydrates into the page as they land. `runPipeline` takes its message
 sink as an argument, which is what lets `tools/smoke.mjs` import it from Node.
 
+Beside the seven stages runs a **preview channel**: `{ type:'preview', key, payload }`
+messages keyed `stops`, `hub`, `zones`, `geo:category` and `rules:question` that `app.js`
+paints only into sections still showing skeletons, so the map, the rail and §07 move while
+the three long stages run. Previews are **hints, not stages**: never merged into the
+`Report`, never written into a JSON data block, never logged, never degradations, never
+progress captions, and `tools/smoke.mjs` ignores the type — a build that dropped every one
+of them produces the identical report. The map is the one place preview-built state
+persists: §05's MapLibre instance is created once from the `stops` preview and
+`mountSection` **adopts** the live `#netmap` node into the real markup at `network` and
+across the `geo` re-mount, so it is never rebuilt. `CONTRACT.md` §(d) "Previews" is the
+full statement.
+
 The report's **eight** sections are rendered by `render/verdict.js`, `render/map.js` and
 `render/deck.js`. The At a Glance tiles live inside the map section and hydrate through a
 **nested** `data-section="glance"` host with its own `needs`/`redo`. That matters: §05's rendered
-string must not change after the `network` stage, because a re-render swaps `#netmap` out and tears
-down the MapLibre instance, while the tiles are corrected at `rules`, at `score` and on every day
-click. Two hydration clocks, one section; see `CONTRACT.md` §(d) and §(e). The strategy view is
+string must not change after the `network` stage except at `geo`, because a re-render re-mounts
+the section's controls and their DOM state (the live `#netmap` itself is adopted across the
+swap), while the tiles are corrected at `rules`, at `score` and on every day click. Two hydration
+clocks, one section; see `CONTRACT.md` §(d) and §(e). The strategy view is
 **fragment-only** — `render/strategy.js` (markup, pure `Report → string`) plus `render/simulator.js`
 (every DOM mutation in that view). It appears in no nav or link. See `CONTRACT.md` §(g).
 
@@ -105,6 +118,10 @@ on a desktop, a bottom sheet under 48rem. Consequences:
 - `cooperativeGestures` is **off**: there is no scrolling column for the map to fight.
 - **Search is wired synchronously, before the map**: it works with MapLibre blocked, and a failed
   catalogue fetch degrades to the bring-your-own card rather than an empty grey box.
+- **Geolocation is press-only.** The locate button at the end of the search box is the one caller
+  of `navigator.geolocation`, and nothing asks for a position at load or at map init; a permission
+  prompt the reader did not cause is a bug. It lists `rowsNear` in the results and moves the map
+  as a courtesy, so it too works with MapLibre blocked.
 - The polygon tool is **hand-rolled on the map's own events on purpose**: `CONTRACT.md` §0 pins an
   exhaustive five-item external-asset allowlist, and a draw library would need an amendment.
 - The picker's map must be `destroy()`ed before the run starts, and must never be folded into

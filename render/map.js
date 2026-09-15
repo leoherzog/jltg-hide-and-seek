@@ -31,7 +31,7 @@ import {
 import {
   esc, el, join, waCard, waScroller, waDetails, waSwitch, waCopyButton, waButton,
   waCallout, waIcon, waBadge, waProgressBar, kpi, section, subhead, provChip, chip,
-  linkChip, basisChip, degradeChip, iconLabel, legendRow, cardHeader, dataTable,
+  linkChip, basisChip, degradeChip, iconLabel, legendRow, cardHeader, dataTable, budgetBar,
 } from './html.js';
 
 import {
@@ -78,6 +78,22 @@ export const S4_HEADWAY_BINS = Object.freeze([
   Object.freeze([35.0, '4', '≤35']),
   Object.freeze([50.0, '5', '≤50']),
   Object.freeze([Infinity, '6', 'over 50']),
+]);
+
+/**
+ * Bar letters and hover text for `DaySummary.headwayHistogramMin` (CONTRACT §(d)), whose
+ * buckets are `[0,5) [5,10) [10,15) [15,20) [20,30) [30,45) [45,60) [60,90) [90,∞)`.
+ * This list and `worker.js`'s `HEADWAY_BUCKETS` are two spellings of one thing and must
+ * move together; `s4ServiceByDay` draws `Math.min` of the two lengths so a mismatch
+ * degrades instead of printing `undefined`. Distinct from `S4_HEADWAY_BINS`, the
+ * ROUTE-DIRECTION grid's six bins.
+ */
+const S4_HEADWAY_HIST_LABELS = Object.freeze([
+  Object.freeze(['5', 'under 5 min']), Object.freeze(['10', '5–10 min']),
+  Object.freeze(['15', '10–15 min']), Object.freeze(['20', '15–20 min']),
+  Object.freeze(['30', '20–30 min']), Object.freeze(['45', '30–45 min']),
+  Object.freeze(['60', '45–60 min']), Object.freeze(['90', '60–90 min']),
+  Object.freeze(['90+', 'over 90 min']),
 ]);
 
 // Degradation thresholds, named so the legend cap chips can quote them.
@@ -768,7 +784,68 @@ export function s4Heatmap(report, methodHtml, leadHtml = '') {
 }
 
 /**
- * §06 — the ride-time bar chart and the headway-by-day heatmap.
+ * The Service-by-day card: one outlined sub-card per service day from `DaySummary` alone,
+ * so §06 exists from the `days` stage and is CORRECTED at `network`, not built from empty.
+ * `budgetBar` sums the histogram itself; `total` is the worker's `servedStops`, and the
+ * grey remainder is served stops with no measurable headway. No arithmetic here.
+ * @param {Object} report @returns {string} '' without days
+ */
+function s4ServiceByDay(report) {
+  const keys = s4DayOrder(report);
+  if (!keys.length) return '';
+  const bestKey = s4BestDay(report);
+  const cards = keys.map((key) => {
+    const d = s4DayByKey(report, key);
+    if (!d) return '';
+    const label = s4DayLabel(report, key);
+    const hist = Array.isArray(d.headwayHistogramMin) ? d.headwayHistogramMin : [];
+    const n = Math.min(hist.length, S4_HEADWAY_HIST_LABELS.length);
+    const segments = [];
+    for (let i = 0; i < n; i++) {
+      const [letter, tip] = S4_HEADWAY_HIST_LABELS[i];
+      segments.push([letter, Number(hist[i]) || 0, `${num(hist[i])} stops · ${tip}`]);
+    }
+    const bar = d.servedStops > 0 && n
+      ? budgetBar(segments, d.servedStops, {
+        ariaLabel: `Served stops by minutes between buses on a ${label}`,
+        remainderTip: 'No measurable headway', height: '1.1rem',
+      })
+      : '';
+    const kpis = el('div', join(
+      kpi(num(d.trips), 'trips', '', { size: 'l' }),
+      kpi(num(d.servedStops), 'served stops', '', { size: 'l' }),
+      kpi(d.medianHeadwayMin === null || d.medianHeadwayMin === undefined
+        ? '—' : mins(d.medianHeadwayMin), 'median headway', '',
+      { size: 'l', subHtml: esc('per stop · 06:00–22:00') }),
+    ), { className: 'wa-grid wa-gap-s', style: '--min-column-size:6rem' });
+    const span = iconLabel('clock',
+      `${hhmm(d.firstDeparture)} – ${hhmm(d.lastDeparture)} · ${num(d.spanHours, 1)} h of service`);
+    return waCard(el('div', join(kpis, span, bar), { className: 'wa-stack wa-gap-s' }), {
+      appearance: 'outlined',
+      headerHtml: cardHeader(label, {
+        chipsHtml: key === bestKey ? chip('Best day', 'calendar-day', { variant: 'brand' }) : '',
+      }),
+    });
+  });
+  const legend = legendRow([
+    [waIcon('chart-simple'), 'Bar: served stops by minutes between buses, 06:00–22:00'],
+    [waIcon('calendar-day'), 'Measured on the representative date of each day type'],
+  ], { label: 'Service-by-day key' });
+  return waCard(el('div', join(
+    el('div', cards.join(''), { className: 'wa-grid wa-gap-s', style: '--min-column-size:16rem' }),
+    legend,
+  ), { className: 'wa-stack wa-gap-s' }), {
+    headerHtml: cardHeader('Service by day', {
+      caption: 'Trips, span and the wait between buses, per service day',
+    }),
+  });
+}
+
+/**
+ * §06 — the Service-by-day card, the ride-time bar chart and the headway-by-day heatmap.
+ *
+ * PROGRESSIVE: at `days` only the Service-by-day card exists; `network` adds the ride
+ * chart and the headway grid; `score` changes only the fit sentence's inputs.
  *
  * Chart A: travel time from the start to a fixed destination sample, with a dashed
  * line at the hiding period; bars are brand when they fit, gold with a caveat, danger
@@ -784,19 +861,23 @@ export function s4Heatmap(report, methodHtml, leadHtml = '') {
  */
 export function renderTransitReality(payload) {
   const report = payload || {};
-  const size = report.size;
-  if (!size || !report.days || !report.days.length) return '';
-  const hp = num(size.hidingPeriodMin || 0);
+  // `size` is null until `network`: the Service-by-day card is a `DaySummary` view and
+  // renders without it, so this section is CORRECTED at `network`, not built from empty.
+  const size = report.size || null;
+  if (!report.days || !report.days.length) return '';
+  const hp = size ? num(size.hidingPeriodMin || 0) : '';
   const startName = startStopName(report);
   const departure = String((report.opts || {}).departure || '').slice(0, 5);
   const samples = report.travelSamples || [];
   const cards = [];
+  const byDay = s4ServiceByDay(report);
+  if (byDay) cards.push(byDay);
 
   const bestKey = s4BestDay(report);
   const bestLabel = s4DayLabel(report, bestKey);
   const assumed = Boolean((report.metrics || {}).assumedSchedule);
 
-  if (samples.length) {
+  if (size && samples.length) {
     // The chart's accessible description keeps the full reading; the page shows the key.
     const caption = `Scheduled minutes from ${startName} at ${departure} on the selected `
       + `day, to a fixed sample of ${num(samples.length)} busy zones — the same `
@@ -887,22 +968,26 @@ export function renderTransitReality(payload) {
 
   if (!cards.length) return '';
 
-  const fit = samples.filter((smp) => {
+  // The ride sample exists only once `network` has measured it; before that there is
+  // no fit count and no claim about one.
+  const sampled = Boolean(size && samples.length);
+  const fit = sampled ? samples.filter((smp) => {
     const cell = (smp.perDay || {})[bestKey];
     return cell && cell.minutes !== null && cell.minutes !== undefined
       && Number(cell.minutes) <= Number(size.hidingPeriodMin || 0);
-  }).length;
+  }).length : 0;
   const headway = fnum(s4DayView(report, bestKey).medianHeadwayMin);
   // One sentence from two halves, concatenated as strings so no separator creeps in.
-  const fitHalf = samples.length
+  const fitHalf = sampled
     ? `${el('b', esc(`${num(fit)} of ${num(samples.length)}`))} sample rides fit the `
       + `${esc(hp)}-min window on a ${esc(bestLabel)}`
     : '';
   const headwayHalf = headway === null ? ''
-    : `${samples.length ? '; the' : 'The'} median stop sees a bus every ${el('b', esc(mins(headway)))}`;
+    : `${sampled ? '; the' : 'The'} median stop sees a bus every ${el('b', esc(mins(headway)))}`;
   const answer = el('p', `${fitHalf}${headwayHalf}.`, { className: 'wa-body-s' });
+  // `startStopName` is '' without a hub, so the star mark waits for `network` too.
   const ledeMarks = join(
-    iconLabel('star', startName),
+    startName ? iconLabel('star', startName) : '',
     departure ? iconLabel('clock', departure) : '',
     linkChip('#network', 'Same start as the map', 'map-location-dot'),
   );
@@ -912,7 +997,7 @@ export function renderTransitReality(payload) {
       kicker: 'How long things take',
       lede: 'Later rounds start from the last hider’s zone. Re-read from there.',
       ledeHtml: ledeMarks,
-      answerHtml: (samples.length || headway !== null) ? answer : '',
+      answerHtml: (sampled || headway !== null) ? answer : '',
     });
 }
 

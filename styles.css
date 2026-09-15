@@ -1006,6 +1006,11 @@ wa-skeleton { --color: var(--wa-color-surface-lowered); }
    which neither spelling matches. */
 .sk-body { pointer-events: none; user-select: none; }
 
+/* A preview slot (CONTRACT §(d) "Previews") is `wa-cluster` / `wa-stack`, whose
+   `display:flex` is an author rule and beats the UA's `[hidden]` — the same fix
+   `#netlayers[hidden]` needs. */
+[data-preview][hidden] { display: none; }
+
 /* The map frame is a separate element from `#netmap`, which sets `height: 0`
    (line 499) until the map script gives it one. Removing this is how
    the real map appears. */

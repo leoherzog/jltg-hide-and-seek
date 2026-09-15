@@ -30,7 +30,7 @@ import {
   renderHero, renderVerdict, renderScoreTrace, renderYourGame, bandVariant,
   s4Imperial as imperial, s4Signed as signed, s4JoinWords as joinWords,
   s4DayView as dayView, s4DayOrder as dayOrder, s4DayLabel as dayLabel,
-  s4BestDay as bestDay,
+  s4BestDay as bestDay, s4Dist as dist,
 } from './render/verdict.js';
 import {
   renderGlanceRail, renderNetworkMap, renderTransitReality, s4TilesHtml, s4MapCaption,
@@ -38,12 +38,17 @@ import {
 } from './render/map.js';
 import {
   renderQuestions, renderCurses, renderProvenance, renderFooter, initDeckTables,
-  setDeckPageSize,
+  setDeckPageSize, S4_STATUS_TAG, S4_STATUS_COUNT,
 } from './render/deck.js';
 // S5 — the hider's guide. Not a section and not in `SECTIONS`:
 // the fragment `#strategy` is the only door (see `applyRoute`).
 import { renderStrategy } from './render/strategy.js';
 import { initStrategy } from './render/simulator.js';
+// Catalogue ORDER and the feature-layer total for §07's geo tally (CONTRACT §(d)
+// "Previews"). Pure data on the precedent of `render/strategy.js` importing `QUESTIONS`
+// from `../rules/catalogue.js`; the module has no import-time side effects and nothing
+// here runs the OSM reader on the main thread.
+import { GEO_CATEGORIES, GEO_DENSITY_GRID_CATEGORIES } from './osm/geodata.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -114,16 +119,20 @@ const DEFAULT_OPTIONS = Object.freeze({
  */
 const SECTIONS = [
   // The hero's headline counts `questions.length`, which is 0 until `rules`; `days`
-  // adds the "Best day" chip.
-  { id: 'hero', needs: 'feed', redo: ['days', 'network', 'rules', 'score'], render: (r) => renderHero(r) },
-  // `geo` only: `s4Imperial` flips km→mi there. Scored zone dots arrive through
-  // `#stops` and `refreshMapData()` (a `setData`, which keeps pan and zoom).
+  // adds the "Best day" chip. `geo` too: the h1 names `report.place`, which flips from
+  // the agency to the admin place name when the map files land (`applyStage('geo')`).
+  { id: 'hero', needs: 'feed', redo: ['days', 'network', 'geo', 'rules', 'score'], render: (r) => renderHero(r) },
+  // `geo` only: `s4Imperial` flips km→mi there and the section re-mounts; `mountSection`
+  // adopts the live `#netmap` across that re-mount, so the MapLibre instance survives it.
+  // Scored zone dots arrive through `#stops` and `refreshMapData()` (a `setData`).
   { id: 'network', needs: 'network', redo: ['geo'], render: (r) => renderNetworkMap(r) },
   // Not numbered: the stat rail lives in a nested `data-section="glance"` host inside
   // §05 and redoes on everything §05 must not.
   { id: 'glance', needs: 'network', redo: ['days', 'geo', 'rules', 'score'], render: (r) => renderGlanceRail(r) },
   { id: 'yourgame', needs: 'score', redo: [], render: (r) => renderYourGame(r) },
-  { id: 'transit', needs: 'network', redo: ['score'], render: (r) => renderTransitReality(r) },
+  // `days` first: the Service-by-day card is a `DaySummary` view. The ride chart and the
+  // headway grid are added at `network`, the fit sentence's inputs at `score`.
+  { id: 'transit', needs: 'days', redo: ['network', 'score'], render: (r) => renderTransitReality(r) },
   { id: 'verdict', needs: 'score', redo: [], render: (r) => renderVerdict(r) },
   { id: 'questions', needs: 'rules', redo: ['score'], render: (r) => renderQuestions(r) },
   { id: 'curses', needs: 'rules', redo: ['score'], render: (r) => renderCurses(r) },
@@ -365,6 +374,19 @@ const state = {
   /** @type {string} */ degradationsDismissed: '',
   /** @type {Map<string,string>} */ rendered: new Map(),
   /** @type {Set<string>} */ dropped: new Set(),
+  /**
+   * Preview hints (CONTRACT §(d) "Previews"). A SIBLING of `report`, never merged into it
+   * and never read by `writeDataBlocks`, `finish`, `storeLastRun` or any renderer.
+   */
+  previews: {
+    /** @type {{lon:Float64Array, lat:Float64Array, name:string[], bbox:number[]}|null} */ stops: null,
+    /** @type {Object|null} */ hub: null,
+    /** @type {Object|null} */ zones: null,
+    /** @type {Map<string, Object>} category key → payload */ geo: new Map(),
+    /** @type {Object[]} in catalogue order, as judged */ rules: [],
+  },
+  /** The pending `requestAnimationFrame` for `paintPreviews`, or 0. */
+  previewFrame: 0,
   booted: false,
   running: false,
   finished: false,
@@ -1711,6 +1733,10 @@ function onWorkerMessage(msg) {
     case 'stage':
       applyStage(msg.stage, msg.payload || {});
       return;
+    case 'preview':
+      // A hint while a long stage runs. Never merged into the report (CONTRACT §(d)).
+      applyPreview(String(msg.key || ''), msg.payload || {});
+      return;
     case 'log':
       // Diagnostics are never report content.
       // eslint-disable-next-line no-console
@@ -1788,6 +1814,10 @@ function applyStage(stage, payload) {
       break;
     case 'geo':
       r.geo = payload.geo || emptyGeoLocal();
+      // The same expression the worker uses for `Report.place` at `done`, applied four
+      // stages earlier so the hero and the wordmark stop saying the agency's name. Falsy
+      // (a regional extract nulls the admin ladder) keeps the `feed` seed.
+      if (r.geo.admin && r.geo.admin.placeName) r.place = r.geo.admin.placeName;
       break;
     case 'rules':
       r.questions = payload.questions || [];
@@ -1892,6 +1922,219 @@ function finish(report) {
   }
   // Last: a page loaded at `#strategy` enters the guide the moment the run completes.
   applyRoute();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Previews (CONTRACT §(d) "Previews") — hints painted into skeletons, never report content
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** The stage whose arrival makes each preview key stale. */
+const PREVIEW_STAGE = Object.freeze({
+  stops: 'network', hub: 'network', zones: 'network',
+  'geo:category': 'geo', 'rules:question': 'rules',
+});
+
+/** `render/deck.js`'s `S4_STATUS_ORDER` (not exported there): degradation order. */
+const PREVIEW_STATUS_ORDER = Object.freeze(['functional', 'weak', 'degenerate', 'dead', 'unknown']);
+
+/** Feature layers `collectGeodata` reads: the catalogue minus the density-grid columns. */
+const PREVIEW_GEO_LAYERS = Object.freeze(
+  GEO_CATEGORIES.filter((c) => !GEO_DENSITY_GRID_CATEGORIES.includes(c.key)),
+);
+
+/**
+ * Record one preview and schedule a repaint. Previews are IDEMPOTENT HINTS: the panels are
+ * re-rendered from `state.previews` rather than appended to, so arrival order, duplicates
+ * and a dropped message all paint the same thing. A preview whose stage already landed is
+ * stale by definition and dropped at the door.
+ */
+function applyPreview(key, payload) {
+  if (state.fatal || state.finished) return;
+  const stage = PREVIEW_STAGE[key];
+  if (!stage || state.arrived.has(stage)) return;
+  switch (key) {
+    case 'stops': state.previews.stops = payload; break;
+    case 'hub': state.previews.hub = payload; break;
+    case 'zones': state.previews.zones = payload; break;
+    case 'geo:category':
+      if (payload.key) state.previews.geo.set(String(payload.key), payload);
+      break;
+    case 'rules:question': state.previews.rules.push(payload); break;
+    default: return;
+  }
+  schedulePreviewPaint();
+  if (stage === 'network') {
+    try { mountPreviewMap(); } catch (err) { console.warn('[app] preview map', err); }
+  }
+}
+
+/** One repaint per frame however many previews land in it (80 questions, 33 lanes). */
+function schedulePreviewPaint() {
+  if (state.previewFrame) return;
+  state.previewFrame = requestAnimationFrame(() => {
+    state.previewFrame = 0;
+    try { paintPreviews(); } catch (err) {
+      // A preview that cannot paint is a preview that does not paint. Never a degradation.
+      console.warn('[app] preview paint', err);
+    }
+  });
+}
+
+/**
+ * A section host that is STILL A SKELETON, or null — the one gate previews paint
+ * through. The mount that fills the section replaces this host wholesale, so a preview
+ * inside it cannot outlive its data.
+ */
+function previewHost(id) {
+  const def = SECTIONS.find((s) => s.id === id);
+  if (!def || state.arrived.has(def.needs) || state.dropped.has(id)) return null;
+  const host = sectionHost(id);
+  if (!host) return null;
+  return host.getAttribute('data-state') === 'skeleton' ? host : null;
+}
+
+/** The `[data-preview="<id>"]` slot inside a still-skeleton host, or null. */
+function previewSlot(id) {
+  const host = previewHost(id);
+  return host ? host.querySelector(`[data-preview="${id}"]`) : null;
+}
+
+/** Re-render every preview slot from `state.previews`. Idempotent; writes only on change. */
+function paintPreviews() {
+  const slots = [
+    ['network', previewNetworkHtml], ['glance', previewGlanceHtml], ['questions', previewDeckHtml],
+  ];
+  for (const [id, build] of slots) {
+    const slot = previewSlot(id);
+    if (!slot) continue;
+    const html = build();
+    if (slot.innerHTML !== html) slot.innerHTML = html;
+    slot.hidden = !html;
+  }
+}
+
+const PREVIEW_MEASURING = () => chip('Preview · still measuring', 'hourglass-half',
+  { variant: 'brand', appearance: 'filled' });
+
+/** §05's map-card row: the status chip and one sentence about what the map shows. */
+function previewNetworkHtml() {
+  const p = state.previews;
+  if (!p.stops) return '';
+  return join(PREVIEW_MEASURING(), el('span',
+    esc('Served stops on the busiest service day. The border, the hiding zones and the '
+      + 'colour modes arrive once the network is measured.'),
+    { className: 'wa-caption-xs wa-color-text-quiet' }));
+}
+
+/** The rail's row: exact counts and the hub, each a lookup on a preview payload. */
+function previewGlanceHtml() {
+  const p = state.previews;
+  if (!p.stops && !p.hub && !p.zones) return '';
+  return join(
+    PREVIEW_MEASURING(),
+    p.stops ? chip(`${num(p.stops.name.length)} served stops`, 'location-dot') : '',
+    // CONTRACT §(b) Hub: `dominant: false` ⇒ do not name a single hub in the UI. Same
+    // words as `renderNetworkMap`'s lede chips.
+    p.hub ? (p.hub.dominant ? chip(`Start · ${p.hub.name}`, 'star')
+      : chip('No dominant interchange', 'circle-nodes')) : '',
+    p.zones ? chip(`${num(p.zones.name.length)} hiding zones · ${dist(state.report, p.zones.radiusM, 2)} radius`, 'circle-dot') : '',
+  );
+}
+
+/** §07's slot: the map-file tally (while `geo` runs) above the question tally (`rules`). */
+function previewDeckHtml() {
+  return join(previewGeoHtml(), previewRulesHtml());
+}
+
+function previewGeoHtml() {
+  const got = state.previews.geo;
+  if (!got.size) return '';
+  const chips = [];
+  // Catalogue order: arrival order never reaches the DOM.
+  for (const c of PREVIEW_GEO_LAYERS) {
+    const p = got.get(c.key);
+    if (!p) continue;
+    const label = p.label || c.label;
+    if (p.kind === 'read') chips.push(chip(`${label} · ${num(p.count || 0)}`, 'circle-check'));
+    else if (p.kind === 'counted') chips.push(chip(`${label} · ~${num(p.count || 0)}`, 'calculator', { variant: 'warning', title: 'an upper bound, not a count' }));
+    else if (p.kind === 'absent') chips.push(chip(`${label} · no layer`, 'circle-minus'));
+    else chips.push(chip(`${label} · unread`, 'triangle-exclamation', { variant: 'warning' }));
+  }
+  // The tally stays on show under the question tally while `rules` runs, so the head
+  // chip must stop claiming a read that is over once the `geo` stage has landed.
+  const reading = !state.arrived.has('geo');
+  const head = el('div', join(
+    reading ? chip('Reading the map files', 'map', { variant: 'brand', appearance: 'filled' })
+      : chip('Map files read', 'map', { variant: 'neutral', appearance: 'filled' }),
+    chip(`${num(got.size)} of ${num(PREVIEW_GEO_LAYERS.length)} layers`, 'layer-group'),
+  ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
+  return el('div', join(head, el('div', chips.join(''), { className: 'wa-cluster wa-gap-2xs' })),
+    { className: 'wa-stack wa-gap-2xs', dataPreviewPart: 'geo' });
+}
+
+function previewRulesHtml() {
+  const rows = state.previews.rules;
+  if (!rows.length) return '';
+  const total = (state.report.size && state.report.size.catalogueSize) || 0;
+  const counts = PREVIEW_STATUS_ORDER.map((k) => [k, rows.filter((r) => r.status === k).length]);
+  const head = el('div', join(
+    chip('Checking the question deck', 'list-check', { variant: 'brand', appearance: 'filled' }),
+    chip(total ? `${num(rows.length)} of ${num(total)}` : `${num(rows.length)} checked`, 'circle-question'),
+    ...counts.filter(([, n]) => n).map(([k, n]) => chip(`${num(n)} ${S4_STATUS_COUNT[k]}`,
+      S4_STATUS_TAG[k][1], { variant: S4_STATUS_TAG[k][2], appearance: S4_STATUS_TAG[k][3] })),
+  ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' });
+  // The last ten judged, oldest first: the card's height settles once it is full.
+  const list = el('ul', rows.slice(-10).map((r) => el('li', join(
+    el('span', esc(capWord(String(r.category || ''))), { className: 'cat-tag' }),
+    el('b', esc(r.label || r.id || '')),
+    S4_STATUS_TAG[r.status] ? chip(S4_STATUS_TAG[r.status][0], S4_STATUS_TAG[r.status][1],
+      { variant: S4_STATUS_TAG[r.status][2], appearance: S4_STATUS_TAG[r.status][3] }) : '',
+  ), { className: 'wa-cluster wa-gap-2xs wa-align-items-center' })).join(''),
+  { className: 'wa-stack wa-gap-3xs wa-list-plain wa-body-s', role: 'list' });
+  return el('div', join(head, list), { className: 'wa-stack wa-gap-2xs', dataPreviewPart: 'rules' });
+}
+
+/**
+ * Put a `#netmap` into §05's skeleton frame (once) and hand the map previews to the page
+ * runtime as `window.__jltg.preview` — never through `#stops` (CONTRACT §(d) "Previews").
+ * The runtime's `buildMap` creates the MapLibre instance from the stops extent; the
+ * `network` mount ADOPTS the node (see `mountSection`), so the instance is never rebuilt.
+ */
+function mountPreviewMap() {
+  const p = state.previews;
+  if (!p.stops || !p.stops.bbox) return;
+  const host = previewHost('network');
+  if (!host) return;
+  const frame = host.querySelector('#netmap-frame');
+  if (!frame) return;
+  if (!frame.querySelector('#netmap')) {
+    // Only the frame's own skeleton is replaced: after the runtime's `sayBlocked` put
+    // its callout there, re-inserting a host would just retry a blocked import.
+    if (!frame.querySelector('wa-skeleton')) return;
+    // Byte-identical to `renderNetworkMap`'s node, so the adopted node is indistinguishable
+    // from a fresh one. Replaces the frame's skeleton only; every other skeleton stays.
+    frame.innerHTML = el('div', '', { id: 'netmap', className: 'wa-border-radius-m' });
+  }
+  const W = (window.__jltg = window.__jltg || {});
+  W.preview = W.preview || {};
+  const n = p.stops.name.length;
+  // The same cap `stopsPayload` applies: over it the real map draws zone centres only, so
+  // the hint must not show dots that vanish at `network`. The extent still fits.
+  W.preview.stops = n <= MAX_MAP_STOPS ? p.stops
+    : { lon: new Float64Array(0), lat: new Float64Array(0), name: [], bbox: p.stops.bbox };
+  W.preview.hub = p.hub || null;
+  W.preview.zones = p.zones ? { ...p.zones, rings: p.zones.name.length <= MAX_MAP_ZONE_RINGS } : null;
+  injectRuntime();   // creates the map on the first pass, repaints on later ones
+}
+
+/** Forget a MapLibre instance so the next runtime pass builds a new one. */
+function resetMapRuntime(runtime) {
+  runtime.map = null; runtime.mapHost = null; runtime.mapBuilt = 0; runtime.mapReady = 0;
+  runtime.paintMap = null; runtime.refreshMapData = null; runtime.highlight = null;
+  runtime.highlightPinned = null; runtime.applyHl = null; runtime.buildLayers = null;
+  runtime.attachMap = null; runtime.hubMarker = null; runtime.scaleCtl = null;
+  runtime.scaleUnit = ''; runtime.staticFilled = 0; runtime.mapFitted = 0;
+  runtime.previewFit = 0; runtime.mapTouched = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2084,23 +2327,24 @@ function mountSection(id, html) {
     return { body, rows };
   });
 
-  // The map is built once, guarded by `window.__jltg.mapBuilt`. When a re-render of
-  // §05 swaps `#netmap` out, the flag must be cleared or the new one is never built.
-  // Only the km→mi flip at `geo` rewrites §05's string; the rail's host never
-  // contains `#netmap`.
-  const hadMap = host.querySelector && host.querySelector('#netmap');
-  if (hadMap && root.querySelector && root.querySelector('#netmap')) {
+  // The map is built ONCE per run. When both the outgoing host and the incoming markup
+  // carry `#netmap` (the stops-preview frame → the real §05 at `network`; §05 → §05 at
+  // `geo` for the km→mi flip), the LIVE node is moved into the new markup and the
+  // MapLibre instance, its listeners, the reader's pan and zoom and the pinned highlight
+  // all survive; the next `injectRuntime()` pass resizes it and wires the new controls
+  // (`attachMap`). Only when no live instance owns the outgoing node (MapLibre blocked,
+  // or its import still in flight) is the old flag-clearing path taken, so the fresh
+  // markup gets a build — at most one, and never after `network`.
+  const oldMap = host.querySelector && host.querySelector('#netmap');
+  const newMap = root.querySelector && root.querySelector('#netmap');
+  if (oldMap && newMap) {
     const runtime = window.__jltg;
-    if (runtime) {
-      runtime.mapBuilt = 0;
-      // Clearing these makes `refreshMapData()` a no-op until the rebuilt map
-      // republishes them.
-      runtime.map = null;
-      runtime.mapReady = 0;
-      runtime.paintMap = null;
-      runtime.refreshMapData = null;
-      runtime.highlight = null;
-      runtime.highlightPinned = null;
+    if (runtime && runtime.map && runtime.mapHost === oldMap) {
+      for (const cls of newMap.classList) oldMap.classList.add(cls);
+      newMap.replaceWith(oldMap);
+    } else if (runtime) {
+      if (runtime.map) { try { runtime.map.remove(); } catch { /* already gone */ } }
+      resetMapRuntime(runtime);
     }
   }
 
@@ -2385,6 +2629,12 @@ function fatalError(stage, message, opts = {}) {
     slot.hidden = false;
     const again = slot.querySelector('[data-role="errorreset"]');
     if (again) again.addEventListener('click', resetToLanding);
+    // A live preview map inside a host about to be removed would leak its WebGL context.
+    const runtime = window.__jltg;
+    if (runtime && runtime.map) {
+      try { runtime.map.remove(); } catch { /* already gone */ }
+      resetMapRuntime(runtime);
+    }
     for (const husk of [...document.querySelectorAll('[data-state="skeleton"]')]) {
       dropSectionHost(husk, husk.getAttribute('data-section'));
     }
@@ -3450,7 +3700,7 @@ function loadDay(fallback) {
 function saveDay(k) { try { localStorage.setItem(dayStoreKey(), k); } catch (e) {} }
 
 /* The map's layer state, per viewer. It has to outlive the geo-stage re-mount, which
-   rebuilds the MapLibre instance. MODES is the whitelist: a stale value in storage
+   re-mounts §05's controls. MODES is the whitelist: a stale value in storage
    must not put the map in a mode it no longer has. */
 const LAYER_KEY = 'jltg-netlayers';
 const MODES = ['base', 'reach', 'frequency'];
@@ -3756,19 +4006,606 @@ function ringOf(lon, lat, radiusM, n) {
   return out;
 }
 
-async function buildMap() {
-  const host = $('netmap');
-  if (!host || W.mapBuilt || !DATA || !STOPS || !DATA.border || !DATA.hub) return;
-  W.mapBuilt = 1;
-  /* giveUp undoes the claim so the next injectRuntime() can retry, and hides the
-     map's own chrome (layer switches and colour key), which is useless without a
-     map. The copy buttons stay: the border is text. */
-  const setChrome = (on) => {
-    for (const id of ['netlayers', 'netlegend']) {
-      const n = $(id);
-      if (n) n.hidden = !on;
+/* The MapLibre instance is created ONCE per run and ADOPTED across every re-mount of
+   #05 (CONTRACT §(d) "Previews"): createMap() runs once, buildLayers() on every
+   style.load, attachMap() on every runtime pass. Before the network stage the map is a
+   HINT built from W.preview (the stops extent and dots, then the hub star and the zone
+   dots as those previews land); isReal() flips when #data carries a border and a hub,
+   and from then on every source reads #stops and #data exactly as before. Everything
+   that used to be build-time has a fill-later form: setData for the sources,
+   Marker.setLngLat for the hub, ScaleControl.setUnit for km/mi, and control wiring
+   keyed on data-map-bound. Nothing below is tied to where the #netmap node lives. */
+const EMPTY_FC = { type: 'FeatureCollection', features: [] };
+const PAD = { top: 40, bottom: 34, left: 40, right: 52 };
+const isReal = () => Boolean(DATA && STOPS && DATA.border && DATA.hub);
+const hint = () => W.preview || {};
+const bboxRing = bb => [[bb[1], bb[0]], [bb[3], bb[0]], [bb[3], bb[2]], [bb[1], bb[2]], [bb[1], bb[0]]];
+const lineFC = coords => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } });
+const borderFC = () => {
+  const B = DATA.border;                             /* bbox is [S, W, N, E] */
+  return lineFC(B.kind === 'circle' ? ringOf(B.circle[1], B.circle[0], B.circle[2], 96) : bboxRing(B.bbox));
+};
+/* The worker's suggested border, when it offered one: a second gold rectangle, solid
+   and thinner. No suggestion is the common case: the source is then an empty
+   FeatureCollection so the layer exists either way for applyHl(). */
+const suggestedFC = () => {
+  const SB = DATA.suggestedBorder;
+  const sbb = (SB && SB.bbox && SB.bbox.length === 4 && SB.bbox.every(Number.isFinite)) ? SB.bbox : null;
+  return sbb ? lineFC(bboxRing(sbb)) : EMPTY_FC;
+};
+/* The smallest circle that holds the whole network, drawn only while the Network
+   diameter tile is highlighted. */
+const mecFC = () => {
+  const mec = (DATA.metrics || {}).mec;
+  return lineFC((mec && mec.length === 3) ? ringOf(mec[1], mec[0], mec[2], 96) : []);
+};
+/* Route spokes: the per-day trip counts are flattened to t_<dayKey> properties because
+   an expression cannot index into a nested object. */
+const spokesFC = S => ({
+  type: 'FeatureCollection',
+  features: (S.spokes || []).map(sp => {
+    const props = { r: sp.r, hub: sp.hub ? 1 : 0 };
+    const trips = sp.trips || {};
+    for (const k of Object.keys(trips).sort()) props['t_' + k] = trips[k];
+    return { type: 'Feature', properties: props,
+      geometry: { type: 'LineString', coordinates: sp.coords || [] } };
+  }),
+});
+const ringsFC = () => {
+  if (isReal()) {
+    const S = D('stops') || STOPS;
+    return S.rings ? {
+      type: 'FeatureCollection',
+      features: S.zones.map(z => ({
+        type: 'Feature', properties: { name: z[2] },
+        geometry: { type: 'Polygon', coordinates: [ringOf(z[0], z[1], G.zone_radius_m, 40)] },
+      })),
+    } : EMPTY_FC;
+  }
+  const z = hint().zones;
+  if (!z || !z.rings) return EMPTY_FC;
+  const out = [];
+  for (let i = 0; i < z.name.length; i++) {
+    out.push({ type: 'Feature', properties: { name: z.name[i] },
+      geometry: { type: 'Polygon', coordinates: [ringOf(z.lon[i], z.lat[i], z.radiusM, 40)] } });
+  }
+  return { type: 'FeatureCollection', features: out };
+};
+/* Hint features carry the SAME property keys as real rows (applyMode's expressions
+   never see a missing key) plus hint:1, which the tips read. */
+const stopsHintFC = () => {
+  const s = hint().stops;
+  if (!s) return EMPTY_FC;
+  const out = [];
+  for (let i = 0; i < s.name.length; i++) {
+    out.push({ type: 'Feature',
+      properties: { name: s.name[i], routes: 0, freq: 0, rtxt: '', hwtxt: '', hb: 0, hwv: -1, hint: 1 },
+      geometry: { type: 'Point', coordinates: [s.lon[i], s.lat[i]] } });
+  }
+  return { type: 'FeatureCollection', features: out };
+};
+const zonesHintFC = () => {
+  const z = hint().zones;
+  if (!z) return EMPTY_FC;
+  const out = [];
+  for (let i = 0; i < z.name.length; i++) {
+    out.push({ type: 'Feature',
+      properties: { name: z.name[i], score: null, stxt: '', ttxt: '', t: -1, frac: -1, hint: 1 },
+      geometry: { type: 'Point', coordinates: [z.lon[i], z.lat[i]] } });
+  }
+  return { type: 'FeatureCollection', features: out };
+};
+const setIf = (id, data) => {
+  const s = W.map && W.map.getSource && W.map.getSource(id);
+  if (s) s.setData(data);
+};
+
+const STYLES = { light: '__TILES_LIGHT__', dark: '__TILES_DARK__' };
+/* the same values as styles.css --ink-2, --surface, --gold-deep, --accent, written
+   out because MapLibre paint takes no var() */
+const PAL = { light: { stop: '#556577', edge: '#fafafa', gold: '#906600', zone: '#202f40' },
+              dark:  { stop: '#b5bfcb', edge: '#202f40', gold: '#ffbf40', zone: '#91b5dd' } };
+const isDark = () => document.documentElement.classList.contains('wa-dark');
+
+/* Sources and layers are rebuilt on every style.load, which fires again after
+   setStyle on a theme flip. The ramps are read with cssVar() rather than
+   hard-coded like PAL because they are the same tokens the ride chart and the
+   headway grid paint from, and a second copy would drift. Kept on W because the
+   closures that paint from it are republished on every pass. */
+const readRamp = () => ({
+  reachOk: cssVar('--accent'),        /* fits the window with slack */
+  reachTight: cssVar('--gold-mark'),  /* fits, but past three quarters of it */
+  reachBust: cssVar('--crit'),        /* busts the hiding period */
+  reachNone: cssVar('--baseline'),    /* no journey on this day */
+  /* the six steps [data-hb='1']…[data-hb='6'] paint the headway grid with */
+  hb: [cssVar('--seq-100'), cssVar('--seq-200'), cssVar('--seq-300'),
+       cssVar('--seq-400'), cssVar('--seq-550'), cssVar('--seq-650')],
+  off: cssVar('--off'),
+  spoke: cssVar('--ink-2'),          /* a route line, and every mark's hairline */
+  spokeHub: cssVar('--gold-deep'),   /* a route that calls at the hub */
+  ink: cssVar('--ink'),              /* the ring that makes a fill a shape */
+});
+
+/* The headway grid's own thresholds, via #data. A trailing null is the open-ended
+   last bin (Infinity is not JSON). */
+const BINS = (G.headway_bins_min && G.headway_bins_min.length)
+  ? G.headway_bins_min : [10, 15, 25, 35, 50, null];
+const binOf = v => {
+  for (let i = 0; i < BINS.length; i++) {
+    const lim = BINS[i];
+    if (lim === null || lim === undefined || v <= lim) return i + 1;
+  }
+  return BINS.length;
+};
+
+/* Which per-day columns #stops carried, last time paintMap read it. Cached because
+   applyMode runs on every tile hover and D('stops') is a large parse. Pass-local:
+   attachMap() repaints on every pass, so the newest closure has read them. */
+let HAS_REACH = false;
+let HAS_HW = false;
+
+/* The tile highlight survives every pass and every re-mount: it lives on W. */
+W.hl = W.hl || { pinned: null, preview: null };
+
+/* The stop dots' edge ramp, and the heavier one the frequency layer needs so a
+   1.3 px dot at z9 still has an edge. */
+const STOP_EDGE_W = ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1];
+const STOP_EDGE_HB = ['interpolate', ['linear'], ['zoom'], 9, .6, 13, 1.2];
+
+/* Hides the map's own chrome (layer switches and colour key), which is useless
+   without a map. The copy buttons stay: the border is text. No-ops on the skeleton,
+   which ships neither. */
+const setChrome = (on) => {
+  for (const id of ['netlayers', 'netlegend']) {
+    const n = $(id);
+    if (n) n.hidden = !on;
+  }
+};
+
+/* Rebuild the two data-bearing sources from whatever #stops now holds (or from the
+   previews while there is no #stops yet), fill the static sources the first time the
+   real data is here, re-filter the spokes to the selected day, then repaint. Never
+   setStyle, never fitBounds: nothing here may move the viewport. */
+const paintMap = () => {
+  if (!W.map || !W.map.getSource) return;
+  const real = isReal();
+  const S = real ? (D('stops') || STOPS || {}) : {};
+  const day = W.day || CURRENT;
+  const hp = Number(G.hiding_period_min || 0);
+  HAS_REACH = real && Boolean(S.reach && Object.keys(S.reach).length);
+  HAS_HW = real && Boolean(S.hw && Object.keys(S.hw).length);
+  const reach = (S.reach || {})[day] || null;
+  const F = S.fmt || {};
+  const FMIN = F.min || {}, FROUTES = F.routes || {}, FSCORE = F.score || {};
+  setIf('zonedots', real ? {
+    type: 'FeatureCollection',
+    features: (S.zones || []).map((z, i) => {
+      /* -1 is "no journey", never null: MapLibre expressions compare numbers */
+      const t = reach && reach[i] !== null && reach[i] !== undefined ? reach[i] : null;
+      return {
+        type: 'Feature',
+        properties: {
+          name: z[2], score: z[3],
+          stxt: z[3] == null ? '' : (FSCORE[z[3]] || ''),
+          ttxt: t === null ? '' : (FMIN[t] || ''),
+          t: t === null ? -1 : t,
+          frac: (t === null || hp <= 0) ? -1 : t / hp,
+        },
+        geometry: { type: 'Point', coordinates: [z[0], z[1]] },
+      };
+    }),
+  } : zonesHintFC());
+  const hw = (S.hw || {})[day] || null;
+  setIf('stops', real ? {
+    type: 'FeatureCollection',
+    features: (S.stops || []).map((s, i) => {
+      /* hb 0 is "no service at this stop on this day" (CONTRACT §(d) StopRow) */
+      const v = hw && hw[i] !== null && hw[i] !== undefined ? hw[i] : null;
+      return {
+        type: 'Feature',
+        properties: {
+          name: s[2], routes: s[3], freq: s[4] || 0,
+          rtxt: FROUTES[s[3]] || '', hwtxt: v === null ? '' : (FMIN[v] || ''),
+          hb: v === null ? 0 : binOf(v),
+          hwv: v === null ? -1 : v,
+        },
+        geometry: { type: 'Point', coordinates: [s[0], s[1]] },
+      };
+    }),
+  } : stopsHintFC());
+  /* the zones hint may land after style.load; the real rings are set exactly once */
+  if (!real || !W.staticFilled) setIf('zonerings', ringsFC());
+  if (real && !W.staticFilled) {
+    W.staticFilled = 1;
+    setIf('border', borderFC()); setIf('border-suggested', suggestedFC());
+    setIf('n-mec', mecFC()); setIf('n-spokes', spokesFC(S));
+  }
+  /* Spoke geometry never changes, only which run today: a setFilter on the per-day
+     t_<dayKey> property. */
+  if (W.map.getLayer && W.map.getLayer('n-spoke-line')) {
+    W.map.setFilter('n-spoke-line', ['>', ['coalesce', ['get', 't_' + day], 0], 0]);
+  }
+  applyMode();
+};
+
+/* Colour only: setPaintProperty on two layers. The force argument lets a tile
+   highlight put the map into a mode without writing it to W.layers or storage,
+   so dropping the highlight gives the reader's own choice straight back. */
+const applyMode = (force) => {
+  const RAMP = W.ramp;
+  if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
+  const p = PAL[isDark() ? 'dark' : 'light'];
+  let mode = force || (W.layers && W.layers.mode) || 'base';
+  /* A mode with no column behind it looks like a broken map; W.layers may still
+     carry it from another feed, so the paint refuses it too. */
+  if (mode === 'reach' && !HAS_REACH) mode = 'base';
+  if (mode === 'frequency' && !HAS_HW) mode = 'base';
+  const set = (layer, prop, value) => {
+    if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
+  };
+  if (mode === 'reach') {
+    /* Four bins that differ in hue AND ring: lightness is not monotone in the
+       light theme, so the stroke is the redundant channel (tight wears --gold-deep,
+       bust wears --ink, no-journey is ring only). The strokes are also the contrast
+       fix: the fills alone are well under 3:1 on the basemap's land colour. Keep
+       the fills as §06's ride-chart tokens. */
+    set('zone-dots', 'circle-color', ['case',
+      ['<', ['get', 'frac'], 0], 'rgba(0,0,0,0)',
+      ['<=', ['get', 'frac'], 0.75], RAMP.reachOk,
+      ['<=', ['get', 'frac'], 1.0], RAMP.reachTight,
+      RAMP.reachBust]);
+    set('zone-dots', 'circle-stroke-color', ['case',
+      ['<', ['get', 'frac'], 0], RAMP.spoke,
+      ['>', ['get', 'frac'], 1.0], RAMP.ink,
+      ['>', ['get', 'frac'], 0.75], RAMP.spokeHub,
+      p.edge]);
+    set('zone-dots', 'circle-stroke-width', ['case',
+      ['<', ['get', 'frac'], 0], 1.5,
+      ['>', ['get', 'frac'], 1.0], 1.6,
+      ['>', ['get', 'frac'], 0.75], 1.4,
+      1]);
+    set('zone-dots', 'circle-stroke-opacity', 0.95);
+    set('zone-dots', 'circle-opacity', 0.9);
+    set('stop-dots', 'circle-color', RAMP.off);
+    set('stop-dots', 'circle-stroke-color', p.edge);
+    set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
+    set('stop-dots', 'circle-opacity', 0.4);
+  } else if (mode === 'frequency') {
+    /* A single-hue lightness ramp, CVD-safe, same six steps as the headway grid. */
+    set('stop-dots', 'circle-color', ['case',
+      ['<=', ['get', 'hb'], 0], RAMP.off,
+      ['match', ['get', 'hb'],
+        1, RAMP.hb[0], 2, RAMP.hb[1], 3, RAMP.hb[2],
+        4, RAMP.hb[3], 5, RAMP.hb[4], 6, RAMP.hb[5], RAMP.hb[5]]]);
+    set('stop-dots', 'circle-opacity', ['case', ['<=', ['get', 'hb'], 0], 0.35, 0.9]);
+    /* The hairline the grid's cells carry: the light end of this ramp is 1.1:1
+       against pale ground, and without an edge the best-served stops vanish. */
+    set('stop-dots', 'circle-stroke-color', RAMP.spoke);
+    set('stop-dots', 'circle-stroke-width', STOP_EDGE_HB);
+    set('zone-dots', 'circle-color', p.zone);
+    set('zone-dots', 'circle-stroke-color', p.edge);
+    set('zone-dots', 'circle-stroke-width', 1);
+    set('zone-dots', 'circle-stroke-opacity', 0.85);
+    set('zone-dots', 'circle-opacity', 0.3);
+  } else {
+    set('zone-dots', 'circle-color', p.zone);
+    set('zone-dots', 'circle-stroke-color', p.edge);
+    set('zone-dots', 'circle-stroke-width', 1);
+    set('zone-dots', 'circle-stroke-opacity', 0.85);
+    set('zone-dots', 'circle-opacity', 0.9);
+    set('stop-dots', 'circle-color', p.stop);
+    set('stop-dots', 'circle-stroke-color', p.edge);
+    set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
+    set('stop-dots', 'circle-opacity', 0.8);
+  }
+  const legend = $('netlegend');
+  if (legend) legend.setAttribute('data-mode', mode);
+};
+
+/* ── tile → map highlight ──────────────────────────────────────────────────
+   Some stat tiles name a fact the map can point at. Hover or focus previews it,
+   click or Enter/Space pins it, one at a time. Every branch below is paint, a
+   filter or a visibility flag: nothing touches a source, writes W.layers or moves
+   the viewport, so clearing a highlight is one applyMode() and two hidden layers. */
+const HL_NONE = ['==', ['literal', 0], ['literal', 1]];   /* matches no feature */
+const HL_LABEL = {
+  zones: 'hiding zones',
+  stops: 'served stops',
+  frequency: '15-min route-direction stops',
+  reach: 'unreachable zones',
+  extent: 'network extent',
+};
+
+const applyHl = () => {
+  if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !W.ramp) return;
+  let kind = W.hl.preview || W.hl.pinned || null;
+  /* a highlight with no data behind it shows nothing rather than dimming everything */
+  if (kind === 'reach' && !HAS_REACH) kind = null;
+  const set = (layer, prop, value) => {
+    if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
+  };
+  const filt = (layer, value) => {
+    if (W.map.getLayer(layer)) W.map.setFilter(layer, value);
+  };
+  const show = (layer, on) => {
+    if (W.map.getLayer(layer)) {
+      W.map.setLayoutProperty(layer, 'visibility', on ? 'visible' : 'none');
     }
   };
+  /* Back to the reader's own layer state first, then the emphasis on top. The
+     frequency highlight dims on the freq flag, so it still works without the
+     headway column; it just does not force the ramp it cannot paint. */
+  applyMode((kind === 'frequency' && HAS_HW) ? 'frequency'
+    : kind === 'reach' ? 'reach' : null);
+  filt('n-hl-zones', HL_NONE);
+  filt('n-hl-stops', HL_NONE);
+  show('n-mec-line', false);
+  if (W.map.getLayer('border-line')) {
+    W.map.setPaintProperty('border-line', 'line-width', kind === 'extent' ? 3 : 1.6);
+    W.map.setPaintProperty('border-line', 'line-opacity', kind === 'extent' ? 1 : .85);
+  }
+  /* the extent tile thickens both gold frames */
+  if (W.map.getLayer('border-suggested-line')) {
+    W.map.setPaintProperty('border-suggested-line', 'line-width', kind === 'extent' ? 2.4 : 1.2);
+    W.map.setPaintProperty('border-suggested-line', 'line-opacity', kind === 'extent' ? 1 : .9);
+  }
+  if (kind === 'zones') {
+    set('stop-dots', 'circle-opacity', .12);
+  } else if (kind === 'stops') {
+    set('zone-dots', 'circle-opacity', .12);
+    set('stop-dots', 'circle-opacity', .95);
+  } else if (kind === 'frequency') {
+    /* freq is the 15-minute route-direction flag the tile counts */
+    set('stop-dots', 'circle-opacity', ['case', ['>', ['get', 'freq'], 0], .95, .07]);
+    set('zone-dots', 'circle-opacity', .1);
+    filt('n-hl-stops', ['>', ['get', 'freq'], 0]);
+  } else if (kind === 'reach') {
+    /* frac < 0 is "no journey"; frac > 1 busts the window. Only those stay lit. */
+    const missed = ['any', ['<', ['get', 'frac'], 0], ['>', ['get', 'frac'], 1]];
+    set('zone-dots', 'circle-opacity', ['case', missed, 1, .08]);
+    set('stop-dots', 'circle-opacity', .06);
+    filt('n-hl-zones', missed);
+  } else if (kind === 'extent') {
+    set('stop-dots', 'circle-opacity', .25);
+    set('zone-dots', 'circle-opacity', .25);
+    show('n-mec-line', true);
+  }
+  /* A live region announces on mutation, and applyHl runs on every hover across
+     the rail, so write only when the text actually differs. */
+  const note = $('netpin');
+  const say = W.hl.pinned ? 'Showing: ' + (HL_LABEL[W.hl.pinned] || '') : '';
+  if (note && note.textContent !== say) note.textContent = say;
+};
+
+const paintAll = () => { paintMap(); applyHl(); };
+
+/* The sources and layers, built on every style.load. Sources that are real-only
+   (border, the suggested border, the spokes, the MEC) start EMPTY while the map is a
+   hint and are filled by paintMap() the first time the real data is here; a theme
+   flip after the network stage rebuilds them full. Route spokes go in first, so they
+   sit under everything. A route calling at the hub is gold and a shade heavier.
+   Hidden unless asked for; paintMap() filters. */
+const buildLayers = () => {
+  const map = W.map;
+  if (!map) return;
+  const real = isReal();
+  const p = PAL[isDark() ? 'dark' : 'light'];
+  const RAMP = (W.ramp = readRamp());
+  const S = real ? (D('stops') || STOPS || {}) : {};
+
+  map.addSource('n-spokes', { type: 'geojson', data: real ? spokesFC(S) : EMPTY_FC });
+  map.addLayer({ id: 'n-spoke-line', type: 'line', source: 'n-spokes',
+    layout: { visibility: W.layers.spokes ? 'visible' : 'none',
+      'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': ['case', ['>', ['get', 'hub'], 0], RAMP.spokeHub, RAMP.spoke],
+      'line-opacity': ['case', ['>', ['get', 'hub'], 0], .5, .35],
+      /* only one zoom-based interpolate per expression, so the case goes inside */
+      'line-width': ['interpolate', ['linear'], ['zoom'],
+        9, ['case', ['>', ['get', 'hub'], 0], 1.3, .7],
+        13, ['case', ['>', ['get', 'hub'], 0], 1.8, 1.2],
+        16, ['case', ['>', ['get', 'hub'], 0], 2.6, 2]],
+    } });
+
+  map.addSource('border', { type: 'geojson', data: real ? borderFC() : EMPTY_FC });
+  map.addLayer({ id: 'border-line', type: 'line', source: 'border',
+    paint: { 'line-color': p.gold, 'line-width': 1.6, 'line-opacity': .85, 'line-dasharray': [3, 2.4] } });
+
+  map.addSource('border-suggested', { type: 'geojson', data: real ? suggestedFC() : EMPTY_FC });
+  map.addLayer({ id: 'border-suggested-line', type: 'line', source: 'border-suggested',
+    paint: { 'line-color': p.gold, 'line-width': 1.2, 'line-opacity': .9 } });
+
+  map.addSource('zonerings', { type: 'geojson', data: ringsFC() });
+  map.addLayer({ id: 'zone-fill', type: 'fill', source: 'zonerings',
+    layout: { visibility: W.layers.zones ? 'visible' : 'none' },
+    paint: { 'fill-color': p.zone, 'fill-opacity': .10 } });
+  map.addLayer({ id: 'zone-ring', type: 'line', source: 'zonerings',
+    layout: { visibility: W.layers.zones ? 'visible' : 'none' },
+    paint: { 'line-color': p.zone, 'line-width': .8, 'line-opacity': .55 } });
+
+  map.addSource('stops', { type: 'geojson', data: EMPTY_FC });
+  map.addLayer({ id: 'stop-dots', type: 'circle', source: 'stops',
+    paint: { 'circle-color': p.stop, 'circle-opacity': .8,
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.3, 12, 2.4, 14, 3.6, 16, 5.4],
+      'circle-stroke-color': p.edge, 'circle-stroke-opacity': .8,
+      'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1] } });
+
+  map.addSource('zonedots', { type: 'geojson', data: EMPTY_FC });
+  map.addLayer({ id: 'zone-dots', type: 'circle', source: 'zonedots',
+    paint: { 'circle-color': p.zone, 'circle-opacity': .9,
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.6, 14, 5, 16, 7],
+      'circle-stroke-color': p.edge, 'circle-stroke-width': 1, 'circle-stroke-opacity': .85 } });
+
+  /* Two halo layers, always present and filtered to nothing until a tile asks.
+     Additive, on top of the dots: the point is to find four zones in three hundred. */
+  map.addLayer({ id: 'n-hl-zones', type: 'circle', source: 'zonedots',
+    filter: ['==', ['literal', 0], ['literal', 1]],
+    paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
+      'circle-stroke-width': 3, 'circle-stroke-opacity': .55,
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 5.2, 12, 6.6, 14, 8, 16, 10] } });
+  map.addLayer({ id: 'n-hl-stops', type: 'circle', source: 'stops',
+    filter: ['==', ['literal', 0], ['literal', 1]],
+    paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
+      'circle-stroke-width': 2, 'circle-stroke-opacity': .5,
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 3.3, 12, 4.4, 14, 5.6, 16, 7.4] } });
+
+  map.addSource('n-mec', { type: 'geojson', data: real ? mecFC() : lineFC([]) });
+  map.addLayer({ id: 'n-mec-line', type: 'line', source: 'n-mec',
+    layout: { visibility: 'none' },
+    paint: { 'line-color': RAMP.spokeHub, 'line-width': 1.4, 'line-opacity': .7,
+      'line-dasharray': [2, 2] } });
+
+  /* the statics were just built full; paintMap() need not fill them again */
+  if (real) W.staticFilled = 1;
+  /* Fill in what arrives later or changes with the day, and re-apply the pin. */
+  paintMap();
+  applyHl();
+};
+
+/* The round-start star: built once from W.hub (the hub preview, then #data), moved
+   with setLngLat after that. A hub whose name changed is rebuilt; on a healthy run it
+   never does, because the preview hub IS inferHub's result. */
+const placeHub = () => {
+  if (!W.hub || !W.maplibregl || !W.map) return;
+  if (W.hubMarker && W.hubMarkerName !== W.hub.name) {
+    try { W.hubMarker.remove(); } catch (e) {}
+    W.hubMarker = null;
+  }
+  if (W.hubMarker) { W.hubMarker.setLngLat([W.hub.lon, W.hub.lat]); return; }
+  const star = document.createElement('div');
+  star.className = 'mk-central';
+  star.innerHTML = '<span class="star">★</span><span class="clbl">' + esc(W.hub.name) + '</span>';
+  /* The hover panel is pointer-only, so the marker carries the same fact as text. */
+  star.setAttribute('title', W.hub.name + ', the inferred round-start station');
+  star.setAttribute('aria-label', W.hub.name + ', the inferred round-start station');
+  bindTT(star, '<b>' + esc(W.hub.name) + '</b>The inferred round-start station.');
+  W.hubMarker = new W.maplibregl.Marker({ element: star }).setLngLat([W.hub.lon, W.hub.lat]).addTo(W.map);
+  W.hubMarkerName = W.hub.name;
+};
+
+/* The layer switches and the colour-by radio, bound once per ELEMENT: §05 re-mounts
+   at geo with fresh control nodes, and the next pass binds those. W.layers carries the
+   state across. */
+const wireControls = () => {
+  const spsw = $('spokesw');
+  if (spsw && !spsw.dataset.mapBound) {
+    spsw.dataset.mapBound = '1';
+    if (W.layers.spokes) spsw.checked = true;
+    spsw.addEventListener('change', () => {
+      W.layers.spokes = Boolean(spsw.checked);
+      saveLayers();
+      if (W.map && W.map.getLayer('n-spoke-line')) {
+        W.map.setLayoutProperty('n-spoke-line', 'visibility', spsw.checked ? 'visible' : 'none');
+      }
+    });
+  }
+
+  const sw = $('zonesw');
+  if (sw && !sw.dataset.mapBound) {
+    sw.dataset.mapBound = '1';
+    if (W.layers.zones) sw.checked = true;
+    sw.addEventListener('change', () => {
+      W.layers.zones = Boolean(sw.checked);
+      saveLayers();
+      const v = sw.checked ? 'visible' : 'none';
+      ['zone-fill', 'zone-ring'].forEach(id => {
+        if (W.map && W.map.getLayer(id)) W.map.setLayoutProperty(id, 'visibility', v);
+      });
+    });
+  }
+
+  const cb = $('colourby');
+  if (cb && !cb.dataset.mapBound) {
+    cb.dataset.mapBound = '1';
+    /* Attribute first, then property: an un-upgraded wa-radio-group reads the
+       attribute. Only the modes this map offers count: a feed over MAX_MAP_STOPS
+       ships no Frequency button, and storage must not select a mode with no control. */
+    const offered = [].slice.call(cb.querySelectorAll('wa-radio'))
+      .map(r => r.getAttribute('value'));
+    if (offered.indexOf(W.layers.mode) < 0) {
+      W.layers.mode = offered.indexOf('reach') >= 0 ? 'reach' : 'base';
+    }
+    cb.setAttribute('value', W.layers.mode);
+    cb.value = W.layers.mode;
+    cb.addEventListener('change', () => {
+      const want = cb.value || 'base';
+      W.layers.mode = offered.indexOf(want) >= 0 ? want : 'base';
+      saveLayers();
+      /* applyHl(), never applyMode(): applyMode alone would wipe a pinned tile's
+         dimming while the tile still said aria-current. */
+      if (W.applyHl) W.applyHl();
+    });
+  }
+};
+
+/* Every pass with a live instance: the node may have moved into a new card
+   (resize), the units may have flipped at geo (setUnit), the controls may be fresh
+   nodes (wireControls), and the data may have gone from hint to real (paintAll). */
+const attachMap = () => {
+  const map = W.map, host = $('netmap');
+  if (!map || !host || W.mapHost !== host) return;
+  const real = isReal();
+  W.hub = real ? { name: DATA.hub.name, lat: DATA.hub.lat, lon: DATA.hub.lon }
+    : (hint().hub ? { name: hint().hub.name, lat: hint().hub.lat, lon: hint().hub.lon } : (W.hub || null));
+  map.resize();
+  setChrome(true);
+  const unit = G.scale_unit || 'metric';
+  if (W.scaleCtl && unit !== W.scaleUnit) { W.scaleCtl.setUnit(unit); W.scaleUnit = unit; }
+  placeHub();
+  /* The ONE viewport move after creation (CONTRACT §(d) "Previews"): a map created
+     from the stops extent refits to the real border exactly once, and not at all if
+     the reader has already dragged or zoomed. */
+  if (real && W.previewFit && !W.mapFitted) {
+    W.mapFitted = 1;
+    const bb = DATA.border.bbox;
+    if (!W.mapTouched) map.fitBounds([[bb[1], bb[0]], [bb[3], bb[2]]], { padding: PAD, animate: false });
+  }
+  if (map.getSource && map.getSource('stops')) paintAll();   /* else style.load will call buildLayers */
+  wireControls();
+  bindRail();
+};
+
+/* Published on EVERY pass, before bootPage runs buildMap(): the async create and the
+   once-bound listeners always reach the newest closures, which read the newest
+   #data / #stops. */
+W.attachMap = attachMap;
+W.buildLayers = buildLayers;
+W.applyHl = applyHl;
+W.highlight = (kind, pin) => {
+  if (pin === 'pin') W.hl.pinned = (W.hl.pinned === kind) ? null : kind;
+  else W.hl.preview = kind;
+  applyHl();
+  return W.hl.pinned;
+};
+W.highlightPinned = () => W.hl.pinned;
+W.paintMap = paintAll;
+W.refreshMapData = paintAll;
+
+/* The per-pass entry: attach to a live instance, or create one — from the border and
+   hub in #data once the network stage is in, from the stops preview before it. */
+function buildMap() {
+  const host = $('netmap');
+  if (!host) return;
+  const hinted = Boolean(hint().stops && hint().stops.bbox);
+  if (!isReal() && !hinted) return;
+  if (W.map) {
+    if (W.mapHost === host) { attachMap(); return; }     /* adopted, or nothing moved */
+    /* the live node is gone (never on the healthy path): start over */
+    try { W.map.remove(); } catch (e) {}
+    W.map = null; W.mapHost = null; W.mapBuilt = 0; W.mapReady = 0;
+    W.hubMarker = null; W.scaleCtl = null; W.staticFilled = 0; W.mapFitted = 0;
+  }
+  if (W.mapBuilt) return;          /* a create is awaiting the MapLibre import */
+  createMap(host);                 /* async; ends with W.attachMap() */
+}
+
+/* Once per run. Everything that can be redone on a later pass lives in attachMap();
+   this is only the import, the constructor, the controls and the once-bound
+   listeners. W.mapSeq guards the await: a later create (the node was swapped while
+   the import was in flight) supersedes this one, which then touches nothing. */
+async function createMap(host) {
+  W.mapBuilt = 1;
+  const seq = (W.mapSeq = (W.mapSeq || 0) + 1);
   /* Say so where the map would have been, and drop the rail's hover sentence: with no
      map there is nothing for a tile to light up. The callout goes in #netmap-frame
      when the section provides one, and beside the host when it does not. */
@@ -3785,6 +4622,8 @@ async function buildMap() {
     const hover = $('glance-hover-note');
     if (hover) hover.remove();
   };
+  /* giveUp undoes the claim so the next injectRuntime() can retry, and hides the
+     map's own chrome, which is useless without a map. */
   const giveUp = (msg, e) => {
     W.mapBuilt = 0; setChrome(false); sayBlocked(); console.warn(msg, e || '');
   };
@@ -3794,451 +4633,66 @@ async function buildMap() {
   try {
     const ns = await import('__MAPLIBRE_JS__');
     maplibregl = ns.default ?? ns;
-  } catch (e) { giveUp('MapLibre unavailable — map omitted', e); return; }
+  } catch (e) {
+    if (W.mapSeq === seq) giveUp('MapLibre unavailable — map omitted', e);
+    return;
+  }
+  /* superseded by a later create, or the node was swept: touch nothing */
+  if (W.mapSeq !== seq || !host.isConnected) return;
   if (typeof maplibregl === 'undefined' || !maplibregl || !maplibregl.Map) {
     giveUp('MapLibre unavailable — map omitted');
     return;
   }
 
-  const B = DATA.border, bb = B.bbox;                  /* [S, W, N, E] */
-  const borderRing = B.kind === 'circle'
-    ? ringOf(B.circle[1], B.circle[0], B.circle[2], 96)
-    : [[bb[1], bb[0]], [bb[3], bb[0]], [bb[3], bb[2]], [bb[1], bb[2]], [bb[1], bb[0]]];
-
-  const STYLES = { light: '__TILES_LIGHT__', dark: '__TILES_DARK__' };
-  /* the same values as styles.css --ink-2, --surface, --gold-deep, --accent, written
-     out because MapLibre paint takes no var() */
-  const PAL = { light: { stop: '#556577', edge: '#fafafa', gold: '#906600', zone: '#202f40' },
-                dark:  { stop: '#b5bfcb', edge: '#202f40', gold: '#ffbf40', zone: '#91b5dd' } };
-  const isDark = () => document.documentElement.classList.contains('wa-dark');
+  const real = isReal();
+  const bb = real ? DATA.border.bbox : hint().stops.bbox;   /* [S, W, N, E] */
+  W.previewFit = real ? 0 : 1;
   let dark = isDark();
-
   host.style.height = '470px';
   host.classList.toggle('dark-map', dark);
 
+  const opts = {
+    container: host,
+    style: STYLES[dark ? 'dark' : 'light'],
+    cooperativeGestures: true,
+    attributionControl: { compact: true },
+  };
+  if (bb[2] > bb[0] && bb[3] > bb[1]) {
+    opts.bounds = [[bb[1], bb[0]], [bb[3], bb[2]]];
+    opts.fitBoundsOptions = { padding: PAD };
+  } else {
+    opts.center = [bb[1], bb[0]];   /* a one-stop feed has no extent to fit */
+    opts.zoom = 12;
+  }
   let map;
   try {
-    map = new maplibregl.Map({
-      container: 'netmap',
-      style: STYLES[dark ? 'dark' : 'light'],
-      bounds: [[bb[1], bb[0]], [bb[3], bb[2]]],
-      fitBoundsOptions: { padding: { top: 40, bottom: 34, left: 40, right: 52 } },
-      cooperativeGestures: true,
-      attributionControl: { compact: true },
-    });
+    map = new maplibregl.Map(opts);
   } catch (e) {
     giveUp('MapLibre failed — map omitted', e);
     host.innerHTML = ''; host.style.height = '';
     return;
   }
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-  map.addControl(new maplibregl.ScaleControl({ unit: G.scale_unit }), 'bottom-left');
-  /* Published: a later injectRuntime() builds a new closure and returns early on the
-     mapBuilt guard, so anything that pushes new data must reach the map through W. */
+  W.scaleUnit = G.scale_unit || 'metric';
+  W.scaleCtl = new maplibregl.ScaleControl({ unit: W.scaleUnit });
+  map.addControl(W.scaleCtl, 'bottom-left');
+  /* Published: everything that pushes data or paint reaches the map through W, and
+     the listeners below call through W so they always reach the newest closures. */
+  W.maplibregl = maplibregl;
   W.map = map;
+  W.mapHost = host;
   W.mapReady = 1;
-  /* A retry after an earlier giveUp() finds the chrome hidden; this gives it back. */
-  setChrome(true);
-
-  const zoneRings = STOPS.rings ? {
-    type: 'FeatureCollection',
-    features: STOPS.zones.map(z => ({
-      type: 'Feature', properties: { name: z[2] },
-      geometry: { type: 'Polygon', coordinates: [ringOf(z[0], z[1], G.zone_radius_m, 40)] },
-    })),
-  } : { type: 'FeatureCollection', features: [] };
-
-  /* Sources and layers are rebuilt on every style.load, which fires again after
-     setStyle on a theme flip. The ramps are read with cssVar() rather than
-     hard-coded like PAL because they are the same tokens the ride chart and the
-     headway grid paint from, and a second copy would drift. */
-  let RAMP = null;
-  const readRamp = () => ({
-    reachOk: cssVar('--accent'),        /* fits the window with slack */
-    reachTight: cssVar('--gold-mark'),  /* fits, but past three quarters of it */
-    reachBust: cssVar('--crit'),        /* busts the hiding period */
-    reachNone: cssVar('--baseline'),    /* no journey on this day */
-    /* the six steps [data-hb='1']…[data-hb='6'] paint the headway grid with */
-    hb: [cssVar('--seq-100'), cssVar('--seq-200'), cssVar('--seq-300'),
-         cssVar('--seq-400'), cssVar('--seq-550'), cssVar('--seq-650')],
-    off: cssVar('--off'),
-    spoke: cssVar('--ink-2'),          /* a route line, and every mark's hairline */
-    spokeHub: cssVar('--gold-deep'),   /* a route that calls at the hub */
-    ink: cssVar('--ink'),              /* the ring that makes a fill a shape */
-  });
-
-  /* The headway grid's own thresholds, via #data. A trailing null is the open-ended
-     last bin (Infinity is not JSON). */
-  const BINS = (G.headway_bins_min && G.headway_bins_min.length)
-    ? G.headway_bins_min : [10, 15, 25, 35, 50, null];
-  const binOf = v => {
-    for (let i = 0; i < BINS.length; i++) {
-      const lim = BINS[i];
-      if (lim === null || lim === undefined || v <= lim) return i + 1;
-    }
-    return BINS.length;
-  };
-
-  /* Which per-day columns #stops carried, last time paintMap read it. Cached because
-     applyMode runs on every tile hover and D('stops') is a large parse. */
-  let HAS_REACH = Boolean(STOPS.reach && Object.keys(STOPS.reach).length);
-  let HAS_HW = Boolean(STOPS.hw && Object.keys(STOPS.hw).length);
-
-  /* Rebuild the two data-bearing sources from whatever #stops now holds, re-filter
-     the spokes to the selected day, then repaint. Never setStyle, never fitBounds:
-     nothing here may move the viewport. */
-  const paintMap = () => {
-    if (!W.map || !W.map.getSource) return;
-    const S = D('stops') || STOPS || {};
-    const day = W.day || CURRENT;
-    const hp = Number(G.hiding_period_min || 0);
-    HAS_REACH = Boolean(S.reach && Object.keys(S.reach).length);
-    HAS_HW = Boolean(S.hw && Object.keys(S.hw).length);
-    const reach = (S.reach || {})[day] || null;
-    const F = S.fmt || {};
-    const FMIN = F.min || {}, FROUTES = F.routes || {}, FSCORE = F.score || {};
-    const zs = W.map.getSource('zonedots');
-    if (zs) {
-      zs.setData({
-        type: 'FeatureCollection',
-        features: (S.zones || []).map((z, i) => {
-          /* -1 is "no journey", never null: MapLibre expressions compare numbers */
-          const t = reach && reach[i] !== null && reach[i] !== undefined ? reach[i] : null;
-          return {
-            type: 'Feature',
-            properties: {
-              name: z[2], score: z[3],
-              stxt: z[3] == null ? '' : (FSCORE[z[3]] || ''),
-              ttxt: t === null ? '' : (FMIN[t] || ''),
-              t: t === null ? -1 : t,
-              frac: (t === null || hp <= 0) ? -1 : t / hp,
-            },
-            geometry: { type: 'Point', coordinates: [z[0], z[1]] },
-          };
-        }),
-      });
-    }
-    const hw = (S.hw || {})[day] || null;
-    const ss = W.map.getSource('stops');
-    if (ss) {
-      ss.setData({
-        type: 'FeatureCollection',
-        features: (S.stops || []).map((s, i) => {
-          /* hb 0 is "no service at this stop on this day" (CONTRACT §(d) StopRow) */
-          const v = hw && hw[i] !== null && hw[i] !== undefined ? hw[i] : null;
-          return {
-            type: 'Feature',
-            properties: {
-              name: s[2], routes: s[3], freq: s[4] || 0,
-              rtxt: FROUTES[s[3]] || '', hwtxt: v === null ? '' : (FMIN[v] || ''),
-              hb: v === null ? 0 : binOf(v),
-              hwv: v === null ? -1 : v,
-            },
-            geometry: { type: 'Point', coordinates: [s[0], s[1]] },
-          };
-        }),
-      });
-    }
-    /* Spoke geometry never changes, only which run today: a setFilter on the per-day
-       t_<dayKey> property, flattened at build time because an expression cannot
-       index into a nested object. */
-    if (W.map.getLayer && W.map.getLayer('n-spoke-line')) {
-      W.map.setFilter('n-spoke-line', ['>', ['coalesce', ['get', 't_' + day], 0], 0]);
-    }
-    applyMode();
-  };
-
-  /* The stop dots' edge ramp, and the heavier one the frequency layer needs so a
-     1.3 px dot at z9 still has an edge. */
-  const STOP_EDGE_W = ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1];
-  const STOP_EDGE_HB = ['interpolate', ['linear'], ['zoom'], 9, .6, 13, 1.2];
-
-  /* Colour only: setPaintProperty on two layers. The force argument lets a tile
-     highlight put the map into a mode without writing it to W.layers or storage,
-     so dropping the highlight gives the reader's own choice straight back. */
-  const applyMode = (force) => {
-    if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
-    const p = PAL[isDark() ? 'dark' : 'light'];
-    let mode = force || (W.layers && W.layers.mode) || 'base';
-    /* A mode with no column behind it looks like a broken map; W.layers may still
-       carry it from another feed, so the paint refuses it too. */
-    if (mode === 'reach' && !HAS_REACH) mode = 'base';
-    if (mode === 'frequency' && !HAS_HW) mode = 'base';
-    const set = (layer, prop, value) => {
-      if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
-    };
-    if (mode === 'reach') {
-      /* Four bins that differ in hue AND ring: lightness is not monotone in the
-         light theme, so the stroke is the redundant channel (tight wears --gold-deep,
-         bust wears --ink, no-journey is ring only). The strokes are also the contrast
-         fix: the fills alone are well under 3:1 on the basemap's land colour. Keep
-         the fills as §06's ride-chart tokens. */
-      set('zone-dots', 'circle-color', ['case',
-        ['<', ['get', 'frac'], 0], 'rgba(0,0,0,0)',
-        ['<=', ['get', 'frac'], 0.75], RAMP.reachOk,
-        ['<=', ['get', 'frac'], 1.0], RAMP.reachTight,
-        RAMP.reachBust]);
-      set('zone-dots', 'circle-stroke-color', ['case',
-        ['<', ['get', 'frac'], 0], RAMP.spoke,
-        ['>', ['get', 'frac'], 1.0], RAMP.ink,
-        ['>', ['get', 'frac'], 0.75], RAMP.spokeHub,
-        p.edge]);
-      set('zone-dots', 'circle-stroke-width', ['case',
-        ['<', ['get', 'frac'], 0], 1.5,
-        ['>', ['get', 'frac'], 1.0], 1.6,
-        ['>', ['get', 'frac'], 0.75], 1.4,
-        1]);
-      set('zone-dots', 'circle-stroke-opacity', 0.95);
-      set('zone-dots', 'circle-opacity', 0.9);
-      set('stop-dots', 'circle-color', RAMP.off);
-      set('stop-dots', 'circle-stroke-color', p.edge);
-      set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
-      set('stop-dots', 'circle-opacity', 0.4);
-    } else if (mode === 'frequency') {
-      /* A single-hue lightness ramp, CVD-safe, same six steps as the headway grid. */
-      set('stop-dots', 'circle-color', ['case',
-        ['<=', ['get', 'hb'], 0], RAMP.off,
-        ['match', ['get', 'hb'],
-          1, RAMP.hb[0], 2, RAMP.hb[1], 3, RAMP.hb[2],
-          4, RAMP.hb[3], 5, RAMP.hb[4], 6, RAMP.hb[5], RAMP.hb[5]]]);
-      set('stop-dots', 'circle-opacity', ['case', ['<=', ['get', 'hb'], 0], 0.35, 0.9]);
-      /* The hairline the grid's cells carry: the light end of this ramp is 1.1:1
-         against pale ground, and without an edge the best-served stops vanish. */
-      set('stop-dots', 'circle-stroke-color', RAMP.spoke);
-      set('stop-dots', 'circle-stroke-width', STOP_EDGE_HB);
-      set('zone-dots', 'circle-color', p.zone);
-      set('zone-dots', 'circle-stroke-color', p.edge);
-      set('zone-dots', 'circle-stroke-width', 1);
-      set('zone-dots', 'circle-stroke-opacity', 0.85);
-      set('zone-dots', 'circle-opacity', 0.3);
-    } else {
-      set('zone-dots', 'circle-color', p.zone);
-      set('zone-dots', 'circle-stroke-color', p.edge);
-      set('zone-dots', 'circle-stroke-width', 1);
-      set('zone-dots', 'circle-stroke-opacity', 0.85);
-      set('zone-dots', 'circle-opacity', 0.9);
-      set('stop-dots', 'circle-color', p.stop);
-      set('stop-dots', 'circle-stroke-color', p.edge);
-      set('stop-dots', 'circle-stroke-width', STOP_EDGE_W);
-      set('stop-dots', 'circle-opacity', 0.8);
-    }
-    const legend = $('netlegend');
-    if (legend) legend.setAttribute('data-mode', mode);
-  };
-  /* ── tile → map highlight ──────────────────────────────────────────────────
-     Some stat tiles name a fact the map can point at. Hover or focus previews it,
-     click or Enter/Space pins it, one at a time. Every branch below is paint, a
-     filter or a visibility flag: nothing touches a source, writes W.layers or moves
-     the viewport, so clearing a highlight is one applyMode() and two hidden layers. */
-  const HL_NONE = ['==', ['literal', 0], ['literal', 1]];   /* matches no feature */
-  const HL_LABEL = {
-    zones: 'hiding zones',
-    stops: 'served stops',
-    frequency: '15-min route-direction stops',
-    reach: 'unreachable zones',
-    extent: 'network extent',
-  };
-  let hlPinned = null;
-  let hlPreview = null;
-
-  const applyHl = () => {
-    if (!W.map || !W.map.getLayer || !W.map.getLayer('zone-dots') || !RAMP) return;
-    let kind = hlPreview || hlPinned || null;
-    /* a highlight with no data behind it shows nothing rather than dimming everything */
-    if (kind === 'reach' && !HAS_REACH) kind = null;
-    const set = (layer, prop, value) => {
-      if (W.map.getLayer(layer)) W.map.setPaintProperty(layer, prop, value);
-    };
-    const filt = (layer, value) => {
-      if (W.map.getLayer(layer)) W.map.setFilter(layer, value);
-    };
-    const show = (layer, on) => {
-      if (W.map.getLayer(layer)) {
-        W.map.setLayoutProperty(layer, 'visibility', on ? 'visible' : 'none');
-      }
-    };
-    /* Back to the reader's own layer state first, then the emphasis on top. The
-       frequency highlight dims on the freq flag, so it still works without the
-       headway column; it just does not force the ramp it cannot paint. */
-    applyMode((kind === 'frequency' && HAS_HW) ? 'frequency'
-      : kind === 'reach' ? 'reach' : null);
-    filt('n-hl-zones', HL_NONE);
-    filt('n-hl-stops', HL_NONE);
-    show('n-mec-line', false);
-    if (W.map.getLayer('border-line')) {
-      W.map.setPaintProperty('border-line', 'line-width', kind === 'extent' ? 3 : 1.6);
-      W.map.setPaintProperty('border-line', 'line-opacity', kind === 'extent' ? 1 : .85);
-    }
-    /* the extent tile thickens both gold frames */
-    if (W.map.getLayer('border-suggested-line')) {
-      W.map.setPaintProperty('border-suggested-line', 'line-width', kind === 'extent' ? 2.4 : 1.2);
-      W.map.setPaintProperty('border-suggested-line', 'line-opacity', kind === 'extent' ? 1 : .9);
-    }
-    if (kind === 'zones') {
-      set('stop-dots', 'circle-opacity', .12);
-    } else if (kind === 'stops') {
-      set('zone-dots', 'circle-opacity', .12);
-      set('stop-dots', 'circle-opacity', .95);
-    } else if (kind === 'frequency') {
-      /* freq is the 15-minute route-direction flag the tile counts */
-      set('stop-dots', 'circle-opacity', ['case', ['>', ['get', 'freq'], 0], .95, .07]);
-      set('zone-dots', 'circle-opacity', .1);
-      filt('n-hl-stops', ['>', ['get', 'freq'], 0]);
-    } else if (kind === 'reach') {
-      /* frac < 0 is "no journey"; frac > 1 busts the window. Only those stay lit. */
-      const missed = ['any', ['<', ['get', 'frac'], 0], ['>', ['get', 'frac'], 1]];
-      set('zone-dots', 'circle-opacity', ['case', missed, 1, .08]);
-      set('stop-dots', 'circle-opacity', .06);
-      filt('n-hl-zones', missed);
-    } else if (kind === 'extent') {
-      set('stop-dots', 'circle-opacity', .25);
-      set('zone-dots', 'circle-opacity', .25);
-      show('n-mec-line', true);
-    }
-    /* A live region announces on mutation, and applyHl runs on every hover across
-       the rail, so write only when the text actually differs. */
-    const note = $('netpin');
-    const say = hlPinned ? 'Showing: ' + (HL_LABEL[hlPinned] || '') : '';
-    if (note && note.textContent !== say) note.textContent = say;
-  };
-
-  /* Published for bindRail(), which lives outside this closure because #tiles is
-     rewritten on every day switch and re-stamped from renderDay(). */
-  W.highlight = (kind, pin) => {
-    if (pin === 'pin') hlPinned = (hlPinned === kind) ? null : kind;
-    else hlPreview = kind;
-    applyHl();
-    return hlPinned;
-  };
-  W.highlightPinned = () => hlPinned;
-
-  const paintAll = () => { paintMap(); applyHl(); };
-  W.paintMap = paintAll;
-  W.refreshMapData = paintAll;
-
-  /* Only now do the tiles become controls: earlier bindRail() calls were no-ops
-     until W.highlight existed. */
-  bindRail();
+  W.hl = W.hl || { pinned: null, preview: null };
 
   map.on('style.load', () => {
-    /* The geo-stage re-mount orphans this instance, listeners and all; an orphan's
-       style.load would repaint the live map from a stale closure. */
-    if (W.map !== map) return;
-    const p = PAL[isDark() ? 'dark' : 'light'];
-    RAMP = readRamp();
-
-    /* Route spokes go in first, so they sit under everything. A route calling at the
-       hub is gold and a shade heavier. Hidden unless asked for; paintMap() filters. */
-    map.addSource('n-spokes', { type: 'geojson', data: {
-      type: 'FeatureCollection',
-      features: (STOPS.spokes || []).map(sp => {
-        const props = { r: sp.r, hub: sp.hub ? 1 : 0 };
-        const trips = sp.trips || {};
-        for (const k of Object.keys(trips).sort()) props['t_' + k] = trips[k];
-        return { type: 'Feature', properties: props,
-          geometry: { type: 'LineString', coordinates: sp.coords || [] } };
-      }),
-    } });
-    map.addLayer({ id: 'n-spoke-line', type: 'line', source: 'n-spokes',
-      layout: { visibility: W.layers.spokes ? 'visible' : 'none',
-        'line-cap': 'round', 'line-join': 'round' },
-      paint: {
-        'line-color': ['case', ['>', ['get', 'hub'], 0], RAMP.spokeHub, RAMP.spoke],
-        'line-opacity': ['case', ['>', ['get', 'hub'], 0], .5, .35],
-        /* only one zoom-based interpolate per expression, so the case goes inside */
-        'line-width': ['interpolate', ['linear'], ['zoom'],
-          9, ['case', ['>', ['get', 'hub'], 0], 1.3, .7],
-          13, ['case', ['>', ['get', 'hub'], 0], 1.8, 1.2],
-          16, ['case', ['>', ['get', 'hub'], 0], 2.6, 2]],
-      } });
-
-    map.addSource('border', { type: 'geojson', data: {
-      type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: borderRing } } });
-    map.addLayer({ id: 'border-line', type: 'line', source: 'border',
-      paint: { 'line-color': p.gold, 'line-width': 1.6, 'line-opacity': .85, 'line-dasharray': [3, 2.4] } });
-
-    /* The worker's suggested border, when it offered one: a second gold rectangle,
-       solid and thinner. No suggestion is the common case: the source is then an
-       empty FeatureCollection so the layer exists either way for applyHl(). */
-    const SB = DATA.suggestedBorder;
-    const sbb = (SB && SB.bbox && SB.bbox.length === 4 && SB.bbox.every(Number.isFinite))
-      ? SB.bbox : null;
-    map.addSource('border-suggested', { type: 'geojson', data: sbb
-      ? { type: 'Feature', properties: {}, geometry: { type: 'LineString',
-        coordinates: [[sbb[1], sbb[0]], [sbb[3], sbb[0]], [sbb[3], sbb[2]],
-          [sbb[1], sbb[2]], [sbb[1], sbb[0]]] } }
-      : { type: 'FeatureCollection', features: [] } });
-    map.addLayer({ id: 'border-suggested-line', type: 'line', source: 'border-suggested',
-      paint: { 'line-color': p.gold, 'line-width': 1.2, 'line-opacity': .9 } });
-
-    map.addSource('zonerings', { type: 'geojson', data: zoneRings });
-    map.addLayer({ id: 'zone-fill', type: 'fill', source: 'zonerings',
-      layout: { visibility: W.layers.zones ? 'visible' : 'none' },
-      paint: { 'fill-color': p.zone, 'fill-opacity': .10 } });
-    map.addLayer({ id: 'zone-ring', type: 'line', source: 'zonerings',
-      layout: { visibility: W.layers.zones ? 'visible' : 'none' },
-      paint: { 'line-color': p.zone, 'line-width': .8, 'line-opacity': .55 } });
-
-    map.addSource('stops', { type: 'geojson', data: {
-      type: 'FeatureCollection',
-      features: STOPS.stops.map(s => ({ type: 'Feature',
-        properties: { name: s[2], routes: s[3] },
-        geometry: { type: 'Point', coordinates: [s[0], s[1]] } })),
-    } });
-    map.addLayer({ id: 'stop-dots', type: 'circle', source: 'stops',
-      paint: { 'circle-color': p.stop, 'circle-opacity': .8,
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.3, 12, 2.4, 14, 3.6, 16, 5.4],
-        'circle-stroke-color': p.edge, 'circle-stroke-opacity': .8,
-        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 9, .3, 13, 1] } });
-
-    map.addSource('zonedots', { type: 'geojson', data: {
-      type: 'FeatureCollection',
-      features: STOPS.zones.map(z => ({ type: 'Feature',
-        properties: { name: z[2], score: z[3] },
-        geometry: { type: 'Point', coordinates: [z[0], z[1]] } })),
-    } });
-    map.addLayer({ id: 'zone-dots', type: 'circle', source: 'zonedots',
-      paint: { 'circle-color': p.zone, 'circle-opacity': .9,
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.6, 14, 5, 16, 7],
-        'circle-stroke-color': p.edge, 'circle-stroke-width': 1, 'circle-stroke-opacity': .85 } });
-
-    /* Two halo layers, always present and filtered to nothing until a tile asks.
-       Additive, on top of the dots: the point is to find four zones in three hundred. */
-    map.addLayer({ id: 'n-hl-zones', type: 'circle', source: 'zonedots',
-      filter: ['==', ['literal', 0], ['literal', 1]],
-      paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
-        'circle-stroke-width': 3, 'circle-stroke-opacity': .55,
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 5.2, 12, 6.6, 14, 8, 16, 10] } });
-    map.addLayer({ id: 'n-hl-stops', type: 'circle', source: 'stops',
-      filter: ['==', ['literal', 0], ['literal', 1]],
-      paint: { 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': RAMP.spokeHub,
-        'circle-stroke-width': 2, 'circle-stroke-opacity': .5,
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 3.3, 12, 4.4, 14, 5.6, 16, 7.4] } });
-
-    /* The smallest circle that holds the whole network, drawn only while the Network
-       diameter tile is highlighted. */
-    const mec = (DATA.metrics || {}).mec;
-    map.addSource('n-mec', { type: 'geojson', data: {
-      type: 'Feature', properties: {}, geometry: { type: 'LineString',
-        coordinates: (mec && mec.length === 3) ? ringOf(mec[1], mec[0], mec[2], 96) : [] } } });
-    map.addLayer({ id: 'n-mec-line', type: 'line', source: 'n-mec',
-      layout: { visibility: 'none' },
-      paint: { 'line-color': RAMP.spokeHub, 'line-width': 1.4, 'line-opacity': .7,
-        'line-dasharray': [2, 2] } });
-
-    /* Fill in what arrives later or changes with the day, and re-apply the pin. */
-    paintMap();
-    applyHl();
+    /* an orphaned instance keeps this listener; it must not paint the live map */
+    if (W.map === map && W.buildLayers) W.buildLayers();
   });
-
-  const star = document.createElement('div');
-  star.className = 'mk-central';
-  star.innerHTML = '<span class="star">★</span><span class="clbl">' + esc(DATA.hub.name) + '</span>';
-  new maplibregl.Marker({ element: star }).setLngLat([DATA.hub.lon, DATA.hub.lat]).addTo(map);
-  /* The hover panel is pointer-only, so the marker carries the same fact as text. */
-  star.setAttribute('title', DATA.hub.name + ', the inferred round-start station');
-  star.setAttribute('aria-label', DATA.hub.name + ', the inferred round-start station');
-  bindTT(star, '<b>' + esc(DATA.hub.name) + '</b>The inferred round-start station.');
+  /* A reader's own gesture (originalEvent), never a programmatic fit: attachMap()
+     skips its one sanctioned refit once the reader has taken the viewport. */
+  ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart'].forEach(ev => {
+    map.on(ev, e => { if (e && e.originalEvent) W.mapTouched = 1; });
+  });
 
   const placeTip = (e, html) => {
     tt.innerHTML = html;
@@ -4260,15 +4714,20 @@ async function buildMap() {
      registration order, so a click on a feature clears the pin and then re-pins. */
   map.on('click', hideTip);
 
-  /* Every figure in these tips arrives formatted in #stops; the runtime only joins. */
-  const stopTip = f => '<b>' + esc(f.name || 'Stop') + '</b>' + esc(f.rtxt || '')
+  /* Every figure in these tips arrives formatted in #stops; the runtime only joins.
+     A hint feature (the previews) carries a name and nothing else. */
+  const stopTip = f => Number(f.hint)
+    ? '<b>' + esc(f.name || 'Stop') + '</b>Stop'
+    : '<b>' + esc(f.name || 'Stop') + '</b>' + esc(f.rtxt || '')
     + (f.hwtxt ? ' · every ' + esc(f.hwtxt) + ' <small>06:00–22:00</small>' : ' · no service this day')
     + (Number(f.freq) ? ' · 15-min route-direction' : '');
-  const zoneTip = f => '<b>' + esc(f.name || 'Zone') + '</b>Zone'
+  const zoneTip = f => Number(f.hint)
+    ? '<b>' + esc(f.name || 'Zone') + '</b>Zone'
+    : '<b>' + esc(f.name || 'Zone') + '</b>Zone'
     + (f.stxt ? ' · ' + esc(f.stxt) + '/100' : '')
     + (f.ttxt ? ' · ' + esc(f.ttxt) + ' from start' : ' · no journey from start');
   const spokeTip = f => '<b>' + esc(String(f.r || 'Route')) + '</b>'
-    + (Number(f.hub) ? 'Calls at ' + esc(DATA.hub.name) : 'Does not call at the hub');
+    + (Number(f.hub) ? 'Calls at ' + esc((W.hub && W.hub.name) || 'the hub') : 'Does not call at the hub');
 
   /* delegated layer events survive setStyle, so bind them once */
   const bindLayerTip = (layer, tip) => {
@@ -4279,53 +4738,6 @@ async function buildMap() {
   bindLayerTip('stop-dots', stopTip);
   bindLayerTip('zone-dots', zoneTip);
   bindLayerTip('n-spoke-line', spokeTip);
-
-  const spsw = $('spokesw');
-  if (spsw) {
-    if (W.layers.spokes) spsw.checked = true;
-    spsw.addEventListener('change', () => {
-      W.layers.spokes = Boolean(spsw.checked);
-      saveLayers();
-      if (map.getLayer('n-spoke-line')) {
-        map.setLayoutProperty('n-spoke-line', 'visibility', spsw.checked ? 'visible' : 'none');
-      }
-    });
-  }
-
-  const sw = $('zonesw');
-  if (sw) {
-    if (W.layers.zones) sw.checked = true;
-    sw.addEventListener('change', () => {
-      W.layers.zones = Boolean(sw.checked);
-      saveLayers();
-      const v = sw.checked ? 'visible' : 'none';
-      ['zone-fill', 'zone-ring'].forEach(id => {
-        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
-      });
-    });
-  }
-
-  const cb = $('colourby');
-  if (cb) {
-    /* Attribute first, then property: an un-upgraded wa-radio-group reads the
-       attribute. Only the modes this map offers count: a feed over MAX_MAP_STOPS
-       ships no Frequency button, and storage must not select a mode with no control. */
-    const offered = [].slice.call(cb.querySelectorAll('wa-radio'))
-      .map(r => r.getAttribute('value'));
-    if (offered.indexOf(W.layers.mode) < 0) {
-      W.layers.mode = offered.indexOf('reach') >= 0 ? 'reach' : 'base';
-    }
-    cb.setAttribute('value', W.layers.mode);
-    cb.value = W.layers.mode;
-    cb.addEventListener('change', () => {
-      const want = cb.value || 'base';
-      W.layers.mode = offered.indexOf(want) >= 0 ? want : 'base';
-      saveLayers();
-      /* applyHl(), never applyMode(): applyMode alone would wipe a pinned tile's
-         dimming while the tile still said aria-current. */
-      applyHl();
-    });
-  }
 
   const retheme = () => {
     /* the orphaned instance keeps this listener too */
@@ -4339,6 +4751,8 @@ async function buildMap() {
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', retheme);
   new MutationObserver(retheme)
     .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+  if (W.attachMap) W.attachMap();
 }
 
 /* ── the stat rail's tiles, as map controls ──────────────────────────────────
@@ -4519,11 +4933,13 @@ function pageRuntimeSource() {
 /**
  * Run the page runtime against whatever is currently in the DOM, as an inline
  * module. Every binding is idempotent, so re-running it after a later section lands
- * is safe; the map is built once. Not run before `network`, the first stage that
- * gives the map a border, a hub and a stop list.
+ * is safe; the map is built once. Not run before `days`: §06 lands there (its
+ * histogram bars need `bindBudgets`) and the `stops` preview that follows it is what
+ * `buildMap` turns into a map. Every binding is idempotent, so an early pass against a
+ * page of skeletons does nothing but bind chrome.
  */
 function injectRuntime() {
-  if (!state.arrived.has('network')) return;
+  if (!state.arrived.has('days')) return;
   // The spent <script> is removed first so the DOM never accumulates one per stage.
   const spent = document.querySelector('script[data-jltg-runtime]');
   if (spent) spent.remove();

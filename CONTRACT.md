@@ -44,12 +44,12 @@ block; it is built from `state.report` in memory.
 | `render/deck.js` | main | `renderQuestions`, `renderCurses`, `renderProvenance`, `S4_STATUS_TAG`, `S4_STATUS_COUNT`, `S4_ACTION_TAG` |
 | `render/strategy.js` | main | `renderStrategy`, `zoneViews`, `modeChips`, `poiCategories`; the constants `AXES`, `AXIS_IDS`, `AXIS_PLAIN`, `BAND_CUTS`, `FLAG_TEXT`, `MODE_LABEL`, `MODE_ICON`, `MODE_CATEGORY`, `RADAR_ID_MILES`, `TABLE_PAGE`, `TABLE_PAGE_ABOVE`, `MAX_MAP_ZONES`, `SPOTS_SHIPPED`, `MAX_POI_PER_CATEGORY`, `TENTACLE_ID_REACH_MI`; the rounding helpers `pts`, `bar`, `band`. Pure `Report → string`, no DOM. Reads `QUESTIONS` from `rules/catalogue.js` for one field: a tentacle question's own `param`, which `QuestionAudit` does not carry. `FLAG_TEXT[flag]` is `[label, variant, icon, shortLabel]`. |
 | `render/simulator.js` | main | `initStrategy(root, report)` — the only export `app.js` uses. Owns every DOM mutation in §(g)'s view; idempotent; imports from `strategy.js` one-way. |
-| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`, `renderBorderChips`, `renderDrawHint`, `renderPicksCount`, `renderMapNote`, `renderMarkerTip`, `NUDGE_DEG`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` `<div>` (it holds a `legendRow` `<ul>`, which a `<p>` cannot) INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderResults(rows, {more, farKm, …})` receives the overflow count and, per catalogue id, the km a too-far row sits from the nearest pick (its Add is disabled) from `render/picker.js`. `renderPickerNote` takes `{capped, blocked: Array<{label, href}>, ringEmpty, osmOffer, osmPicked, regionalOn, far: Array<{label, km}>, farMore, split}` and prints only the hard cap, feeds refused as too far away, picks that no longer chain into one map, an API-keyed feed, an uncovered shape and the OpenStreetMap offer. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. That sentence fills the caption's visually hidden `[data-caption-text]`; `renderBorderChips` draws the visible, `aria-hidden` `[data-caption-chips]`, mode chip first. |
-| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. The picker writes `#picker-draw-hint` per mode — idle, drawing, and the refusal — and a `click` on Draw a shape whose `detail === 0` (a keyboard activation) refuses draw mode outright, writes that refusal and moves focus to the search box, because every vertex of the hand-rolled tool is a pointer event. `fitRows` pads `fitBounds` by the measured `.landing-panel` — the left column above 48rem, the bottom sheet below — and fires on the 0→1 pick as well as for the example chips, so the first feed taken is framed and no later one moves the view. A catalogue pick past `MAX_FEED_GAP_M` from every current pick is refused inside `addRow`, the one door the results, Enter, a marker click and a shape's sweep all use, and the results list marks such rows with their distance and a disabled Add. Picks that stop chaining without an add (a middle one removed; an example chip beside a far drawn area) get a note, never a silent removal. |
+| `render/landing.js` | main | `renderPickerCard`, `renderExampleMaps`, `renderResults`, `renderResultsSummary`, `renderPicks`, `renderPickerNote`, `renderBorderRow`, `renderBorderCaption`, `renderBorderChips`, `renderDrawHint`, `renderPicksCount`, `renderMapNote`, `renderMarkerTip`, `NUDGE_DEG`; the constant `PICK_CAP` (= `lib/core.js`'s `MAX_FEEDS_PER_RUN`). Pure `data → string`, no DOM — the landing feed picker's markup. `renderPickerCard` emits the `#border-row` host (`app.js` replaces `[data-role=pickerbody]` wholesale, so `index.html` cannot) but neither `#catalog-map` nor a heading: the map host is static markup in `index.html`, a sibling of the panel inside `#picker`, and the heading and lede belong to the panel. The card's outermost node carries `.picker-controls`, which styles.css §7 reaches through. `renderPickerCard` also emits `#picker-draw-hint`, a `role`-less `aria-live="polite"` `<div>` (it holds a `legendRow` `<ul>`, which a `<p>` cannot) INSIDE `#picker-draw`: styles.css §7 keeps only that row on screen while a shape is being drawn on a phone, so a hint outside it would be the one sentence the reader cannot see. `renderResults(rows, {more, farKm, …})` receives the overflow count and, per catalogue id, the km a too-far row sits from the nearest pick (its Add is disabled) from `render/picker.js`. `renderPickerNote` takes `{capped, blocked: Array<{label, href}>, ringEmpty, osmOffer, osmPicked, regionalOn, locate, far: Array<{label, km}>, farMore, split}` and prints only the hard cap, feeds refused as too far away, picks that no longer chain into one map, an API-keyed feed, an uncovered shape, the OpenStreetMap offer and the locate button's empty outcomes (`locate` is `'none'`, `'denied'`, `'unavailable'` or null). `renderPickerCard` puts the icon-only `#locate-me` `<wa-button>` in the search box's `end` slot; it is markup only, and nothing in the page asks the browser for a position until it is pressed. `renderBorderCaption` branches on the frame's `mode` FIRST and the OpenStreetMap flags second, because `mode` alone decides what `readOptions` sends: an `'auto'` frame says the border will be inferred even when the pick is a drawn shape. That sentence fills the caption's visually hidden `[data-caption-text]`; `renderBorderChips` draws the visible, `aria-hidden` `[data-caption-chips]`, mode chip first. |
+| `render/picker.js` | main | `initPicker(root, handlers) → {setByo, resize, destroy}` — the only export `app.js` uses. Owns every DOM mutation in the landing picker, the lazy MapLibre import, the hand-rolled draw tool and the game-border **frame** (`st.border`; the `border` source and its `border-fill` / `border-line` / `border-handle` layers; eight handles; pointer and touch drags; four edge fields; the Fit / Where-they-overlap / Box-around-my-shape / Shrink / Grow buttons), all on MapLibre's own events (§0). Idempotent; imports from `landing.js` / `lib/catalog.js` / `lib/geo.js` one-way. Its map is `destroy()`ed in `enterRunningState`; never merge it into `PAGE_RUNTIME_JS`. **State flows outward only**: `commit()` → `handlers.onChange`, and `handlers.onBorder({bbox, mode: 'auto'|'custom'} | null)` on every frame move or mode change. There is no `setSelection`, `setBorder` or `refresh`; `app.js` owns the pick list and reads the frame. The example-map chips write `st.selected` through `commit()`; a chip **replaces** the catalogue picks and leaves the drawn shape and bring-your-own feed alone. Drag rules: handles resize; the OUTLINE (`border-line`, within `EDGE_PX`) moves the box; the FILL belongs to the map's pan; a move drag needs `MOVE_PX` of travel before it can turn an `'auto'` frame `'custom'`. `#border-caption` is a `role="status"` region set `aria-live="off"` during a drag. The map uses `cooperativeGestures: false` because the map is the page. `giveUpOnMap`'s `mapHost.hidden` is the ONE signal styles.css §7 reads to collapse the landing stage to a centred card; `app.js` sets the same attribute when the catalogue never arrives. The picker writes `#picker-draw-hint` per mode — idle, drawing, and the refusal — and a `click` on Draw a shape whose `detail === 0` (a keyboard activation) refuses draw mode outright, writes that refusal and moves focus to the search box, because every vertex of the hand-rolled tool is a pointer event. `fitRows` pads `fitBounds` by the measured `.landing-panel` — the left column above 48rem, the bottom sheet below — and fires on the 0→1 pick as well as for the example chips, so the first feed taken is framed and no later one moves the view. `#locate-me` is the ONLY caller of `navigator.geolocation`, and only on a press — never at load, never at map init — so the permission prompt is always the reader's doing; it is hidden where the API is missing or the origin is insecure. A position lists `rowsNear(st.rows, lat, lon)` in the results (the switches govern it, like a drawn shape; a typed query is cleared), drops a `maplibregl.Marker` there and eases the map to it, and works with MapLibre blocked because the list, not the map move, is the result. A refusal or failure writes `st.locate` for the note and nothing else. A catalogue pick past `MAX_FEED_GAP_M` from every current pick is refused inside `addRow`, the one door the results, Enter, a marker click and a shape's sweep all use, and the results list marks such rows with their distance and a disabled Add. Picks that stop chaining without an add (a middle one removed; an example chip beside a far drawn area) get a note, never a silent removal. |
 | `worker.js` | worker | — (module worker entry; pipeline orchestrator, stage emitter) |
 | `lib/core.js` | worker+main | numbers, formatting, deterministic JSON, hashing, constants |
 | `lib/geo.js` | worker+main | geometry toolkit |
-| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `centroidOf`, `spanKmOf`, `gapKmOf(row, boxes)`, `tooFarFrom(row, boxes)` (past `MAX_FEED_GAP_M` from every box), `labelOf`, `placeOf`, `sourceRefFor`, `osmSourceRef`, `CATALOG_VERSION`; `EXAMPLE_MAPS` and `exampleMapsFor(doc) → {examples, missing}` — the hand-curated example-map chips, catalogue ids only, validated by `tools/mdb-snapshot.mjs --check` (every id present, none behind a key or inactive, each list within `MAX_FEEDS_PER_RUN`). Reads `data/feeds.json`, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff. No DOM, no MapLibre; importable from Node. |
+| `lib/catalog.js` | main | `loadCatalog`, `feedUrlOf`, `visibleRows`, `searchCatalog` (→ `{rows, total}`, so a truncated list can say how many more matched), `rowsIntersectingRing`, `rowsNear(rows, lat, lon, {withinKm, limit}) → {rows, total}` (boxes containing the point first, then within `NEAR_KM` edge to edge, ties to the bigger `t`), `centroidOf`, `spanKmOf`, `gapKmOf(row, boxes)`, `tooFarFrom(row, boxes)` (past `MAX_FEED_GAP_M` from every box), `labelOf`, `placeOf`, `sourceRefFor`, `osmSourceRef`, `CATALOG_VERSION`; `EXAMPLE_MAPS` and `exampleMapsFor(doc) → {examples, missing}` — the hand-curated example-map chips, catalogue ids only, validated by `tools/mdb-snapshot.mjs --check` (every id present, none behind a key or inactive, each list within `MAX_FEEDS_PER_RUN`). Reads `data/feeds.json`, generated offline by `tools/mdb-snapshot.mjs` and reviewed as a diff. No DOM, no MapLibre; importable from Node. |
 | `lib/cache.js` | worker | `openCache`, `Cache`, `CacheMiss` — content-addressed IndexedDB cache |
 | `lib/http.js` | worker | `httpFetch`, `sleep` — fetch with mirror failover, retries, courtesy sleep |
 | `gtfs/feed.js` | worker | `loadFeed`, `unzip`, `normaliseTimes`, `feedWindow`, `StopTimes`, `attachStopTimes`, `stopTimesOf` (`StopTimes.appendFrom` is how `gtfs/merge.js` copies a columnar store; `stopTimesOf` serves the merge and `buildServiceDay`), `tripRows(feed)` (trip_id → `Int32Array` of stop_time row indices, sorted by `int(stop_sequence)`), and `s1Cache` / `s1Invalidate` — the **one** per-feed memo worker-side (a non-enumerable own property on the `Feed`, keyed by name; one store, one meaning per key). `normaliseTimes` calls `s1Invalidate` whenever the columnar store is rebuilt; nothing else invalidates. The shared numeric helpers `s1Median`, `s1Share`, `s1Int`, `s1Float` live here too. |
@@ -1262,6 +1262,7 @@ path the golden numbers are measured on.
 | stage | `{ type:'stage', stage:string, payload:object }` | A section's data is ready. See the stage table. |
 | log | `{ type:'log', level:'info'\|'warn', message:string }` | Diagnostics. Never rendered as report content. |
 | degraded | `{ type:'degraded', message:string, code:DegradeCode }` | Appended to `Report.degradations`, recorded in `Report.degradationCodes`, shown in the toast and §09. |
+| preview | `{ type:'preview', key:string, payload:object }` | A **hint** for the page while a long stage runs. Not a stage: never merged into the `Report`, never written into a `<script type="application/json">` block, never a `degraded`, a `log` or a progress caption. Painted only into a section that is still a skeleton and ignored once the key's owning stage has arrived. `tools/smoke.mjs` ignores it. See "Previews" below; the stage order is still exactly seven. |
 | error | `{ type:'error', stage:string, message:string, fatal:boolean }` | `fatal: false` ⇒ the run continues degraded. `fatal: true` ⇒ no further messages will arrive. A non-fatal `error` is logged by `app.js`, never rendered: every non-fatal error is paired with a templated `degraded` message, which is the record. |
 | done | `{ type:'done', report: Report }` | The complete `Report`. Always last. |
 
@@ -1276,9 +1277,9 @@ internally but must flatten before emitting. `Projection` crosses as `{lat0, lon
 | # | `stage` | Payload | Unblocks |
 |---|---|---|---|
 | 1 | `'feed'` | `{ agencyName, agencyUrl, timezone, feedStart, feedEnd, feedVersion, publisher, asOf, sha256, source, feeds: FeedSourceRow[], stops: number, routes: number, trips: number, place }` — every scalar describes the MERGED feed; `feeds` names what it was merged from | hero |
-| 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 |
-| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, suggestedBorder: SuggestedBorder\|null, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], zoneReach: ZoneReach, routeSpokes: RouteSpoke[], spokeCap: {shown,total,source}, stops: StopRow[], proj: {lat0,lon0} }` — the `Report` carries `suggestedBorder` too | §05 and its stat rail |
-| 4 | `'geo'` | `{ geo: GeoData }` | stage 5 |
+| 2 | `'days'` | `{ days: DaySummary[], selectedDay: string }` | §06 (Service by day) |
+| 3 | `'network'` | `{ zones: Zone[], hub: Hub, border: Border, suggestedBorder: SuggestedBorder\|null, size: GameSize, sizeInference: SizeInference, metrics: Metrics, routeHeadways: RouteHeadwayRow[], travelSamples: TravelSampleRow[], zoneReach: ZoneReach, routeSpokes: RouteSpoke[], spokeCap: {shown,total,source}, stops: StopRow[], proj: {lat0,lon0} }` — the `Report` carries `suggestedBorder` too | §05 and its stat rail; §06's ride chart and headway grid |
+| 4 | `'geo'` | `{ geo: GeoData }` | stage 5; the hero and the wordmark re-read `place` from `geo.admin.placeName` |
 | 5 | `'rules'` | `{ questions: QuestionAudit[], curses: CurseAudit[], questionOrder: string[], questionFunnel: number[], questionCategories: QuestionCategory[] }` | §07, §08 |
 | 6 | `'score'` | `{ fitness: Fitness, caps: FitnessCap[], zoneScores: Object<string,ZoneScore>, rankedZoneIds: string[], dossierZoneIds: string[], findings: Finding[], recommendations: Recommendation[], questions: QuestionAudit[] }` | §01, §02, §03 |
 | 7 | `'provenance'` | `{ provenance: Provenance, degradations: string[], degradationCodes: Object<string, DegradeCode> }` | §09 |
@@ -1369,11 +1370,13 @@ Notes on the stage payloads:
    */
   ```
 * **§05's rendered string must not depend on `rules` or `score`.** A string that changes
-  there re-mounts the section, and `mountSection` clears `window.__jltg.mapBuilt` when the
-  swap carries a `#netmap`, destroying the MapLibre instance and the reader's pan and zoom.
+  there re-mounts the section, and a re-mount replaces the section's controls and their
+  DOM state (`mountSection` moves the live `#netmap` across a swap that carries one on
+  both sides, so the MapLibre instance itself survives; see "Previews").
   The stat rail moves at both stages, which is why it is a **nested** `data-section` host
   with its own `needs`/`redo`. §05's string does change at `geo` (`s4Imperial` flips km→mi
-  and rewrites the zone radius, border pad and border area); that is the only rebuild.
+  and rewrites the zone radius, border pad and border area) and the section re-mounts; the
+  live `#netmap` is adopted across that re-mount, so the instance is never rebuilt.
   Anything arriving after `network` reaches the map through `#stops`: `writeDataBlocks()`
   rewrites that block on **every** `applyStage` and calls `window.__jltg.refreshMapData()`,
   which pushes it through MapLibre's `setData`/`setPaintProperty`. That is why `network`'s
@@ -1385,8 +1388,9 @@ Notes on the stage payloads:
   `renderNetworkMap` may additionally read `suggestedBorder` and one main-side field,
   `report.sourceKinds`, which `app.js` stamps on the report *before* the worker starts and
   never changes; it decides only whether `#suggest-rerun` ships `disabled`. The suggested
-  box is a second static line layer, **`border-suggested-line`**, built once in `buildMap`
-  from `DATA.suggestedBorder` at `network` (the `'extent'` highlight thickens both lines);
+  box is a second static line layer, **`border-suggested-line`**, built empty in
+  `buildLayers` and filled by `setData` from `DATA.suggestedBorder` at `network` (the
+  `'extent'` highlight thickens both lines);
   its source is an empty `FeatureCollection` when there is no suggestion, so `applyHl` need
   not branch. The `#suggest-rerun` button is wired from `app.js` by **one delegated
   document-level click listener**, never from `PAGE_RUNTIME_JS` and never per mount,
@@ -1395,6 +1399,10 @@ Notes on the stage payloads:
   writes its explanation there; `app.js` moves focus to it after writing.
 * **Stages 4–7 must still emit when the OSM layer is unavailable**, carrying the
   degradation. See §(f).
+* **`'feed'` seeds `place` with the agency name and no later stage payload replaces it.**
+  `geo.admin.placeName` is known at stage 4, so `app.js` overwrites `report.place` in
+  `applyStage('geo')` and the hero's `redo` carries `geo`. Only the final `Report` carries
+  `place` on the wire.
 * **S5 adds no payload here, deliberately.** The hider's guide (§(g)) is built entirely
   from fields the stages above already carry. The per-zone × per-day service block is
   **not** added: it would need `ServiceDay.stopDays[zoneId]`, which `daySummary()` strips
@@ -1404,7 +1412,58 @@ Notes on the stage payloads:
   sparkline, per-day switching.
 * `progress.stage` uses the same seven tokens plus finer sub-tokens (`'feed:unzip'`,
   `'geo:overpass'`, …). The UI maps any `stage` prefix before the first `:` onto its
-  section.
+  section. `preview.key` uses the same roots: `stops`/`hub`/`zones` belong to `network`;
+  `geo:…` and `rules:…` to their stage.
+
+### Previews — hints, not stages
+
+The three long stages (`network`, `geo`, `rules`) deliver nothing to the page until they
+finish. `preview` messages let the page paint *provisional* content meanwhile. One rule
+above all others: **a preview never reaches the `Report`.** It is not merged into
+`state.report`, not written into `#data` / `#questions-data` / `#curses-data` / `#stops` /
+`#provenance`, not appended to `degradations`, not logged and not shown as a progress
+caption. A run with every hook removed produces the byte-identical `Report`, progress
+stream and log.
+
+| `key` | posted | payload | owning stage (retires it) |
+|---|---|---|---|
+| `'stops'` | after the `'days'` stage message, once the in-play set is fixed | `{ lon: Float64Array, lat: Float64Array, name: string[], bbox: [S,W,N,E] }` — the rows `StopRow[]` will carry, in `servedStopIds` order: a FILTER of `inPlay ?? best.servedStopIds`, never a re-sort, coordinates through `coord()` | `network` |
+| `'hub'` | right after `inferHub` | `{ stopId, name, lat, lon, dominant }` | `network` |
+| `'zones'` | right after `buildZones` | `{ lon: Float64Array, lat: Float64Array, name: string[], radiusM }` — zone centres in `buildZones`' order | `network` |
+| `'geo:category'` | from inside `collectGeodata`, as each category lane completes, through `hooks.onPreview(key, payload)` — in the NETWORK's completion order; the page sorts into `GEO_CATEGORIES` order before painting | `{ key, label, kind: 'read'\|'counted'\|'absent'\|'failed', count: number\|null }` — `counted` is an upper bound and must be printed as one; the six density-grid categories take no lane and emit nothing | `geo` |
+| `'rules:question'` | from inside `auditQuestions`, per judged question, through `opts.onPreview(key, payload)`, in catalogue order | `{ id, label, category, status }` | `rules` |
+
+* Payloads are structured-clone-safe and small; typed arrays for coordinate columns.
+* The hooks are guarded on both sides: `collectGeodata` and `auditQuestions` wrap the call
+  so a hook that throws cannot fail a category read or the audit, and `worker.js`'s
+  `preview()` wraps the payload build and the `post` so a preview cannot fail the stage it
+  decorates. A `'geo:category'` preview fires *after* its lane's outcome is decided, never
+  inside the `try` that classifies it; it is the one per-category emission in
+  `collectGeodata`, exempt from the "name the phase, not the category" caption rule because
+  a preview is not output.
+* `app.js` (`applyPreview`) accepts a preview only while `state.arrived` lacks the owning
+  stage, and paints only into a host still marked `data-state="skeleton"` (through the
+  `[data-preview]` slots the shell ships and, for the map, the skeleton's `#netmap-frame`);
+  the section's own mount then replaces the host wholesale. Previews live in
+  `state.previews`, a sibling of `state.report` that nothing in `writeDataBlocks`,
+  `finish` or any renderer reads.
+* **The map is the one place preview-built state persists.** `app.js` hands the three map
+  previews to the page runtime as `window.__jltg.preview` (never through `#stops`) and
+  `PAGE_RUNTIME_JS` `buildMap` creates the MapLibre instance from the `stops` extent while
+  §05 is still a skeleton. The instance is built ONCE per run: `mountSection` ADOPTS the
+  live `#netmap` node into the incoming §05 markup whenever both sides carry one (at
+  `network`, and again at `geo`'s km→mi re-mount) and the next `injectRuntime()` pass
+  re-attaches it (`resize`, `ScaleControl.setUnit`, control wiring, `setData`). Sources
+  that used to be built at `style.load` (`border`, `border-suggested`, `n-mec`,
+  `n-spokes`) start empty and are filled by `setData` when `network` lands; `zonerings`
+  is seeded from the `zones` hint, then replaced by the real rings the same way.
+  A rebuild happens only when no live instance owns the outgoing node (MapLibre blocked,
+  or the import still in flight when `network` lands): at most one, and never after
+  `network`.
+* One viewport move is sanctioned: when the instance was created from the `stops` extent
+  and the real border first arrives, `attachMap` calls `fitBounds` on the border exactly
+  once, and skips it if the reader has already dragged or zoomed. Nothing else moves the
+  viewport after creation; the "setData, never fitBounds" rule for late data stands.
 
 ---
 

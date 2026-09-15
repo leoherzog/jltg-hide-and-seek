@@ -514,19 +514,26 @@
       </header>
       <!-- ONE card: the border controls live in the toolbar above the map and a
            collapsed disclosure inside this card. The skeleton keeps the same rows as
-           the real card (toolbar, map, legend, note, caption) so nothing jumps. -->
-      <div class="wa-stack wa-gap-s sk-body">
+           the real card (toolbar, map, legend, note, caption) so nothing jumps.
+           `sk-body` is on the rows, NOT on this wrapper: the frame must stay interactive
+           because the stops preview puts a live MapLibre map in it (CONTRACT §(d)
+           "Previews"), and `.sk-body` is `pointer-events:none`. -->
+      <div class="wa-stack wa-gap-s">
         <wa-card>
           <div class="wa-stack wa-gap-s">
-            <div class="wa-cluster wa-gap-2xs">
+            <div class="wa-cluster wa-gap-2xs sk-body">
               <wa-skeleton class="sk-chip" style="inline-size:11rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:7rem"></wa-skeleton>
             </div>
+            <!-- Preview slot (CONTRACT §(d) "Previews"): a "still measuring" chip row while
+                 the network stage runs. app.js fills it; the `network` mount replaces this
+                 whole host and the slot with it. Outside every `.sk-body` on purpose. -->
+            <div data-preview="network" class="wa-cluster wa-gap-2xs wa-align-items-center" hidden></div>
             <div id="netmap-frame"><wa-skeleton style="inline-size:100%;aspect-ratio:16/9;min-block-size:18rem"></wa-skeleton></div>
-            <div class="wa-cluster wa-gap-2xs">
+            <div class="wa-cluster wa-gap-2xs sk-body">
               <wa-skeleton class="sk-chip" style="inline-size:8rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:7rem"></wa-skeleton>
               <wa-skeleton class="sk-chip" style="inline-size:9rem"></wa-skeleton>
@@ -545,6 +552,10 @@
            `renderDay()` rewrites. -->
       <div id="glance" data-section="glance" data-stage="network" data-state="skeleton" aria-busy="true" class="wa-stack wa-gap-s">
         <h3 class="wa-heading-s wa-color-text-quiet wa-text-uppercase">At a glance</h3>
+        <!-- Preview slot (CONTRACT §(d) "Previews"): provisional chips from the stops / hub /
+             zones previews. Never a figure the page asserts — the row leads with "still
+             measuring". Outside `.sk-body`; the `network` mount removes it. -->
+        <div data-preview="glance" class="wa-cluster wa-gap-2xs wa-align-items-center" hidden></div>
         <div class="wa-stack wa-gap-2xs sk-body" style="max-inline-size:72ch"><wa-skeleton class="sk-lede"></wa-skeleton><wa-skeleton class="sk-lede" style="inline-size:64%"></wa-skeleton></div>
         <div id="tiles" class="wa-stack wa-gap-l sk-body">
           <div class="wa-grid wa-gap-m" style="--min-column-size:11rem">
@@ -661,6 +672,11 @@
         <h2 class="wa-heading-2xl" data-n="05">The questions</h2>
         <p class="wa-body-l sk-body"><wa-skeleton class="sk-lede"></wa-skeleton></p>
       </header>
+      <!-- Preview slot (CONTRACT §(d) "Previews"): the map-file tally while `geo` runs, then
+           the question tally while `rules` runs. `aria-busy` stays on the section for the
+           slot's whole life, so nothing in here is announced; the `rules` mount is the
+           announcement. Outside `.sk-body` on purpose. -->
+      <div data-preview="questions" class="wa-stack wa-gap-s" hidden></div>
       <div class="wa-stack wa-gap-l sk-body">
         <!-- the funnel, then the status grid, then the filter bar, then the table -->
         <wa-skeleton class="sk-bar"></wa-skeleton>

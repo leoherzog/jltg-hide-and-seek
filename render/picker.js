@@ -33,7 +33,7 @@ import {
 } from '../lib/geo.js';
 import {
   visibleRows, searchCatalog, rowsIntersectingRing, centroidOf,
-  labelOf, placeOf, sourceRefFor, osmSourceRef, exampleMapsFor, gapKmOf, tooFarFrom,
+  labelOf, placeOf, sourceRefFor, osmSourceRef, exampleMapsFor, gapKmOf, tooFarFrom, rowsNear,
 } from '../lib/catalog.js';
 import {
   renderResults, renderResultsSummary, renderPicks, renderPickerNote, renderExampleMaps,
@@ -130,6 +130,7 @@ export function initPicker(root, handlers = {}) {
 
   const $ = (id) => root.querySelector(`#${id}`);
   const search = $('catalog-search');
+  const locateBtn = $('locate-me');
   const resultsBox = $('catalog-results');
   const summaryBox = $('catalog-summary');
   const mapNote = $('map-note');
@@ -178,6 +179,15 @@ export function initPicker(root, handlers = {}) {
      * goes, so the OpenStreetMap offer survives a typed search.
      */
     ringVacant: false,
+    /**
+     * The locate button's last outcome with nothing to list: `'none'` (a position
+     * with no feed near it), `'denied'`, `'unavailable'`, or null. Reset by the
+     * next search, like `ringEmpty`.
+     * @type {'none'|'denied'|'unavailable'|null}
+     */
+    locate: null,
+    /** the reader's position on the map, a DOM marker so it survives a restyle */
+    hereMarker: null,
     blocked: [],
     /** `[{label, km}]` catalogue picks refused as a second city; the last action only, like `blocked` */
     far: [],
@@ -198,6 +208,8 @@ export function initPicker(root, handlers = {}) {
     /** the cursor the last hover asked for, so an unchanged mousemove writes nothing */
     hoverCursor: '',
     map: null,
+    /** the maplibre-gl namespace once imported, for the position marker */
+    gl: null,
     mapPending: false,
     mapFailed: false,
     dark: isDark(),
@@ -500,6 +512,7 @@ export function initPicker(root, handlers = {}) {
       osmOffer: Boolean(st.ring) && st.ringVacant && !osm && !capped,
       osmPicked: Boolean(osm),
       regionalOn: Boolean(swRegional && swRegional.checked),
+      locate: st.locate,
       far: st.far.slice(0, 3),
       farMore: Math.max(0, st.far.length - 3),
       // Picks can still split: a middle one removed, or an example chip beside a far shape.
@@ -585,7 +598,72 @@ export function initPicker(root, handlers = {}) {
     st.results = found.rows;
     st.resultsTotal = found.total;
     st.ringEmpty = false;
+    if (st.locate) { st.locate = null; renderPicksAndNote(); }
     renderResultsBox();
+  }
+
+  // ── feeds near me ─────────────────────────────────────────────────────────
+
+  /** Zoom for a located reader: a metro area and its neighbours, markers unclustered. */
+  const LOCATE_ZOOM = 8;
+
+  /**
+   * Ask for the reader's position and list the feeds around it. Only ever on a
+   * press: nothing here runs at load, so the browser's permission prompt is the
+   * reader's doing. Works with the map blocked — the list is the result, the map
+   * move is a courtesy.
+   */
+  function locate() {
+    if (!locateBtn || locateBtn.loading) return;
+    st.blocked = [];
+    st.far = [];
+    locateBtn.loading = true;
+    const done = () => { if (!st.destroyed) locateBtn.loading = false; };
+    navigator.geolocation.getCurrentPosition((pos) => {
+      done();
+      if (st.destroyed) return;
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      // The typed query is superseded: the list now says where the reader is.
+      if (search) search.value = '';
+      st.searching = false;
+      st.ringEmpty = false;
+      const found = rowsNear(st.rows, lat, lon);
+      st.results = found.rows;
+      st.resultsTotal = found.total;
+      st.locate = found.rows.length ? null : 'none';
+      renderResultsBox();
+      renderPicksAndNote();
+      showHere(lat, lon);
+    }, (err) => {
+      done();
+      if (st.destroyed) return;
+      // PERMISSION_DENIED is 1; POSITION_UNAVAILABLE and TIMEOUT read the same to a reader.
+      st.locate = err && err.code === 1 ? 'denied' : 'unavailable';
+      renderPicksAndNote();
+    }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 });
+  }
+
+  /** Put a marker on the reader's position and bring the map there. */
+  function showHere(lat, lon) {
+    if (!st.map || !st.gl) return;
+    const lngLat = [lon, lat];
+    if (!st.hereMarker) {
+      // The palette's gold, as a literal: the marker is an SVG whose fill is an attribute.
+      st.hereMarker = new st.gl.Marker({ color: '#ffbf40' });
+      st.hereMarker.getElement().setAttribute('aria-label', 'Your location');
+    }
+    st.hereMarker.setLngLat(lngLat).addTo(st.map);
+    const view = { center: lngLat, zoom: Math.max(st.map.getZoom(), LOCATE_ZOOM) };
+    if (reducedMotion()) st.map.jumpTo(view);
+    else st.map.easeTo(view);
+  }
+
+  if (locateBtn) {
+    // No API, or an insecure origin where the call always fails: no button.
+    const canLocate = Boolean(navigator.geolocation) && window.isSecureContext !== false;
+    if (canLocate) on(locateBtn, 'click', (event) => { event.preventDefault(); locate(); });
+    else locateBtn.hidden = true;
   }
 
   // ── search + list wiring, all synchronous, all before MapLibre ─────────────
@@ -1649,6 +1727,7 @@ export function initPicker(root, handlers = {}) {
       // `ns.default ?? ns`: maplibre-gl 6 dropped the default export. Same in `app.js`.
       const ns = await import(MAPLIBRE_JS);
       maplibregl = ns.default ?? ns;
+      st.gl = maplibregl;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('MapLibre unavailable — the feed map is omitted; search still works', err);
@@ -1746,6 +1825,7 @@ export function initPicker(root, handlers = {}) {
       if (ro) { ro.disconnect(); ro = null; }
       mo.disconnect();
       hideTip();
+      if (st.hereMarker) { st.hereMarker.remove(); st.hereMarker = null; }
       // A hidden WebGL context held for the whole run is a leak.
       if (st.map) { st.map.remove(); st.map = null; }
       if (root) delete root.__picker;

@@ -1778,13 +1778,23 @@ const OSM_COVERAGE = Object.freeze({
  * @param {Array<Object>} zones
  * @param {Projection} proj
  * @param {number} radiusM
- * @param {{onProgress?: function(number, number, string), onLog?: function(string, string), timezone?: string}
+ * @param {{onProgress?: function(number, number, string), onLog?: function(string, string),
+ *          onPreview?: function(string, Object), timezone?: string}
  *        | function(number, number, string)} [hooks]
  * @returns {Promise<Object>} GeoData
  */
 export async function collectGeodata(world, opts, border, zones, proj, radiusM, hooks = {}) {
   const h = typeof hooks === 'function' ? { onProgress: hooks } : (hooks || {});
   const log = typeof h.onLog === 'function' ? h.onLog : noopLog;
+  // A PREVIEW hook (CONTRACT.md §(d) "Previews"): fired per category in COMPLETION order,
+  // which is the network's. That is allowed here and nowhere else in this function because
+  // a preview is not output — nothing below is applied, logged, counted or captioned from
+  // it, and the page re-sorts previews into `GEO_CATEGORIES` order before painting. A hook
+  // that throws is dropped so one lane's decoration cannot fail a category read.
+  const onPreview = typeof h.onPreview === 'function' ? h.onPreview : null;
+  const preview = onPreview
+    ? (key, payload) => { try { onPreview(key, payload); } catch { /* a hint */ } }
+    : () => {};
 
   const bbox = border.bbox;
   const catalogue = geoCategories();
@@ -1837,32 +1847,50 @@ export async function collectGeodata(world, opts, border, zones, proj, radiusM, 
   // THE PROGRESS CAPTION IS THE PHASE, NOT THE CATEGORY, for the same reason: the
   // label is output too (`app.js` prints it), and with eight in flight naming any
   // one category would be rendering the network's order. See the rules on `Progress`.
+  // The `onPreview` hint is the ONE per-category emission, exempt because a preview is not
+  // output (CONTRACT.md §(d) "Previews"); it touches no state this function keeps.
   const featureCategories = GEO_CATEGORIES
     // The tallies are answered by the density grid in step 2, not by a feature layer.
     .filter((c) => !GEO_DENSITY_GRID_CATEGORIES.includes(c.key));
+  /** One category's outcome. The body is unchanged: same `progress.start`/`finish`, same
+   *  classification. It is a named function only so the preview hook below can run OUTSIDE
+   *  the try that classifies a throw as `kind:'failed'`. */
+  const readCategory = async (category) => {
+    const key = category.key;
+    // A layer the build did not produce degrades that category only, costs no
+    // round-trip, and takes no progress task; hence the underrun and `settle`.
+    if (worldLayerInfo(world, key) === null) return { key, kind: 'absent' };
+    const task = progress.start(GEO_FEATURE_PHASE_LABEL);
+    try {
+      const upperBound = await worldCount(world, key, bbox);
+      if (upperBound !== null && upperBound > CATEGORY_FEATURE_BUDGET) {
+        // An upper bound, not a count — say so by marking the category partial.
+        return { key, kind: 'counted', upperBound };
+      }
+      const features = (await worldPois(world, key, key, bbox, proj, {
+        keepRings: keepRingsFor(key),
+      })) || [];
+      return { key, kind: 'read', features };
+    } catch (exc) {
+      // One dead layer is a caveat; all of them dead is the next check.
+      return { key, kind: 'failed', exc };
+    } finally {
+      task.finish();
+    }
+  };
   const outcomes = await mapConcurrent(
     featureCategories, GEO_CATEGORY_CONCURRENCY, async (category) => {
-      const key = category.key;
-      // A layer the build did not produce degrades that category only, costs no
-      // round-trip, and takes no progress task; hence the underrun and `settle`.
-      if (worldLayerInfo(world, key) === null) return { key, kind: 'absent' };
-      const task = progress.start(GEO_FEATURE_PHASE_LABEL);
-      try {
-        const upperBound = await worldCount(world, key, bbox);
-        if (upperBound !== null && upperBound > CATEGORY_FEATURE_BUDGET) {
-          // An upper bound, not a count — say so by marking the category partial.
-          return { key, kind: 'counted', upperBound };
-        }
-        const features = (await worldPois(world, key, key, bbox, proj, {
-          keepRings: keepRingsFor(key),
-        })) || [];
-        return { key, kind: 'read', features };
-      } catch (exc) {
-        // One dead layer is a caveat; all of them dead is the next check.
-        return { key, kind: 'failed', exc };
-      } finally {
-        task.finish();
-      }
+      const outcome = await readCategory(category);
+      // AFTER the read, never inside its try: the outcome is already decided, so a hook
+      // cannot turn a successful read into `kind:'failed'` and move `layersRead`.
+      preview('geo:category', {
+        key: outcome.key,
+        label: category.label,
+        kind: outcome.kind,
+        count: outcome.kind === 'read' ? outcome.features.length
+          : outcome.kind === 'counted' ? outcome.upperBound : null,
+      });
+      return outcome;
     },
   );
 

@@ -1424,11 +1424,15 @@ export function questionCategories(questions) {
  *
  * @param {Object} size @param {Object} geo @param {Object} gtfsFacts
  * @param {Array<Object>} zones @param {Object} metrics @param {Object} border
- * @param {{onProgress?: function(number, number, string): void}} [opts]
+ * @param {{onProgress?: function(number, number, string): void,
+ *          onPreview?: function(string, Object): void}} [opts]
  * @returns {Array<Object>} QuestionAudit rows
  */
 export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opts = {}) {
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  // A PREVIEW hook (CONTRACT.md §(d) "Previews"): one hint per judged question, in
+  // catalogue order. Guarded, because a hook that throws must not take the audit down.
+  const onPreview = typeof opts.onPreview === 'function' ? opts.onPreview : null;
   const n = zones.length;
   const proj = projFromZones(zones);
   const seekers = seekerSample(zones);
@@ -1827,6 +1831,15 @@ export function auditQuestions(size, geo, gtfsFacts, zones, metrics, border, opt
       keep: q.keep,
     });
     if (onProgress) onProgress(qi + 1, catalogue.length, `Checking question: ${q.label}`);
+    if (onPreview) {
+      // Read back off `out`, so the hint can never disagree with the row just pushed.
+      // `status` is final here: `scoreZones` fills `survMean` only.
+      const row = out[out.length - 1];
+      try {
+        onPreview('rules:question',
+          { id: row.id, label: row.label, category: row.category, status: row.status });
+      } catch { /* a hint, nothing more */ }
+    }
   }
   return out;
 }

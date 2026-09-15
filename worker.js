@@ -12,6 +12,8 @@
 // Everything that crosses `postMessage` is flattened to plain data here: `ServiceDay`,
 // `Feed.tables` and `Projection` cannot be structured-cloned, so §(d)'s wire shapes
 // are built at this boundary and nowhere else.
+// `preview` messages (CONTRACT.md §(d) "Previews") are hints for the page while a long
+// stage runs; they are posted and forgotten — nothing in this file reads one back.
 
 import {
   QUARTER_MILE_M, DEFAULT_DEPARTURE, BOARD_SLACK_S, MAX_FEEDS_PER_RUN,
@@ -314,6 +316,19 @@ export async function runPipeline(options, source, emit) {
     const message = (err && err.message) ? err.message : String(err);
     post({ type: 'error', stage, message, fatal: true });
   };
+  /**
+   * A PREVIEW (CONTRACT.md §(d) "Previews"): a hint for the page while a long stage runs.
+   * Never a stage, never merged into the `Report`, never a degradation, a log line or a
+   * progress caption. The thunk runs inside the guard so a preview that throws — building
+   * its payload or posting it — is dropped in silence rather than failing the stage it
+   * decorates; `null` from the thunk means "nothing to show" and posts nothing.
+   */
+  const preview = (key, build) => {
+    try {
+      const payload = build();
+      if (payload) post({ type: 'preview', key, payload });
+    } catch { /* a hint, nothing more */ }
+  };
 
   // The GTFS and inference layers log through injectable sinks.
   setFeedLogger({
@@ -464,7 +479,10 @@ export async function runPipeline(options, source, emit) {
       stops: stopCount,
       routes: routeCount,
       trips: tripCount,
-      // `geo.admin.placeName` is not resolved yet; the `'provenance'` stage overwrites this.
+      // `geo.admin.placeName` is not resolved yet, so the hero opens on the agency name.
+      // No later STAGE payload carries `place`: `app.js` overwrites `report.place` from the
+      // `'geo'` payload (`geo.admin.placeName`), and only the final `Report` carries the
+      // same value on the wire (`place` below, at `done`).
       place: feed.agencyName,
     },
   });
@@ -544,9 +562,18 @@ export async function runPipeline(options, source, emit) {
       opts.borderBbox ? 'border_not_applied' : 'exclusions_not_applied');
     }
   }
+  // ── preview: the busiest day's served stops (CONTRACT.md §(d) "Previews") ────────
+  // Posted after the in-play set is fixed so it is the same row set `stopRows` walks.
+  // A FILTER of `servedStopIds`, never a re-sort and never a Set (AGENTS.md: the T90
+  // stride); nothing here is read back by the pipeline.
+  preview('stops', () => previewStops(feed, inPlay ?? best.servedStopIds));
   try {
     progress.begin(3);
     hub = inferHub(feed, best, proj, inPlay);
+    preview('hub', () => ({
+      stopId: hub.stopId, name: hub.name,
+      lat: coord(hub.lat), lon: coord(hub.lon), dominant: Boolean(hub.dominant),
+    }));
     progress.finish();
 
     progress.begin(4);
@@ -577,6 +604,7 @@ export async function runPipeline(options, source, emit) {
     // Zones outside a supplied border cease to exist: the cover runs over the in-play set.
     const centres = zoneCover(inPlay ?? best.servedStopIds, size.zoneRadiusM, events, pos);
     zones = buildZones(feed, best, centres, size.zoneRadiusM, proj, inPlay);
+    preview('zones', () => previewZones(zones, size.zoneRadiusM));
     progress.report(0.5, 'Re-measuring the zones');
     metrics = networkMetrics(feed, days, proj, hub, size.zoneRadiusM, inPlay);
     metrics.inPlayFallback = inPlayFallback;
@@ -656,6 +684,7 @@ export async function runPipeline(options, source, emit) {
       // Arms adminInfo's ordinal-1 place rule (Tokyo, Vienna); a hint the census
       // cross-checks, never an input it trusts.
       timezone: feed.timezone,
+      onPreview: (key, payload) => preview(key, () => payload),
     });
     log('info', worldStatsLine(handle));
   } catch (err) {
@@ -681,6 +710,7 @@ export async function runPipeline(options, source, emit) {
     progress.begin(8);
     questions = auditQuestions(size, geo, gtfsFacts, zones, metrics, border, {
       onProgress: progress.sink(),
+      onPreview: (key, payload) => preview(key, () => payload),
     });
     categories = questionCategories(questions);
     curses = auditCurses(size, geo, gtfsFacts, geo.admin.countryCode, metrics);
@@ -927,6 +957,45 @@ function daySummary(day) {
     headwayHistogramMin: histogram,
     lastBusPercentilesS: toPlain(s1Percentiles(lasts, [0.05, 0.25, 0.5, 0.75, 0.95])),
   };
+}
+
+/**
+ * The `'stops'` preview (CONTRACT.md §(d) "Previews"): coordinate columns, names and the
+ * extent to fit. Coordinates go through `coord()` like `StopRow`. `ids` is iterated and
+ * never copied, sorted or Set-round-tripped; rows without a stop record are skipped
+ * exactly as `stopRows` skips them. Returns null for an empty set (nothing to show).
+ */
+function previewStops(feed, ids) {
+  const lon = [];
+  const lat = [];
+  const name = [];
+  let s = Infinity; let w = Infinity; let n = -Infinity; let e = -Infinity;
+  for (const sid of ids) {
+    const stop = feed.stops[sid];
+    if (!stop) continue;
+    const la = coord(stop.lat);
+    const lo = coord(stop.lon);
+    lon.push(lo); lat.push(la); name.push(stop.name);
+    if (la < s) s = la;
+    if (la > n) n = la;
+    if (lo < w) w = lo;
+    if (lo > e) e = lo;
+  }
+  if (!lon.length) return null;
+  return { lon: Float64Array.from(lon), lat: Float64Array.from(lat), name, bbox: [s, w, n, e] };
+}
+
+/** The `'zones'` preview: zone centres in `buildZones`' own order, never re-sorted. */
+function previewZones(zones, radiusM) {
+  const lon = new Float64Array(zones.length);
+  const lat = new Float64Array(zones.length);
+  const name = new Array(zones.length);
+  for (let i = 0; i < zones.length; i++) {
+    lon[i] = coord(zones[i].lon);
+    lat[i] = coord(zones[i].lat);
+    name[i] = zones[i].name;
+  }
+  return { lon, lat, name, radiusM };
 }
 
 /**

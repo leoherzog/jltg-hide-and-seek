@@ -37,6 +37,13 @@ export function renderPickerCard() {
   // The label is real but visually hidden, so a screen reader still announces it.
   const search = el('wa-input', join(
     waIcon('magnifying-glass', { slot: 'start' }),
+    // Icon-only, so the icon carries the accessible name (Web Awesome's rule for
+    // icon buttons). `render/picker.js` hides it where geolocation is missing and
+    // lists what `rowsNear` finds; nothing asks for a position until this is pressed.
+    el('wa-button', waIcon('location-crosshairs', { label: 'Feeds near me' }), {
+      id: 'locate-me', slot: 'end', type: 'button', appearance: 'plain', size: 's',
+      title: 'Feeds near me',
+    }),
     // A plain `<a>` round the chip, not `linkChip`, which cannot set `target`. The
     // `~km` span on each result row already says marker positions are rough.
     el('span', join(esc('Or tap a marker.'),
@@ -641,6 +648,24 @@ export function renderPickerNote(s) {
       el('p', esc('OpenStreetMap has rail, metro and tram lines here.'), { className: 'wa-body-s' }),
       osmBasisLegend(),
     ), { className: 'wa-stack wa-gap-2xs' }));
+  }
+  // The locate button's outcomes that leave nothing in the results list. `'none'`
+  // is a position with no catalogue feed near it; the other two never got one.
+  if (s.locate === 'none') {
+    lines.push(noteRow(join(
+      chip('No published feed near you', 'location-crosshairs', { variant: 'warning' }),
+      esc('Search for a city, or draw a shape.'),
+    )));
+  } else if (s.locate === 'denied') {
+    lines.push(noteRow(join(
+      chip('Location blocked', 'location-crosshairs', { variant: 'neutral' }),
+      esc('Allow it in the browser, or search for a city.'),
+    )));
+  } else if (s.locate === 'unavailable') {
+    lines.push(noteRow(join(
+      chip('Location unavailable', 'location-crosshairs', { variant: 'neutral' }),
+      esc('Search for a city instead.'),
+    )));
   }
   for (const b of s.blocked || []) {
     const how = b.href
