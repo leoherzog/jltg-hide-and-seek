@@ -10,7 +10,8 @@
 # double-count every way in the buffers. cover-geometries/ and shards.json come from
 # the same cover.py run — regenerate and commit them together.
 #
-# This workflow does not merge shards. Merge runs on kadro:
+# This workflow does not merge shards; world-merge.yml does, chained after it by
+# world-rebuild.yml. The same merge by hand on kadro:
 #
 #   uv run tools/osm-world/merge.py --shards <dir with one subdir per shard build> \
 #     --admin <overture admin.fgb> --out <dir>
@@ -39,10 +40,7 @@
 name: world-density-shards
 
 on:
-  # Schedule disabled until the R2_* secrets exist; every job would fail at upload.
-  # Re-arm by uncommenting the two live lines (monthly, 06:00 UTC on the 3rd).
-  # schedule:
-  #   - cron: "0 6 3 * *"
+  # No schedule of its own: world-rebuild.yml runs it monthly, then merges and prunes.
   workflow_dispatch:
     inputs:
       batch_size:

@@ -160,9 +160,10 @@ subset; with no override it threads `null` so the no-override path is literally 
 The **example-map chips** in the panel are `lib/catalog.js`'s `EXAMPLE_MAPS`: hand-curated lists of
 catalogue ids, public operators only — no campus loops, tourist cruises or private coaches. A chip
 replaces the catalogue picks through the picker's own `commit()` funnel, so it is not a way in for
-a selection setter. `tools/mdb-snapshot.mjs --check` fails when a chip names a row the snapshot no
-longer has, and `exampleMapsFor` hides a chip at runtime rather than offer a city with a feed
-missing.
+a selection setter. `exampleMapFaults` is the one rule for a chip the snapshot cannot serve (a row
+gone, behind a key, no longer updated, or out of chain): `exampleMapsFor` hides it at runtime and
+`tools/mdb-snapshot.mjs --check` warns without failing, so upstream drift never blocks a catalogue
+refresh and the chip returns once upstream recovers. A malformed list still fails `--check`.
 
 `data/feeds.json` is a **build artifact reviewed as a diff**, the same discipline as
 `tools/osm-world/categories.json`. `tools/mdb-snapshot.mjs` regenerates it from the Mobility

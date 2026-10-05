@@ -258,10 +258,9 @@ export function initPicker(root, handlers = {}) {
   /** The chips this catalogue can serve; a dropped one is said once, in the console. */
   const examples = (() => {
     const found = exampleMapsFor(doc);
-    for (const gone of found.missing) {
+    for (const gone of found.hidden) {
       // eslint-disable-next-line no-console
-      console.warn(`example map "${gone.key}" is not offered: ${gone.ids.join(', ')} `
-        + 'missing from the catalogue or behind an API key');
+      console.warn(`example map "${gone.key}" is not offered: ${gone.faults.join('; ')}`);
     }
     return found.examples;
   })();

@@ -632,8 +632,8 @@ Resolved 2026-08-22 by the first real global merge — see §Open questions.
 | file | trigger | matrix | per-job timeout | R2 prefix |
 | --- | --- | --- | ---: | --- |
 | `.github/workflows/world-canary.yml` | `workflow_dispatch` only | one ~1 GB coarse shard | — | none — **needs no secrets** |
-| `.github/workflows/world-density-shards.yml` | dispatch only (schedule disabled) | 514 fine shards, batched | 90 min | `shards/density/<id>/` |
-| `.github/workflows/world-feature-shards.yml` | dispatch only (schedule disabled) | 87 coarse shards, batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
+| `.github/workflows/world-density-shards.yml` | dispatch, or monthly via `world-rebuild.yml` | 514 fine shards, batched | 90 min | `shards/density/<id>/` |
+| `.github/workflows/world-feature-shards.yml` | dispatch, or monthly via `world-rebuild.yml` | 87 coarse shards, batch 1 → 87 jobs | 240 min | `shards/feature/<id>/` |
 
 Helpers: `tools/osm-world/ci/chunk-shards.py` (stdlib only; batches `shards.json[kind]`
 into the `strategy.matrix.include` list and **fails cleanly** if a future `cover.py` run
@@ -648,7 +648,7 @@ poison the merge — and feature builds get `--unlink-source`).
 Both shard workflows **fail loudly** on a missing `shards.json` (it and
 `cover-geometries/` are committed `cover.py` outputs, read from the checkout) and on
 missing `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET`.
-The `schedule:` trigger stays disabled; the secrets exist as of 2026-08-22. Retries wrap
+Neither carries a `schedule:`; `world-rebuild.yml` runs both monthly, then merges. Retries wrap
 the *whole* per-shard call and are a **full re-download + rebuild**, not a resume
 (`build-shard.sh` clears its work dir on entry and passes `--force`) — acceptable for the
 transient network/runner failures they exist for.

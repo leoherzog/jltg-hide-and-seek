@@ -17,12 +17,13 @@
 # Sizing (measured on kadro 16-core/31 GB; runner is 4-core/15 GB): DuckDB peak RSS
 # 6.3 GB at SIMPLIFY=0.0001, MEMORY_LIMIT 10GB with spill to $OUT/duckdb-tmp. The
 # source parquet is streamed over httpfs; disk use is ~15 GB, so no free-disk step.
-# Wall is minutes to tens of minutes on a runner. Run rarely, by hand; nothing
-# schedules it, world-rebuild.yml calls it.
+# Wall is minutes to tens of minutes on a runner. world-rebuild.yml calls it monthly
+# with `release: latest`.
 #
-# Overture prunes old releases. build-admin.sh checks the listing first and fails
-# naming what still exists; re-pin `release` when that fires and review the
-# probe-admin.mjs expectations (ground truth for 2026-07-22.0).
+# Overture prunes old releases. A pinned `release` fails once pruned, and
+# build-admin.sh names what still exists; re-pin and review the probe-admin.mjs
+# expectations (ground truth for 2026-07-22.0). `latest` resolves to the newest
+# listed release, and the same probes gate its upload.
 #
 # R2 secrets required:
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
@@ -35,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Overture release id (pinned; build fails loudly listing live releases if pruned)"
+        description: "Overture release id, or 'latest' for the newest listed (a pin fails loudly listing live releases once pruned)"
         required: false
         default: "2026-07-22.0"
       simplify:
@@ -67,7 +68,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REL: ${{ inputs.release || '2026-07-22.0' }}
+  # The resolve step turns this into REL. REL is never set here, so its $GITHUB_ENV
+  # write cannot lose to a workflow-level value.
+  REL_INPUT: ${{ inputs.release || '2026-07-22.0' }}
   SIMPLIFY: ${{ inputs.simplify || '0.0001' }}
   ADMIN_PREFIX: ${{ inputs.admin_prefix || 'admin' }}
   AWS_REQUEST_CHECKSUM_CALCULATION: when_required
@@ -94,6 +97,22 @@ jobs:
           # every run makes a silent reversion visible before ENOSPC does.
           free_gb=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
+
+      - name: resolve the Overture release
+        run: |
+          set -euo pipefail
+          rel="$REL_INPUT"
+          if [ "$rel" = "latest" ]; then
+            LIST_URL='https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/?list-type=2&delimiter=/&prefix=release/'
+            rel="$(curl -sfL --retry 3 "$LIST_URL" \
+                | grep -o '<Prefix>release/[^<]*</Prefix>' \
+                | sed -e 's|<Prefix>release/||' -e 's|/*</Prefix>||' \
+                | { grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}\.[0-9]+$' || true; } \
+                | sort -V | tail -n 1)"
+            [ -n "$rel" ] || { echo "::error::could not list Overture releases at $LIST_URL"; exit 1; }
+          fi
+          echo "REL=$rel" >> "$GITHUB_ENV"
+          echo "Overture release: $REL_INPUT -> $rel"
 
       - name: preflight R2 secrets (before a 20-minute build, not after)
         env:

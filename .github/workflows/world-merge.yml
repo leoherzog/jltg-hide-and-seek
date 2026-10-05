@@ -21,9 +21,10 @@
 # If that OOMs, the durable fix is client-side multi-band density, not a bigger runner.
 #
 # Intermediates move through R2, never Actions artifacts: per-layer partial
-# manifests and density bands stage under merge/staging/<run_id>/, cleaned up by
-# finalize. Staging is keyed by run_id on purpose so "re-run failed jobs" reuses
-# the succeeded jobs' staged output.
+# manifests and density bands stage under merge/staging/<run_id>/. Staging is keyed
+# by run_id on purpose so "re-run failed jobs" reuses the succeeded jobs' staged
+# output. Once a world is live, finalize sweeps all of merge/staging/, since every
+# other run's intermediates are older than what it just published.
 #
 # /vsis3 is not used for merge output: publish_layer renames after hashing, a
 # rename over /vsis3 is a CopyObject, and R2 caps single-part copy at 5 GiB, which
@@ -54,7 +55,7 @@
 #     jobs always pass --manifest-dest (a staging key), and merge.py refuses a
 #     `partial: true` manifest at the default destination.
 # A canary with skip_finalize leaves its staged manifests under
-# merge/staging/<run_id>/; delete by hand or ignore (staging is per-run_id).
+# merge/staging/<run_id>/ until the next finalize sweeps them.
 #
 # R2 secrets required:
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
@@ -302,10 +303,10 @@ jobs:
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
       - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           # +~31 GB in ~3 min. green's merge peaks ~60 GB of transient disk.
-          tool-cache: false
+          preinstalled-runtimes: false
           android: true
           dotnet: true
           haskell: true
@@ -422,10 +423,10 @@ jobs:
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
       - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           # Band jobs peak ~45 GB; the margin is undocumented headroom, hence mandatory.
-          tool-cache: false
+          preinstalled-runtimes: false
           android: true
           dotnet: true
           haskell: true
@@ -532,10 +533,10 @@ jobs:
           [ "$free_gb" -ge 20 ] || echo "::warning::only ${free_gb} GB free — large shards may not fit"
 
       - name: free disk space (MANDATORY on merge jobs — DESIGN.md §Phase 6)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           # ~15 GB of bands in + ~15 GB out + the writer's hidden ~2× temp.
-          tool-cache: false
+          preinstalled-runtimes: false
           android: true
           dotnet: true
           haskell: true
@@ -701,7 +702,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: clean up staging intermediates
+      - name: clean up staging intermediates, this run's and every older run's
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
@@ -711,15 +712,23 @@ jobs:
           set -euo pipefail
           # The world is already live; a failed cleanup must warn, not fail the run.
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          # The parent of every run's STAGING. The world-merge concurrency group means
+          # no other merge is writing under it while finalize runs.
+          SWEEP="${STAGING%/*}"
+          # A malformed STAGING would widen this recursive delete to the bucket root.
+          if [ "$SWEEP" != "merge/staging" ]; then
+            echo "::warning::STAGING is '$STAGING', not under merge/staging/; not sweeping"
+            exit 0
+          fi
           # No --no-progress here: `aws s3 rm` rejects it as an unknown option.
-          aws s3 rm "s3://$R2_BUCKET/$STAGING/" --recursive --endpoint-url "$EP" \
-            || echo "::warning::staging cleanup failed — orphaned intermediates remain under $STAGING/ in R2; delete them by hand"
+          aws s3 rm "s3://$R2_BUCKET/$SWEEP/" --recursive --endpoint-url "$EP" \
+            || echo "::warning::staging cleanup failed — orphaned intermediates remain under $SWEEP/ in R2; delete them by hand"
           # Verify rather than trust the exit code. The `|| true` is required:
           # `aws s3 ls` exits 1 on an empty listing, which is the success case.
-          left=$( (aws s3 ls "s3://$R2_BUCKET/$STAGING/" --recursive \
+          left=$( (aws s3 ls "s3://$R2_BUCKET/$SWEEP/" --recursive \
                    --endpoint-url "$EP" || true) | wc -l)
           [ "$left" -eq 0 ] \
-            || echo "::warning::$left object(s) still under $STAGING/ in R2 after cleanup; delete them by hand"
+            || echo "::warning::$left object(s) still under $SWEEP/ in R2 after cleanup; delete them by hand"
 
       - name: prune layer files the live manifest no longer names
         env:

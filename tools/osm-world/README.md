@@ -212,7 +212,11 @@ Scopes are verified against the live bucket. Cloudflare has no write-only tier, 
   rebuild never replaces the previous world's files, so `world-merge.yml`'s finalize waits
   out the manifest's `max-age` and then deletes every `world/*.fgb` the live manifest no
   longer names. Without that step the 2026-08-22 merge left 35 such files (49.5 GB)
-  behind.
+  behind. The same finalize then sweeps all of `merge/staging/`.
+- **Stale shard output is pruned before the merge.** `world-rebuild.yml`'s
+  `prune-shards` job deletes whatever under `shards/{density,feature}/` no current
+  shard's manifest names, using `ci/prune-shards.py`, which refuses unless every shard in
+  `shards.json` has a manifest. Deletes go one key at a time because shard ids nest.
 
 ## What ships, and what does not
 
@@ -733,10 +737,14 @@ are identical, and so is a re-run of the merge.
 
 ## CI
 
-Seven workflows. All are `workflow_dispatch` (the shard schedules stay commented out),
-`max-parallel` 20, `fail-fast: false`, and fail loudly rather than quietly skipping when
-`shards.json` is missing or the `R2_*` secrets are unset. The secrets exist as of
-2026-08-22.
+Seven workflows. All take `workflow_dispatch`, and `world-rebuild.yml` also runs
+monthly, at 06:00 UTC on the 3rd. All use `max-parallel` 20 and `fail-fast: false`, and
+fail loudly rather than quietly skipping when `shards.json` is missing or the `R2_*`
+secrets are unset.
+
+The monthly rebuild builds admin from the newest Overture release, because a pin fails
+once Overture prunes it. If that build fails, the merge uses the previous `admin/` build
+and the run goes red. A failed shard wave or transit build stops the merge.
 
 | workflow | what | matrix | timeout | R2 prefix | status |
 | --- | --- | --- | ---: | --- | --- |
@@ -745,7 +753,7 @@ Seven workflows. All are `workflow_dispatch` (the shard schedules stay commented
 | `world-admin.yml` | Overture admin build + probes | 1 job | 120 min | `admin/` (handoff) | dispatched, run 32591161893; failed on a GDAL driver gap, which drove the fix now in `build-admin.sh` |
 | `world-transit.yml` | global route-relation build + probes | 1 job | 350 min | `transit/` (handoff) | never dispatched; `build-transit.py` has only run against a city extract, so the planet-scale disk and wall-clock numbers in the header are arithmetic rather than measurement |
 | `world-merge.yml` | shards + admin + transit → the world | 36 layers + N bands + 3 | 350 min max | `world/` | dispatched, run 32599689118, which published the live world |
-| `world-rebuild.yml` | shards → admin, transit → merge | calls the other five | — | — | never dispatched |
+| `world-rebuild.yml` | shards → prune, admin, transit → merge | calls the other five, plus `prune-shards` | — | prunes `shards/` | monthly; dispatched as run 34764355451, 248/248 jobs green, before `prune-shards` and `release: latest` existed |
 | `world-canary.yml` | one ~1 GB shard, full pipeline, re-measures a runner | 1 job | 90 min | none: output is a workflow artifact | — |
 
 Shard-run evidence is in `DESIGN.md` §Phase 4 Result.

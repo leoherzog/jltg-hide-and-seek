@@ -45,9 +45,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import process from 'node:process';
 import { inflateRawSync } from 'node:zlib';
-import { EXAMPLE_MAPS } from '../lib/catalog.js';
-import { MAX_FEEDS_PER_RUN, MAX_FEED_GAP_M } from '../lib/core.js';
-import { bboxChains } from '../lib/geo.js';
+import { EXAMPLE_MAPS, exampleMapFaults } from '../lib/catalog.js';
+import { MAX_FEEDS_PER_RUN } from '../lib/core.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -133,6 +132,7 @@ const COUNTS_CONCURRENCY = Math.max(1, Number(flag('--counts-concurrency') || DE
 
 const GREEN = '[32m';
 const RED = '[31m';
+const YELLOW = '[33m';
 const DIM = '[2m';
 const RESET = '[0m';
 const colour = process.stdout.isTTY ? (c, s) => `${c}${s}${RESET}` : (_c, s) => s;
@@ -140,6 +140,8 @@ const colour = process.stdout.isTTY ? (c, s) => `${c}${s}${RESET}` : (_c, s) => 
 function line(text = '') { if (!JSON_OUT) process.stdout.write(`${text}\n`); }
 function chatter(text = '') { if (!QUIET) line(text); }
 function fail(text) { process.stderr.write(`${colour(RED, 'ERROR')} ${text}\n`); }
+/** On stdout, so the workflow's PR body carries it. */
+function warn(text) { line(`${colour(YELLOW, 'WARN')} ${text}`); }
 
 /** Code-point string order. Never `localeCompare`: locale-dependent is non-deterministic. */
 function cmpStr(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
@@ -427,9 +429,10 @@ export function diffSummary(old, next) {
 // ── --check ──────────────────────────────────────────────────────────────────
 
 /**
- * Every invariant the runtime may assume, checked without a network.
+ * Every invariant the runtime may assume, checked without a network. `warnings` name
+ * the example maps this snapshot hides; they never clear `ok`.
  * @param {string} filePath
- * @returns {Promise<{ok: boolean, problems: string[], doc: object|null}>}
+ * @returns {Promise<{ok: boolean, problems: string[], warnings: string[], doc: object|null}>}
  */
 export async function checkSnapshot(filePath) {
   const problems = [];
@@ -437,13 +440,13 @@ export async function checkSnapshot(filePath) {
   try {
     text = await readFile(filePath, 'utf8');
   } catch (err) {
-    return { ok: false, problems: [`cannot read ${filePath}: ${err.message}`], doc: null };
+    return { ok: false, problems: [`cannot read ${filePath}: ${err.message}`], warnings: [], doc: null };
   }
   let doc;
   try {
     doc = JSON.parse(text);
   } catch (err) {
-    return { ok: false, problems: [`not valid JSON: ${err.message}`], doc: null };
+    return { ok: false, problems: [`not valid JSON: ${err.message}`], warnings: [], doc: null };
   }
   const say = (cond, msg) => { if (!cond) problems.push(msg); };
 
@@ -453,7 +456,7 @@ export async function checkSnapshot(filePath) {
   }
   say(Number.isFinite(doc.regionalKm) && doc.regionalKm > 0, 'regionalKm is not a positive number');
   say(Array.isArray(doc.rows), 'rows is not an array');
-  if (!Array.isArray(doc.rows)) return { ok: false, problems, doc };
+  if (!Array.isArray(doc.rows)) return { ok: false, problems, warnings: [], doc };
   say(doc.count === doc.rows.length, `count ${doc.count} is not rows.length ${doc.rows.length}`);
 
   // One object per line, so a regeneration is reviewable as a line diff.
@@ -514,10 +517,11 @@ export async function checkSnapshot(filePath) {
     }
   }
 
-  // The example maps (`lib/catalog.js`) name rows by id; a regeneration that drops
-  // one breaks a landing-page chip, so it fails here.
+  // A malformed `EXAMPLE_MAPS` entry is a code bug and fails. Upstream drift only
+  // hides the chip at runtime, so it warns and the refresh still lands.
   const byId = new Map(doc.rows.map((row) => [row.id, row]));
   const keys = new Set();
+  const warnings = [];
   for (const ex of EXAMPLE_MAPS) {
     const at = `example map ${ex.key}`;
     say(!keys.has(ex.key), `${at}: duplicate key`);
@@ -525,19 +529,9 @@ export async function checkSnapshot(filePath) {
     say(ex.ids.length > 0 && ex.ids.length <= MAX_FEEDS_PER_RUN,
       `${at}: ${ex.ids.length} feeds, the run cap is ${MAX_FEEDS_PER_RUN}`);
     say(new Set(ex.ids).size === ex.ids.length, `${at}: repeats an id`);
-    for (const id of ex.ids) {
-      const row = byId.get(id);
-      say(Boolean(row), `${at}: ${id} is not in the catalogue`);
-      if (!row) continue;
-      say(!row.a, `${at}: ${id} (${row.p}) needs an API key`);
-      say(!row.x, `${at}: ${id} (${row.p}) is no longer updated`);
-    }
-    // The picker refuses a pick that does not chain to the others, so neither may a chip.
-    const boxes = ex.ids.map((id) => byId.get(id)).filter(Boolean).map((row) => row.b);
-    say(bboxChains(boxes, MAX_FEED_GAP_M).length <= 1,
-      `${at}: its feeds do not chain within ${MAX_FEED_GAP_M} m, so the picker would refuse one`);
+    for (const fault of exampleMapFaults(ex, byId)) warnings.push(`${at} is hidden: ${fault}`);
   }
-  return { ok: problems.length === 0, problems, doc };
+  return { ok: problems.length === 0, problems, warnings, doc };
 }
 
 // ── fetch ────────────────────────────────────────────────────────────────────
@@ -859,17 +853,20 @@ export async function measureAll(entries, onProgress) {
 
 async function main() {
   if (CHECK_ONLY) {
-    const { ok, problems, doc } = await checkSnapshot(OUT_PATH);
+    const { ok, problems, warnings, doc } = await checkSnapshot(OUT_PATH);
     if (JSON_OUT) {
       process.stdout.write(`${JSON.stringify({
-        mode: 'check', ok, problems, count: doc ? doc.count : 0,
+        mode: 'check', ok, problems, warnings, count: doc ? doc.count : 0,
       }, null, 2)}\n`);
-    } else if (ok) {
-      line(`${colour(GREEN, 'OK')} ${path.relative(REPO, OUT_PATH)} — ${doc.count} feeds, `
-        + 'every invariant holds');
     } else {
-      for (const p of problems.slice(0, 40)) fail(p);
-      if (problems.length > 40) fail(`and ${problems.length - 40} more`);
+      for (const w of warnings) warn(w);
+      if (ok) {
+        line(`${colour(GREEN, 'OK')} ${path.relative(REPO, OUT_PATH)} — ${doc.count} feeds, `
+          + 'every invariant holds');
+      } else {
+        for (const p of problems.slice(0, 40)) fail(p);
+        if (problems.length > 40) fail(`and ${problems.length - 40} more`);
+      }
     }
     process.exitCode = ok ? 0 : 1;
     return;
@@ -990,6 +987,7 @@ async function main() {
       diff: delta,
       ok: verify.ok,
       problems: verify.problems,
+      warnings: verify.warnings,
     }, null, 2)}\n`);
   } else {
     chatter();
@@ -1025,6 +1023,7 @@ async function main() {
     line(verify.ok
       ? `  ${colour(GREEN, 'check OK')} — every invariant holds`
       : `  ${colour(RED, 'CHECK FAILED')} — ${verify.problems.length} problems`);
+    for (const w of verify.warnings) warn(w);
   }
   for (const p of verify.problems.slice(0, 20)) fail(p);
   process.exitCode = verify.ok ? 0 : 1;

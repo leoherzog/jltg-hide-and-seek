@@ -1,22 +1,33 @@
 # .github/workflows/world-rebuild.yml — Phase 6 orchestrator (DESIGN.md §Phase 6):
-# one dispatch rebuilds the whole world.
+# one run rebuilds the whole world, monthly or on dispatch.
 #
-#   world-feature-shards ─┐
-#   world-density-shards ─┼──► world-merge
-#   world-admin ──────────┤
-#   world-transit ────────┘
+#   world-feature-shards ─┬─► prune-shards ─┐
+#   world-density-shards ─┘                 ├──► world-merge
+#   world-admin ────────────────────────────┤
+#   world-transit ──────────────────────────┘
 #
 # All five are reusable workflows called on this ref with `secrets: inherit`; each
-# keeps its own matrix, timeouts and preflights. This file adds only the ordering:
-# the merge's plan job hard-checks the R2 manifest set against shards.json, so it
-# must run after a complete shard wave (and never with skip_cover_check).
+# keeps its own matrix, timeouts and preflights. This file adds the ordering and the
+# cleanup: the merge's plan job hard-checks the R2 manifest set against shards.json,
+# so it must run after a complete shard wave (and never with skip_cover_check).
+#
+# Cleanup of old data, all in R2 and all after the data it replaces is in place:
+#   - prune-shards deletes shard output no current shard names (a shard a cover
+#     change dropped, a layer file a category change left behind), via
+#     ci/prune-shards.py, which refuses unless every shard in shards.json has a
+#     manifest. Without it a cover change stops every later merge at the cover check.
+#   - world-merge's finalize sweeps all of merge/staging/ and prunes every
+#     world/*.fgb the new live manifest no longer names.
+# A failed cleanup turns the run red but never blocks or undoes a publish.
+#
+# Admin builds from the newest Overture release, gated by its probes, because
+# Overture prunes old releases and a pin fails within months. If the admin build
+# fails, the merge proceeds against the build already under admin/ and the run goes
+# red. Transit has no fallback: route relations go stale between rebuilds, and a
+# world merged against an old transit prefix looks fresh.
 #
 # Scale (2026-08-22): ~247 jobs. Shard phase ~4 h (canada is the long pole, 20-parallel
 # per shard workflow), then merge ~2 h. Job caps are 6 h each; the run takes longer.
-#
-# Admin is rebuilt every time (minutes of work; its Overture release is pinned in
-# world-admin.yml). Transit is chained because route relations go stale between
-# rebuilds and a world merged against an old transit prefix looks fresh.
 #
 # Each calling job carries a job-level `concurrency` group matching the called
 # workflow's, so a rebuild queues behind a standalone dispatch. cancel-in-progress
@@ -24,13 +35,13 @@
 #
 # R2 secrets required (inherited by every called workflow):
 #   R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET
-#
-# Reusable-workflow wiring is unverified until dispatched.
 
 name: world-rebuild
 
 on:
-  # Dispatch only; a full rebuild is deliberate.
+  schedule:
+    # 06:00 UTC on the 3rd: clear of the 1st, and done well before feed-catalogue (6th).
+    - cron: "0 6 3 * *"
   workflow_dispatch:
     inputs:
       world_prefix:
@@ -63,6 +74,8 @@ jobs:
     concurrency:
       group: world-admin
       cancel-in-progress: false
+    with:
+      release: latest
 
   transit:
     uses: ./.github/workflows/world-transit.yml
@@ -71,8 +84,56 @@ jobs:
       group: world-transit
       cancel-in-progress: false
 
+  prune-shards:
+    needs: [feature-shards, density-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: delete shard output no current shard names
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # aws-cli v2.23+ defaults to CRC checksums some S3-compatibles reject.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          for kind in feature density; do
+            aws s3 sync "s3://$R2_BUCKET/shards/$kind/" "mf/$kind/" \
+              --endpoint-url "$EP" --no-progress \
+              --exclude '*' --include '*/manifest.json'
+          done
+          aws s3api list-objects-v2 --bucket "$R2_BUCKET" --prefix shards/ \
+              --endpoint-url "$EP" --query 'Contents[].Key' --output text \
+            | tr '\t' '\n' | { grep -vx -e '' -e None || true; } > keys.txt
+          python3 tools/osm-world/ci/prune-shards.py --keys keys.txt \
+            --feature-manifests mf/feature --density-manifests mf/density > prune.txt
+          # Per key, never `rm --recursive` on a shard prefix: ids nest (`us`,
+          # `us/district-of-columbia`), so a stale parent's prefix holds live shards.
+          failed=0
+          while IFS= read -r key; do
+            aws s3 rm "s3://$R2_BUCKET/$key" --endpoint-url "$EP" --only-show-errors \
+              || failed=$((failed + 1))
+          done < prune.txt
+          [ "$failed" -eq 0 ] \
+            || echo "::warning::$failed stale shard object(s) could not be deleted; the merge's cover check refuses any stale manifest by name"
+          echo "- pruned $(( $(wc -l < prune.txt) - failed )) stale object(s) from \`shards/\`" >> "$GITHUB_STEP_SUMMARY"
+
   merge:
-    needs: [feature-shards, density-shards, admin, transit]
+    needs: [feature-shards, density-shards, prune-shards, admin, transit]
+    # A failed admin build or prune does not block the publish; the shard wave and
+    # transit must succeed. !cancelled() is what lets a failed `needs` through.
+    if: >-
+      ${{ !cancelled()
+        && needs.feature-shards.result == 'success'
+        && needs.density-shards.result == 'success'
+        && needs.transit.result == 'success' }}
     uses: ./.github/workflows/world-merge.yml
     secrets: inherit
     concurrency:
@@ -80,3 +141,15 @@ jobs:
       cancel-in-progress: false
     with:
       world_prefix: ${{ inputs.world_prefix || 'world' }}
+
+  admin-fallback:
+    needs: [admin, merge]
+    if: ${{ !cancelled() && needs.admin.result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: say which admin build the world was merged against
+        env:
+          MERGED: ${{ needs.merge.result }}
+        run: |
+          echo "::warning::world-admin failed; the merge ($MERGED) used the previous build under admin/. A probe failure on a new Overture release needs review."
+          echo "- admin build **failed**; merge ($MERGED) used the previous \`admin/\` build" >> "$GITHUB_STEP_SUMMARY"

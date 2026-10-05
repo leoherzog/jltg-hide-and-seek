@@ -120,10 +120,10 @@ jobs:
           fi
 
       - name: free disk space (MANDATORY here — the planet does not fit without it)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           # +~31 GB in ~3 min. Same knobs as the merge jobs; swap stays.
-          tool-cache: false
+          preinstalled-runtimes: false
           android: true
           dotnet: true
           haskell: true
