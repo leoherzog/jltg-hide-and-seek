@@ -70,6 +70,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Every `uv run` uses uv's own CPython build, never the runner image's python3,
+  # so an ubuntu-latest image change cannot move the interpreter.
+  UV_PYTHON: "3.14"
+  UV_PYTHON_PREFERENCE: only-managed
   TRANSIT_PREFIX: ${{ inputs.transit_prefix || 'transit' }}
   PLANET_URL: ${{ inputs.planet_url || '' }}
   AWS_REQUEST_CHECKSUM_CALCULATION: when_required
@@ -147,7 +151,7 @@ jobs:
             exit 1
           fi
 
-      - name: install osmium-tool, gdal, uv
+      - name: install osmium-tool, gdal
         run: |
           set -euo pipefail
           sudo apt-get update -y
@@ -158,8 +162,12 @@ jobs:
             ogrinfo --formats 2>/dev/null | grep "$drv" >/dev/null \
               || { echo "::error::this GDAL lacks the $drv driver"; exit 1; }
           done
-          python3 -m pip install --user --upgrade uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          # No lockfile to key a cache on, and matrix jobs would race to save one.
+          enable-cache: false
 
       - name: build transit_route.fgb (planet download included)
         run: |

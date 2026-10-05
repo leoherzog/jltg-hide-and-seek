@@ -1512,7 +1512,14 @@ def stage_density(planet: Path, work: Path, out_dir: Path, table: Table,
     log(f"stage 4: density pass over the planet at {cell_deg}° cells"
         + (f", clipped to {clip_region.name}" if clip_region is not None else ""))
     handler = DensityHandler()
-    handler.apply_file(str(planet), locations=True, idx=OSMIUM_INDEX)
+    # Filter in C++ so only tree nodes and candidate ways reach Python: a Python
+    # call per node is about half the pass. pyosmium stores node locations before
+    # filters run, so way geometry is unaffected. Must stay a superset of what
+    # node() and way() test first.
+    handler.apply_file(str(planet), locations=True, idx=OSMIUM_INDEX, filters=[
+        osmium.filter.TagFilter(("natural", "tree")).enable_for(osmium.osm.NODE),
+        osmium.filter.KeyFilter("highway", "building", "bridge").enable_for(osmium.osm.WAY),
+    ])
     log(f"stage 4: {len(handler.cells)} populated cells "
         f"from {handler.ways} ways and {handler.nodes} nodes"
         + (f" ({handler.clipped} candidates outside the clip region dropped)"

@@ -20,6 +20,7 @@ off individual features and computes area-weighted centroids.
 
 | dependency | install | needed for | note |
 | --- | --- | --- | --- |
+| CPython 3.14 | `uv`; CI sets `UV_PYTHON` and `UV_PYTHON_PREFERENCE: only-managed` | every `uv run` | the runner image's `python3` runs only the stdlib `ci/` helpers, so an image change cannot move the build's interpreter |
 | `osmium` (pyosmium) | `uv`, from the PEP 723 block in `build.py` | the density pass, the transit relation assembly | no requirements file, no virtualenv to activate |
 | `boto3` | `uv`, same block | the R2 upload | |
 | `osmium` (osmium-tool) | `dnf install osmium-tool` | `tags-filter`, `export` | not pip-installable |
@@ -85,6 +86,10 @@ Every stage skips when its output exists, so an interrupted build resumes.
 - **Stage 4's skip is keyed on the `--clip-region` state**: sha256 of the region file, or
   `none`, recorded in a `density.clip-state` sidecar in the work dir. A cached grid built
   under a different clip is rebuilt, not silently reused.
+- **Stage 4 filters in C++ before calling Python.** Only `natural=tree` nodes and ways
+  carrying `highway`, `building` or `bridge` reach the handler, which roughly halves the
+  pass; pyosmium stores node locations before filters run, so way geometry is
+  unaffected. The filters must stay a superset of what the handler tests.
 - **Stage 1 is skipped entirely when the selection leaves no feature layer** (`--only
   density`, which is every CI density shard). The per-layer loop is its only reader.
   Density reads the raw extract in stage 4 and is unaffected.
