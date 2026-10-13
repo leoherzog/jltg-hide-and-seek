@@ -21,7 +21,7 @@ block; it is built from `state.report` in memory.
 | No build | No bundler, no TypeScript, no npm runtime dep. Top-level `await` is fine. |
 | Worker side | `lib/**`, `gtfs/**`, `osm/**`, `rules/**` run inside the Web Worker. **No DOM.** Allowed: `self`, `fetch`, `indexedDB`, `crypto`, `DecompressionStream`, `TextDecoder`, typed arrays, `structuredClone`. |
 | Main side | `app.js`, `render/**`. DOM freely. |
-| External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.12.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` and have no constant. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
+| External assets | Only these five: WebAwesome kit `https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.14.0`; MapLibre `https://cdn.jsdelivr.net/npm/maplibre-gl/+esm` and `.../dist/maplibre-gl.min.css`; tiles `https://tiles.openfreemap.org/styles/positron` and `/dark`. The kit and the MapLibre stylesheet are `<link>`ed by `index.html` and have no constant. The other three are exported from `lib/core.js` as `MAPLIBRE_JS`, `TILES_LIGHT`, `TILES_DARK`. |
 | Still five | `data/feeds.json` is a **same-origin repo asset**, not an external one. A feed zip — a Mobility Database mirror URL or an agency's own — is **input**, like a pasted URL. The polygon draw tool and the landing border editor are hand-rolled on MapLibre's own events so this list stays exhaustive; do not replace either with a CDN module without amending the row above. **Known divergence, recorded rather than fixed:** the world-file base URL (`DEFAULT_WORLD_BASE_URL`, `osm/worldfile.js`) is not in the list although every run fetches from it. Folding it in is a deliberate amendment, never a side effect of another change. |
 | Determinism | No `Date.now()`, no `Math.random()`, no wall clock anywhere in the pipeline. Never iterate a `Map`/`Set`/object whose insertion order could vary without sorting first. Two runs over the same input must be byte-identical. |
 | Numbers | Every number that reaches the UI goes through exactly one formatter from `lib/core.js`. No `toFixed`, no `Math.round`, no `Intl.NumberFormat` in the pipeline or the renderers. |
@@ -1481,7 +1481,7 @@ optional parameters, with `className` for the `class` attribute. The element hel
 * `esc()` is the only way text becomes markup. There is no "I know this is safe" exception
   — feed data contains apostrophes, ampersands and, in the wild, angle brackets.
 * Attribute values always go through `attrs()`, which escapes them.
-* Only WebAwesome 3.12 components with a helper below are sanctioned. If there is no helper
+* Only WebAwesome 3.14 components with a helper below are sanctioned. If there is no helper
   for it, do not invent one.
 
 ```js

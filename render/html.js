@@ -9,7 +9,7 @@
 //   * `esc()` is the only way text becomes markup; feed data contains apostrophes,
 //     ampersands and angle brackets. Attribute values always go through `attrs()`.
 //
-// Only WebAwesome 3.12 components the drafts use (or pages.md sanctions) get a helper;
+// Only WebAwesome 3.14 components the drafts use (or pages.md sanctions) get a helper;
 // do not invent one.
 //
 import {
