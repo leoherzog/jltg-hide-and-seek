@@ -332,7 +332,7 @@ jobs:
           done
 
       - name: install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           # No lockfile to key a cache on, and matrix jobs would race to save one.
           enable-cache: false
@@ -455,7 +455,7 @@ jobs:
           done
 
       - name: install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           # No lockfile to key a cache on, and matrix jobs would race to save one.
           enable-cache: false
@@ -569,7 +569,7 @@ jobs:
           done
 
       - name: install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           # No lockfile to key a cache on, and matrix jobs would race to save one.
           enable-cache: false
@@ -649,7 +649,7 @@ jobs:
           done
 
       - name: install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           # No lockfile to key a cache on, and matrix jobs would race to save one.
           enable-cache: false
