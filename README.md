@@ -407,7 +407,7 @@ The design specs the code occasionally cites (`specs/*.md`, `scoring.md`) live o
 <summary>How the feed catalogue is kept</summary>
 
 - The markers come from `data/feeds.json`, curated from the Mobility Database's published CSV,
-  refreshed monthly by `.github/workflows/feed-catalogue.yml` as a pull request and regenerable with
+  committed monthly by `.github/workflows/feed-catalogue.yml` and regenerable with
   `node tools/mdb-snapshot.mjs`.
 - A box withdrawn upstream keeps the one the file already had and marks the row `k`.
 - Systems spanning more than 250 km and feeds no longer updated are hidden behind opt-in switches,

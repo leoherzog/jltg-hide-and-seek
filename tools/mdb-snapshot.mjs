@@ -140,7 +140,7 @@ const colour = process.stdout.isTTY ? (c, s) => `${c}${s}${RESET}` : (_c, s) => 
 function line(text = '') { if (!JSON_OUT) process.stdout.write(`${text}\n`); }
 function chatter(text = '') { if (!QUIET) line(text); }
 function fail(text) { process.stderr.write(`${colour(RED, 'ERROR')} ${text}\n`); }
-/** On stdout, so the workflow's PR body carries it. */
+/** On stdout, so the workflow's commit message carries it. */
 function warn(text) { line(`${colour(YELLOW, 'WARN')} ${text}`); }
 
 /** Code-point string order. Never `localeCompare`: locale-dependent is non-deterministic. */

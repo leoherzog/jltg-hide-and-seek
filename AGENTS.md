@@ -180,8 +180,8 @@ feeds themselves: three HTTP Range requests each, reading the zip's central dire
 objects, HTML error pages) keep their previous numbers under `q` rather than failing the run. A
 plain `node tools/mdb-snapshot.mjs` carries `t`/`u` forward untouched, so a hand refresh never needs
 the network beyond the CSV. `.github/workflows/feed-catalogue.yml` runs it monthly with `--counts`
-and opens a PR; it never pushes to `main`, because the diff is the review. The catalogue rots
-silently, so refreshing it is a checklist item.
+and commits straight to `main`: `--check` is the only gate, and the diff is reviewed after it
+ships. The catalogue rots silently, so refreshing it is a checklist item.
 
 Four things about the merge that are load-bearing and non-obvious:
 
