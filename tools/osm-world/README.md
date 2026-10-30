@@ -754,7 +754,7 @@ and the run goes red. A failed shard wave or transit build stops the merge.
 | workflow | what | matrix | timeout | R2 prefix | status |
 | --- | --- | --- | ---: | --- | --- |
 | `world-density-shards.yml` | fine shards (514) | batch ≤5 / ≤2 GB → 113 matrix jobs | 350 min | `shards/density/<id>/` | **proven at full scale**: 113/113 jobs, zero failures (2026-08-22) |
-| `world-feature-shards.yml` | coarse shards (87) | batch 1 → 87 matrix jobs | 240 min | `shards/feature/<id>/` | **proven at full scale**: 87/87 jobs, zero failures (2026-08-22) |
+| `world-feature-shards.yml` | coarse shards (87) | batch 1 → 87 matrix jobs | 360 min | `shards/feature/<id>/` | **proven at full scale**: 87/87 jobs, zero failures (2026-08-22) |
 | `world-admin.yml` | Overture admin build + probes | 1 job | 120 min | `admin/` (handoff) | dispatched, run 32591161893; failed on a GDAL driver gap, which drove the fix now in `build-admin.sh` |
 | `world-transit.yml` | global route-relation build + probes | 1 job | 350 min | `transit/` (handoff) | never dispatched; `build-transit.py` has only run against a city extract, so the planet-scale disk and wall-clock numbers in the header are arithmetic rather than measurement |
 | `world-merge.yml` | shards + admin + transit → the world | 36 layers + N bands + 3 | 350 min max | `world/` | dispatched, run 32599689118, which published the live world |

@@ -108,9 +108,9 @@ jobs:
     name: build (${{ matrix.batch_id }})
     needs: setup
     runs-on: ubuntu-latest
-    # Not generous: the worst real job used 92% of this, so a slower runner or a
-    # grown extract will trip it.
-    timeout-minutes: 240
+    # GitHub-hosted runners' ceiling. canada's build alone takes ~3 h, so a throttled
+    # Geofabrik download can still trip it.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       max-parallel: 20
