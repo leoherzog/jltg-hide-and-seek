@@ -96,8 +96,20 @@ case "$KIND" in
     ;;
 esac
 
-# Download + verify. Geofabrik's .md5 sidecar names the dated file, not "-latest",
-# so `md5sum -c` fails on the name alone; compare the hash by hand instead.
+# Download + verify. A "-latest" URL redirects to a dated extract, and during
+# Geofabrik's daily publish the "-latest" pbf and "-latest" .md5 switch to the new
+# extract at different moments. Resolve the redirect once, then fetch the dated pbf
+# and its dated .md5, which never change. The sidecar names the dated file, so
+# `md5sum -c` fails on the name alone; compare the hash by hand instead.
+# --max-time: Geofabrik can stall a HEAD for minutes; a timeout counts as a retry.
+resolved_url="$(curl -fsSIL --retry 5 --retry-connrefused --retry-delay 3 --max-time 120 \
+  -o /dev/null -w '%{url_effective}' "$PBF_URL")"
+if [ "$resolved_url" != "$PBF_URL" ]; then
+  log "$PBF_URL resolves to $resolved_url"
+  PBF_URL="$resolved_url"
+  MD5_URL="$resolved_url.md5"
+fi
+
 log "downloading $PBF_URL"
 curl -fL --retry 5 --retry-connrefused --retry-delay 3 -o "$PBF" "$PBF_URL"
 

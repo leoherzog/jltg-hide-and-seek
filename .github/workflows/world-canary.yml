@@ -129,7 +129,14 @@ jobs:
           MD5_URL: ${{ steps.pick.outputs.md5_url }}
         run: |
           set -euo pipefail
-          # Geofabrik's .md5 302s to a dated filename: compare by hand, never `md5sum -c`.
+          # Same contract as build-shard.sh: pin the dated extract behind "-latest" and
+          # its dated .md5, then compare by hand, never `md5sum -c`.
+          resolved="$(curl -fsSIL --retry 5 --retry-connrefused --max-time 120 -o /dev/null -w '%{url_effective}' "$PBF_URL")"
+          if [ "$resolved" != "$PBF_URL" ]; then
+            PBF_URL="$resolved"
+            MD5_URL="$resolved.md5"
+          fi
+          echo "downloading $PBF_URL"
           curl -fL --retry 5 --retry-connrefused -o shard.osm.pbf "$PBF_URL"
           expected="$(curl -fL --retry 5 --retry-connrefused "$MD5_URL" | awk '{print $1}')"
           got="$(md5sum shard.osm.pbf | awk '{print $1}')"

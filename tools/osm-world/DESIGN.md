@@ -93,10 +93,12 @@ RSS law still governs shard sizing.
   and a 70%-residual rule 512 / 82.4 GB, both with holes over inhabited land).
   `index-v1.json`'s `parent` field is a display hierarchy, not a tree — `us`,
   `us-midwest`, `us/michigan` are siblings — so the cover is computed geometrically.
-- **Geofabrik `.md5` sidecars** 302-redirect to mirrors and name the *dated* file
-  (`germany-260815.osm.pbf`), not `-latest`. `build.py`'s `expected_md5` handles both
-  (urllib follows redirects; hash-only comparison). Shell scripts must use `curl -L` and
-  compare hashes, never `md5sum -c`.
+- **Geofabrik `-latest` URLs** redirect to a *dated* extract (`germany-260815.osm.pbf`),
+  and during the daily publish the `-latest` pbf and `-latest.md5` switch to the new
+  extract at different moments, so a pair fetched separately can disagree for hours.
+  Shell scripts resolve the redirect once, fetch the dated pbf and its dated `.md5`, and
+  compare hashes by hand, never `md5sum -c`, since the sidecar names the dated file.
+  `build.py`'s `expected_md5` follows redirects and compares the hash only.
 
 ---
 
@@ -638,9 +640,9 @@ Resolved 2026-08-22 by the first real global merge — see §Open questions.
 Helpers: `tools/osm-world/ci/chunk-shards.py` (stdlib only; batches `shards.json[kind]`
 into the `strategy.matrix.include` list and **fails cleanly** if a future `cover.py` run
 would exceed `--max-jobs`, default 256 — the fix is raising the batch size, not a code
-change) and `tools/osm-world/ci/build-shard.sh` (downloads pbf + `.md5` with `curl -L`
-and **compares hashes by hand**, then runs `build.py … --upload --prefix
-shards/<kind>/<id>`, reusing `build.py`'s own boto3 uploader, and cleans its scratch dir
+change) and `tools/osm-world/ci/build-shard.sh` (resolves the `-latest` redirect,
+downloads the dated pbf + its `.md5` and **compares hashes by hand**, then runs
+`build.py … --upload --prefix shards/<kind>/<id>`, reusing `build.py`'s own boto3 uploader, and cleans its scratch dir
 between shards; density builds get `--clip-region cover-geometries/<id>.geojson` — a
 missing geometry file is a hard error, since an unclipped density shard would silently
 poison the merge — and feature builds get `--unlink-source`).
