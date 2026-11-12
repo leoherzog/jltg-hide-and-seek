@@ -1,0 +1,3 @@
+# Cloudflare Pages redirects for addresses earlier versions of the site served.
+/generated/* / 301
+/strategy.html / 301

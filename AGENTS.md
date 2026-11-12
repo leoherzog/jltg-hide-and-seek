@@ -356,6 +356,10 @@ forward as a record of what was checked.
 
 - The root `index.html` is the app shell, not generated output. Nothing writes HTML files; nothing
   should start to.
+- The site is Cloudflare Pages serving the repo root, so every tracked file is public. `404.html`
+  must stay: without it Pages answers every unknown path with a 200 copy of the app shell. The
+  canonical origin is written in `index.html`'s head and JSON-LD, `robots.txt` and `sitemap.xml`;
+  none of them may name `#strategy`.
 - Commit messages stay bare: no `Co-Authored-By`, no `Claude-Session` trailer.
 - `GUIDE.md` / `HIDING.md` / `SEEKING.md` are the rulebook and the authority on game rules.
 - `package.json` is a LOCAL copy of Web Awesome Pro for reading component source offline. NOTHING

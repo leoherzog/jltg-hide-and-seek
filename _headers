@@ -1,0 +1,18 @@
+# Cloudflare Pages response headers. The pages.dev hostname mirrors the canonical
+# site, and the repo's docs and tooling are served but are not pages to index.
+# Not robots.txt Disallow: a crawler that may not fetch a URL never sees its noindex.
+
+https://:project.pages.dev/*
+  X-Robots-Tag: noindex
+
+/*.md
+  X-Robots-Tag: noindex
+
+/tools/*
+  X-Robots-Tag: noindex
+
+/.github/*
+  X-Robots-Tag: noindex
+
+/.agents/*
+  X-Robots-Tag: noindex

@@ -2,9 +2,9 @@
 <!--
   index.html — the static shell for the browser app.
 
-  The head loads the WebAwesome Pro kit, MapLibre stylesheet, theme classes and
-  colour-scheme script. The body ships the full slot structure and header
-  BEFORE any data exists.
+  The head carries the search and share metadata, then loads the WebAwesome Pro
+  kit, MapLibre stylesheet, theme classes and colour-scheme script. The body ships
+  the full slot structure and header BEFORE any data exists.
 
   Three states, driven by `data-state` on <body> (styles.css §7):
     landing  — a full-bleed feed map with one floating panel of controls
@@ -21,8 +21,87 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="Is your city's transit system a good map for Jet Lag: The Game's Hide+Seek? Pick it off a map of more than a thousand transit feeds, or bring your own — hiding zones, question audit, curse deck and a 100-point map-fitness score, computed in your browser.">
-<title>Hide and Seek — Map Fitness Report</title>
+<title>Hide and Seek Map Rater for Jet Lag: The Game</title>
+<meta name="description" content="Is your city a good map for Jet Lag: The Game's Hide and Seek? Pick a transit system and get a 100-point read on its hiding places, questions and curses.">
+
+<!-- Search and share metadata. The canonical origin is spelled out here, in the
+     JSON-LD below, in robots.txt and in sitemap.xml; change all four together.
+     Nothing here may name `#strategy`: the hider's guide is reached only by fragment. -->
+<link rel="canonical" href="https://jltg.herzog.tech/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Hide+Seek Map Rater">
+<meta property="og:url" content="https://jltg.herzog.tech/">
+<meta property="og:title" content="Is your city a good Hide and Seek map?">
+<meta property="og:description" content="Pick a transit system and get a 100-point read on its hiding places, questions and curses for Jet Lag: The Game's Hide and Seek. Runs in your browser.">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://jltg.herzog.tech/og-image.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Hide+Seek Map Rater: is your city a good map? A 100-point read on hiding places, questions and curses.">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://jltg.herzog.tech/#website",
+      "url": "https://jltg.herzog.tech/",
+      "name": "Hide+Seek Map Rater",
+      "alternateName": "Hide and Seek Map Rater",
+      "inLanguage": "en",
+      "publisher": { "@id": "https://jltg.herzog.tech/#author" }
+    },
+    {
+      "@type": "WebApplication",
+      "@id": "https://jltg.herzog.tech/#app",
+      "url": "https://jltg.herzog.tech/",
+      "name": "Hide+Seek Map Rater",
+      "alternateName": "Hide and Seek Map Rater",
+      "description": "Rates a city's public transit system as a map for Jet Lag: The Game's Hide and Seek home game. Pick a system from a world map of thousands of GTFS feeds, or bring your own, and get a 100-point map fitness score, a verdict for every question and curse in the deck, and the travel times behind them. Everything runs in the browser; the feed is never uploaded.",
+      "applicationCategory": "UtilitiesApplication",
+      "applicationSubCategory": "Transit map analysis",
+      "operatingSystem": "Any",
+      "browserRequirements": "Requires JavaScript, ES modules and Web Workers.",
+      "inLanguage": "en",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "image": "https://jltg.herzog.tech/og-image.png",
+      "featureList": [
+        "100-point map fitness score across six sub-scores",
+        "A verdict for every question in the Hide and Seek deck",
+        "Every curse checked against OpenStreetMap features",
+        "Crossing times and headways from the published timetable",
+        "World map of GTFS feeds from the Mobility Database",
+        "Runs in the browser; the feed is never uploaded"
+      ],
+      "about": {
+        "@type": "Game",
+        "name": "Jet Lag: The Game Hide and Seek",
+        "url": "https://www.jetlagthegame.com/"
+      },
+      "author": { "@id": "https://jltg.herzog.tech/#author" },
+      "isPartOf": { "@id": "https://jltg.herzog.tech/#website" }
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://jltg.herzog.tech/#source",
+      "codeRepository": "https://github.com/leoherzog/jltg-hide-and-seek",
+      "programmingLanguage": "JavaScript",
+      "targetProduct": { "@id": "https://jltg.herzog.tech/#app" },
+      "author": { "@id": "https://jltg.herzog.tech/#author" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://jltg.herzog.tech/#author",
+      "name": "Leo Herzog",
+      "url": "https://herzog.tech/"
+    }
+  ]
+}
+</script>
 
 <!-- The three origins in CONTRACT §0's asset allowlist, warmed before the first
      stylesheet asks for one. Each CORS fetch (the kit's modules and fonts, the tile
@@ -46,6 +125,7 @@
 <!-- Web Awesome autoloader -->
 <script type="module" src="https://ka-p.webawesome.com/kit/95e68140d1204145/webawesome@3.14.0/webawesome.loader.js"></script>
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body data-state="landing">

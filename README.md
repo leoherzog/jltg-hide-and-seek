@@ -361,6 +361,10 @@ lib/catalog.js       main-side reader for data/feeds.json: search, bbox intersec
 data/feeds.json      the feed catalogue snapshot the landing map draws; one JSON object per
                      line so a regeneration reads as a diff
 styles.css           the one stylesheet
+404.html             the not-found page; its presence turns off Cloudflare Pages' single-page fallback
+robots.txt sitemap.xml   crawler files for the canonical https://jltg.herzog.tech/
+_headers _redirects  Cloudflare Pages: noindex the pages.dev mirror and the docs, redirect retired paths
+og-image.png         the link-preview card, rasterized from tools/social-card.svg
 CONTRACT.md          authoritative for every shape crossing a module boundary
 tools/smoke.mjs      headless harness: runs the real pipeline, asserts 19 golden numbers,
                      then the merge assertions

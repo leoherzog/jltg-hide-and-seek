@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!--
+  404.html — the not-found page. Its presence turns off Cloudflare Pages' single-page
+  fallback, so an unknown path answers 404 instead of a 200 copy of the app shell.
+  It is served at any depth, so every URL in it is root-absolute, and it loads nothing
+  external. Colours are styles.css's brand tokens, copied as literals.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>Page not found · Hide+Seek Map Rater</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --paper: #f0f0f0; --text: #202f40; --quiet: #556577; --link: #b1511e; --gold: #906600;
+    --serif: "Charter", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #152434; --text: #f0f0f0; --quiet: #b5bfcb; --link: #f57a3c; --gold: #ffbf40; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-block-size: 100dvh; display: grid; place-items: center;
+    padding: 2rem 1rem; background: var(--paper); color: var(--text);
+    font: 1.0625rem/1.5 var(--serif);
+  }
+  main { max-inline-size: 34rem; display: grid; gap: .75rem; }
+  img { inline-size: 3.5rem; block-size: 3.5rem; }
+  .kicker { margin: 0; font: 700 .8125rem/1.2 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--gold); }
+  h1 { margin: 0; font-size: clamp(2rem, 6vw, 2.75rem); line-height: 1.1; text-wrap: balance; }
+  p { margin: 0; color: var(--quiet); text-wrap: pretty; }
+  a { color: var(--link); font: 700 1rem/1.4 var(--sans); }
+</style>
+</head>
+<body>
+<main>
+  <img src="/favicon.svg" alt="">
+  <p class="kicker">Jet Lag: The Game · Hide+Seek</p>
+  <h1>Nothing is hiding here.</h1>
+  <p>This address is not part of the map rater. Every report starts from the map of transit systems.</p>
+  <p><a href="/">Back to the map</a></p>
+</main>
+</body>
+</html>

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://jltg.herzog.tech/sitemap.xml
